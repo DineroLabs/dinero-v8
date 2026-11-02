@@ -1864,7 +1864,7 @@ TEST(BlockValidationInvariants, CsnContextPreflightEnforcesCoinbaseAndBlockRules
     EXPECT_NE(error.find("block-sigops-exceeded"), std::string::npos) << error;
 }
 
-TEST(BlockValidationInvariants, CsnContextPreflightFailsClosedOnLegacyRelativeLock) {
+TEST(BlockValidationInvariants, CsnContextPreflightPassesLegacyZeroAndExpiredHeightLocks) {
     SelectRegtestDormantCommitment();
     const uint32_t height = 111001;
     Block block = MakeContextPreflightBlock(height);
@@ -1872,15 +1872,119 @@ TEST(BlockValidationInvariants, CsnContextPreflightFailsClosedOnLegacyRelativeLo
     spend.version = 2;
     spend.vin.resize(1);
     spend.vin.front().prevout = TxOutPoint{MakeTestTxId(9991), 0};
-    spend.vin.front().sequence = 2;
-    spend.vout.emplace_back(AmountUna::Una(9000), MakeMatrixScript(0x42));
+    spend.vin.front().sequence = 0;
+    spend.vout.emplace_back(AmountUna::Una(9000), std::vector<uint8_t>{0x51});
     block.vtx.push_back(spend);
     const std::vector<SpentOutputData> spent_outputs{
-        SpentOutputData(10000, MakeMatrixScript(0x42), 1, false)};
+        SpentOutputData(10000, std::vector<uint8_t>{0x51}, 1, false)};
+    std::string error;
+    // The deliberately unsigned fixture fails at script verification. Both
+    // lock checks must advance past the old missing-height failure.
+    EXPECT_FALSE(CheckStatelessBlockContextReadOnly(
+        block, height, &spent_outputs, {}, error));
+    EXPECT_EQ(error, "stateless-context-script-verification-failed");
+    block.vtx.back().vin.front().sequence = 2;
+    error.clear();
+    EXPECT_FALSE(CheckStatelessBlockContextReadOnly(
+        block, height, &spent_outputs, {}, error));
+    EXPECT_EQ(error, "stateless-context-script-verification-failed");
+}
+
+TEST(BlockValidationInvariants, CsnContextPreflightFailsClosedOnUnknownLegacyTimeLock) {
+    SelectRegtestDormantCommitment();
+    const uint32_t height = 111001;
+    Block block = MakeContextPreflightBlock(height);
+    Transaction spend;
+    spend.version = 2;
+    spend.vin.resize(1);
+    spend.vin.front().prevout = TxOutPoint{MakeTestTxId(9992), 0};
+    spend.vin.front().sequence = (1U << 22) | 2U;
+    spend.vout.emplace_back(AmountUna::Una(9000), std::vector<uint8_t>{0x51});
+    block.vtx.push_back(spend);
+    const std::vector<SpentOutputData> spent_outputs{
+        SpentOutputData(10000, std::vector<uint8_t>{0x51}, 1, false)};
     std::string error;
     EXPECT_FALSE(CheckStatelessBlockContextReadOnly(
         block, height, &spent_outputs, {}, error));
-    EXPECT_EQ(error, "contextual-lock-missing-input-height");
+    EXPECT_EQ(error, "contextual-lock-missing-input-mtp");
+}
+
+TEST(BlockValidationInvariants, CsnContextPreflightPassesExpiredLegacyTimeLockBound) {
+    SelectRegtestDormantCommitment();
+    const uint32_t height = 111001;
+    Block block = MakeContextPreflightBlock(height);
+    Transaction spend;
+    spend.version = 2;
+    spend.vin.resize(1);
+    spend.vin.front().prevout = TxOutPoint{MakeTestTxId(9995), 0};
+    spend.vin.front().sequence = (1U << 22) | 2U;
+    spend.vout.emplace_back(AmountUna::Una(9000), std::vector<uint8_t>{0x51});
+    block.vtx.push_back(spend);
+    const std::vector<SpentOutputData> spent_outputs{
+        SpentOutputData(10000, std::vector<uint8_t>{0x51}, 1, false)};
+    const LockMtpLookup mtp = [height](uint32_t wanted)
+        -> std::optional<uint64_t> {
+        if (wanted == 18) return 1000;
+        if (wanted == height - 1) return 3000;
+        return std::nullopt;
+    };
+    std::string error;
+    EXPECT_FALSE(CheckStatelessBlockContextReadOnly(
+        block, height, &spent_outputs, mtp, error));
+    EXPECT_EQ(error, "stateless-context-script-verification-failed");
+}
+
+TEST(BlockValidationInvariants, CsnContextPreflightDoesNotPoisonUnprovenLegacyLock) {
+    SelectRegtestDormantCommitment();
+    const auto saved_activation = MutableParams().contextual_locks_activation_height;
+    struct Restore {
+        uint32_t height;
+        ~Restore() { MutableParams().contextual_locks_activation_height = height; }
+    } restore{saved_activation};
+    MutableParams().contextual_locks_activation_height = 21;
+    const uint32_t height = 21;
+    Block block = MakeContextPreflightBlock(height);
+    Transaction spend;
+    spend.version = 2;
+    spend.vin.resize(1);
+    spend.vin.front().prevout = TxOutPoint{MakeTestTxId(9993), 0};
+    spend.vin.front().sequence = 3;
+    spend.vout.emplace_back(AmountUna::Una(9000), std::vector<uint8_t>{0x51});
+    block.vtx.push_back(spend);
+    const std::vector<SpentOutputData> spent_outputs{
+        SpentOutputData(10000, std::vector<uint8_t>{0x51}, 1, false)};
+    std::string error;
+    EXPECT_FALSE(CheckStatelessBlockContextReadOnly(
+        block, height, &spent_outputs, {}, error));
+    EXPECT_EQ(error, "contextual-lock-legacy-height-unverified");
+}
+
+TEST(BlockValidationInvariants, CsnContextPreflightStillClassifiesExactHeightViolation) {
+    SelectRegtestDormantCommitment();
+    const auto saved_activation = MutableParams().contextual_locks_activation_height;
+    struct Restore {
+        uint32_t height;
+        ~Restore() { MutableParams().contextual_locks_activation_height = height; }
+    } restore{saved_activation};
+    MutableParams().contextual_locks_activation_height = 21;
+    const uint32_t height = 21;
+    Block block = MakeContextPreflightBlock(height);
+    Transaction spend;
+    spend.version = 2;
+    spend.vin.resize(2);
+    spend.vin[0].prevout = TxOutPoint{MakeTestTxId(9993), 0};
+    spend.vin[0].sequence = 3;  // Legacy bound is inconclusive first.
+    spend.vin[1].prevout = TxOutPoint{MakeTestTxId(9994), 0};
+    spend.vin[1].sequence = 2;  // Exact v2 creation at H20 is invalid at H21.
+    spend.vout.emplace_back(AmountUna::Una(9000), std::vector<uint8_t>{0x51});
+    block.vtx.push_back(spend);
+    const std::vector<SpentOutputData> spent_outputs{
+        SpentOutputData(10000, std::vector<uint8_t>{0x51}, 1, false),
+        SpentOutputData(10000, std::vector<uint8_t>{0x51}, 20, false)};
+    std::string error;
+    EXPECT_FALSE(CheckStatelessBlockContextReadOnly(
+        block, height, &spent_outputs, {}, error));
+    EXPECT_EQ(error, "non-final-relative-height-lock");
 }
 
 TEST(BlockValidationInvariants, CsnContextPreflightPreservesPreH1CoinbaseShape) {

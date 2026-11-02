@@ -327,6 +327,7 @@ bool CheckStatelessBlockContextReadOnly(
         }
         std::vector<UTXOEntry> input_utxos;
         std::vector<std::optional<uint32_t>> input_heights;
+        std::vector<size_t> legacy_relative_inputs;
         input_utxos.reserve(tx.vin.size());
         input_heights.reserve(tx.vin.size());
         for (const auto& input : tx.vin) {
@@ -350,14 +351,53 @@ bool CheckStatelessBlockContextReadOnly(
                 error = "stateless-coinbase-maturity-violation";
                 return false;
             }
+            // A v1 Utreexo leaf authenticates the outpoint/value/script, but
+            // not the sidecar's exact creation height. Its leaf format does
+            // prove creation before the v2 activation. Check relative locks
+            // against the latest possible creation height: a pass is then
+            // valid for every height the old output could have had. Accepted
+            // headers make branch MTP nondecreasing, so the same bound is
+            // conservative for time locks. A failed bound is only
+            // uncertainty, not proof that the block is invalid.
+            const uint32_t leaf_activation = GetUtreexoMaturityLeafActivationHeight();
+            const auto legacy_upper_bound = leaf_activation > 0 &&
+                    leaf_activation != UINT32_MAX
+                ? std::optional<uint32_t>(leaf_activation - 1)
+                : std::nullopt;
             input_heights.push_back(v2_leaf
-                ? std::optional<uint32_t>(spent.created_height) : std::nullopt);
+                ? std::optional<uint32_t>(spent.created_height)
+                : legacy_upper_bound);
+            if (!v2_leaf && tx.version >= 2 &&
+                (input.sequence & 0x80000000U) == 0) {
+                legacy_relative_inputs.push_back(input_utxos.size());
+            }
             input_utxos.emplace_back(AmountUna::Una(spent.value), spent.scriptPubKey,
                 v2_leaf ? spent.created_height : 0, v2_leaf && spent.is_coinbase,
                 spent.is_confidential, spent.commitment);
         }
         if (!CheckContextualLocks(tx, height, Params().contextual_locks_activation_height,
                 input_heights, branch_mtp, error, /*defer_unknown_relative=*/false)) {
+            if (!legacy_relative_inputs.empty() &&
+                error.rfind("non-final-relative-", 0) == 0) {
+                // A bound failure may still be a valid old spend. Retry only
+                // the exact-height inputs so their independent violations
+                // retain consensus-invalid classification; never mark a
+                // legacy-bound failure as BLOCK_FAILED_VALID.
+                Transaction exact_only = tx;
+                exact_only.lockTime = 0;
+                for (size_t index : legacy_relative_inputs) {
+                    exact_only.vin[index].sequence |= 0x80000000U;
+                }
+                std::string exact_error;
+                if (CheckContextualLocks(exact_only, height,
+                        Params().contextual_locks_activation_height,
+                        input_heights, branch_mtp, exact_error,
+                        /*defer_unknown_relative=*/false)) {
+                    error = "contextual-lock-legacy-height-unverified";
+                } else {
+                    error = std::move(exact_error);
+                }
+            }
             return false;
         }
         if (tx.HasConfidentialOutputs() || HasConfidentialInputs(input_utxos)) {
