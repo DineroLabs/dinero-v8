@@ -226,6 +226,7 @@ TEST(CovenantActivation, ConsensusChecksumCommitsToEveryActivationHeight) {
     dormant.orchard_activation_height = UINT32_MAX;
     dormant.orchard_branch_id = 0;
     dormant.orchard_catalog_commitment_activation_height = UINT32_MAX;
+    dormant.coinbase_structure_activation_height = UINT32_MAX;
     EXPECT_EQ(
         ConsensusChecksum(dormant),
         "3f288229f948021a52652574e9c1a0f173de0ff2782ab1b6139ebafe2c3e3de4");
@@ -261,6 +262,7 @@ TEST(CovenantActivation, ConsensusChecksumCommitsToEveryActivationHeight) {
     expect_committed(&ChainParams::shielded_private_covenant_activation_height);
     expect_committed(&ChainParams::shielded_outgoing_recovery_activation_height);
     expect_committed(&ChainParams::shielded_coinbase_reject_activation_height);
+    expect_committed(&ChainParams::coinbase_structure_activation_height);
 
     // state_commitment_v1 joined the checksum with its dormant wiring.
     expect_committed(&ChainParams::state_commitment_activation_height);
