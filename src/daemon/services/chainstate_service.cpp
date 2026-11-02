@@ -92,6 +92,7 @@
 #include "ipc/oracles/transaction_oracle_client.h"  // Phase 9.2: For Lightning TX tracking
 #include "network/bridge_node.h"  // Phase P.2: For Utreexo proof pre-caching
 #include "network/stateless_node.h"  // CSN reorg: For RewindToCheckpoint/ReplayBlock
+#include "consensus/block_validation.h"  // Read-only contextual CSN replay preflight
 #include "storage/chain_write_token.h"  // For genesis bootstrap token
 #include "consensus/chainparams.h"   // For Params()
 #include "consensus/state_commitment.h"  // IsStateCommitmentActive — the single dormancy authority
@@ -12626,6 +12627,104 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
             }
         }
 
+        // Both staging provenance and BLOCK_VALID_TRANSACTIONS stop short of
+        // script validation. Re-derive each stored spend from the fork forest
+        // before trusting its script and height metadata. This private forest
+        // advances over the proposed branch without changing canonical state.
+        consensus::UtreexoForest preflight_forest = restored_forest;
+        network::StatelessNode preflight_node(&preflight_forest);
+        const auto reject_proven_invalid = [&](CBlockIndex* index,
+                                               const std::string& reason) {
+            // Only an authenticated, deterministic consensus failure may
+            // poison a header. An unavailable proof, missing branch MTP or
+            // legacy creation height never reaches this path.
+            ChainWriteToken token;
+            if (chain_db_->setHeaderStatusBits(
+                    token, index->hash, BLOCK_FAILED_VALID) != Status::Ok) {
+                EnterSafeMode("CSN contextual rejection status could not be persisted");
+                return;
+            }
+            {
+                std::lock_guard<std::recursive_mutex> index_lock(g_block_index_mutex);
+                index->status |= BLOCK_FAILED_VALID;
+                InvalidateAncestryCache();
+            }
+            RemoveCandidate(index);
+            if (best_candidate != index) RemoveCandidate(best_candidate);
+            activation_retries_.Clear(best_candidate->hash);
+            if (logger_) logger_->warning(
+                "[ABC-CSN] Persisted consensus-invalid branch block at height " +
+                std::to_string(index->height) + ": " + reason);
+        };
+        for (auto* block_index : connect_path) {
+            const auto block_result = ReadStoredBlock(block_index->hash);
+            if (block_result.status() != Status::Ok) return;
+            const auto& candidate = block_result.value();
+            const auto replay_result = chain_db_->getCSNSpendTargets(block_index->hash);
+            CsnReplayData replay_data;
+            const std::string* record = replay_result.status() == Status::Ok
+                ? &replay_result.value() : nullptr;
+            if ((replay_result.status() != Status::Ok &&
+                 replay_result.status() != Status::NotFound) ||
+                !consensus::DecodeCsnReplayDataForBlock(candidate, record, replay_data) ||
+                (record && !EnsureCsnReplayMetadata(
+                    block_index, candidate, *record, replay_data))) {
+                if (logger_) logger_->error("[ABC-CSN] Context preflight: replay data unavailable");
+                return;
+            }
+            const auto* spent_outputs = replay_data.has_spent_outputs
+                ? &replay_data.spent_outputs
+                : (candidate.utreexo ? &candidate.utreexo->spent_outputs : nullptr);
+            if (!preflight_node.ReplayBlock(candidate, block_index->height,
+                                            replay_data.spend_targets, spent_outputs)) {
+                if (logger_) logger_->error("[ABC-CSN] Context preflight: stored spends not authenticated at height " +
+                                            std::to_string(block_index->height));
+                return;
+            }
+            const auto branch_mtp = [block_index](uint32_t wanted)
+                    -> std::optional<uint64_t> {
+                auto* cursor = block_index->pprev;
+                while (cursor && cursor->height > wanted) cursor = cursor->pprev;
+                if (!cursor || cursor->height != wanted) return std::nullopt;
+                return cursor->GetMedianTimePast();
+            };
+            std::string context_error;
+            if (!consensus::CheckStatelessBlockContextReadOnly(
+                    candidate, block_index->height, spent_outputs,
+                    branch_mtp, context_error)) {
+                if (logger_) logger_->error("[ABC-CSN] Context preflight rejected height " +
+                    std::to_string(block_index->height) + ": " + context_error +
+                    " — canonical state left untouched");
+                if (context_error == "stateless-context-script-verification-failed" ||
+                    context_error == "stateless-context-bip34-height-mismatch" ||
+                    context_error == "stateless-context-invalid-coinbase-height-script" ||
+                    context_error == "stateless-context-invalid-coinbase-framing" ||
+                    context_error == "stateless-context-missing-dnrf" ||
+                    context_error == "stateless-context-invalid-state-commitment" ||
+                    context_error == "coinbase-carries-shielded-bundle" ||
+                    context_error == "stateless-context-double-spend" ||
+                    context_error == "stateless-context-invalid-transaction-inputs" ||
+                    context_error == "Legacy private lane removed" ||
+                    context_error.rfind("block-sigops-exceeded", 0) == 0 ||
+                    context_error.rfind("non-final-", 0) == 0) {
+                    reject_proven_invalid(block_index, context_error);
+                }
+                return;
+            }
+            // Shielded anchor/nullifier validation still depends on the
+            // mutable selected shielded state. Until it can be run on a
+            // private fork copy, refuse this reorg before the forest rewind
+            // instead of discovering an invalid bundle after disconnect.
+            if (std::any_of(candidate.vtx.begin() + 1, candidate.vtx.end(),
+                    [](const Transaction& tx) { return tx.IsShielded(); })) {
+                if (logger_) logger_->error(
+                    "[ABC-CSN] Shielded branch requires scratch-state preflight; "
+                    "reorg refused before canonical mutation. Recover with a "
+                    "newer qualified snapshot or a full-node validator.");
+                return;
+            }
+        }
+
         // Step 2: Restore forest + StatelessNode state
         stateless_node_->RewindToCheckpoint(static_cast<uint32_t>(fork_point->height), restored_forest);
 
@@ -23648,6 +23747,78 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
                 if (replay_data.has_spent_outputs) {
                     replay_spent_outputs = std::move(replay_data.spent_outputs);
                     spent_outputs = &replay_spent_outputs;
+                }
+            }
+
+            // A recovery sidecar is not script authorization. Authenticate it
+            // against a private copy of the current forest before using its
+            // spent-output scripts, then reject any invalid spend before the
+            // shared forest or shielded state changes.
+            consensus::UtreexoForest replay_preflight_forest;
+            {
+                auto forest_lock = consensus_utxo_set_->LockForestShared();
+                replay_preflight_forest = consensus_utxo_set_->GetForest();
+            }
+            network::StatelessNode replay_preflight(&replay_preflight_forest);
+            if (!replay_preflight.ReplayBlock(block, tip_to_connect->height,
+                                              replay_targets, spent_outputs)) {
+                return fail("stateless-replay-context-metadata-unverified");
+            }
+            const auto branch_mtp = [tip_to_connect](uint32_t wanted)
+                    -> std::optional<uint64_t> {
+                auto* cursor = tip_to_connect->pprev;
+                while (cursor && cursor->height > wanted) cursor = cursor->pprev;
+                if (!cursor || cursor->height != wanted) return std::nullopt;
+                return cursor->GetMedianTimePast();
+            };
+            std::string context_error;
+            if (!consensus::CheckStatelessBlockContextReadOnly(
+                    block, tip_to_connect->height, spent_outputs,
+                    branch_mtp, context_error)) {
+                return fail("stateless-replay-context-invalid: " + context_error);
+            }
+            // Recovery may replay a shielded-bearing selected block that was
+            // stored just before a crash. Check the pool transition on a
+            // private copy before touching the shared forest or pool. Use the
+            // same delta and shielded-section validators as the live apply.
+            const bool has_shielded = std::any_of(
+                block.vtx.begin() + 1, block.vtx.end(),
+                [](const Transaction& tx) { return tx.IsShielded(); });
+            if (has_shielded) {
+                const auto marker = chain_db_->getShieldedTipMarker();
+                if (marker.status() != Status::Ok ||
+                    StatelessReplayShieldedDecision(
+                        static_cast<uint32_t>(marker.value().height),
+                        tip_to_connect->height) != StatelessReplayShieldedAction::Apply) {
+                    return fail("stateless-replay-shielded-scratch-marker-unavailable");
+                }
+                auto scratch_tree = shielded_tree_;
+                auto scratch_anchors = shielded_anchor_history_;
+                consensus::shielded::NullifierSet scratch_nullifiers;
+                const auto nullifier_content = shielded_nullifiers_.SerializeContent();
+                if (nullifier_content.empty() ||
+                    scratch_nullifiers.Open(":memory:") !=
+                        consensus::shielded::NullifierSet::OpenResult::Ok ||
+                    !scratch_nullifiers.DeserializeContent(nullifier_content)) {
+                    return fail("stateless-replay-shielded-scratch-state-unavailable");
+                }
+                std::vector<int64_t> scratch_deltas;
+                std::string scratch_error;
+                if (!block_validator_->ComputeShieldedDeltasForStoredBlock(
+                        block, tip_to_connect->height, scratch_deltas,
+                        scratch_error, spent_outputs)) {
+                    return fail("stateless-replay-shielded-scratch-delta-invalid: " +
+                                scratch_error);
+                }
+                consensus::BlockValidator scratch_validator(consensus_utxo_set_.get());
+                scratch_validator.setShieldedState(
+                    &scratch_tree, &scratch_nullifiers, &scratch_anchors);
+                consensus::BlockUndo scratch_undo;
+                if (!scratch_validator.ApplyBlockShieldedSection(
+                        block, tip_to_connect->height, scratch_deltas,
+                        scratch_undo, scratch_error)) {
+                    return fail("stateless-replay-shielded-scratch-invalid: " +
+                                scratch_error);
                 }
             }
 

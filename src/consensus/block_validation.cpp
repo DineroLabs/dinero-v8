@@ -40,6 +40,7 @@ extern "C" {
 #include "consensus/subsidy.h"  // Canonical monetary policy
 #include "consensus/utreexo_stump.h"       // Transition proof cross-check
 #include "consensus/state_commitment.h"    // state_commitment_v1: DNRS lookup + IsStateCommitmentActive
+#include "consensus/filter_commitment.h"
 #include "consensus/shielded/shielded_root.h"  // post-block SHR1 root for the commitment value check
 #include <algorithm>
 #include <sstream>
@@ -224,6 +225,156 @@ bool SpentOutputMatchesBlockOutput(
 }
 
 }  // namespace
+
+bool CheckStatelessBlockContextReadOnly(
+    const Block& block, uint32_t height,
+    const std::vector<SpentOutputData>* spent_outputs,
+    const LockMtpLookup& branch_mtp, std::string& error) {
+    if (block.vtx.empty()) {
+        error = "stateless-context-missing-coinbase";
+        return false;
+    }
+    const auto& coinbase = block.vtx.front();
+    if (coinbase.vin.size() != 1 || coinbase.vout.empty() ||
+        !coinbase.vin.front().prevout.txid.IsNull()) {
+        error = "stateless-context-invalid-coinbase-framing";
+        return false;
+    }
+    if (IsCoinbaseStructureActive(height, Params().coinbase_structure_activation_height) &&
+        !coinbase.IsCoinbase()) {
+        error = "invalid-coinbase-prevout-structure";
+        return false;
+    }
+    // Match BlockAcceptor's existing raw BIP34 parser exactly, including its
+    // historical ability to read the height prefix through the serialized
+    // sequence when the script is shorter than the claimed prefix length.
+    // Tightening that parser is a separate activation/history-scan decision.
+    const auto& script = coinbase.vin.front().scriptSig;
+    if (script.size() < 2 || script.size() > 100) {
+        error = "stateless-context-invalid-coinbase-height-script";
+        return false;
+    }
+    uint64_t encoded_height = 0;
+    const uint8_t height_len = script.front();
+    if (height_len > 0 && height_len <= 5) {
+        const uint32_t sequence = coinbase.vin.front().sequence;
+        for (size_t i = 0; i < height_len; ++i) {
+            const size_t byte_index = i + 1;
+            const uint8_t byte = byte_index < script.size()
+                ? script[byte_index]
+                : static_cast<uint8_t>(sequence >> (8 * (byte_index - script.size())));
+            encoded_height |= static_cast<uint64_t>(byte) << (i * 8);
+        }
+    }
+    if (encoded_height != height) {
+        error = "stateless-context-bip34-height-mismatch";
+        return false;
+    }
+    if (RequiresFilterCommitment(height) &&
+        !FindFilterCommitmentIndexForBlock(coinbase, height)) {
+        error = "stateless-context-missing-dnrf";
+        return false;
+    }
+    if (height >= Params().shielded_coinbase_reject_activation_height &&
+        UsesShieldedValueSemantics(coinbase)) {
+        error = "coinbase-carries-shielded-bundle";
+        return false;
+    }
+    if (IsStateCommitmentActive(height, Params().state_commitment_activation_height) &&
+        FindStateCommitment(coinbase).status != StateCommitmentStatus::Ok) {
+        error = "stateless-context-invalid-state-commitment";
+        return false;
+    }
+    if (!shielded::CheckAuthBlockResources(block.vtx, height,
+            Params().shielded_spend_auth_activation_height, error,
+            shielded::CompactRulesFor(Params()))) return false;
+    unsigned int sigop_cost = 0;
+    if (!CheckBlockSigops(block, sigop_cost, error)) {
+        error = "block-sigops-exceeded: " + error;
+        return false;
+    }
+
+    size_t input_count = 0;
+    for (size_t tx_idx = 1; tx_idx < block.vtx.size(); ++tx_idx) {
+        input_count += block.vtx[tx_idx].vin.size();
+    }
+    if (input_count != (spent_outputs ? spent_outputs->size() : 0)) {
+        error = "stateless-context-spent-output-count-mismatch";
+        return false;
+    }
+    std::unordered_set<OutPoint> seen_spends;
+    std::unordered_map<OutPoint, BlockOutputRef> block_outputs;
+    for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
+        const auto& tx = block.vtx[tx_idx];
+        const TxId txid = tx.GetTxid();
+        for (uint32_t vout = 0; vout < tx.vout.size(); ++vout) {
+            block_outputs.emplace(OutPoint(txid, vout),
+                                  BlockOutputRef{&tx.vout[vout], tx.IsCoinbase(), tx_idx});
+        }
+    }
+    size_t spent_index = 0;
+    for (size_t tx_idx = 1; tx_idx < block.vtx.size(); ++tx_idx) {
+        const auto& tx = block.vtx[tx_idx];
+        const bool has_shielded_bundle = UsesShieldedValueSemantics(tx);
+        if (tx.IsCoinbase() ||
+            (!Transaction::IsShieldedVersion(tx.version) &&
+             !tx.shielded_bundle_bytes.empty()) ||
+            (Transaction::IsShieldedVersion(tx.version) &&
+             tx.shielded_bundle_bytes.empty()) ||
+            (!has_shielded_bundle && (tx.vin.empty() || tx.vout.empty()))) {
+            error = "stateless-context-invalid-transaction-inputs";
+            return false;
+        }
+        std::vector<UTXOEntry> input_utxos;
+        std::vector<std::optional<uint32_t>> input_heights;
+        input_utxos.reserve(tx.vin.size());
+        input_heights.reserve(tx.vin.size());
+        for (const auto& input : tx.vin) {
+            const OutPoint prevout(input.prevout.txid, input.prevout.vout);
+            if (!seen_spends.insert(prevout).second) {
+                error = "stateless-context-double-spend";
+                return false;
+            }
+            const auto& spent = (*spent_outputs)[spent_index++];
+            const auto intra = block_outputs.find(prevout);
+            if (intra != block_outputs.end() && intra->second.tx_index < tx_idx &&
+                !SpentOutputMatchesBlockOutput(spent, *intra->second.output,
+                                               height, intra->second.is_coinbase)) {
+                error = "stateless-context-intrablock-spent-output-mismatch";
+                return false;
+            }
+            const bool v2_leaf = IsUtreexoMaturityLeafActive(spent.created_height);
+            if (EvaluateUtreexoStatelessMaturity(height, spent.created_height,
+                                                 spent.is_coinbase) ==
+                UtreexoStatelessMaturityStatus::IMMATURE_COINBASE) {
+                error = "stateless-coinbase-maturity-violation";
+                return false;
+            }
+            input_heights.push_back(v2_leaf
+                ? std::optional<uint32_t>(spent.created_height) : std::nullopt);
+            input_utxos.emplace_back(AmountUna::Una(spent.value), spent.scriptPubKey,
+                v2_leaf ? spent.created_height : 0, v2_leaf && spent.is_coinbase,
+                spent.is_confidential, spent.commitment);
+        }
+        if (!CheckContextualLocks(tx, height, Params().contextual_locks_activation_height,
+                input_heights, branch_mtp, error, /*defer_unknown_relative=*/false)) {
+            return false;
+        }
+        if (tx.HasConfidentialOutputs() || HasConfidentialInputs(input_utxos)) {
+            error = "Legacy private lane removed";
+            return false;
+        }
+        const PrecomputedTransactionData precomputed(tx, input_utxos);
+        for (size_t input_idx = 0; input_idx < tx.vin.size(); ++input_idx) {
+            if (ValidateSpend(tx, input_idx, input_utxos[input_idx], height,
+                              input_utxos, &precomputed) != ScriptValidationResult::OK) {
+                error = "stateless-context-script-verification-failed";
+                return false;
+            }
+        }
+    }
+    return true;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Phase 2: Pure Consensus Architecture
