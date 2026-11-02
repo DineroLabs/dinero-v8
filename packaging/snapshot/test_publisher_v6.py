@@ -4,20 +4,27 @@ Native v6 proof/import is independently exercised by OrchardSnapshotRuntime.
 import hashlib,json,os,struct,subprocess,tempfile,unittest,shutil
 from pathlib import Path
 SCRIPT=Path(__file__).with_name('dinero-snapshot-publish.sh').resolve()
+CAPTURE=Path(__file__).with_name('capture_boundary_v5.py').resolve()
 
 class PublisherV6(unittest.TestCase):
-    def run_publication(self, profile=2, gate=True, reorg=False, key=True, fresh=False, optimize=False, failed=False):
+    def run_publication(self, profile=2, gate=True, reorg=False, key=True, fresh=False, optimize=False, failed=False, boundary=False, bad_pin=False, capture_first=False):
         tmp=tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
         root=Path(tmp.name); dumps=root/'data/snapshots'; dumps.mkdir(parents=True)
+        height=149999 if boundary else 150000
+        version=5 if boundary else 6
         section=b'ORCH'+struct.pack('<I',1)+bytes([profile])+bytes(1048576)
-        payload=b'UXTO'+struct.pack('<I',6)+bytes.fromhex('ab'*32)+struct.pack('<I',150000)+bytes(24)+struct.pack('<Q',len(section))+section+bytes(32)
+        payload=b'UXTO'+struct.pack('<I',version)+bytes.fromhex('ab'*32)+struct.pack('<I',height)+bytes(24)
+        if version==6: payload+=struct.pack('<Q',len(section))+section+bytes(32)
         (root/'template.dat').write_bytes(payload)
         (dumps/'pending.dat').write_bytes(payload)
-        (dumps/'pending.json').write_text(json.dumps({'base_height':150000,'base_hash':'ab'*32}))
+        (dumps/'pending.json').write_text(json.dumps({'base_height':height,'base_hash':'ab'*32}))
         previous=root/'www/archive/previous';previous.mkdir(parents=True)
         (previous/'retained').write_text('previous publication')
         (root/'www/latest').symlink_to('archive/previous')
-        if fresh:
+        if bad_pin:
+            pinned=root/'www/pinned/v5-h149999';pinned.mkdir(parents=True)
+            (pinned/'manifest.json').write_text('{}')
+        if fresh or capture_first:
             (dumps/'pending.dat').unlink();(dumps/'pending.json').unlink()
         bin=root/'bin';bin.mkdir()
         def executable(name, text):
@@ -27,14 +34,24 @@ class PublisherV6(unittest.TestCase):
         executable('mv','#!/usr/bin/env python3\nimport os,sys\nos.replace(sys.argv[-2],sys.argv[-1])\n')
         executable('sleep','#!/bin/sh\n/bin/sleep 0.01\n')
         executable('head','#!/usr/bin/env python3\nimport sys\ndata=sys.stdin.readlines()\nn=int(sys.argv[2]);sys.stdout.writelines(data[:n] if n<0 else data[:n])\n')
-        state={'assumeutxo_active':gate,'snapshot_base_height':150000,'snapshot_base_block':'ab'*32,'status':'Failed' if failed else 'NotStarted','error_message':''}
-        cli=executable('cli', '#!/usr/bin/env python3\nimport json,sys,pathlib,shutil\na=sys.argv\nr=pathlib.Path('+repr(str(root))+')\nif "dumptxoutset" in a:\n i=a.index("dumptxoutset");shutil.copyfile(r/"template.dat",a[i+1]);(r/"export-args.json").write_text(json.dumps(a[i+1:]));print(json.dumps({"base_height":150000,"base_hash":"ab"*32}))\nelif "getbackgroundvalidationprogress" in a:\n sys.exit(1) if not (r/"configured-gate").exists() else None; ready=(r/"first-gate-probe").exists(); (r/"first-gate-probe").touch(); sys.exit(1) if not ready else None; (r/"gate-ran").touch(); print('+repr(json.dumps(state))+')\nelif "getblockcount" in a: print(150288)\nelif "getblockhash" in a: print("cd"*32 if '+repr(reorg)+' and (r/"gate-ran").exists() else "ab"*32)\nelse: sys.exit(99)\n')
+        state={'assumeutxo_active':gate,'snapshot_base_height':height,'snapshot_base_block':'ab'*32,'status':'Failed' if failed else 'NotStarted','error_message':''}
+        cli=executable('cli', '#!/usr/bin/env python3\nimport json,sys,pathlib,shutil\na=sys.argv\nr=pathlib.Path('+repr(str(root))+')\nif "getblockchaininfo" in a: print(json.dumps({"chain":"mainnet"}))\nelif "dumptxoutset" in a:\n i=a.index("dumptxoutset");shutil.copyfile(r/"template.dat",a[i+1]);(r/"export-args.json").write_text(json.dumps(a[i+1:]));print(json.dumps({"base_height":'+str(height)+',"base_hash":"ab"*32}))\nelif "getbackgroundvalidationprogress" in a:\n sys.exit(1) if not (r/"configured-gate").exists() else None; ready=(r/"first-gate-probe").exists(); (r/"first-gate-probe").touch(); sys.exit(1) if not ready else None; (r/"gate-ran").touch(); print('+repr(json.dumps(state))+')\nelif "getblockcount" in a: print(int((r/"tip").read_text()) if (r/"tip").exists() else '+str(height+288)+')\nelif "getblockhash" in a: print(json.dumps("cd"*32 if '+repr(reorg)+' and (r/"gate-ran").exists() else "ab"*32))\nelse: sys.exit(99)\n')
         daemon=executable('daemon','#!/usr/bin/env python3\nimport pathlib,sys,time,signal,json\nr=pathlib.Path('+repr(str(root))+')\nd=pathlib.Path(next(a.split("=",1)[1] for a in sys.argv if a.startswith("--datadir=")))\nif not all(setting in (d/"dinero.conf").read_text().splitlines() for setting in ("lightning.oracles.enable=0","utreexo-bridge=0")):\n print("FATAL: Scheduled Orchard requires explicit disabled legacy oracles",flush=True);sys.exit(1)\nprint("# HELP din_blocks_rejected_total Number of rejected blocks",flush=True)\nprint("din_blocks_rejected_total 0",flush=True)\nc=dict(line.split("=",1) for line in (d/"dinero.conf").read_text().splitlines() if "=" in line)\npayload=pathlib.Path(c["assumeutxo_snapshot"]);manifest=json.loads(pathlib.Path(c["assumeutxo_manifest"]).read_text())\nif payload.name!=manifest["snapshot"]["snapshot_file"]:print("FATAL: Snapshot manifest snapshot_file mismatch",flush=True);sys.exit(1)\n(r/"gate-payload-name").write_text(payload.name)\n(r/"configured-gate").touch();(r/"gate-argv.json").write_text(json.dumps(sys.argv[1:]))\nsignal.signal(signal.SIGTERM,lambda *_:sys.exit(0))\nwhile True:time.sleep(.01)\n')
         ssl=shutil.which('openssl'); keypath=root/'key.pem'
         subprocess.run([ssl,'genpkey','-algorithm','ED25519','-out',str(keypath)],check=True,capture_output=True)
         pub=subprocess.check_output([ssl,'pkey','-in',str(keypath),'-pubout','-outform','DER'])[-32:]
         env=dict(os.environ,DATADIR=str(root/'data'),PUBROOT=str(root/'www'),KEY=str(keypath if key else root/'missing'),CLI_BIN=str(cli),DINEROD=str(daemon),GATE_TIMEOUT='2',PATH=str(bin)+os.pathsep+os.environ['PATH'])
         if optimize: env['PYTHONOPTIMIZE']='1'
+        if capture_first:
+            assert boundary
+            (root/'tip').write_text(str(height))
+            captured=subprocess.run(['python3',str(CAPTURE)],env=env,capture_output=True,text=True,timeout=5)
+            assert captured.returncode==0,captured.stdout+captured.stderr
+            (root/'tip').write_text(str(height+287))
+            early=subprocess.run(['bash',str(SCRIPT)],env=env,capture_output=True,text=True,timeout=5)
+            assert early.returncode==0,early.stdout+early.stderr
+            assert (dumps/'pending.json').exists() and (root/'www/latest/retained').exists()
+            (root/'tip').write_text(str(height+288))
         result=subprocess.run(['bash',str(SCRIPT)],env=env,capture_output=True,text=True,timeout=15)
         return root,payload,pub,result
     def test_signed_compact_publication_and_manifest(self):
@@ -48,6 +65,27 @@ class PublisherV6(unittest.TestCase):
             dest=Path(export);dest.mkdir(parents=True,exist_ok=True)
             for name in ('snapshot.dat','manifest.json','manifest.sig'):shutil.copyfile(latest/name,dest/name)
             (dest/'public-key.raw').write_bytes(pub)
+    def test_last_v5_is_pinned_outside_rotating_archive(self):
+        root,payload,_,r=self.run_publication(boundary=True);self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        pin=root/'www/pinned/v5-h149999'
+        self.assertEqual((pin/'snapshot.dat').read_bytes(),payload)
+        self.assertEqual(json.loads((pin/'manifest.json').read_text())['snapshot']['height'],149999)
+        self.assertTrue((pin/'manifest.sig').is_file())
+        self.assertEqual((root/'www/latest/manifest.json').read_bytes(),(pin/'manifest.json').read_bytes())
+    def test_exact_capture_waits_288_then_pins_v5(self):
+        root,payload,_,r=self.run_publication(boundary=True,capture_first=True)
+        self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        pin=root/'www/pinned/v5-h149999'
+        self.assertEqual((pin/'snapshot.dat').read_bytes(),payload)
+        self.assertFalse((root/'data/snapshots/pending.json').exists())
+    def test_different_existing_v5_pin_preserves_latest(self):
+        root,_,_,r=self.run_publication(boundary=True,bad_pin=True);self.assertNotEqual(r.returncode,0)
+        self.assertIn('existing permanent v5 boundary artifact differs',r.stdout)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_different_pin_cannot_pass_python_optimization(self):
+        root,_,_,r=self.run_publication(boundary=True,bad_pin=True,optimize=True)
+        self.assertNotEqual(r.returncode,0)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
     def test_scheduled_orchard_gate_declares_legacy_oracles_disabled(self):
         root,_,_,r=self.run_publication();self.assertEqual(r.returncode,0,r.stdout+r.stderr)
         self.assertTrue((root/'configured-gate').exists())

@@ -30,6 +30,7 @@ GATE_RPC=${GATE_RPC:-26998}
 GATE_WALLET=${GATE_WALLET:-27000}
 GATE_TIMEOUT=${GATE_TIMEOUT:-1200}
 KEEP=7
+PIN_V5_HEIGHT=${SNAPSHOT_PIN_V5_HEIGHT:-149999}
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 LOG_PREFIX="[snapshot-publish $TS]"
 
@@ -118,7 +119,8 @@ openssl pkeyutl -verify -pubin \
     -rawin -in "$MANIFEST" -sigfile "$SIG" >/dev/null \
     || fail "signature self-verification failed"
 
-elif [ "$SNAPSHOT_PROFILE" = compact ] || [ "$FORMAT" -lt 5 ] || [ "$HEIGHT" -lt 111000 ]; then
+elif [ "$SNAPSHOT_PROFILE" = compact ] || [ "$FORMAT" -lt 5 ] || [ "$HEIGHT" -lt 111000 ] ||
+     { [ "$FORMAT" = 5 ] && [ "$HEIGHT" = "$PIN_V5_HEIGHT" ]; }; then
     fail "phone/legacy publication requires a signing key"
 else
     log "publishing v$FORMAT without optional publisher signature; chain binding is mandatory"
@@ -210,6 +212,54 @@ cp "$DUMP_FILE"  "$SET_DIR/snapshot.dat"
 cp "$MANIFEST"   "$SET_DIR/manifest.json"
 if [ -f "$SIG" ]; then cp "$SIG" "$SET_DIR/manifest.sig"; fi
 chmod -R o+rX "$SET_DIR"
+# The exact last pre-Orchard v5 base is a permanent recovery artifact. Pin it
+# before exposing it via latest; normal seven-set archive rotation excludes it.
+if [ "$FORMAT" = 5 ] && [ "$HEIGHT" = "$PIN_V5_HEIGHT" ]; then
+    PIN_ROOT=$PUBROOT/pinned
+    PIN_DIR=$PIN_ROOT/v5-h$HEIGHT
+    mkdir -p "$PIN_ROOT"
+    if [ -e "$PIN_DIR" ]; then
+        python3 - "$PIN_DIR" "$HEIGHT" "$BASE_HASH" "$SHA" <<'PYPIN' \
+            || fail "existing permanent v5 boundary artifact differs or is incomplete"
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]);height=int(sys.argv[2]);block=sys.argv[3];sha=sys.argv[4]
+data=json.loads((root/'manifest.json').read_text())
+if data.get('format_version')!=5:
+    raise SystemExit('wrong pinned format')
+if data['snapshot']['height']!=height or data['snapshot']['block_hash']!=block:
+    raise SystemExit('wrong pinned base')
+if data['snapshot']['sha256']!=sha or not (root/'manifest.sig').is_file():
+    raise SystemExit('incomplete pinned identity')
+with (root/'snapshot.dat').open('rb') as stream:
+    digest=hashlib.file_digest(stream,'sha256').hexdigest()
+if digest!=sha:
+    raise SystemExit('pinned payload hash differs')
+PYPIN
+    else
+        PIN_TMP=$(mktemp -d "$PIN_ROOT/.v5-h$HEIGHT.XXXXXX")
+        cp "$SET_DIR/snapshot.dat" "$SET_DIR/manifest.json" "$SET_DIR/manifest.sig" "$PIN_TMP/" \
+            || fail "permanent v5 boundary copy failed"
+        python3 - "$PIN_TMP" <<'PYSYNC' || fail "permanent v5 boundary durability sync failed"
+import os,pathlib,sys
+root=pathlib.Path(sys.argv[1])
+for name in ('snapshot.dat','manifest.json','manifest.sig'):
+    with (root/name).open('rb') as stream:
+        os.fsync(stream.fileno())
+fd=os.open(root,os.O_RDONLY)
+try: os.fsync(fd)
+finally: os.close(fd)
+PYSYNC
+        chmod -R o+rX "$PIN_TMP"
+        mv -T "$PIN_TMP" "$PIN_DIR" || fail "permanent v5 boundary install failed"
+        python3 - "$PIN_ROOT" <<'PYSYNC' || fail "permanent v5 boundary parent sync failed"
+import os,sys
+fd=os.open(sys.argv[1],os.O_RDONLY)
+try: os.fsync(fd)
+finally: os.close(fd)
+PYSYNC
+    fi
+    log "pinned permanent v5 boundary: $PIN_DIR"
+fi
 ln -sfn "archive/$TS" "$PUBROOT/latest.tmp"
 mv -Tf "$PUBROOT/latest.tmp" "$PUBROOT/latest"
 log "published: $SET_DIR -> latest"

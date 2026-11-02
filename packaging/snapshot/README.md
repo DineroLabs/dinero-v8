@@ -14,8 +14,24 @@ artifact is claimed captured or qualified by this source change.
 
 Arrange an explicit boundary capture: a periodic/daily current-tip export may
 skip H149999, and an exporter already past that height cannot obtain it merely
-by asking dumptxoutset for an older height. Validate the returned/header base
-height and hash, not just the requested filename. The v5 base at H149999 must
+by asking dumptxoutset for an older height. Before the boundary, qualify the
+publisher and stop its daily timer after its prior candidate has published.
+Then run `capture_boundary_v5.py --watch` as a supervised one-shot service,
+starting while the selected tip is still below H149999. It polls every second,
+holds the same publisher lock during export, and stages `pending.dat/json` only
+when the selected tip is exactly H149999. It verifies the RPC result, v5 file
+header and selected block hash before and after export. A missed height,
+existing unrelated pending candidate, changed selected hash, or postactivation
+v6 export refuses without replacing the pending artifact. Keep the watcher log
+and its exit status; it is not a publication receipt. The capture height is
+fixed at H149999 and the script refuses a non-mainnet RPC endpoint.
+
+After capture, run the publisher only once H150287 is selected and buried.
+The publisher's existing native fresh-node gate decides whether to serve it;
+for the exact H149999 v5 base, it also installs an immutable copy in
+`$PUBROOT/pinned/v5-h149999` before updating `latest`. Archive rotation never
+touches this pinned directory. Retain its payload, manifest and signature
+even when `latest` later points at a v6 artifact. The v5 base at H149999 must
 still wait for 288 descendants: earliest publication is H150287. Orchard
 activation itself remains H150000; this snapshot does not delay activation or
 permit a v5 snapshot with an Orchard-era base. The first possible v6 base is
