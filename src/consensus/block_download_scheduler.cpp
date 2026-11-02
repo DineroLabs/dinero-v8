@@ -4,6 +4,7 @@
 
 #include "consensus/block_download_scheduler.h"
 #include "consensus/header_chain.h"
+#include "consensus/merkle_root.h"
 #include "consensus/orchard_profile.h"
 #ifdef DINERO_HAS_ORCHARD_DOWNLOAD_READER
 #include "primitives/orchard_block_reader.h"
@@ -2075,16 +2076,20 @@ bool BlockDownloadScheduler::ValidateBlockAgainstHeader(const Block& block) {
         return false;
     }
 
-    // Validate merkle root matches
-    // Phase N.4.1: For skeleton, just compare header fields
-    // Phase N.4.2: Will compute merkle root from transactions
-    uint256 block_merkle = block.header.merkle_root;
-    uint256 header_merkle = header.header.merkle_root;
-
-    if (block_merkle != header_merkle) {
-        g_logger.error("[BlockDownloadScheduler] Merkle root mismatch!");
-        g_logger.error("  Block merkle:  " + block_merkle.GetHex());
-        g_logger.error("  Header merkle: " + header_merkle.GetHex());
+    // A header match alone does not bind the received transactions to that
+    // header. A body stored here can later enter candidate selection before
+    // ordinary ingress validates it. Never persist an unbound body under an
+    // honest hash: reject this peer's body and leave the header requestable.
+    if (block.vtx.empty()) {
+        g_logger.warning("[BlockDownloadScheduler] Empty body for header: " +
+                         block_hash.GetHex());
+        return false;
+    }
+    bool merkle_mutated = false;
+    const uint256 body_merkle = ComputeMerkleRoot(block.vtx, &merkle_mutated);
+    if (merkle_mutated || body_merkle != header.header.merkle_root) {
+        g_logger.warning("[BlockDownloadScheduler] Unbound body for header: " +
+                         block_hash.GetHex());
         return false;
     }
 

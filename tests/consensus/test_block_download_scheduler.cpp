@@ -10,6 +10,7 @@
 #include "consensus/drain_failure_streak.h"
 #include "consensus/header_chain.h"
 #include "consensus/chainparams.h"
+#include "consensus/merkle_root.h"
 #include "primitives/block.h"
 #include "primitives/uint256.h"
 #include "storage/block_storage.h"
@@ -37,6 +38,19 @@ namespace dcs = dinero::consensus;
 
 namespace {
 
+dinero::Transaction TestCoinbase() {
+    dinero::Transaction tx;
+    tx.version = 1;
+    tx.witness_version = 0xFF;
+    dinero::TxInput input;
+    input.prevout.vout = 0xffffffffu;
+    input.scriptSig = {1, 1};
+    input.sequence = 0xffffffffu;
+    tx.vin.push_back(input);
+    tx.vout.emplace_back(dinero::AmountUna::Una(1), std::vector<uint8_t>{0x51});
+    return tx;
+}
+
 BlockHeader CreateTestHeader(
     const uint256& prev_hash,
     uint32_t time,
@@ -45,7 +59,7 @@ BlockHeader CreateTestHeader(
     BlockHeader header;
     header.version = 1;
     header.prev_block_hash = prev_hash;
-    header.merkle_root = uint256();
+    header.merkle_root = dcs::ComputeMerkleRoot({TestCoinbase()});
     header.timestamp = time;
     header.difficulty = bits;
     header.nonce = 1;
@@ -117,6 +131,7 @@ Block MakeBlockForHash(dcs::HeaderChainSelector& selector, const uint256& hash) 
 
     Block block;
     block.header = entry->header;
+    block.vtx.push_back(TestCoinbase());
     return block;
 }
 
@@ -157,6 +172,82 @@ int main() {
     dinero::SelectParams(dinero::Chain::REGTEST);
 
     std::cout << "=== BlockDownloadScheduler Regression Tests ===" << std::endl;
+
+    {
+        std::cout << "\nbody/header binding: reject a bad body without poisoning its header..." << std::endl;
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        BuildLinearHeaders(selector, 1, &hashes);
+        const auto dir = std::filesystem::temp_directory_path() /
+            ("dinero_scheduler_merkle_" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        dinero::BlockStorage storage;
+        if (!Require(storage.init(dir) == dinero::Status::Ok,
+                     "body/header binding storage opens")) return 1;
+        dcs::BlockDownloadScheduler scheduler(&selector, &storage);
+        scheduler.SetLocalTipHeight(0);
+        scheduler.OnHeadersProcessed();
+        int persisted = 0;
+        scheduler.SetPersistBodyPositionCallback(
+            [&](const uint256&, const dinero::FilePosition&) { ++persisted; });
+
+        Block empty = MakeBlockForHash(selector, hashes[1]);
+        empty.vtx.clear();
+        if (!Require(!scheduler.OnBlockReceived(empty),
+                     "empty body with honest header must be refused before storage")) return 1;
+        Block mismatched = MakeBlockForHash(selector, hashes[1]);
+        mismatched.vtx[0].vin[0].scriptSig.push_back(2);
+        if (!Require(!scheduler.OnBlockReceived(mismatched),
+                     "different transaction root under honest header must be refused")) return 1;
+        if (!Require(persisted == 0 && !scheduler.HasReceivedBlock(hashes[1]),
+                     "bad bodies must not publish a durable candidate receipt")) return 1;
+        if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, hashes[1])),
+                     "correct body remains receivable for the same header")) return 1;
+        if (!Require(persisted == 1 && scheduler.HasReceivedBlock(hashes[1]),
+                     "only the correct body becomes a durable candidate receipt")) return 1;
+        storage.close();
+        std::filesystem::remove_all(dir);
+    }
+
+    {
+        std::cout << "\nbody/header binding: reject a mutated merkle tree with the same root..." << std::endl;
+        dcs::HeaderChainSelector selector;
+        uint256 null_hash;
+        null_hash.SetNull();
+        const BlockHeader genesis = CreateTestHeader(null_hash, 4'000'000);
+        if (!Require(selector.AddHeader(genesis), "mutated-tree genesis header accepted")) return 1;
+        Block correct;
+        auto second = TestCoinbase();
+        second.vin[0].scriptSig.push_back(2);
+        auto third = TestCoinbase();
+        third.vin[0].scriptSig.push_back(3);
+        correct.vtx = {TestCoinbase(), second, third};
+        correct.header = CreateTestHeader(genesis.GetHash(), 4'000'001);
+        correct.header.merkle_root = dcs::ComputeMerkleRoot(correct.vtx);
+        if (!Require(selector.AddHeader(correct.header), "mutated-tree target header accepted")) return 1;
+        Block duplicate = correct;
+        duplicate.vtx.push_back(third);
+        bool mutated = false;
+        if (!Require(dcs::ComputeMerkleRoot(duplicate.vtx, &mutated) ==
+                         correct.header.merkle_root && mutated,
+                     "duplicate-last transaction preserves the honest root")) return 1;
+        const auto dir = std::filesystem::temp_directory_path() /
+            ("dinero_scheduler_mutated_" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        dinero::BlockStorage storage;
+        if (!Require(storage.init(dir) == dinero::Status::Ok,
+                     "mutated-tree storage opens")) return 1;
+        dcs::BlockDownloadScheduler scheduler(&selector, &storage);
+        int persisted = 0;
+        scheduler.SetPersistBodyPositionCallback(
+            [&](const uint256&, const dinero::FilePosition&) { ++persisted; });
+        if (!Require(!scheduler.OnBlockReceived(duplicate) && persisted == 0,
+                     "mutated duplicate must be rejected before durable receipt")) return 1;
+        if (!Require(scheduler.OnBlockReceived(correct) && persisted == 1,
+                     "honest body remains receivable under that exact header")) return 1;
+        storage.close();
+        std::filesystem::remove_all(dir);
+    }
 
     {
         std::cout << "\n1. external backpressure clamp preserves one request slot..." << std::endl;
