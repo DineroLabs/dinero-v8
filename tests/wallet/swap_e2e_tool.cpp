@@ -597,7 +597,8 @@ int main(int argc, char** argv) {
                 // Alice vanishes too; Bitcoin time passes T_btc and only the tower can refund Bob.
                 std::cout << "  alice goes offline; bitcoind: mock time to T_btc + 1 h\n";
                 mock_btc_past_t_btc();
-                mine_btc(12);
+                // Advance MTP without mining the tower's first refund before its fee bump.
+                mine_btc_empty(12);
                 // No Bitcoin blocks for a while: the tower must bump its refund, and
                 // the higher rung must replace the lower one in the mempool.
                 std::this_thread::sleep_for(std::chrono::seconds(9));
