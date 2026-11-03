@@ -149,7 +149,11 @@ rpc_call() {
             json_params="[${params}]"
         fi
     fi
-    curl -s --connect-timeout 2 --max-time 30 \
+    # Mining 120 blocks can exceed an ordinary RPC's 30-second deadline on a
+    # loaded CI host. Keep the longer deadline specific to mining.
+    local rpc_timeout=30
+    [[ "${method}" == "generatetoaddress" ]] && rpc_timeout=180
+    curl -s --connect-timeout 2 --max-time "${rpc_timeout}" \
         -u "${cookie}" \
         -H "Content-Type: application/json" \
         -d "{\"jsonrpc\":\"2.0\",\"method\":\"${method}\",\"params\":${json_params},\"id\":1}" \
@@ -340,8 +344,17 @@ mine_blocks_to_address() {
     local total=$3
     local address=$4
     local result
-    result=$(rpc_call "${port}" "${datadir}" "generatetoaddress" "${total}, \"${address}\"")
-    rpc_has_error "${result}" && return 1
+    # This helper is called in an `|| fail` condition, where Bash suppresses
+    # `set -e` inside the function. Check curl's exit status explicitly so a
+    # timed-out request cannot be mistaken for a completed mining batch.
+    if ! result=$(rpc_call "${port}" "${datadir}" "generatetoaddress" "${total}, \"${address}\""); then
+        echo "generatetoaddress RPC failed or timed out (${total} blocks)" >&2
+        return 1
+    fi
+    if ! jq -e '.error == null and .result != null' <<<"${result}" >/dev/null 2>&1; then
+        echo "generatetoaddress returned no successful result (${total} blocks)" >&2
+        return 1
+    fi
     return 0
 }
 

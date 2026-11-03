@@ -1263,10 +1263,20 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_spend_reorg_reconciliation.sh)
     set_tests_properties(CsnSpendReorgReconciliation PROPERTIES
         ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
         LABELS "integration;wallet;utreexo;bridge;csn;reorg"
-        TIMEOUT 360
+        TIMEOUT 600
         RUN_SERIAL TRUE
     )
     message(STATUS "  ✓ CsnSpendReorgReconciliation registered")
+endif()
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_mining_rpc_contract.py)
+    add_test(
+        NAME CsnMiningRpcHarness
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_mining_rpc_contract.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_spend_reorg_reconciliation.sh
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_shielded_reorg_invertibility.sh
+    )
+    set_tests_properties(CsnMiningRpcHarness PROPERTIES
+        LABELS "integration;csn;harness" TIMEOUT 10)
 endif()
 
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/utreexo_checkpoint_mutator.cpp)
@@ -1963,6 +1973,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_shielded_reorg_invertibility.sh)
         ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;BUILDER=$<TARGET_FILE:shielded_tx_builder>"
         LABELS "integration;shielded;stateless;csn;reorg;invertibility;canonical-state"
         TIMEOUT 900
+        RUN_SERIAL TRUE
     )
     message(STATUS "  ✓ CSNShieldedReorgInvertibility registered")
 endif()
