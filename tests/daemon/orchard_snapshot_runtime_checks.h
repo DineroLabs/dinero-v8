@@ -2344,6 +2344,7 @@ TEST(OrchardSnapshotRuntime, FullNodeRejectsBadDnorst02WithCompactBootstrapOff) 
 }
 TEST(OrchardSnapshotRuntime, RealRegtestActivationFullAndCompactImportReopenAndFloor) {
     using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
+    struct RestoreParams { ChainParams saved;~RestoreParams(){MutableParams()=saved;} } restore{Params()};
     CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
     MutableParams().state_commitment_burial_depth=0;
     const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);
@@ -2384,6 +2385,10 @@ TEST(OrchardSnapshotRuntime, RealRegtestActivationFullAndCompactImportReopenAndF
         EXPECT_EQ(db.getOrchardUndoParent(section.state).status(),Status::Corruption);
         EXPECT_ANY_THROW(Access::Install(mutex,db,source.f.token,files,headers,decoded));
         EXPECT_EQ(db.getOrchardState()->block_hash,section.state.block_hash);
+        // The imported proof was admitted with the fresh-import rule above.
+        // A restart at the base has no selected descendants, but must still
+        // authenticate and restore that durable base for both profiles.
+        MutableParams().state_commitment_burial_depth=1;
         installed.full.reset();installed.compact.reset();db.close();ASSERT_EQ(db.init(database_path),Status::Ok);
         auto restored=Access::Restore(mutex,db,headers);
         if(profile==OrchardSnapshotProfile::Full) {
@@ -2422,6 +2427,7 @@ TEST(OrchardSnapshotRuntime, RealRegtestActivationFullAndCompactImportReopenAndF
         EXPECT_ANY_THROW(Access::Restore(mutex,db,headers));EXPECT_EQ(db.getTip()->hash,section.state.block_hash);
         {rocksdb::WriteBatch batch;batch.Put(key,proof);ASSERT_EQ(db.writeBatch(source.f.token,std::move(batch),true),Status::Ok);}
         ASSERT_NO_THROW(Access::Restore(mutex,db,headers));db.close();
+        MutableParams().state_commitment_burial_depth=0;
     }
 }
 TEST(OrchardSnapshotRuntime, DormantCoinbaseProfileV6FileImportsUnderH1Schedule) {

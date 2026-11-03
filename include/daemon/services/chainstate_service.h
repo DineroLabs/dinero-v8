@@ -609,7 +609,11 @@ public:
     // Export current UTXO set to snapshot file
     consensus::SnapshotExportResult ExportSnapshot(const std::filesystem::path& snapshot_path, bool compact_export = false);
     // Load UTXO set from snapshot file (fast sync)
-    consensus::SnapshotImportResult LoadSnapshot(const std::filesystem::path& snapshot_path);
+    // persisted_base_rehydrate is reserved for startup recovery of the exact
+    // base already recorded in the durable AssumeUTXO lifecycle. Fresh imports
+    // must use the default and satisfy the full header burial rule.
+    consensus::SnapshotImportResult LoadSnapshot(const std::filesystem::path& snapshot_path,
+                                                 bool persisted_base_rehydrate = false);
 
     // Phase 42: AssumeUTXO State Management
     bool IsAssumeUTXOActive() const { return assumeutxo_active_; }
@@ -1796,6 +1800,7 @@ private:
     bool LoadShieldedState();
     consensus::SnapshotExportResult ExportOrchardSnapshot(const std::filesystem::path&, bool compact_export = false);
     consensus::SnapshotImportResult LoadOrchardSnapshot(const std::filesystem::path&);
+    bool HasPersistedActiveSnapshotBase(const uint256& base_hash, uint32_t base_height) const;
     bool InitOrchardSnapshotStorage();
     bool StartOrchardSnapshotStorage();
     bool InitCompactSnapshotBootstrap(const std::filesystem::path&);

@@ -5371,6 +5371,27 @@ bool ChainstateService::Start() {
                 config_ ? config_->GetString("assumeutxo_snapshot", "") : "";
 
             if (!snapshot_path.empty()) {
+                // Refuse a mismatched configured file before clearing any
+                // surviving consensus UTXOs. The deeper file checks remain in
+                // LoadSnapshot; this guards the destructive preparation step.
+                consensus::SnapshotMetadata configured_base;
+                std::string preview_error;
+                const uint64_t maximum_mb = config_
+                    ? static_cast<uint64_t>(std::max(0, config_->GetInt(
+                          "assumeutxo_snapshot_max_mb", 64 * 1024)))
+                    : 64ULL * 1024ULL;
+                if (!ValidateSnapshotTransportPreflight(
+                        snapshot_path, maximum_mb * 1024ULL * 1024ULL,
+                        preview_error) ||
+                    !ReadSnapshotHeaderPreview(snapshot_path, configured_base,
+                                               preview_error) ||
+                    configured_base.magic != consensus::SNAPSHOT_MAGIC ||
+                    !HasPersistedActiveSnapshotBase(configured_base.block_hash,
+                                                    configured_base.block_height)) {
+                    logger_->error("[AssumeUTXO restore] Configured snapshot cannot rehydrate the persisted active base" +
+                                   (preview_error.empty() ? std::string() : ": " + preview_error));
+                    return false;
+                }
                 const uint64_t stale_utxos = consensus_utxo_set_->GetSetSize();
                 logger_->warning("[AssumeUTXO restore] Consensus UTXO set is not at snapshot base "
                                  "(utxo-tip=" +
@@ -5388,7 +5409,8 @@ bool ChainstateService::Start() {
                     consensus_utxo_set_->Clear();
                 }
 
-                auto import_result = LoadSnapshot(std::filesystem::path(snapshot_path));
+                auto import_result = LoadSnapshot(std::filesystem::path(snapshot_path),
+                                                  /*persisted_base_rehydrate=*/true);
                 if (!import_result.success) {
                     logger_->error("[AssumeUTXO restore] Snapshot rehydrate failed: " +
                                    import_result.error_message);
@@ -15499,7 +15521,26 @@ ChainstateService::SnapshotImportPublication::~SnapshotImportPublication(){
     source_.snapshot_import_publishing_=false;
 }
 
-consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::filesystem::path& snapshot_path) {
+bool ChainstateService::HasPersistedActiveSnapshotBase(
+    const uint256& base_hash, uint32_t base_height) const {
+    if (!utxo_index_ || !assumeutxo_lifecycle_ || !assumeutxo_active_ ||
+        assumeutxo_base_block_ != base_hash ||
+        assumeutxo_base_height_ != base_height) return false;
+    const auto active = utxo_index_->GetMetadata(assumeutxo::kActiveKey);
+    const auto persisted_hash = utxo_index_->GetMetadata(assumeutxo::kBaseBlockKey);
+    const auto persisted_height = utxo_index_->GetMetadata(assumeutxo::kBaseHeightKey);
+    const auto lifecycle = assumeutxo_lifecycle_->GetStatus(
+        std::chrono::steady_clock::now());
+    return active && active.value() == "true" &&
+           persisted_hash && persisted_hash.value() == base_hash.GetHex() &&
+           persisted_height && persisted_height.value() == std::to_string(base_height) &&
+           lifecycle.assumeutxo_active &&
+           lifecycle.snapshot_base_block == base_hash &&
+           lifecycle.snapshot_base_height == base_height;
+}
+
+consensus::SnapshotImportResult ChainstateService::LoadSnapshot(
+    const std::filesystem::path& snapshot_path, bool persisted_base_rehydrate) {
     using namespace consensus;
     // rc24.1 single-flight: LoadSnapshot mutates the consensus UTXO set in place
     // and is reachable from the auto-bootstrap path AND the manual RPC path.
@@ -15878,6 +15919,22 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
                     return result;
                 }
                 // same base: benign rehydrate, continue
+            }
+        }
+
+        // A node may later invalidate back to its already-imported base. At
+        // that point the selected best header is the base itself, so a fresh
+        // import's burial depth is no longer available. Permit this narrow
+        // startup rehydrate only when the durable active/base markers and the
+        // restored lifecycle all identify this exact snapshot. The selected
+        // chain ancestry and every v5 binding proof are still checked below.
+        if (persisted_base_rehydrate) {
+            if (!HasPersistedActiveSnapshotBase(header.block_hash,
+                                                header.block_height)) {
+                result.error_message =
+                    "Persisted snapshot base does not match the active AssumeUTXO lifecycle";
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
             }
         }
 
@@ -16341,16 +16398,18 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
                         ancestor_at_base = at_base.hash;
                     }
                 }
+                const uint32_t required_depth = persisted_base_rehydrate
+                    ? 0 : Params().state_commitment_burial_depth;
                 const auto burial = consensus::EvaluateSnapshotBurial(
                     header.block_hash, header.block_height, ancestor_at_base,
-                    best_height, Params().state_commitment_burial_depth);
+                    best_height, required_depth);
                 if (burial != consensus::SnapshotBindingVerdict::Ok) {
                     if (binding_fail(burial,
                             "base " + header.block_hash.GetHex().substr(0, 16) +
                             "…@" + std::to_string(header.block_height) +
                             " vs best-work height " + std::to_string(best_height) +
                             ", required depth " +
-                            std::to_string(Params().state_commitment_burial_depth))) {
+                            std::to_string(required_depth))) {
                         return result;
                     }
                 } else {
@@ -26521,7 +26580,7 @@ void ChainstateService::BackgroundValidationWorker() {
                     throw std::runtime_error("v6 archival replay owner unavailable");
             }
             const auto baseline=OrchardSnapshotStore::ReadBaseline(*db);
-            OrchardSnapshotStore::Authenticate(baseline,*headers,Params().state_commitment_burial_depth);
+            OrchardSnapshotStore::Authenticate(baseline,*headers,0);
             const auto activation=Params().orchard_activation_height;
             const auto parent_height=activation-1;
             const auto selected_header=[&](const uint256& hash,uint32_t height) {
@@ -26600,7 +26659,7 @@ void ChainstateService::BackgroundValidationWorker() {
             consensus::VerifyOrchardSnapshotCoins(baseline,branch.ProvenUtxos());
             {
                 std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
-                OrchardSnapshotStore::Authenticate(baseline,*headers,Params().state_commitment_burial_depth);
+                OrchardSnapshotStore::Authenticate(baseline,*headers,0);
                 if(bg_validation_should_stop_.load())throw std::runtime_error("Validation stopped by user");
                 // This acknowledges executed history only. The selected
                 // post-base coins, state, tip and reorg floor stay untouched.

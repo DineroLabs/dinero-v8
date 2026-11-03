@@ -1961,7 +1961,11 @@ OrchardSnapshotStore::Publication OrchardSnapshotStore::Install(AnnotatedRecursi
 }
 std::unique_ptr<OrchardBranchReplay> OrchardSnapshotStore::ReplayFromBaseline(const ChainDB& db,
     const consensus::HeaderChainSelector& headers,uint32_t height,const uint256& hash,const arith_uint256& work) {
-    const auto baseline=ReadBaseline(db);(void)Authenticate(baseline,headers,Params().state_commitment_burial_depth);
+    // The baseline was installed only after full burial and is now authenticated
+    // by its durable proof digest. A later rollback may leave it at the selected
+    // tip; recheck its selected ancestry and complete proof without requiring
+    // the historical descendants to remain selected.
+    const auto baseline=ReadBaseline(db);(void)Authenticate(baseline,headers,0);
     std::vector<BlockHeader> history(size_t(baseline.state.height)+1);auto previous=baseline.state.block_hash;
     for(size_t remaining=history.size();remaining;--remaining) {
         const auto row=headers.GetHeaderValue(previous);Require(row&&row->height==remaining-1);
@@ -1996,7 +2000,7 @@ bool OrchardSnapshotStore::RecoverBaseMarkers(AnnotatedRecursiveMutex& mutex,Cha
     using namespace consensus;mutex.AssertHeld("recover authenticated v6 base markers");
     const auto floor=storage::ReadOrchardSnapshotBase(db);Require(bool(floor));const auto tip=Need(db.getTip());
     if(tip.height>=int(floor->height))return false;
-    const auto baseline=ReadBaseline(db);const auto context=Authenticate(baseline,headers,Params().state_commitment_burial_depth);
+    const auto baseline=ReadBaseline(db);const auto context=Authenticate(baseline,headers,0);
     const auto consistent=Need(db.getValidatedTip());
     Require(tip.height>=0&&consistent.hash==tip.hash&&consistent.height==tip.height);
     uint256 old_ancestor;uint32_t base_height=0;
@@ -2025,17 +2029,16 @@ bool OrchardSnapshotStore::RecoverBaseMarkers(AnnotatedRecursiveMutex& mutex,Cha
     Need(db.setValidatedTip(token,floor->block,int(floor->height),&batch));
     StageOrchardSnapshotJournal(context,header,baseline.base_catalog.work,baseline.state,
         UtreexoStump::deserialize(baseline.base_catalog.stump),batch);
-    (void)Authenticate(baseline,headers,Params().state_commitment_burial_depth);
+    (void)Authenticate(baseline,headers,0);
     std::unique_lock<std::mutex> selection(headers.mutex_);const auto* best=headers.best_header_;
     const auto* selected_base=best?best->GetAncestor(floor->height):nullptr;
-    Require(selected_base&&selected_base->hash==floor->block&&
-        uint64_t(best->height)>=uint64_t(floor->height)+Params().state_commitment_burial_depth);
+    Require(selected_base&&selected_base->hash==floor->block);
     Need(db.writeBatch(token,std::move(batch),true));return true;
 }
 OrchardSnapshotStore::Publication OrchardSnapshotStore::Restore(AnnotatedRecursiveMutex& mutex,const ChainDB& db,
     const consensus::HeaderChainSelector& headers) {
     using namespace consensus;mutex.AssertHeld("restore authenticated Orchard snapshot");
-    const auto base=ReadBaseline(db);(void)Authenticate(base,headers,Params().state_commitment_burial_depth);
+    const auto base=ReadBaseline(db);(void)Authenticate(base,headers,0);
     const auto tip=Need(db.getTip()),consistent=Need(db.getValidatedTip());
     Require(tip.height>=int(base.state.height)&&tip.hash==consistent.hash&&tip.height==consistent.height);
     const auto selected=storage::catalog::State::Decode(Need(db.getOrchardCatalogState(tip.hash)));
