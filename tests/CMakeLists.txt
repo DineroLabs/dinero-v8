@@ -9804,6 +9804,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/storage/test_header_status_bits.cpp)
   target_include_directories(test_header_status_bits PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/rust/orchard_backend/include
   )
   add_test(NAME HeaderStatusBits COMMAND test_header_status_bits)
   set_tests_properties(HeaderStatusBits PROPERTIES
