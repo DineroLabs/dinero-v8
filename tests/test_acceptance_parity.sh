@@ -33,6 +33,7 @@ CURRENT_SHA="${CURRENT_SHA:-unknown}"
 
 REQUIRE_BASELINE=0
 SELFTEST_CLASSIFICATION=0
+SELFTEST_COMPLETENESS=0
 
 # Compare consensus acceptance rather than the RPC transport used to report a
 # deterministic rejection. Keep this list narrow: an internal, timeout, or
@@ -71,10 +72,16 @@ classify_fixture_outcome() {
     esac
 }
 
-# This first factoring preserves the existing valid-replay gate. The complete
-# corpus condition is tightened independently in the following change.
+# Matching failures are not parity: both nodes must accept the entire valid
+# corpus and finish at the expected height, not merely agree with each other.
 valid_replay_complete() {
-    [[ "${VALID_MISMATCHES}" -eq 0 && "${BASE_FINAL_HEIGHT}" == "${CUR_FINAL_HEIGHT}" ]]
+    [[ "${VALID_MISMATCHES}" -eq 0 &&
+       "${VALID_ACCEPTED_BASE}" -eq "${BLOCK_COUNT}" &&
+       "${VALID_ACCEPTED_CUR}" -eq "${BLOCK_COUNT}" &&
+       "${VALID_REJECTED_BASE}" -eq 0 &&
+       "${VALID_REJECTED_CUR}" -eq 0 &&
+       "${BASE_FINAL_HEIGHT}" == "${BLOCK_COUNT}" &&
+       "${CUR_FINAL_HEIGHT}" == "${BLOCK_COUNT}" ]]
 }
 
 classification_selftest() {
@@ -90,6 +97,41 @@ classification_selftest() {
     echo 'acceptance fixture classification selftest passed'
 }
 
+completeness_selftest() {
+    BLOCK_COUNT=4
+    VALID_MISMATCHES=0
+    VALID_ACCEPTED_BASE=4
+    VALID_ACCEPTED_CUR=4
+    VALID_REJECTED_BASE=0
+    VALID_REJECTED_CUR=0
+    BASE_FINAL_HEIGHT=4
+    CUR_FINAL_HEIGHT=4
+    valid_replay_complete || { echo 'complete corpus was rejected' >&2; return 1; }
+
+    VALID_ACCEPTED_BASE=3
+    VALID_ACCEPTED_CUR=3
+    VALID_REJECTED_BASE=1
+    VALID_REJECTED_CUR=1
+    BASE_FINAL_HEIGHT=3
+    CUR_FINAL_HEIGHT=3
+    if valid_replay_complete; then
+        echo 'matched rejection was accepted as complete' >&2
+        return 1
+    fi
+
+    VALID_ACCEPTED_BASE=4
+    VALID_ACCEPTED_CUR=4
+    VALID_REJECTED_BASE=0
+    VALID_REJECTED_CUR=0
+    BASE_FINAL_HEIGHT=RPC_FAIL
+    CUR_FINAL_HEIGHT=RPC_FAIL
+    if valid_replay_complete; then
+        echo 'matched RPC failure was accepted as complete' >&2
+        return 1
+    fi
+    echo 'acceptance valid-corpus completeness selftest passed'
+}
+
 for arg in "$@"; do
     case "$arg" in
         --require-baseline)
@@ -97,6 +139,9 @@ for arg in "$@"; do
             ;;
         --selftest-classification)
             SELFTEST_CLASSIFICATION=1
+            ;;
+        --selftest-completeness)
+            SELFTEST_COMPLETENESS=1
             ;;
         --help|-h)
             cat <<USAGE
@@ -124,6 +169,10 @@ done
 
 if [[ "${SELFTEST_CLASSIFICATION}" == "1" ]]; then
     classification_selftest
+    exit 0
+fi
+if [[ "${SELFTEST_COMPLETENESS}" == "1" ]]; then
+    completeness_selftest
     exit 0
 fi
 
