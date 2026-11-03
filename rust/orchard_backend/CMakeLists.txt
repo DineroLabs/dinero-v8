@@ -697,7 +697,14 @@ if(DINERO_ORCHARD_BUILD_TESTS)
     add_executable(test_runtime_replay_branch_views
       "${ORCHARD_HOST_ROOT}/tests/wallet/test_runtime_replay_branch_views.cpp"
       "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
-    target_link_libraries(test_runtime_replay_branch_views PRIVATE dinero_orchard_account_replay dinero_orchard_chainstate_write dinero_orchard_block_staging dinero_crypto RocksDB::rocksdb)
+    # The fixture's core closure discovers chainstate-write references after
+    # GNU ld's first archive pass. Pull its one object in on that first pass.
+    target_link_libraries(test_runtime_replay_branch_views PRIVATE
+      dinero_orchard_account_replay
+      "$<$<PLATFORM_ID:Linux>:-Wl,--whole-archive>"
+      dinero_orchard_chainstate_write
+      "$<$<PLATFORM_ID:Linux>:-Wl,--no-whole-archive>"
+      dinero_orchard_block_staging dinero_crypto RocksDB::rocksdb)
     target_include_directories(test_runtime_replay_branch_views PRIVATE "${ORCHARD_HOST_ROOT}/src")
     add_test(NAME RuntimeReplayBranchViews COMMAND test_runtime_replay_branch_views "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     set_tests_properties(RuntimeReplayBranchViews PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE
