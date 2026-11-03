@@ -17302,7 +17302,9 @@ bool ChainstateService::InvalidateBlockPass(const uint256& hash, std::string& er
             // bookkeeping. ABC normally rewinds its forest first; the manual
             // invalidation entry must do the same. Reconstruct and verify the
             // destination before changing the tip, forest or invalidity flags.
-            if (!compact_startup_ && GetConfig().utreexo_stateless) {
+            const bool csn_manual_rewind =
+                !compact_startup_ && GetConfig().utreexo_stateless;
+            if (csn_manual_rewind) {
                 const auto* parent = target->pprev;
                 if (!parent || !chain_db_ || !consensus_utxo_set_ || !stateless_node_) {
                     error = "CSN invalidation requires a parent and initialized chainstate";
@@ -17337,7 +17339,6 @@ bool ChainstateService::InvalidateBlockPass(const uint256& hash, std::string& er
                     }
                 }
                 stateless_node_->RewindToCheckpoint(static_cast<uint32_t>(parent->height), restored);
-                csn_reorg_reset_height_.store(static_cast<uint32_t>(parent->height + 1));
             }
 
             // Disconnect from tip down to the invalidated block (inclusive)
@@ -17345,6 +17346,12 @@ bool ChainstateService::InvalidateBlockPass(const uint256& hash, std::string& er
                 CBlockIndex* to_disconnect = active_tip_;
                 manually_disconnected_blocks.push_back(to_disconnect);
                 if (!DisconnectTip(to_disconnect)) {
+                    // Earlier disconnects may already have moved the active tip.
+                    // Publish only that committed prefix on a partial failure.
+                    if (csn_manual_rewind && active_tip_ && active_tip_->height >= 0) {
+                        csn_reorg_reset_height_.store(
+                            static_cast<uint32_t>(active_tip_->height + 1));
+                    }
                     error = "Failed to disconnect tip at height " +
                             std::to_string(to_disconnect->height);
                     return false;
@@ -17365,6 +17372,14 @@ bool ChainstateService::InvalidateBlockPass(const uint256& hash, std::string& er
                 ChainWriteToken token;
                 arith_uint256 work = ChainworkFromHex(active_tip_->chainwork);
                 chain_db_->setTip(token, active_tip_->hash, active_tip_->height, work);
+            }
+            // The P2P dispatcher can consume this one-shot signal concurrently.
+            // Publish it only after every disconnect has lowered the active tip;
+            // otherwise cursor reconciliation can immediately advance it back
+            // to the old tip and discard the first block of the replacement fork.
+            if (csn_manual_rewind && active_tip_ && active_tip_->height >= 0) {
+                csn_reorg_reset_height_.store(
+                    static_cast<uint32_t>(active_tip_->height + 1));
             }
         }
     }
