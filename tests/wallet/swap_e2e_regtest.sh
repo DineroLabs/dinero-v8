@@ -25,7 +25,11 @@ case "$SCENARIO" in
   *) echo "Unknown swap fixture scenario: $SCENARIO" >&2; exit 1 ;;
 esac
 DIR=$(mktemp -d)
-DPORT=$((20000 + RANDOM % 20000)); DP2P=$((DPORT + 7)); BPORT=$((DPORT + 13))
+# This topology owns five listeners through base+23. Probe the whole range
+# before starting it: another CTest daemon may already own a randomly chosen
+# RPC port, in which case the CSN silently waits for a node that never starts.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../integration/lib" && pwd)/port_alloc.sh"
+DPORT=$(alloc_port_base 24); DP2P=$((DPORT + 7)); BPORT=$((DPORT + 13))
 CPORT=$((DPORT + 21)); CP2P=$((DPORT + 23))
 CONSENSUS=(--consensus-contextual-locks-height=1 --consensus-sixty-second-height=130)
 BCLI=(bitcoin-cli -regtest -datadir="$DIR/btc" -rpcport=$BPORT -rpcuser=test -rpcpassword=test)
@@ -94,6 +98,11 @@ if [[ "$CTIP" == "$TIP" ]]; then
   echo "  OK   CSN node validated the whole swap chain to height $HEIGHT (tip ${TIP:0:16})"
 else
   echo "  FAIL CSN node tip ${CTIP:0:16} != bridge tip ${TIP:0:16} (height $HEIGHT)"; rc=1
+  echo "  CSN RPC port $CPORT; bridge RPC port $DPORT"
+  if ! kill -0 "$CPID" 2>/dev/null; then
+    echo "  CSN daemon exited before reaching the bridge tip"
+  fi
+  grep -iE "failed to bind socket|RPC listener bind/listen failed" "$DIR/csn.log" | tail -5 || true
   grep -iE "reject|invalid|fail" "$DIR/csn.log" | tail -15
 fi
 SIXTY=$(dcall getblockchaininfo '[]' | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("blocks"))')

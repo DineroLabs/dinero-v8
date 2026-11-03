@@ -17706,7 +17706,13 @@ if(TARGET dinerod AND TARGET dinero-swap-tower AND DINERO_BITCOIND)
   add_test(NAME SwapE2ERegtest
     COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_e2e_regtest.sh $<TARGET_FILE:swap_e2e_fixture_daemon> $<TARGET_FILE:swap_e2e_tool>
             $<TARGET_FILE:dinero-swap-tower>)
-  set_tests_properties(SwapE2ERegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900)
+  # The twelve scenarios launch independent Bitcoin, bridge, CSN and tower
+  # processes; run them clear of other daemon topologies in the full CTest run.
+  set_tests_properties(SwapE2ERegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900 RUN_SERIAL TRUE)
+  add_test(NAME SwapE2EPortCollision
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/wallet/test_swap_e2e_port_collision.py
+            ${CMAKE_SOURCE_DIR}/tests/wallet/swap_e2e_regtest.sh)
+  set_tests_properties(SwapE2EPortCollision PROPERTIES LABELS "wallet;swap;harness" TIMEOUT 30)
 endif()
 
 # Escrow builders must fail safe: no buyer key-path in the Taproot escrow, and
