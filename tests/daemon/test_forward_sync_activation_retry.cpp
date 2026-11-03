@@ -866,7 +866,9 @@ void RunSigopsStoredCandidate(const std::filesystem::path& root) {
 void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
                                   bool activate_candidates = false,
                                   bool stage_unbound_fork = false,
-                                  bool legacy_uncertain = false) {
+                                  bool legacy_uncertain = false,
+                                  bool malformed_coinbase = false,
+                                  bool unbound_malformed = false) {
     using namespace dinero;
     GetConfig().utreexo_stateless = true;
     MutableParams().state_commitment_activation_height = UINT32_MAX;
@@ -952,22 +954,40 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
     spend_output.value = AmountUna::Una(4000);
     spend_output.scriptPubKey = p2tr;
     spend.vout.push_back(spend_output);
-    block.vtx = {coinbase, spend};
+    block.vtx = malformed_coinbase
+        ? std::vector<Transaction>{coinbase}
+        : std::vector<Transaction>{coinbase, spend};
+    if (malformed_coinbase) {
+        // The body is Merkle-bound to its own header, but the zero-txid
+        // prevout has the wrong output index. It can arrive headers-first and
+        // be staged before ordinary block ingress validates the coinbase.
+        block.vtx.front().vin.front().prevout.vout = 0;
+    }
     TxOutput witness;
     witness.value = AmountUna::Zero();
     witness.scriptPubKey = consensus::BuildWitnessCommitment(block.vtx);
     block.vtx.front().vout.push_back(witness);
-    const auto filter = consensus::GCSFilter::Build({p2tr, p2tr, p2tr},
-                                                     block.header.prev_block_hash);
+    const auto filter = consensus::GCSFilter::Build(
+        malformed_coinbase ? std::vector<std::vector<uint8_t>>{p2tr}
+                           : std::vector<std::vector<uint8_t>>{p2tr, p2tr, p2tr},
+        block.header.prev_block_hash);
     TxOutput dnrf;
     dnrf.value = AmountUna::Zero();
     dnrf.scriptPubKey = consensus::BuildFilterCommitmentScript(filter.GetHash());
     block.vtx.front().vout.push_back(dnrf);
     block.header.merkle_root = consensus::ComputeMerkleRoot(block.vtx);
+    if (unbound_malformed) block.header.merkle_root.SetNull();
     auto provider = std::shared_ptr<consensus::IUTXOProvider>(
         std::shared_ptr<void>{}, static_cast<consensus::IUTXOProvider*>(&producer));
     network::BridgeNode bridge(provider, &producer.GetForest());
-    block.utreexo = bridge.GenerateProofForBlock(block, height);
+    if (!malformed_coinbase) {
+        block.utreexo = bridge.GenerateProofForBlock(block, height);
+    } else {
+        // Replay metadata is deliberately absent for this structurally
+        // invalid body. Its authenticated header/body binding alone suffices
+        // to classify the failure; a proof cannot make it a coinbase.
+        block.utreexo.emplace();
+    }
     if (legacy_uncertain) {
         std::string context_error;
         const consensus::LockMtpLookup no_old_mtp =
@@ -981,9 +1001,14 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
     consensus::BlockValidator producer_validator(&producer);
     uint256 post_root;
     std::string root_error;
-    Require(producer_validator.ComputeUtreexoRootPure(block, height, post_root, root_error),
-            "producer computes authentic post-root");
-    block.header.utreexo_root = post_root;
+    if (!malformed_coinbase) {
+        Require(producer_validator.ComputeUtreexoRootPure(block, height, post_root, root_error),
+                "producer computes authentic post-root");
+        block.header.utreexo_root = post_root;
+    } else {
+        std::copy(parent_root.begin(), parent_root.end(),
+                  block.header.utreexo_root.begin());
+    }
     if (legacy_uncertain) {
         std::string reward_error;
         Require(network::StatelessNode::CheckReplayReward(
@@ -999,11 +1024,13 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
                 "uncertain fixture passes authenticated replay before context preflight");
     }
     std::string schnorr_error;
-    Require(!consensus::ScriptVerifier::VerifyTaproot(
-                block.vtx[1], 0, {funded}, schnorr_error,
-                consensus::CovenantActivationParams::StandardFlags(height, Params())) &&
-                schnorr_error == "Schnorr signature verification failed",
-            "64-byte key-path signature is cryptographically invalid");
+    if (!malformed_coinbase) {
+        Require(!consensus::ScriptVerifier::VerifyTaproot(
+                    block.vtx[1], 0, {funded}, schnorr_error,
+                    consensus::CovenantActivationParams::StandardFlags(height, Params())) &&
+                    schnorr_error == "Schnorr signature verification failed",
+                "64-byte key-path signature is cryptographically invalid");
+    }
     producer_validator.setValidationMode(consensus::ValidationMode::STATEFUL);
     consensus::BlockUndo full_undo;
     std::string full_error;
@@ -1012,9 +1039,18 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
     std::cout << "FULL_INVALID_SIGNATURE_RESULT connected=" << full_accepted
               << " error=" << full_error << '\n';
     Require(!full_accepted &&
-            full_error.find("Script validation failed") != std::string::npos,
-            "full validator rejects identical authenticated block for invalid signature");
+            (malformed_coinbase
+                ? full_error == "invalid-coinbase-prevout-structure"
+                : full_error.find("Script validation failed") != std::string::npos),
+            malformed_coinbase
+                ? "full validator rejects malformed coinbase after activation"
+                : "full validator rejects identical authenticated block for invalid signature");
     auto* candidate = AddBlockIndex(block.header, height);
+    // For the malformed case this transaction-stage bit models a persisted
+    // receipt from a pre-activation or inconsistent database. Fresh H1 CSN
+    // ingress rejects the body before setting it; a raw scheduler body with
+    // no receipt is quarantined by the existing import gate. The recovery
+    // path must still dispose of a bound invalid receipt deterministically.
     candidate->status |= BLOCK_HAVE_DATA | BLOCK_VALID_TRANSACTIONS | BLOCK_VALID_CHAIN;
     // The competing body is independently proof-consistent and valid. Choose
     // its nonce so the invalid block wins the equal-work hash ordering first.
@@ -1068,12 +1104,30 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
             "CSN fixture candidate metadata staged");
     const auto pos = files->writeBlock(candidate->hash, block);
     Require(pos.status() == Status::Ok, "CSN fixture exact body stored");
+    if (malformed_coinbase) {
+        bool mutated = false;
+        const bool merkle_bound =
+            consensus::ComputeMerkleRoot(block.vtx, &mutated) ==
+                block.header.merkle_root && !mutated;
+        Require(merkle_bound != unbound_malformed,
+                unbound_malformed
+                    ? "stale malformed body is not bound to honest header"
+                    : "malformed coinbase body is bound to its header Merkle root");
+        std::string binding_error;
+        Require(consensus::EnforceWitnessCommitment(
+                    block.vtx, height, Params().enforce_witness_commitment,
+                    Params().witness_commitment_enforcement_height,
+                    binding_error),
+                "malformed coinbase witness is bound to its header body");
+    }
     if (activate_candidates) {
-        const auto replay_record = consensus::SerializeCsnReplayData(
-            block.utreexo->spend_proof.targets, block.utreexo->spent_outputs,
-            consensus::GetUtreexoProofFormatVersion(height));
-        Require(db.putCSNSpendTargets(token, candidate->hash, replay_record) == Status::Ok,
-                "ABC bad candidate replay metadata staged");
+        if (!malformed_coinbase) {
+            const auto replay_record = consensus::SerializeCsnReplayData(
+                block.utreexo->spend_proof.targets, block.utreexo->spent_outputs,
+                consensus::GetUtreexoProofFormatVersion(height));
+            Require(db.putCSNSpendTargets(token, candidate->hash, replay_record) == Status::Ok,
+                    "ABC bad candidate replay metadata staged");
+        }
     }
     Require(db.putHeader(token, honest_index->hash, honest.header, height,
                          arith_uint256(height + 1)) == Status::Ok,
@@ -1113,7 +1167,21 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
                     "ABC selects lower-hash candidate first");
             svc.ActivateBestChain();
             const auto failed_status = db.getHeaderMetadata(candidate->hash);
-            if (legacy_uncertain) {
+            if (unbound_malformed) {
+                Require(svc.GetActiveTip() == parent &&
+                            csn_set.GetForest().getCommitment() == forest_before &&
+                            (candidate->status & BLOCK_FAILED_VALID) == 0 &&
+                            (candidate->status & BLOCK_HAVE_DATA) == 0 &&
+                            failed_status.ok() &&
+                            (failed_status->status_flags & BLOCK_FAILED_VALID) == 0 &&
+                            (failed_status->status_flags & BLOCK_HAVE_DATA) == 0,
+                        "unbound body is quarantined without poisoning header or forest");
+                Require(ActivationRetryTestAccess::Best(svc) == honest_index,
+                        "unbound body leaves honest sibling eligible");
+                svc.ActivateBestChain();
+                Require(svc.GetActiveTip() == honest_index,
+                        "ABC connects honest sibling after stale body quarantine");
+            } else if (legacy_uncertain) {
                 std::cout << "CSN_ABC_LEGACY_RETRY_RESULT active_parent="
                           << (svc.GetActiveTip() == parent)
                           << " forest_unchanged="
@@ -1180,10 +1248,15 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
                   << " forest_unchanged="
                   << (csn_set.GetForest().getCommitment() == forest_before)
                   << " error=" << connect_error << '\n';
-        Require(!connected && consensus_invalid && svc.GetActiveTip() == parent &&
-                csn_set.GetForest().getCommitment() == forest_before,
-                "CSN classifies unauthorized spend as invalid before tip or forest mutation");
-
+        Require(!connected && consensus_invalid &&
+                    svc.GetActiveTip() == parent &&
+                    csn_set.GetForest().getCommitment() == forest_before,
+                malformed_coinbase
+                    ? "CSN classifies bound malformed coinbase as invalid"
+                    : "CSN classifies unauthorized spend as invalid before tip or forest mutation");
+        // The remaining probes belong to the signature/DNRS fixture. The
+        // structural case has already checked the direct connect result.
+        if (!malformed_coinbase) {
         // A transparent-only block can carry a syntactically present but
         // incorrect DNRS commitment. Its shielded post-state must be checked
         // before the recovery path mutates the shared forest.
@@ -1344,6 +1417,7 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
                 "ABC-CSN wrong-DNRS competing branch cannot disconnect honest tip or mutate canonical state");
         MutableParams().state_commitment_activation_height = UINT32_MAX;
         }
+        }
     }
     if (activate_candidates) {
         db.close();
@@ -1352,10 +1426,10 @@ void RunCsnInvalidSignatureReplay(const std::filesystem::path& root,
         const auto failed_after_restart = db.getHeaderMetadata(candidate->hash);
         Require(failed_after_restart.ok() &&
                     (((failed_after_restart->status_flags & BLOCK_FAILED_VALID) != 0) !=
-                     legacy_uncertain),
-                legacy_uncertain
-                    ? "ABC uncertain candidate stays unpoisoned after database reopen"
-                    : "ABC invalid-signature status survives database reopen");
+                     (legacy_uncertain || unbound_malformed)),
+                (legacy_uncertain || unbound_malformed)
+                    ? "ABC retryable candidate stays unpoisoned after database reopen"
+                    : "ABC deterministic invalid status survives database reopen");
     }
     files->close();
     db.close();
@@ -1393,6 +1467,27 @@ int main(int argc, char** argv) {
         }
         if (argc == 2 && std::string(argv[1]) == "--csn-abc-legacy-retry-sibling") {
             RunCsnInvalidSignatureReplay(root / "csn-abc-legacy-retry-sibling", true, false, true);
+            std::filesystem::remove_all(root);
+            std::cout << "ALL PASSED\n";
+            return 0;
+        }
+        if (argc == 2 && std::string(argv[1]) == "--csn-abc-malformed-coinbase") {
+            RunCsnInvalidSignatureReplay(root / "csn-abc-malformed-coinbase",
+                                         true, false, false, true);
+            std::filesystem::remove_all(root);
+            std::cout << "ALL PASSED\n";
+            return 0;
+        }
+        if (argc == 2 && std::string(argv[1]) == "--csn-abc-unbound-malformed") {
+            RunCsnInvalidSignatureReplay(root / "csn-abc-unbound-malformed",
+                                         true, false, false, true, true);
+            std::filesystem::remove_all(root);
+            std::cout << "ALL PASSED\n";
+            return 0;
+        }
+        if (argc == 2 && std::string(argv[1]) == "--csn-direct-malformed") {
+            RunCsnInvalidSignatureReplay(root / "csn-direct-malformed",
+                                         false, false, false, true);
             std::filesystem::remove_all(root);
             std::cout << "ALL PASSED\n";
             return 0;

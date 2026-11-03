@@ -67,6 +67,7 @@
 #include "consensus/merkle_root.h"  // torn-body guard on replay reads
 #include "consensus/witness_commitment.h"  // bind stored legacy witness before activation
 #include "consensus/utreexo_activation.h"
+#include "consensus/coinbase_structure.h"
 #include "daemon/services/config_service.h"
 #include "daemon/config.h"
 #include "daemon/prepared_pool_tip.h"
@@ -214,6 +215,7 @@ bool IsDeterministicStatelessContextFailure(const std::string& error) {
         "stateless-context-bip34-height-mismatch",
         "stateless-context-invalid-coinbase-height-script",
         "stateless-context-invalid-coinbase-framing",
+        "invalid-coinbase-prevout-structure",
         "stateless-context-missing-dnrf",
         "stateless-context-invalid-state-commitment",
         "coinbase-carries-shielded-bundle",
@@ -12589,6 +12591,30 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
             activation_retries_.RecordFailure(
                 best_candidate->hash, std::chrono::steady_clock::now());
         };
+        const auto reject_proven_invalid = [&](CBlockIndex* index,
+                                               const std::string& reason) {
+            // Only a body-bound structural failure or an authenticated
+            // contextual failure may poison a header. Missing proof, branch
+            // MTP or legacy creation height never reaches this path.
+            ChainWriteToken token;
+            if (chain_db_->setHeaderStatusBits(
+                    token, index->hash, BLOCK_FAILED_VALID) != Status::Ok) {
+                EnterSafeMode("CSN contextual rejection status could not be persisted");
+                return;
+            }
+            {
+                std::lock_guard<std::recursive_mutex> index_lock(g_block_index_mutex);
+                index->status |= BLOCK_FAILED_VALID;
+                InvalidateAncestryCache();
+            }
+            if (header_chain_selector_) header_chain_selector_->MarkFailedHeader(index->hash);
+            RemoveCandidate(index);
+            if (best_candidate != index) RemoveCandidate(best_candidate);
+            activation_retries_.Clear(best_candidate->hash);
+            if (logger_) logger_->warning(
+                "[ABC-CSN] Persisted consensus-invalid branch block at height " +
+                std::to_string(index->height) + ": " + reason);
+        };
 
         // Preflight the complete branch before touching any canonical state.
         // A side branch becomes visible to candidate import only after the CSN
@@ -12624,6 +12650,18 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                     body_binding == StoredBodyBindingResult::Quarantined
                         ? "[ABC-CSN] Reorg plan has an unbound stored body; awaiting replacement"
                         : "[ABC-CSN] Could not durably quarantine unbound reorg body");
+                return;
+            }
+            // ReplayBlock checks reward before the contextual validator and
+            // reports only a boolean. A persisted malformed transaction-stage
+            // receipt would otherwise remain retryable across cooldowns and
+            // restarts. The body is bound to this header above.
+            if (consensus::IsCoinbaseStructureActive(
+                    block_index->height,
+                    Params().coinbase_structure_activation_height) &&
+                (candidate.vtx.empty() || !candidate.vtx.front().IsCoinbase())) {
+                reject_proven_invalid(block_index,
+                                      "invalid-coinbase-prevout-structure");
                 return;
             }
             const auto replay_metadata = chain_db_->getHeaderMetadata(block_index->hash);
@@ -12891,30 +12929,6 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
         consensus::BlockValidator preflight_validator(&preflight_utxo_set);
         preflight_validator.setShieldedState(
             &preflight_shielded_tree, &preflight_nullifiers, &preflight_anchors);
-        const auto reject_proven_invalid = [&](CBlockIndex* index,
-                                               const std::string& reason) {
-            // Only an authenticated, deterministic consensus failure may
-            // poison a header. An unavailable proof, missing branch MTP or
-            // legacy creation height never reaches this path.
-            ChainWriteToken token;
-            if (chain_db_->setHeaderStatusBits(
-                    token, index->hash, BLOCK_FAILED_VALID) != Status::Ok) {
-                EnterSafeMode("CSN contextual rejection status could not be persisted");
-                return;
-            }
-            {
-                std::lock_guard<std::recursive_mutex> index_lock(g_block_index_mutex);
-                index->status |= BLOCK_FAILED_VALID;
-                InvalidateAncestryCache();
-            }
-            if (header_chain_selector_) header_chain_selector_->MarkFailedHeader(index->hash);
-            RemoveCandidate(index);
-            if (best_candidate != index) RemoveCandidate(best_candidate);
-            activation_retries_.Clear(best_candidate->hash);
-            if (logger_) logger_->warning(
-                "[ABC-CSN] Persisted consensus-invalid branch block at height " +
-                std::to_string(index->height) + ": " + reason);
-        };
         for (auto* block_index : connect_path) {
             const auto block_result = ReadStoredBlock(block_index->hash);
             if (block_result.status() != Status::Ok) {
@@ -23942,6 +23956,14 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
         if (out_consensus_invalid) *out_consensus_invalid = false;
         return fail(body_binding == StoredBodyBindingResult::Quarantined
             ? "stored-body-unbound" : "stored-body-quarantine-failed");
+    }
+    if (GetConfig().utreexo_stateless &&
+        consensus::IsCoinbaseStructureActive(
+            tip_to_connect->height,
+            Params().coinbase_structure_activation_height) &&
+        (block.vtx.empty() || !block.vtx.front().IsCoinbase())) {
+        if (out_consensus_invalid) *out_consensus_invalid = true;
+        return fail("invalid-coinbase-prevout-structure");
     }
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     std::optional<PreparedHistoricalRuntimeOutbox> historical_delivery;

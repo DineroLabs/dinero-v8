@@ -15380,6 +15380,18 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_forward_sync_activation_retry.cp
     COMMAND test_forward_sync_activation_retry --csn-abc-legacy-retry-sibling)
   set_tests_properties(CsnLegacyContextRetrySibling PROPERTIES
     LABELS "daemon;consensus;csn;regression;mandatory" TIMEOUT 30)
+  add_test(NAME CsnMalformedCoinbaseSibling
+    COMMAND test_forward_sync_activation_retry --csn-abc-malformed-coinbase)
+  set_tests_properties(CsnMalformedCoinbaseSibling PROPERTIES
+    LABELS "daemon;consensus;csn;regression;mandatory" TIMEOUT 30)
+  add_test(NAME CsnMalformedCoinbaseUnbound
+    COMMAND test_forward_sync_activation_retry --csn-abc-unbound-malformed)
+  set_tests_properties(CsnMalformedCoinbaseUnbound PROPERTIES
+    LABELS "daemon;consensus;csn;regression;mandatory" TIMEOUT 30)
+  add_test(NAME CsnMalformedCoinbaseDirect
+    COMMAND test_forward_sync_activation_retry --csn-direct-malformed)
+  set_tests_properties(CsnMalformedCoinbaseDirect PROPERTIES
+    LABELS "daemon;consensus;csn;regression;mandatory" TIMEOUT 30)
   add_test(NAME CsnMarkerlessDispatchLiveness
     COMMAND test_forward_sync_activation_retry --markerless-dispatch)
   set_tests_properties(CsnMarkerlessDispatchLiveness PROPERTIES
