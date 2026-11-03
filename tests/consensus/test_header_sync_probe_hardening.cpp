@@ -346,14 +346,25 @@ TEST(HeaderSyncProbeHardening, SilentOwnerKeepsFlightAgainstPeerThatIsNotAhead) 
 // continuation.
 TEST(HeaderSyncProbeHardening, AnsweringOwnerStartsFreshWindowOnNextRequest) {
     Fixture f;
+    HeaderIndexEntry genesis{};
+    ASSERT_TRUE(f.selector.GetBestHeaderCopy(genesis));
     f.mgr.NotePeerAnnouncedUnknownBlock(1);
     f.mgr.NotePeerAnnouncedUnknownBlock(2);
     ASSERT_TRUE(f.Begin(1, HeaderRequestMode::REFRESH));
     f.Advance(kTakeoverMs - kSec);
-    ASSERT_TRUE(f.mgr.ProcessHeadersWithResult(1, {}).accepted);
+    // An ahead peer that answers with no headers is correctly put on the
+    // short stalled-peer cooldown. Send a real continuation to exercise the
+    // fresh request window, then keep both peers ahead of the new tip.
+    ASSERT_TRUE(f.mgr.ProcessHeadersWithResult(
+        1, {MakeHeader(genesis.hash, 1000001)}).accepted);
     f.mgr.NotePeerAnnouncedUnknownBlock(1);
+    f.mgr.NotePeerAnnouncedUnknownBlock(2);
+    ASSERT_EQ(f.mgr.GetStats().local_best_height, 1U);
+    ASSERT_EQ(f.mgr.PeerBestHeight(1), 2U);
+    ASSERT_EQ(f.mgr.PeerBestHeight(2), 2U);
     ASSERT_TRUE(f.Begin(1, HeaderRequestMode::REFRESH));
     f.Advance(2 * kSec);
+    EXPECT_EQ(f.mgr.GetStats().current_sync_age_ms, 2 * kSec);
     EXPECT_FALSE(f.Begin(2, HeaderRequestMode::REFRESH))
         << "2 s into a new request is not a silent owner";
 }
