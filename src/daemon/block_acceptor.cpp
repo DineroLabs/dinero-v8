@@ -2465,6 +2465,17 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
                 auto* block_index = chainstate->AddBlockIndex(header, height);
 
                 if (block_index) {
+                    // The metadata writer above preserves an existing undo
+                    // locator when this block is delivered again as a side
+                    // branch. Mirror that committed result in the live index:
+                    // ConnectTip owns undo, so a duplicate body cannot clear
+                    // BLOCK_HAVE_UNDO only in memory.
+                    const auto committed_metadata = chain_db->getHeaderMetadata(blockHash);
+                    if (!committed_metadata.ok()) {
+                        error = "Failed to read committed block header metadata";
+                        LOG_ERROR("❌ " + error);
+                        return false;
+                    }
                     // Apr 14 2026 (Bug #6 / #38) — preserve any pre-existing
                     // BLOCK_FAILED_VALID / BLOCK_FAILED_CHILD flag. Without
                     // this, a peer re-relaying a previously-invalidated block
@@ -2550,18 +2561,16 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
                                          dinero::BLOCK_VALID_TRANSACTIONS |
                                          dinero::BLOCK_VALID_CHAIN |
                                          dinero::BLOCK_HAVE_DATA |
-                                         (apply_canonical_writes ? dinero::BLOCK_HAVE_UNDO : 0u) |
+                                         (committed_metadata.value().status_flags & dinero::BLOCK_HAVE_UNDO) |
                                          preserved_failure_flags;
                     if (flatfile_pos.has_value()) {
                         block_index->file_number = flatfile_pos->file_number;
                         block_index->data_pos = static_cast<uint32_t>(flatfile_pos->offset);
                         block_index->data_size = flatfile_pos->size;
                     }
-                    if (undo_flatfile_pos.has_value()) {
-                        block_index->undo_file = undo_flatfile_pos->file_number;
-                        block_index->undo_pos = static_cast<uint32_t>(undo_flatfile_pos->offset);
-                        block_index->undo_size = undo_flatfile_pos->size;
-                    }
+                    block_index->undo_file = committed_metadata.value().undo_file;
+                    block_index->undo_pos = committed_metadata.value().undo_pos;
+                    block_index->undo_size = committed_metadata.value().undo_size;
 
                     // Add to candidate tips for fork selection — but skip if
                     // the block has been persistently invalidated. AddCandidate
