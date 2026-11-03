@@ -17468,13 +17468,37 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
     std::lock_guard<AnnotatedRecursiveMutex> activation_lock(activation_mutex_);
 
     CBlockIndex* target = FindBlockIndex(hash);
+    std::optional<ChainDB::PersistedHeaderMetadata> metadata_only_target;
     if (!target) {
-        error = "Block not found in block index";
-        return false;
+        // A failed header-only root may have lost its separate HeaderStore row
+        // to bounded side-branch retention. The durable status still belongs
+        // to the operator's invalidation, so it must remain reconsiderable.
+        // A missing index for a body-backed block instead indicates a broken
+        // recovery path; do not silently clear that block's validity.
+        if (!chain_db_) {
+            error = "Block not found in block index";
+            return false;
+        }
+        const auto persisted = chain_db_->getHeaderMetadata(hash);
+        if (!persisted.ok()) {
+            error = "Block not found in block index or durable metadata";
+            return false;
+        }
+        if (persisted->height <= 0 ||
+            (persisted->status_flags & BLOCK_VALID_MASK) != BLOCK_VALID_HEADER ||
+            (persisted->status_flags & (BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO)) ||
+            persisted->file_number != 0 || persisted->data_pos != 0 ||
+            persisted->data_size != 0 || persisted->undo_file != 0 ||
+            persisted->undo_pos != 0 || persisted->undo_size != 0) {
+            error = "Body-backed block missing from block index";
+            return false;
+        }
+        metadata_only_target = *persisted;
     }
 
     // Not invalid?
-    if (!(target->status & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD))) {
+    const uint32_t target_status = target ? target->status : metadata_only_target->status_flags;
+    if (!(target_status & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD))) {
         error = "Block is not marked as invalid";
         return false;
     }
@@ -17484,17 +17508,30 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
         error = "Operator status generation unavailable";
         return false;
     }
+    // The in-memory fork index can omit a persisted header-only descendant
+    // whose separate HeaderStore row was pruned. Reconsider must clear its
+    // failed flag too, or startup hydration will keep excluding that branch.
+    if (!chain_db_) {
+        error = "Chain database unavailable for reconsider";
+        return false;
+    }
+    const auto persisted_descendants = chain_db_->getFailedHeaderDescendants(hash);
+    if (!persisted_descendants.ok()) {
+        error = "Failed to enumerate persisted invalid descendants";
+        return false;
+    }
 
     if (logger_) {
         logger_->info("[ReconsiderBlock] Reconsidering block at height " +
-                     std::to_string(target->height) + " hash=" +
+                     std::to_string(target ? target->height : metadata_only_target->height) + " hash=" +
                      hash.GetHex().substr(0, 16) + "...");
     }
 
     std::vector<CBlockIndex*> subtree;
-    subtree.push_back(target);
+    if (target) subtree.push_back(target);
     std::vector<CBlockIndex*> queue;
-    queue.insert(queue.end(), target->children.begin(), target->children.end());
+    if (target)
+        queue.insert(queue.end(), target->children.begin(), target->children.end());
     while (!queue.empty()) {
         CBlockIndex* child = queue.back();
         queue.pop_back();
@@ -17506,6 +17543,24 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
     // Clear invalid flags durably as one logical operation. A crash in the
     // middle of reconsider must not leave the target reconsidered while its
     // descendants stay BLOCK_FAILED_CHILD on disk.
+    std::vector<uint256> cleared_header_hashes;
+    cleared_header_hashes.reserve(subtree.size() + persisted_descendants->size() + 1);
+    std::unordered_set<uint256> indexed_subtree_hashes;
+    indexed_subtree_hashes.reserve(subtree.size());
+    if (!target) cleared_header_hashes.push_back(hash);
+    for (const auto* node : subtree) {
+        if (node) {
+            cleared_header_hashes.push_back(node->hash);
+            indexed_subtree_hashes.insert(node->hash);
+        }
+    }
+    std::vector<CBlockIndex*> extra_indexed_descendants;
+    for (const auto& descendant : *persisted_descendants) {
+        if (indexed_subtree_hashes.contains(descendant)) continue;
+        cleared_header_hashes.push_back(descendant);
+        if (auto* index = FindBlockIndex(descendant))
+            extra_indexed_descendants.push_back(index);
+    }
     if (chain_db_) {
         ChainWriteToken token;
         rocksdb::WriteBatch status_batch;
@@ -17539,7 +17594,11 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
             return true;
         };
 
-        if (!stage_clear(target)) {
+        if (target) {
+            if (!stage_clear(target)) return false;
+        } else if (chain_db_->clearHeaderStatusBits(token, hash,
+                       BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD, &status_batch) != Status::Ok) {
+            error = "Failed to stage metadata-only invalid root clear";
             return false;
         }
 
@@ -17548,6 +17607,14 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
 
         for (size_t i = 1; i < subtree.size(); ++i) {
             if (!stage_clear(subtree[i])) {
+                return false;
+            }
+        }
+        for (const auto& descendant : *persisted_descendants) {
+            if (indexed_subtree_hashes.contains(descendant)) continue;
+            if (chain_db_->clearHeaderStatusBits(token, descendant,
+                    BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD, &status_batch) != Status::Ok) {
+                error = "Failed to stage persisted header-only descendant invalidity clear";
                 return false;
             }
         }
@@ -17582,6 +17649,11 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
             node->status &= ~(BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD);
         }
     }
+    for (CBlockIndex* node : extra_indexed_descendants)
+        node->status &= ~(BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD);
+    if (header_chain_selector_) {
+        header_chain_selector_->ClearFailedHeaderHashes(cleared_header_hashes);
+    }
 
     // A header-only descendant is not the connectable branch tip. Offer the
     // subtree parent-first: AddCandidate keeps the existing eligibility checks
@@ -17590,6 +17662,8 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
     for (CBlockIndex* node : subtree) {
         AddCandidate(node);
     }
+    for (CBlockIndex* node : extra_indexed_descendants)
+        AddCandidate(node);
 
     // Crash boundary: the cleared flags and the advanced generation are
     // DURABLE at this point, but the chain has not been re-activated. A restart

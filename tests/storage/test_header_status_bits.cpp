@@ -39,12 +39,43 @@
 #include "consensus/chainwork.h"
 #include "consensus/block_index.h"
 #include "consensus/block_lifecycle.h"
+#include "consensus/header_chain.h"
+#include "daemon/orchard_snapshot_store.h"
+#include "daemon/services/chainstate_service.h"
+#include <rocksdb/db.h>
+#include <atomic>
 #include <cassert>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <string>
+#include <thread>
+#include <unordered_set>
 
 using namespace dinero;
+
+namespace dinero {
+struct HeaderMetadataStrictScanTestPeer {
+    static void CorruptMetadata(ChainDB& db, const uint256& hash) {
+        const auto status = db.db_->Put(
+            rocksdb::WriteOptions(), db.cf_[db.idx_headers_].get(),
+            db.makeHeaderMetadataKey(hash), std::string("bad-metadata"));
+        if (!status.ok()) std::abort();
+    }
+};
+struct OrchardSnapshotStoreTestAccess {
+    static void Seed(const ChainDB& db, consensus::HeaderChainSelector& headers) {
+        OrchardSnapshotStore::SeedRetainedHeaders(db, headers);
+    }
+};
+struct ShieldedStateStartupTestAccess {
+    static void Publish(ChainstateService& service, CBlockIndex* tip, bool rollback) {
+        service.PublishActiveTip(tip, rollback
+            ? ChainstateService::TipPublishReason::kRollback
+            : ChainstateService::TipPublishReason::kStartupLoad);
+    }
+};
+}
 
 namespace {
 
@@ -678,9 +709,227 @@ void test12_HeaderFirstRowAcceptsMetadata() {
     pass("header-first row accepts independent metadata without collision");
 }
 
+void test13_StrictFailedHeaderScanRefusesCorruption() {
+    cleanTestDatadir();
+    ChainDB db;
+    if (db.init(TEST_DATADIR) != Status::Ok) fail("ChainDB::init failed");
+    const ChainWriteToken token = ChainWriteToken::CreateForTesting();
+    const auto failed = uint256::FromHexUnsafe(
+        "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567801");
+    const auto healthy = uint256::FromHexUnsafe(
+        "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567802");
+    const auto corrupt = uint256::FromHexUnsafe(
+        "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567803");
+    if (db.putHeaderMetadata(token, failed, makeHealthyHeader(BLOCK_FAILED_VALID)) != Status::Ok ||
+        db.putHeaderMetadata(token, healthy, makeHealthyHeader(BLOCK_HAVE_DATA)) != Status::Ok)
+        fail("failed to seed header metadata");
+    BlockHeader header_only;
+    header_only.version = 2;
+    if (db.putHeader(token, header_only.GetHash(), header_only, 77,
+                     arith_uint256()) != Status::Ok)
+        fail("failed to seed canonical header-only row");
+
+    size_t seen = 0, failed_seen = 0;
+    const auto scan = [&] {
+        return db.forEachHeaderMetadataStrict([&](const uint256& hash,
+                const ChainDB::PersistedHeaderMetadata& metadata) {
+            ++seen;
+            if (metadata.status_flags & BLOCK_FAILED_VALID) {
+                if (hash != failed) fail("wrong failed header hash");
+                ++failed_seen;
+            }
+            return true;
+        });
+    };
+    if (scan() != Status::Ok || seen != 2 || failed_seen != 1)
+        fail("strict scan missed a durable failed status");
+
+    HeaderMetadataStrictScanTestPeer::CorruptMetadata(db, corrupt);
+    seen = failed_seen = 0;
+    if (scan() != Status::Corruption)
+        fail("strict scan silently skipped malformed status metadata");
+    pass("strict status hydration sees failed roots and refuses malformed rows");
+}
+
+void test14_ReconsiderFindsPersistedHeaderOnlyDescendants() {
+    cleanTestDatadir();
+    ChainDB db;
+    if (db.init(TEST_DATADIR) != Status::Ok) fail("ChainDB::init failed");
+    const ChainWriteToken token = ChainWriteToken::CreateForTesting();
+    const auto root = uint256::FromHexUnsafe(std::string(64, '1'));
+    const auto child = uint256::FromHexUnsafe(std::string(64, '2'));
+    const auto grandchild = uint256::FromHexUnsafe(std::string(64, '3'));
+    const auto sibling = uint256::FromHexUnsafe(std::string(64, '4'));
+    const auto unrelated = uint256::FromHexUnsafe(std::string(64, '5'));
+    auto write = [&](const uint256& hash, const uint256& parent,
+                     int height, uint32_t flags) {
+        auto metadata = makeHealthyHeader(flags);
+        metadata.parent_hash = parent;
+        metadata.height = height;
+        if (db.putHeaderMetadata(token, hash, metadata) != Status::Ok)
+            fail("failed to seed metadata-only descendant");
+    };
+    write(root, uint256(), 1, BLOCK_FAILED_VALID);
+    write(child, root, 2, BLOCK_FAILED_CHILD);
+    write(grandchild, child, 3, BLOCK_FAILED_CHILD);
+    write(sibling, root, 2, BLOCK_VALID_HEADER);
+    write(unrelated, uint256(), 1, BLOCK_FAILED_VALID);
+
+    // None of these metadata-only descendants has a HeaderStore row or a
+    // CBlockIndex. The production reconsider query must still find them.
+    const auto descendants = db.getFailedHeaderDescendants(root);
+    if (!descendants.ok() ||
+        std::unordered_set<uint256>(descendants->begin(), descendants->end()) !=
+            std::unordered_set<uint256>{child, grandchild})
+        fail("reconsider missed a persisted failed header-only descendant");
+    rocksdb::WriteBatch batch;
+    for (const auto& hash : *descendants) {
+        if (db.clearHeaderStatusBits(token, hash,
+                BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD, &batch) != Status::Ok)
+            fail("failed to stage descendant clear");
+    }
+    if (db.clearHeaderStatusBits(token, root,
+            BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD, &batch) != Status::Ok ||
+        db.writeBatch(token, std::move(batch), true) != Status::Ok)
+        fail("failed to commit atomic reconsider clear");
+    for (const auto& hash : {root, child, grandchild}) {
+        const auto metadata = db.getHeaderMetadata(hash);
+        if (!metadata.ok() ||
+            (metadata->status_flags & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD)))
+            fail("reconsider left a persisted descendant failed");
+    }
+    if (!(db.getHeaderMetadata(unrelated)->status_flags & BLOCK_FAILED_VALID) ||
+        db.getHeaderMetadata(sibling)->status_flags != BLOCK_VALID_HEADER)
+        fail("reconsider modified an unrelated or valid sibling status");
+    pass("reconsider clears metadata-only descendants without touching siblings");
+}
+
+void test15_SnapshotSeedSkipsOnlyPrunedFailedHeaderOnlyRows() {
+    cleanTestDatadir();
+    ChainDB db;
+    if (db.init(TEST_DATADIR) != Status::Ok) fail("ChainDB::init failed");
+    const auto token = ChainWriteToken::CreateForTesting();
+    const auto hash = uint256::FromHexUnsafe(std::string(64, 'a'));
+    ChainDB::PersistedHeaderMetadata metadata;
+    metadata.height = 1;
+    metadata.status_flags = BLOCK_VALID_HEADER | BLOCK_FAILED_VALID;
+    if (db.putHeaderMetadata(token, hash, metadata) != Status::Ok)
+        fail("failed to seed pruned failed header-only row");
+    consensus::HeaderChainSelector headers;
+    try {
+        OrchardSnapshotStoreTestAccess::Seed(db, headers);
+    } catch (const std::exception&) {
+        fail("snapshot startup refused pruned failed header-only row");
+    }
+
+    metadata.status_flags = BLOCK_VALID_HEADER;
+    if (db.putHeaderMetadata(token, hash, metadata) != Status::Ok)
+        fail("failed to seed missing healthy header row");
+    bool refused_healthy = false;
+    try { OrchardSnapshotStoreTestAccess::Seed(db, headers); }
+    catch (const std::exception&) { refused_healthy = true; }
+    if (!refused_healthy) fail("snapshot startup skipped missing healthy header");
+
+    metadata.status_flags = BLOCK_VALID_HEADER | BLOCK_FAILED_VALID | BLOCK_HAVE_DATA;
+    metadata.file_number = 1;
+    metadata.data_pos = 128;
+    metadata.data_size = 64;
+    if (db.putHeaderMetadata(token, hash, metadata) != Status::Ok)
+        fail("failed to seed missing body-backed header row");
+    bool refused_body = false;
+    try { OrchardSnapshotStoreTestAccess::Seed(db, headers); }
+    catch (const std::exception&) { refused_body = true; }
+    if (!refused_body) fail("snapshot startup skipped missing body-backed header");
+    pass("snapshot seed skips pruned failed header-only rows, not healthy or body-backed rows");
+}
+
+void test16_PublishedAncestrySurvivesConcurrentRollback() {
+    const auto genesis_hash = uint256::FromHexUnsafe(std::string(64, 'b'));
+    const auto child_hash = uint256::FromHexUnsafe(std::string(64, 'c'));
+    CBlockIndex* genesis;
+    CBlockIndex* child;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_block_index_mutex);
+        auto genesis_owned = std::make_unique<CBlockIndex>();
+        genesis_owned->hash = genesis_hash;
+        genesis_owned->height = 0;
+        genesis = genesis_owned.get();
+        auto child_owned = std::make_unique<CBlockIndex>();
+        child_owned->hash = child_hash;
+        child_owned->height = 1;
+        child_owned->pprev = genesis;
+        child = child_owned.get();
+        if (!g_block_index.emplace(genesis_hash, std::move(genesis_owned)).second ||
+            !g_block_index.emplace(child_hash, std::move(child_owned)).second)
+            fail("published ancestry fixture hash collision");
+    }
+    ChainstateService service;
+    ShieldedStateStartupTestAccess::Publish(service, genesis, false);
+    std::atomic<bool> valid{true};
+    std::thread writer([&] {
+        for (int i = 0; i < 5000; ++i) {
+            ShieldedStateStartupTestAccess::Publish(service, child, false);
+            ShieldedStateStartupTestAccess::Publish(service, genesis, true);
+        }
+    });
+    for (int i = 0; i < 5000; ++i) {
+        uint256 hash;
+        if (!service.GetPublishedActiveHashAtHeight(0, hash) || hash != genesis_hash)
+            valid = false;
+        if (service.GetPublishedActiveHashAtHeight(1, hash) && hash != child_hash)
+            valid = false;
+    }
+    writer.join();
+    if (!valid) fail("published ancestry returned an incoherent rollback hash");
+    pass("published active ancestry remains coherent during concurrent rollback");
+}
+
 }  // namespace
 
-int main() {
+int failedChildProbe(int argc, char** argv) {
+    if (argc != 5) fail("failed-child probe requires mode, ChainDB path, parent, and child");
+    const std::string mode = argv[1];
+    const auto parent = uint256::FromHexUnsafe(argv[3]);
+    const auto child = uint256::FromHexUnsafe(argv[4]);
+    ChainDB db;
+    if (db.init(argv[2]) != Status::Ok) fail("failed-child probe could not open ChainDB");
+    const bool root_mode = mode.find("root") != std::string::npos;
+    const int expected_height = root_mode ? 1 : 2;
+    if (mode == "--inject-pruned-failed-child" ||
+        mode == "--inject-pruned-failed-root") {
+        if (db.getHeaderMetadata(child).status() != Status::NotFound)
+            fail("failed-child probe hash already has metadata");
+        const ChainWriteToken token = ChainWriteToken::CreateForTesting();
+        ChainDB::PersistedHeaderMetadata metadata;
+        metadata.parent_hash = parent;
+        metadata.height = expected_height;
+        metadata.status_flags = BLOCK_VALID_HEADER |
+            (root_mode ? BLOCK_FAILED_VALID : BLOCK_FAILED_CHILD);
+        // Deliberately no body locator or HeaderStore row: fork-index startup
+        // cannot reconstruct this child, but durable reconsider must find it.
+        if (db.putHeaderMetadata(token, child, metadata) != Status::Ok)
+            fail("failed-child probe could not persist metadata-only child");
+    } else if (mode == "--check-pruned-failed-child" ||
+               mode == "--check-cleared-pruned-child" ||
+               mode == "--check-pruned-failed-root" ||
+               mode == "--check-cleared-pruned-root") {
+        const auto existing = db.getHeaderMetadata(child);
+        if (!existing.ok() || existing->parent_hash != parent ||
+            existing->height != expected_height || existing->data_size != 0)
+            fail("failed-child probe metadata changed unexpectedly");
+        const bool failed = (existing->status_flags &
+            (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD)) != 0;
+        if (failed != (mode == "--check-pruned-failed-child" ||
+                       mode == "--check-pruned-failed-root"))
+            fail("failed-child probe invalidity status does not match expected state");
+    } else {
+        fail("unknown failed-child probe mode");
+    }
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    if (argc > 1) return failedChildProbe(argc, argv);
     std::cout << "========================================" << std::endl;
     std::cout << "Header Status-Bits Test (May 2026 regression guard)" << std::endl;
     std::cout << "========================================" << std::endl;
@@ -697,8 +946,12 @@ int main() {
     test10_UpdateUndoLocatorDefaultAddsNoExtraBits();
     test11_FailedStagePersistsNothing();
     test12_HeaderFirstRowAcceptsMetadata();
+    test13_StrictFailedHeaderScanRefusesCorruption();
+    test14_ReconsiderFindsPersistedHeaderOnlyDescendants();
+    test15_SnapshotSeedSkipsOnlyPrunedFailedHeaderOnlyRows();
+    test16_PublishedAncestrySurvivesConcurrentRollback();
 
-    std::cout << "\n✅ Header status bits: 12/12 properties hold" << std::endl;
+    std::cout << "\n✅ Header status bits: 16/16 properties hold" << std::endl;
     cleanTestDatadir();
     return 0;
 }

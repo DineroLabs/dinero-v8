@@ -629,6 +629,7 @@ def main():
                 assert after["account_sequence"] == original["account_sequence"]
                 assert after["account_digest"] == original["account_digest"]
 
+        old_branch_height = node.rpc("getblockcount")
         node.rpc("blockchain.invalidateblock", [activation])
         assert node.rpc("getblockcount") == 101
         assert node.rpc("getbestblockhash") == activation_parent
@@ -666,6 +667,13 @@ def main():
             assert node.check_profile() == (102, 60)
             print("PASS JSON-RPC coupled timing rewind reactivation and reindex retained profile", flush=True)
         print("PASS JSON-RPC historical replacement and reactivation reindex retained original accounts", flush=True)
+        # Reconsider after the durable H101 invalidation and multiple reindex
+        # restarts. The raw headers were retained, so the old higher-work branch
+        # becomes eligible again without losing the honest replacement header.
+        node.rpc("blockchain.reconsiderblock", [activation_parent])
+        reconsidered = node.rpc("getdaemonstatus")["sync"]
+        assert reconsidered["best_header"]["height"] >= old_branch_height
+        print("PASS JSON-RPC reconsider restored retained header eligibility", flush=True)
         node.stop()
     finally:
         # Stop only this isolated child. A timed-out graceful stop is a failure;

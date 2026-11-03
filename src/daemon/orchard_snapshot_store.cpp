@@ -33,6 +33,7 @@
 #include <set>
 #include <exception>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <ctime>
 #ifndef _WIN32
@@ -1521,12 +1522,38 @@ void OrchardSnapshotStore::CreateFreshStore(const std::filesystem::path& destina
     }
 }
 void OrchardSnapshotStore::SeedRetainedHeaders(const ChainDB& db,consensus::HeaderChainSelector& headers) {
-    std::vector<std::pair<int32_t,uint256>> ordered;
+    struct RetainedHeader {
+        int32_t height;
+        uint256 hash;
+        uint32_t status_flags;
+        bool has_locator;
+    };
+    std::vector<RetainedHeader> ordered;
     Need(db.forEachHeaderMetadata([&](const auto& hash,const ChainDB::PersistedHeaderMetadata& metadata){
-        ordered.emplace_back(metadata.height,hash);return true;
-    }));std::sort(ordered.begin(),ordered.end());
-    for(const auto& [height,hash]:ordered) {
-        const auto header=Need(db.getHeader(hash));
+        ordered.push_back({metadata.height,hash,metadata.status_flags,
+            metadata.file_number!=0 || metadata.data_pos!=0 || metadata.data_size!=0 ||
+            metadata.undo_file!=0 || metadata.undo_pos!=0 || metadata.undo_size!=0});
+        return true;
+    }));
+    std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b){
+        return std::tie(a.height,a.hash)<std::tie(b.height,b.hash);
+    });
+    for(const auto& row:ordered) {
+        const auto stored=db.getHeader(row.hash);
+        if (!stored.ok()) {
+            // Bounded retention can remove an invalidated header-only branch
+            // from HeaderStore while ChainDB keeps its operator status. Such a
+            // row cannot be seeded, but reconsider must remain possible after
+            // startup. Never skip a missing selected or body-backed header.
+            const bool pruned_failed_header_only = stored.status()==Status::NotFound &&
+                row.height>0 &&
+                (row.status_flags & (BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD)) &&
+                (row.status_flags & BLOCK_VALID_MASK)==BLOCK_VALID_HEADER &&
+                !(row.status_flags & (BLOCK_HAVE_DATA|BLOCK_HAVE_UNDO)) &&
+                !row.has_locator;
+            if (pruned_failed_header_only) continue;
+        }
+        const auto header=Need(std::move(stored));
         // Only genuinely validated headers enter the selector. Invalid or
         // orphaned side records cannot rescue a missing selected ancestry.
         (void)headers.AddHeader(header);

@@ -9810,6 +9810,15 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/storage/test_header_status_bits.cpp)
     LABELS "storage;persistence;critical;regression"
     TIMEOUT 30
   )
+  if(TARGET test_orchard_wallet_cycle_daemon)
+    add_test(NAME PrunedFailedChildReconsider COMMAND python3 -B
+      ${CMAKE_SOURCE_DIR}/tests/integration/test_pruned_failed_child_reconsider.py
+      $<TARGET_FILE:test_orchard_wallet_cycle_daemon>
+      $<TARGET_FILE:test_header_status_bits>)
+    set_tests_properties(PrunedFailedChildReconsider PROPERTIES
+      LABELS "integration;header;invalidity;restart;regression"
+      TIMEOUT 240 RUN_SERIAL TRUE)
+  endif()
   message(STATUS "✅ Header status-bits regression guard enabled")
 endif()
 
