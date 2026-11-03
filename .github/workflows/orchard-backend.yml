@@ -324,7 +324,7 @@ jobs:
           python3 - <<'PYTEST'
           import re
           log = open('orchard-storage-test-link-execution.log').read()
-          if log.count('Header status bits: 12/12 properties hold') != 1 or log.count('ALL TESTS PASSED ✓') != 1:
+          if log.count('Header status bits: 16/16 properties hold') != 1 or log.count('ALL TESTS PASSED ✓') != 1:
               raise SystemExit('Storage fixtures did not complete exactly once')
           if sorted(re.findall(r'\[Test ([1-5])\] ✓ PASS:', log)) != ['1', '2', '3', '4', '5']:
               raise SystemExit('Pruning cases missing or duplicated')
