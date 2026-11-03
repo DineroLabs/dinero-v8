@@ -593,11 +593,21 @@ void OrchardSnapshotStore::CheckCompletedActivationRoot(const daemon::DatadirGua
 }
 std::shared_ptr<consensus::HeaderChainSelector> OrchardSnapshotStore::CompletedActivationHeaders(
     const ChainDB& db,consensus::HeaderStore& store){
-    auto retained=std::make_shared<consensus::HeaderChainSelector>();SeedRetainedHeaders(db,*retained);
+    std::vector<uint256> failed_roots;
+    Need(db.forEachHeaderMetadataStrict([&](const uint256& hash,
+            const ChainDB::PersistedHeaderMetadata& metadata) {
+        if (metadata.status_flags & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD))
+            failed_roots.push_back(hash);
+        return true;
+    }));
+    auto retained=std::make_shared<consensus::HeaderChainSelector>();
+    retained->ReplaceFailedHeaderHashes(failed_roots);
+    SeedRetainedHeaders(db,*retained);
     const auto best=retained->GetBestHeaderValue();Require(best.has_value());
     std::vector<consensus::HeaderIndexEntry> ancestry;ancestry.reserve(uint64_t(best->height)+1);
     for(uint64_t h=0;h<=best->height;++h){consensus::HeaderIndexEntry value;Require(retained->GetHeaderAtHeightCopy(uint32_t(h),value));ancestry.push_back(value);}
-    return consensus::HeaderChainSelector::RestorePreservingBranches(store,ancestry);
+    return consensus::HeaderChainSelector::RestorePreservingBranches(
+        store, ancestry, failed_roots);
 }
 std::unique_ptr<OrchardCompactStartup> OrchardSnapshotStore::OpenCompletedActivationRoot(
     const daemon::DatadirGuard& guard,AnnotatedRecursiveMutex& mutex,const ChainWriteToken& token,const BlockStorage& files,

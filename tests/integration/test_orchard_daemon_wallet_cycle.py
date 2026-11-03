@@ -641,9 +641,22 @@ def main():
         if coupled_release:
             assert node.check_profile() == (100, 120)
         retained_reindex()
+        # A persisted invalidated H101 branch still has H102+ raw headers.
+        # Reindex must retain those headers for reconsiderblock, while all
+        # public sync/readiness views project the honest selected H100 tip.
+        header_view = node.rpc("getblockchaininfo")
+        assert header_view["blocks"] == 100 and header_view["headers"] == 100
+        header_sync = node.rpc("getdaemonstatus")["sync"]
+        assert header_sync["converged"] is True
+        assert header_sync["active_tip"]["height"] == header_sync["best_header"]["height"] == 100
         print("PASS JSON-RPC historical disconnect reindex retained delivery chronology", flush=True)
         replacement_parent = node.generate(1, address)[0]
         assert replacement_parent != activation_parent
+        replacement_view = node.rpc("getblockchaininfo")
+        assert replacement_view["blocks"] == 101 and replacement_view["headers"] == 101
+        replacement_sync = node.rpc("getdaemonstatus")["sync"]
+        assert replacement_sync["converged"] is True
+        assert replacement_sync["active_tip"]["hash"] == replacement_sync["best_header"]["hash"] == replacement_parent
         replacement_activation = node.mine(address)
         assert replacement_activation != activation and node.rpc("getblockcount") == 102
         if coupled_release:

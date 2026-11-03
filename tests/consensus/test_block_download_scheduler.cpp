@@ -9,6 +9,7 @@
 #include "consensus/block_download_scheduler.h"
 #include "consensus/drain_failure_streak.h"
 #include "consensus/header_chain.h"
+#include "consensus/header_store.h"
 #include "consensus/chainparams.h"
 #include "consensus/merkle_root.h"
 #include "primitives/block.h"
@@ -3771,6 +3772,244 @@ int main() {
             return 1;
         }
         std::cout << "   ✅ heavier shorter branch queued from the fork point; same chain left alone\n";
+    }
+
+    {
+        // A persisted operator invalidation leaves the header tree intact so
+        // reconsiderblock can recover it later. After restart, however, block
+        // download must advance through an honest sibling even when the failed
+        // branch still has more accumulated header work. MarkBlockInvalid is
+        // the scheduler's existing invalidity input; this probe deliberately
+        // gives it that information and tests whether it changes selection.
+        std::cout << "\n26. invalidated best branch must not hide a valid sibling...\n";
+        const auto dir = std::filesystem::temp_directory_path() /
+            ("dinero_invalid_header_restart_" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        struct Cleanup {
+            std::filesystem::path path;
+            ~Cleanup() {
+                std::error_code ignored;
+                std::filesystem::remove_all(path, ignored);
+            }
+        } cleanup{dir};
+        std::vector<uint256> invalid_branch, honest_branch;
+        {
+            dcs::HeaderStore store(dir.string());
+            store.SetWriteBufferBytes(4u * 1024u * 1024u);
+            if (!Require(store.Open(), "header store must open before invalidation")) return 1;
+            dcs::HeaderChainSelector selector(&store);
+            BuildLinearHeaders(selector, 5, &invalid_branch, 41'000'000);
+            AppendForkHeaders(selector, invalid_branch[0], 2, &honest_branch, 42'000'000);
+        }
+
+        dcs::HeaderStore store(dir.string());
+        store.SetWriteBufferBytes(4u * 1024u * 1024u);
+        if (!Require(store.Open(), "header store must reopen after invalidation")) return 1;
+        dcs::HeaderChainSelector selector(&store);
+        if (!Require(selector.GetRawBestHeaderValue().has_value() &&
+                         selector.GetRawBestHeaderValue()->hash == invalid_branch[5],
+                     "persisted header selector must reproduce the failed-branch best")) return 1;
+
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(0);
+        scheduler.SetGetTipHeightCallback([] { return uint32_t{0}; });
+        scheduler.SetGetBlockHashAtHeightCallback([&](uint32_t height, uint256& out) {
+            if (height != 0) return false;
+            out = invalid_branch[0];
+            return true;
+        });
+        std::vector<uint256> requests;
+        scheduler.SetSendGetDataCallback([&](const uint256& hash, uint32_t) {
+            requests.push_back(hash);
+        });
+        scheduler.OnHeadersProcessed();
+        if (!Require(scheduler.MarkBlockInvalid(invalid_branch[1]),
+                     "invalidated parent must be in the download queue")) return 1;
+        // Chainstate publishes this root only after its failed flag is durable.
+        selector.MarkFailedHeader(invalid_branch[1]);
+        std::vector<uint256> later_invalid;
+        AppendForkHeaders(selector, invalid_branch[5], 1, &later_invalid, 43'000'000);
+        if (!Require(selector.GetRawBestHeaderValue().has_value() &&
+                         selector.GetRawBestHeaderValue()->hash == later_invalid[0],
+                     "raw header best must retain failed branch for reconsider")) return 1;
+
+        scheduler.OnHeadersProcessed();
+        uint256 selected;
+        scheduler.Tick();
+        const bool has_selected = scheduler.GetExpectedHashAtHeight(1, selected);
+        std::cout << "   selected H1=" << (has_selected ? selected.GetHex().substr(0, 12) : "none")
+                  << " invalid H1=" << invalid_branch[1].GetHex().substr(0, 12)
+                  << " honest H1=" << honest_branch[0].GetHex().substr(0, 12)
+                  << " requests=" << requests.size() << '\n';
+        if (!Require(has_selected && selected == honest_branch[0],
+                     "known invalid branch hides the honest sibling at the activation frontier")) {
+            return 1;
+        }
+        if (!Require(std::find(requests.begin(), requests.end(), honest_branch[0]) != requests.end(),
+                     "honest sibling body was never requested")) return 1;
+
+        // Reconsider clears the durable failed flag but retains the old headers.
+        // The raw higher-work branch must become downloadable again, including
+        // a scheduler entry previously marked INVALID.
+        const std::vector<uint256> cleared{invalid_branch[1]};
+        selector.ClearFailedHeaderHashes(cleared);
+        scheduler.Tick();
+        if (!Require(scheduler.GetExpectedHashAtHeight(1, selected) &&
+                         selected == invalid_branch[1],
+                     "reconsider did not restore the retained higher-work branch")) return 1;
+        if (!Require(std::find(requests.begin(), requests.end(), invalid_branch[1]) != requests.end(),
+                     "reconsidered parent body was not requested")) return 1;
+    }
+
+    {
+        std::cout << "\n27. saturated HeaderStore must retain the valid sibling on restart...\n";
+        const auto dir = std::filesystem::temp_directory_path() /
+            ("dinero_failed_header_budget_" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        struct Cleanup {
+            std::filesystem::path path;
+            ~Cleanup() { std::error_code ignored; std::filesystem::remove_all(path, ignored); }
+        } cleanup{dir};
+        std::vector<uint256> invalid_branch, honest_branch;
+        std::vector<dcs::HeaderIndexEntry> compact_selected;
+        {
+            dcs::HeaderStore store(dir.string());
+            store.SetWriteBufferBytes(4u * 1024u * 1024u);
+            if (!Require(store.Open(), "budget fixture store open")) return 1;
+            dcs::HeaderChainSelector source(&store);
+            BuildLinearHeaders(source, 5, &invalid_branch, 61'000'000);
+            AppendForkHeaders(source, invalid_branch[0], 1, &honest_branch, 62'000'000);
+            dcs::HeaderIndexEntry selected_genesis{}, selected_honest{};
+            if (!Require(source.GetHeaderCopy(invalid_branch[0], selected_genesis) &&
+                             source.GetHeaderCopy(honest_branch[0], selected_honest),
+                         "compact selected fixture")) return 1;
+            compact_selected = {selected_genesis, selected_honest};
+            const auto failed_parent = source.GetHeaderValue(invalid_branch[1]);
+            if (!Require(failed_parent.has_value(), "failed parent fixture")) return 1;
+            // Directly seed a legacy over-budget store. Every H2 sibling is a
+            // descendant of the failed H1, while honest H1 is lower work and
+            // would be the first tip pruned before failure hydration.
+            for (uint32_t i = 0; i < 10'001; ++i) {
+                auto header = CreateTestHeader(invalid_branch[1], 61'000'002);
+                header.nonce = i + 2;
+                dcs::HeaderIndexEntry row(header, &*failed_parent);
+                if (!Require(store.StoreHeader(row), "failed to seed saturated HeaderStore")) return 1;
+            }
+        }
+        dcs::HeaderStore store(dir.string());
+        store.SetWriteBufferBytes(4u * 1024u * 1024u);
+        if (!Require(store.Open(), "budget fixture store reopen")) return 1;
+        const std::vector<uint256> failed_roots{invalid_branch[1]};
+        std::vector<dcs::HeaderIndexEntry> inventory_before, inventory_after;
+        if (!Require(store.LoadAllHeaders(inventory_before), "read compact over-cap inventory")) return 1;
+        bool compact_refused_budget = false;
+        try {
+            auto compact = dcs::HeaderChainSelector::RestorePreservingBranches(
+                store, compact_selected, failed_roots);
+            (void)compact;
+        } catch (const std::exception& error) {
+            compact_refused_budget = std::string(error.what()).find("retention budget") !=
+                std::string::npos;
+        }
+        if (!Require(compact_refused_budget,
+                     "compact restore must refuse an over-cap inventory")) return 1;
+        if (!Require(store.LoadAllHeaders(inventory_after) &&
+                         inventory_after.size() == inventory_before.size(),
+                     "compact over-cap refusal mutated HeaderStore")) return 1;
+        dcs::HeaderChainSelector restored(&store, failed_roots);
+        dcs::HeaderIndexEntry honest{};
+        if (!Require(restored.GetHeaderCopy(honest_branch[0], honest),
+                     "startup retention pruned the valid lower-work sibling")) return 1;
+        if (!Require(restored.GetBestHeaderValue().has_value() &&
+                         restored.GetBestHeaderValue()->hash == honest_branch[0],
+                     "startup did not select the retained valid sibling")) return 1;
+        if (!Require(restored.GetRawBestHeaderValue().has_value() &&
+                         restored.GetRawBestHeaderValue()->hash == invalid_branch[5],
+                     "failed raw branch was not retained for reconsider")) return 1;
+        if (!Require(restored.GetAllHeaderHashesCopy().size() <= 6 + 10'000,
+                     "restart retention exceeded the bounded side-branch budget")) return 1;
+        restored.ClearFailedHeaderHashes(failed_roots);
+        if (!Require(restored.GetBestHeaderValue().has_value() &&
+                         restored.GetBestHeaderValue()->hash == invalid_branch[5],
+                     "reconsider after restart did not restore the retained raw branch")) return 1;
+        restored.MarkFailedHeader(invalid_branch[1]);
+        if (!Require(restored.GetBestHeaderValue().has_value() &&
+                         restored.GetBestHeaderValue()->hash == honest_branch[0],
+                     "re-invalidating after reconsider did not restore honest sibling")) return 1;
+    }
+
+    {
+        std::cout << "\n28. stale tip callback cannot strand rollback after the next tick...\n";
+        dcs::HeaderChainSelector selector;
+        BuildLinearHeaders(selector, 2);
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetLocalTipHeight(2);
+        scheduler.OnHeadersProcessed();
+        std::atomic<uint32_t> canonical_height{2};
+        std::atomic<bool> pause_once{true};
+        std::promise<void> entered, release;
+        auto entered_future = entered.get_future();
+        auto release_future = release.get_future();
+        scheduler.SetGetTipHeightCallback([&] {
+            const uint32_t observed = canonical_height.load();
+            if (pause_once.exchange(false)) {
+                entered.set_value();
+                release_future.wait();
+            }
+            return observed;
+        });
+        std::thread first_tick([&] { scheduler.Tick(); });
+        if (entered_future.wait_for(std::chrono::seconds(3)) != std::future_status::ready) {
+            release.set_value();
+            first_tick.join();
+            return 1;
+        }
+        canonical_height.store(0);
+        scheduler.SetLocalTipHeight(0);
+        scheduler.RequestTipRescan();
+        release.set_value();
+        first_tick.join();
+        scheduler.Tick();
+        std::cout << "   rollback height=" << scheduler.GetLocalTipHeight()
+                  << " in-flight=" << scheduler.GetInFlightCount() << '\n';
+        if (!Require(scheduler.GetLocalTipHeight() == 0 &&
+                         scheduler.GetInFlightCount() == 2,
+                     "stale callback hid the canonical rollback and its missing blocks")) return 1;
+    }
+
+    {
+        std::cout << "\n29. pathological failed raw branch cap refuses honest extension explicitly...\n";
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> failed_raw;
+        BuildLinearHeaders(selector, 10'005, &failed_raw, 67'000'000);
+        selector.MarkFailedHeader(failed_raw[1]);
+        uint256 honest_tip = failed_raw[0];
+        for (uint32_t i = 0; i < 10'000; ++i) {
+            const auto header = CreateTestHeader(honest_tip, 68'000'000 + i);
+            if (!Require(selector.AddHeader(header),
+                         "honest branch failed before bounded side budget filled")) return 1;
+            honest_tip = header.GetHash();
+        }
+        const auto count_before = selector.GetAllHeaderHashesCopy().size();
+        const auto next = CreateTestHeader(honest_tip, 68'010'000);
+        if (!Require(selector.AddHeaderWithResult(next) ==
+                         dcs::HeaderChainSelector::AddResult::REJECTED,
+                     "pathological failed raw branch unexpectedly exceeded side budget")) return 1;
+        if (!Require(selector.GetAllHeaderHashesCopy().size() == count_before &&
+                         !selector.GetHeaderValue(next.GetHash()).has_value(),
+                     "budget refusal mutated the retained header inventory")) return 1;
+        const auto eligible = selector.GetBestHeaderValue();
+        const auto raw = selector.GetRawBestHeaderValue();
+        if (!Require(eligible && eligible->hash == honest_tip && eligible->height == 10'000 &&
+                         raw && raw->hash == failed_raw[10'005],
+                     "budget refusal incorrectly reported the failed raw tip as eligible")) return 1;
+        // This is an explicit bounded operational limit, not a universal
+        // liveness claim: a failed raw branch >10k ahead with no evictable
+        // side tip needs operator recovery. A reviewed recovery would restore
+        // a newer authenticated snapshot/header inventory on the honest
+        // branch, or rebuild HeaderStore offline from verified selected
+        // ancestry while preserving ChainDB's failed flags and wallet data.
+        // Neither recovery procedure is exercised by this unit test.
     }
 
     return 0;

@@ -287,7 +287,7 @@ std::vector<BlockHeader> HeaderSyncP2P::FindHeadersToSend(
 
     for (const auto& hash_hex : locator_hashes) {
         uint256 hash = uint256::FromHexUnsafe(hash_hex);
-        if (chain_selector_->GetHeaderCopy(hash, start_entry)) {
+        if (chain_selector_->GetEligibleAncestorCopy(hash, start_entry)) {
             have_start = true;
             break;
         }

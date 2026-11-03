@@ -905,6 +905,7 @@ public:
         if (!published_tip_valid_) return std::nullopt;
         return published_tip_height_;
     }
+    bool GetPublishedActiveHashAtHeight(uint32_t height, uint256& out_hash) const;
 
     std::string getBestBlockHash() const;
 

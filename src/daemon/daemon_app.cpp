@@ -2361,8 +2361,27 @@ bool DaemonApp::Init(int argc, char** argv) {
     ctx_.header_store = header_store;
     std::cout << "[DaemonApp] ✅ HeaderStore initialized (" << datadir << "/headers)" << std::endl;
 
+    // ChainDB invalidity is authoritative. Load it before HeaderStore's
+    // retention trim, otherwise the lower-work valid sibling could be
+    // discarded while the failed max-work branch survives a restart.
+    std::vector<uint256> failed_header_roots;
+    if (chain_db_ptr) {
+        const auto status = chain_db_ptr->forEachHeaderMetadataStrict(
+            [&](const uint256& hash, const ChainDB::PersistedHeaderMetadata& metadata) {
+                if (metadata.status_flags & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD)) {
+                    failed_header_roots.push_back(hash);
+                }
+                return true;
+            });
+        if (status != Status::Ok) {
+            std::cerr << "[DaemonApp] Failed to read persisted invalid header status" << std::endl;
+            return false;
+        }
+    }
+
     // Initialize HeaderChainSelector (consensus logic)
-    auto header_chain = std::make_shared<dinero::consensus::HeaderChainSelector>(header_store.get());
+    auto header_chain = std::make_shared<dinero::consensus::HeaderChainSelector>(
+        header_store.get(), failed_header_roots);
     ctx_.header_chain = header_chain;
     std::cout << "[DaemonApp] ✅ HeaderChainSelector initialized" << std::endl;
 
@@ -2416,7 +2435,8 @@ bool DaemonApp::Init(int argc, char** argv) {
         }
         ctx_.header_store = header_store;
 
-        header_chain = std::make_shared<dinero::consensus::HeaderChainSelector>(header_store.get());
+        header_chain = std::make_shared<dinero::consensus::HeaderChainSelector>(
+            header_store.get(), failed_header_roots);
         ctx_.header_chain = header_chain;
         std::cout << "[DaemonApp] ✅ Clean HeaderStore reinitialized (" << headers_path
                   << ")" << std::endl;
@@ -7006,8 +7026,10 @@ bool DaemonApp::Init(int argc, char** argv) {
                 block_download->SetGetTipHeightCallback(
                     [chainstate_for_drain]() -> uint32_t {
                         if (!chainstate_for_drain) return 0;
-                        auto* tip = chainstate_for_drain->GetActiveTip();
-                        return tip ? tip->height : 0;
+                        // The scheduler can refresh on every tick. Read the
+                        // published value snapshot, never the bare tip pointer.
+                        const auto published = chainstate_for_drain->GetPublishedTipHeight();
+                        return published ? *published : 0;
                     }
                 );
 
@@ -7020,11 +7042,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                 block_download->SetGetBlockHashAtHeightCallback(
                     [chainstate_for_drain](uint32_t height, uint256& out_hash) -> bool {
                         if (!chainstate_for_drain) return false;
-                        return consensus::GetActiveChainHashAtHeight(
-                            chainstate_for_drain->GetActiveTip(),
-                            height,
-                            out_hash
-                        );
+                        return chainstate_for_drain->GetPublishedActiveHashAtHeight(
+                            height, out_hash);
                     }
                 );
             }

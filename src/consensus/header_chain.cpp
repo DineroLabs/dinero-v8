@@ -118,9 +118,16 @@ HeaderChainSelector::HeaderChainSelector()
 }
 
 HeaderChainSelector::HeaderChainSelector(HeaderStore* store)
+    : HeaderChainSelector(store, std::span<const uint256>{})
+{
+}
+
+HeaderChainSelector::HeaderChainSelector(HeaderStore* store,
+                                         std::span<const uint256> failed_roots)
     : best_header_(nullptr)
     , header_store_(store)
 {
+    failed_header_roots_.insert(failed_roots.begin(), failed_roots.end());
     // Phase N.1: Load headers from storage on construction
     if (header_store_) {
         LoadFromStorage();
@@ -128,7 +135,8 @@ HeaderChainSelector::HeaderChainSelector(HeaderStore* store)
 }
 
 std::shared_ptr<HeaderChainSelector> HeaderChainSelector::RestorePreservingBranches(
-        HeaderStore& store, std::span<const HeaderIndexEntry> selected) {
+        HeaderStore& store, std::span<const HeaderIndexEntry> selected,
+        std::span<const uint256> failed_roots) {
     if (selected.empty()) throw std::runtime_error("Startup selected ancestry is empty");
     HeaderStore::StartupSnapshot snapshot;
     if (!store.ReadStartupSnapshot(snapshot))
@@ -162,6 +170,7 @@ std::shared_ptr<HeaderChainSelector> HeaderChainSelector::RestorePreservingBranc
         return a->height != b->height ? a->height < b->height : a->hash < b->hash;
     });
     auto result = std::make_shared<HeaderChainSelector>();
+    result->failed_header_roots_.insert(failed_roots.begin(), failed_roots.end());
     for (const auto* stored : ordered) {
         HeaderIndexEntry* parent = nullptr;
         if (stored->height == 0) {
@@ -176,15 +185,19 @@ std::shared_ptr<HeaderChainSelector> HeaderChainSelector::RestorePreservingBranc
         if (!result->ValidateHeader(stored->header, parent))
             throw std::runtime_error("Startup branch header validation failed");
         auto entry = std::make_unique<HeaderIndexEntry>(stored->header, parent);
+        const bool failed = result->failed_header_roots_.contains(entry->hash) ||
+            (parent && result->failed_header_branch_.contains(parent->hash));
         if (entry->height != stored->height || entry->chainwork != stored->chainwork ||
             (parent && entry->chainwork <= parent->chainwork))
             throw std::runtime_error("Startup branch cumulative work is invalid");
         const auto* value = entry.get();
         result->header_index_.emplace(value->hash, std::move(entry));
+        if (failed) result->failed_header_branch_.insert(value->hash);
         if (parent) ++parent->child_count;
         if (!result->best_header_ || value->chainwork > result->best_header_->chainwork ||
             (value->chainwork == result->best_header_->chainwork && value->hash < result->best_header_->hash))
             result->best_header_ = value;
+        result->UpdateEligibleBestHeader(value);
     }
     if (snapshot.best && !result->header_index_.contains(*snapshot.best))
         throw std::runtime_error("Startup best-header marker names an absent header");
@@ -193,6 +206,8 @@ std::shared_ptr<HeaderChainSelector> HeaderChainSelector::RestorePreservingBranc
         throw std::runtime_error("Startup branch inventory exceeds retention budget");
     for (const auto& [hash, entry] : result->header_index_)
         result->RefreshTipStatus(entry.get());
+    if (!result->eligible_best_header_)
+        throw std::runtime_error("Startup branch inventory has no eligible header");
     // No storage writes or callbacks occurred while the candidate was built.
     // Publish the caller-owned store pointer only after all checks/allocation.
     result->header_store_ = &store;
@@ -200,9 +215,10 @@ std::shared_ptr<HeaderChainSelector> HeaderChainSelector::RestorePreservingBranc
 }
 
 std::shared_ptr<HeaderChainSelector> HeaderChainSelector::RestorePreservingBranches(
-        std::shared_ptr<HeaderStore> store, std::span<const HeaderIndexEntry> selected) {
+        std::shared_ptr<HeaderStore> store, std::span<const HeaderIndexEntry> selected,
+        std::span<const uint256> failed_roots) {
     if (!store) throw std::invalid_argument("Startup header store is absent");
-    auto result=RestorePreservingBranches(*store,selected);
+    auto result=RestorePreservingBranches(*store,selected,failed_roots);
     result->header_store_owner_=std::move(store);
     return result;
 }
@@ -242,6 +258,7 @@ HeaderChainSelector::AddResult HeaderChainSelector::AddHeaderWithResult(const Bl
         // After LoadFromStorage() with a stale persisted best marker,
         // existing fork headers may have more chainwork than best_header_.
         UpdateBestHeader(header_index_[hash].get());
+        UpdateEligibleBestHeader(header_index_[hash].get());
         return AddResult::ALREADY_KNOWN;
     }
 
@@ -271,6 +288,8 @@ HeaderChainSelector::AddResult HeaderChainSelector::AddHeaderWithResult(const Bl
     // Create new header entry (computes height + chainwork)
     auto new_entry = std::make_unique<HeaderIndexEntry>(header, parent);
     const HeaderIndexEntry* entry_ptr = new_entry.get();
+    const bool failed_for_selection = failed_header_roots_.contains(hash) ||
+        (parent && failed_header_branch_.contains(parent->hash));
 
     // 4d-2: RESERVE this header's slot in its parent BEFORE the eviction logic
     // runs. This bumps the parent's child_count and removes it from the
@@ -299,6 +318,10 @@ HeaderChainSelector::AddResult HeaderChainSelector::AddHeaderWithResult(const Bl
             (entry_ptr->chainwork > best_header_->chainwork) ||
             (entry_ptr->chainwork == best_header_->chainwork &&
              entry_ptr->hash < best_header_->hash);
+        const bool would_be_eligible_best = !failed_for_selection &&
+            (!eligible_best_header_ || entry_ptr->chainwork > eligible_best_header_->chainwork ||
+             (entry_ptr->chainwork == eligible_best_header_->chainwork &&
+              entry_ptr->hash < eligible_best_header_->hash));
         if (!would_be_best) {
             const size_t active_len = static_cast<size_t>(best_header_->height) + 1;
             const size_t side_count =
@@ -308,11 +331,15 @@ HeaderChainSelector::AddResult HeaderChainSelector::AddHeaderWithResult(const Bl
                 // fully validated chain. A selected owner's retained tip is
                 // unavailable for eviction even while it is a losing header.
                 const auto candidate=std::find_if(evictable_tips_.begin(),evictable_tips_.end(),
-                    [&](const HeaderIndexEntry* tip) {return !retained_ancestry_tips_.contains(tip->hash);});
+                    [&](const HeaderIndexEntry* tip) {
+                        return tip != eligible_best_header_ &&
+                            !retained_ancestry_tips_.contains(tip->hash);
+                    });
                 const HeaderIndexEntry* min_tip =
                     candidate==evictable_tips_.end() ? nullptr : *candidate;
                 if (min_tip == nullptr ||
-                    !(entry_ptr->chainwork > min_tip->chainwork)) {
+                    (!would_be_eligible_best &&
+                     !(entry_ptr->chainwork > min_tip->chainwork))) {
                     // No lower-work tip to displace — this header cannot belong to
                     // a chain that beats what we already store. Undo the parent
                     // reservation and refuse.
@@ -342,6 +369,7 @@ HeaderChainSelector::AddResult HeaderChainSelector::AddHeaderWithResult(const Bl
 
     // Store in index (parent's child_count was already incremented above).
     header_index_[hash] = std::move(new_entry);
+    if (failed_for_selection) failed_header_branch_.insert(hash);
 
     // Phase N.1: Persist header to storage
     if (header_store_) {
@@ -351,6 +379,7 @@ HeaderChainSelector::AddResult HeaderChainSelector::AddHeaderWithResult(const Bl
     // Update best header if necessary
     const HeaderIndexEntry* old_best = best_header_;
     UpdateBestHeader(entry_ptr);
+    UpdateEligibleBestHeader(entry_ptr);
 
     // Reconcile tip status for exactly the entries whose tip/best state can change
     // in one AddHeader: the new entry, and (on a reorg) the demoted old best tip.
@@ -401,7 +430,8 @@ void HeaderChainSelector::EvictBranch(const HeaderIndexEntry* tip) {
             break;
         }
         HeaderIndexEntry* cur = it->second.get();
-        if (cur == best_header_ || retained_ancestry_tips_.contains(cur_hash)) {
+        if (cur == best_header_ || cur == eligible_best_header_ ||
+            retained_ancestry_tips_.contains(cur_hash)) {
             break;  // never prune through a best-header or retained selected tip
         }
         if (cur->child_count != 0) {
@@ -418,6 +448,7 @@ void HeaderChainSelector::EvictBranch(const HeaderIndexEntry* tip) {
         if (header_store_) {
             header_store_->DeleteHeader(cur_hash);
         }
+        failed_header_branch_.erase(cur_hash);
         header_index_.erase(it);
 
         if (!has_parent) {
@@ -531,13 +562,79 @@ HeaderChainSelector::AncestryRetention::~AncestryRetention() noexcept {
 
 bool HeaderChainSelector::GetBestHeaderCopy(HeaderIndexEntry& out) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!best_header_) {
+    if (!eligible_best_header_) {
         return false;
     }
-    out = *best_header_;
+    out = *eligible_best_header_;
     // Same rule as GetHeaderCopy: a copy never carries the parent pointer out.
     out.parent = nullptr;
     return true;
+}
+
+bool HeaderChainSelector::GetBestEligibleHeaderCopy(HeaderIndexEntry& out) const {
+    return GetBestHeaderCopy(out);
+}
+
+bool HeaderChainSelector::GetRawBestHeaderCopy(HeaderIndexEntry& out) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!best_header_) return false;
+    out = *best_header_;
+    out.parent = nullptr;
+    return true;
+}
+
+std::optional<HeaderIndexEntry> HeaderChainSelector::GetRawBestHeaderValue() const {
+    HeaderIndexEntry out;
+    if (!GetRawBestHeaderCopy(out)) return std::nullopt;
+    return out;
+}
+
+std::vector<uint256> HeaderChainSelector::GetAllHeaderHashesCopy() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<uint256> hashes;
+    hashes.reserve(header_index_.size());
+    for (const auto& [hash, entry] : header_index_) hashes.push_back(hash);
+    return hashes;
+}
+
+void HeaderChainSelector::ReplaceFailedHeaderHashes(const std::vector<uint256>& hashes) {
+    std::unordered_set<uint256> replacement(hashes.begin(), hashes.end());
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (replacement == failed_header_roots_) return;
+    const auto by_height = HeadersByHeightUnderLock();
+    failed_header_roots_.swap(replacement);
+    RebuildEligibleHeadersUnderLock(by_height);
+    ++eligibility_generation_;
+}
+
+void HeaderChainSelector::MarkFailedHeader(const uint256& hash) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (failed_header_roots_.contains(hash)) return;
+    const auto by_height = HeadersByHeightUnderLock();
+    failed_header_roots_.insert(hash);
+    RebuildEligibleHeadersUnderLock(by_height);
+    ++eligibility_generation_;
+}
+
+void HeaderChainSelector::ClearFailedHeaderHashes(std::span<const uint256> hashes) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (std::none_of(hashes.begin(), hashes.end(), [&](const auto& hash) {
+            return failed_header_roots_.contains(hash);
+        })) return;
+    const auto by_height = HeadersByHeightUnderLock();
+    for (const auto& hash : hashes) failed_header_roots_.erase(hash);
+    RebuildEligibleHeadersUnderLock(by_height);
+    ++eligibility_generation_;
+}
+
+bool HeaderChainSelector::IsHeaderFailedForSelection(const uint256& hash) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return failed_header_branch_.contains(hash);
+}
+
+uint64_t HeaderChainSelector::GetEligibilityGeneration() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return eligibility_generation_;
 }
 
 std::optional<HeaderIndexEntry> HeaderChainSelector::GetBestHeaderValue() const {
@@ -598,11 +695,11 @@ bool HeaderChainSelector::GetAsertContextByHash(
 bool HeaderChainSelector::GetHeaderAtHeightCopy(uint32_t height,
                                                 HeaderIndexEntry& out) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!best_header_) {
+    if (!eligible_best_header_) {
         return false;
     }
     // Resolve and copy before the lock is released (#441).
-    const HeaderIndexEntry* entry = best_header_->GetAncestor(height);
+    const HeaderIndexEntry* entry = eligible_best_header_->GetAncestor(height);
     if (!entry) {
         return false;
     }
@@ -613,11 +710,30 @@ bool HeaderChainSelector::GetHeaderAtHeightCopy(uint32_t height,
     return true;
 }
 
+bool HeaderChainSelector::GetEligibleHeaderAtHeightCopy(uint32_t height,
+                                                       HeaderIndexEntry& out) const {
+    return GetHeaderAtHeightCopy(height, out);
+}
+
+bool HeaderChainSelector::GetEligibleAncestorCopy(const uint256& hash,
+                                                  HeaderIndexEntry& out) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!eligible_best_header_) return false;
+    const auto it = header_index_.find(hash);
+    if (it == header_index_.end()) return false;
+    const auto* candidate = it->second.get();
+    const auto* selected = eligible_best_header_->GetAncestor(candidate->height);
+    if (selected != candidate) return false;
+    out = *candidate;
+    out.parent = nullptr;
+    return true;
+}
+
 std::vector<uint256> HeaderChainSelector::BuildLocatorCopy(size_t max_entries) const {
     std::vector<uint256> locator;
     std::lock_guard<std::mutex> lock(mutex_);
 
-    if (!best_header_ || max_entries == 0) {
+    if (!eligible_best_header_ || max_entries == 0) {
         return locator;
     }
 
@@ -629,8 +745,8 @@ std::vector<uint256> HeaderChainSelector::BuildLocatorCopy(size_t max_entries) c
     // ordinary entry budget.
     locator.reserve(max_entries + 1);
 
-    const HeaderIndexEntry* current = best_header_;
-    uint32_t height = best_header_->height;
+    const HeaderIndexEntry* current = eligible_best_header_;
+    uint32_t height = eligible_best_header_->height;
     uint32_t step = 1;
 
     while (current != nullptr && locator.size() < max_entries) {
@@ -642,15 +758,15 @@ std::vector<uint256> HeaderChainSelector::BuildLocatorCopy(size_t max_entries) c
         height -= step;
 
         // Resolve inline while still holding the lock.
-        current = best_header_->GetAncestor(height);
+        current = eligible_best_header_->GetAncestor(height);
 
         if (locator.size() > 1) {
             step *= 2;
         }
     }
 
-    if (best_header_->height > 0) {
-        const HeaderIndexEntry* genesis = best_header_->GetAncestor(0);
+    if (eligible_best_header_->height > 0) {
+        const HeaderIndexEntry* genesis = eligible_best_header_->GetAncestor(0);
         if (genesis != nullptr &&
             (locator.empty() || locator.back() != genesis->hash)) {
             locator.push_back(genesis->hash);
@@ -841,6 +957,10 @@ void HeaderChainSelector::Clear() {
         throw std::logic_error("Cannot clear retained header ancestry");
     header_index_.clear();
     best_header_ = nullptr;
+    eligible_best_header_ = nullptr;
+    failed_header_roots_.clear();
+    failed_header_branch_.clear();
+    ++eligibility_generation_;
     evictable_tips_.clear();          // 4d-2: runtime tip set
     side_branch_cap_warned_ = false;
 
@@ -866,6 +986,7 @@ bool HeaderChainSelector::LoadFromStorage() {
     // Clear current state
     header_index_.clear();
     best_header_ = nullptr;
+    eligible_best_header_ = nullptr;
 
     // Load all headers first (without parent pointers)
     for (const auto& entry : stored_headers) {
@@ -904,6 +1025,8 @@ bool HeaderChainSelector::LoadFromStorage() {
             UpdateBestHeader(pair.second.get());
         }
     }
+    RebuildEligibleHeadersUnderLock(HeadersByHeightUnderLock());
+    ++eligibility_generation_;
 
     // 4d-2 (issue #181): rebuild the runtime child_count + eviction-eligible tip
     // set (neither is persisted), then enforce the side-branch budget so a
@@ -935,7 +1058,13 @@ bool HeaderChainSelector::LoadFromStorage() {
         const size_t active_len = static_cast<size_t>(best_header_->height) + 1;
         while (!evictable_tips_.empty() &&
                header_index_.size() > active_len + MAX_SIDE_BRANCH_HEADERS) {
-            EvictBranch(*evictable_tips_.begin());
+            const auto candidate=std::find_if(evictable_tips_.begin(),evictable_tips_.end(),
+                [&](const HeaderIndexEntry* tip) {
+                    return tip != eligible_best_header_ &&
+                        !retained_ancestry_tips_.contains(tip->hash);
+                });
+            if (candidate == evictable_tips_.end()) break;
+            EvictBranch(*candidate);
         }
     }
 
@@ -1127,6 +1256,38 @@ void HeaderChainSelector::UpdateBestHeader(const HeaderIndexEntry* new_entry) {
         }
     }
     // else: current best remains
+}
+
+void HeaderChainSelector::UpdateEligibleBestHeader(const HeaderIndexEntry* new_entry) {
+    if (!new_entry || failed_header_branch_.contains(new_entry->hash)) return;
+    if (!eligible_best_header_ || new_entry->chainwork > eligible_best_header_->chainwork ||
+        (new_entry->chainwork == eligible_best_header_->chainwork &&
+         new_entry->hash < eligible_best_header_->hash)) {
+        eligible_best_header_ = new_entry;
+    }
+}
+
+std::vector<HeaderIndexEntry*> HeaderChainSelector::HeadersByHeightUnderLock() const {
+    std::vector<HeaderIndexEntry*> by_height;
+    by_height.reserve(header_index_.size());
+    for (const auto& [hash, entry] : header_index_) by_height.push_back(entry.get());
+    std::sort(by_height.begin(), by_height.end(), [](const auto* a, const auto* b) {
+        return a->height != b->height ? a->height < b->height : a->hash < b->hash;
+    });
+    return by_height;
+}
+
+void HeaderChainSelector::RebuildEligibleHeadersUnderLock(
+        const std::vector<HeaderIndexEntry*>& by_height) {
+    eligible_best_header_ = nullptr;
+    failed_header_branch_.clear();
+    for (auto* entry : by_height) {
+        const bool failed = failed_header_roots_.contains(entry->hash) ||
+            (entry->parent ? failed_header_branch_.contains(entry->parent->hash) :
+             !entry->prev_hash.IsNull());
+        if (failed) failed_header_branch_.insert(entry->hash);
+        UpdateEligibleBestHeader(entry);
+    }
 }
 
 arith_uint256 HeaderChainSelector::ComputeChainwork(

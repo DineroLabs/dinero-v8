@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <cctype>
 #include <unordered_set>
+#include <unordered_map>
 #include <mutex>
 #include <set>
 #ifndef _WIN32
@@ -1035,6 +1036,77 @@ Status ChainDB::forEachHeaderMetadata(std::function<bool(const uint256& hash, co
 
     delete it;
     return Status::Ok;
+}
+
+Status ChainDB::forEachHeaderMetadataStrict(
+    std::function<bool(const uint256&, const PersistedHeaderMetadata&)> callback) const {
+    if (!db_) return Status::Internal;
+    std::unique_ptr<rocksdb::Iterator> it(
+        db_->NewIterator(rocksdb::ReadOptions(), cf_[idx_headers_].get()));
+    if (!it) return Status::Internal;
+
+    std::unordered_set<uint256> modern_hashes;
+    bool stopped = false;
+    const auto parse_hash = [](const std::string& key, uint256& hash) {
+        if (key.size() != 65 ||
+            !std::all_of(key.begin() + 1, key.end(), [](unsigned char c) {
+                return std::isxdigit(c) != 0;
+            })) return false;
+        return uint256::FromHex(key.substr(1), hash);
+    };
+    const auto scan = [&](char prefix, bool modern) -> Status {
+        for (it->SeekToFirst(); it->Valid(); it->Next()) {
+            const std::string key = it->key().ToString();
+            if (key.empty() || key[0] != prefix) continue;
+            uint256 hash;
+            if (!parse_hash(key, hash)) return Status::Corruption;
+            if (!modern && modern_hashes.contains(hash)) continue;
+            const std::string value = it->value().ToString();
+            if (!modern && IsCanonicalHeaderValue(value)) continue;
+            auto metadata = DeserializePersistedHeaderMetadataValue(value);
+            if (!metadata.ok()) return Status::Corruption;
+            if (modern) modern_hashes.insert(hash);
+            try {
+                if (!callback(hash, metadata.value())) { stopped = true; break; }
+            } catch (const std::exception&) {
+                return Status::Internal;
+            }
+        }
+        return it->status().ok() ? Status::Ok : convertRocksDBStatus(it->status());
+    };
+    const auto modern = scan(PREFIX_HEADER_META, true);
+    if (modern != Status::Ok) return modern;
+    if (stopped) return Status::Ok;
+    return scan(PREFIX_HEADER, false);
+}
+
+StatusOr<std::vector<uint256>> ChainDB::getFailedHeaderDescendants(const uint256& root) const {
+    struct Child {
+        uint256 hash;
+        uint32_t flags;
+    };
+    std::unordered_multimap<uint256, Child> by_parent;
+    const auto status = forEachHeaderMetadataStrict(
+        [&](const uint256& hash, const PersistedHeaderMetadata& metadata) {
+            by_parent.emplace(metadata.parent_hash, Child{hash, metadata.status_flags});
+            return true;
+        });
+    if (status != Status::Ok) return status;
+
+    std::vector<uint256> failed;
+    std::vector<uint256> frontier{root};
+    std::unordered_set<uint256> seen{root};
+    for (size_t cursor = 0; cursor < frontier.size(); ++cursor) {
+        const auto [begin, end] = by_parent.equal_range(frontier[cursor]);
+        for (auto it = begin; it != end; ++it) {
+            const auto& child = it->second;
+            if (!seen.insert(child.hash).second) continue;
+            frontier.push_back(child.hash);
+            if (child.flags & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD))
+                failed.push_back(child.hash);
+        }
+    }
+    return failed;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

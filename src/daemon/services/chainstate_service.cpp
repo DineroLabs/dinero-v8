@@ -1148,6 +1148,25 @@ void ChainstateService::setOwnedChainDB(std::shared_ptr<ChainDB> db) {
 ChainstateService::ChainstateService() = default;
 ChainstateService::~ChainstateService() = default;
 
+bool ChainstateService::GetPublishedActiveHashAtHeight(uint32_t height,
+                                                      uint256& out_hash) const {
+    // Copy the canonical identity first. Never hold the publication lock while
+    // taking the global block-index lock: startup can relink pprev under that
+    // index lock, and the scheduler must not introduce a lock inversion.
+    uint256 tip_hash;
+    uint32_t tip_height = 0;
+    {
+        std::lock_guard<std::mutex> lock(published_tip_mutex_);
+        if (!published_tip_valid_ || height > published_tip_height_) return false;
+        tip_hash = published_tip_hash_;
+        tip_height = published_tip_height_;
+    }
+    std::lock_guard<std::recursive_mutex> index_lock(g_block_index_mutex);
+    const CBlockIndex* tip = dinero::FindBlockIndex(tip_hash);
+    if (!tip || tip->height != tip_height) return false;
+    return consensus::GetActiveChainHashAtHeight(tip, height, out_hash);
+}
+
 bool ChainstateService::ResolveCanonicalBlockHash(uint32_t height,
                                                   uint256& out_hash) const {
     if (consensus::GetActiveChainHashAtHeight(GetActiveTip(), height, out_hash)) {
@@ -7831,8 +7850,10 @@ void ChainstateService::PublishActiveTipLocked(CBlockIndex* tip, TipPublishReaso
     // only. A synchronization failure cannot return to a caller that might
     // continue with durable state and an unpublished service tip.
     bool changed=false;
+    uint32_t prior_height=0;
     try {
         std::lock_guard<std::mutex> lock(published_tip_mutex_);
+        prior_height=published_tip_height_;
         changed=published_tip_valid_!=bool(tip) ||
             published_tip_hash_!=(tip?tip->GetBlockHash():uint256{}) ||
             published_tip_height_!=(tip?uint32_t(tip->height):0);
@@ -7858,6 +7879,18 @@ void ChainstateService::PublishActiveTipLocked(CBlockIndex* tip, TipPublishReaso
         rpc::LongPollNotifier::instance().notifyTipChanged();
     };
     if(changed)wake_miners();
+
+    // A rollback or same-height reorg can leave the scheduler's queue on the
+    // previous branch. Signal a later authoritative callback refresh rather
+    // than publishing a height here: a callback already in flight could
+    // otherwise overwrite this downshift with the old tip.
+    if (changed) {
+        if (auto* ctx = DaemonContext::instance();
+            ctx && ctx->chainstate.get() == this && ctx->block_download) {
+            const uint32_t new_height = tip ? static_cast<uint32_t>(tip->height) : 0;
+            if (new_height <= prior_height) ctx->block_download->RequestTipRescan();
+        }
+    }
 
     // Diagnostics allocate and may throw. They are best-effort AFTER both tip
     // representations agree, never a prerequisite for post-commit publication.
@@ -9354,7 +9387,16 @@ std::shared_ptr<consensus::HeaderChainSelector> ChainstateService::RestoreCompac
     }
     // No service/selected/wallet lock spans the complete historical header
     // validation. The startup use pins shutdown, not ordinary read admission.
-    auto headers=consensus::HeaderChainSelector::RestorePreservingBranches(std::move(store),selected);
+    std::vector<uint256> failed_roots;
+    if (!chain_db_ || chain_db_->forEachHeaderMetadataStrict(
+            [&](const uint256& hash, const ChainDB::PersistedHeaderMetadata& metadata) {
+                if (metadata.status_flags & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD))
+                    failed_roots.push_back(hash);
+                return true;
+            }) != Status::Ok)
+        throw std::runtime_error("Compact header invalidity hydration failed");
+    auto headers=consensus::HeaderChainSelector::RestorePreservingBranches(
+        std::move(store), selected, failed_roots);
     {
         std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
         std::lock_guard<std::mutex> lifetime(wallet_index_use_mutex_);
@@ -9377,12 +9419,46 @@ void ChainstateService::setHeaderChainSelector(std::shared_ptr<dinero::consensus
     // Startup wiring follows Init in DaemonApp. Preserve that order, and never
     // replace a selector already bound to a reconstructed compact owner.
     std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+    if (header_chain && chain_db_) {
+        // HeaderStore deliberately retains invalidated branches for
+        // reconsiderblock. Its raw max-work tip therefore cannot authorize
+        // block download after restart. Hydrate a separate selector projection
+        // from the durable ChainDB flags before publishing this selector to
+        // the running scheduler. The strict scan refuses malformed rows rather
+        // than silently forgetting an operator's failed-branch decision.
+        std::vector<uint256> failed_headers;
+        size_t scanned = 0;
+        const auto started = std::chrono::steady_clock::now();
+        const auto status = chain_db_->forEachHeaderMetadataStrict(
+            [&](const uint256& hash, const ChainDB::PersistedHeaderMetadata& metadata) {
+                ++scanned;
+                if (metadata.status_flags & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD)) {
+                    failed_headers.push_back(hash);
+                }
+                return true;
+            });
+        if (status != Status::Ok) {
+            throw std::runtime_error("Failed to hydrate persisted invalid header branches");
+        }
+        header_chain->ReplaceFailedHeaderHashes(failed_headers);
+        if (logger_) {
+            logger_->info("[ChainstateService] Header invalidity hydration: scanned=" +
+                std::to_string(scanned) + " failed=" +
+                std::to_string(failed_headers.size()) + " elapsed_ms=" +
+                std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - started).count()));
+        }
+    }
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     if(orchard_snapshot_startup_&&header_chain&&chain_db_)
         OrchardSnapshotStore::SeedRetainedHeaders(*chain_db_,*header_chain);
+#endif
+    // A repeated binding still has to seed any retained Orchard headers.
+    // That was the existing idempotent startup behavior.
+    if (header_chain_selector_ == header_chain) return;
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     if (compact_startup_) {
         if (header_chain_selector_) {
-            if (header_chain_selector_==header_chain) return;
             throw std::logic_error("Cannot replace compact startup header selector");
         }
         if (!header_chain || !compact_startup_->owner)
@@ -12811,6 +12887,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                 index->status |= BLOCK_FAILED_VALID;
                 InvalidateAncestryCache();
             }
+            if (header_chain_selector_) header_chain_selector_->MarkFailedHeader(index->hash);
             RemoveCandidate(index);
             if (best_candidate != index) RemoveCandidate(best_candidate);
             activation_retries_.Clear(best_candidate->hash);
@@ -13488,6 +13565,8 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                     if (logger_) logger_->error(
                         "[ActivateBestChain] Failed to persist consensus-invalid block status");
                     EnterSafeMode("failed to persist consensus-invalid block status");
+                } else if (header_chain_selector_) {
+                    header_chain_selector_->MarkFailedHeader(block_index->hash);
                 }
             }
 
@@ -17129,7 +17208,6 @@ bool ChainstateService::InvalidateBlockPass(const uint256& hash, std::string& er
         error = "Operator status generation unavailable";
         return false;
     }
-
     // Rebind even if a changed graph would now classify the target as a
     // side branch. Detached preparation never authorizes a different operator
     // decision after a selected-tip, target, ancestry or generation change.
@@ -17286,6 +17364,7 @@ bool ChainstateService::InvalidateBlockPass(const uint256& hash, std::string& er
         target->status |= BLOCK_FAILED_VALID;
         InvalidateAncestryCache();
     }
+    if (header_chain_selector_) header_chain_selector_->MarkFailedHeader(target->hash);
     RemoveCandidate(target);
 
     dinero::testing::MaybeAbortAt("after_invalid_target_before_descendants",

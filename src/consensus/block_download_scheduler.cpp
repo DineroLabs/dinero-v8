@@ -116,6 +116,15 @@ void BlockDownloadScheduler::OnHeadersProcessed() {
     g_logger.info("[BlockDownloadScheduler] OnHeadersProcessed called");
 
     // Scan header chain for missing blocks
+    if (header_chain_) {
+        const auto generation = header_chain_->GetEligibilityGeneration();
+        if (generation != observed_eligibility_generation_) {
+            for (auto& fs : missing_blocks_) {
+                if (fs.status == FetchStatus::INVALID) fs.status = FetchStatus::MISSING;
+            }
+            observed_eligibility_generation_ = generation;
+        }
+    }
     ScanForMissingBlocks();
 
     // Log status
@@ -658,6 +667,35 @@ void BlockDownloadScheduler::TickLocked(std::unique_lock<std::mutex>& lock) {
         return;
     }
 
+    // ChainDB failure decisions are published into the selector without
+    // taking the scheduler mutex (the chainstate holds activation_mutex_).
+    // Rebuild here after that lock is released, including after a real tip
+    // rollback. A later Tick repeats the scan if eligibility changes during it.
+    bool tip_regressed = rescan_after_tip_regression_.exchange(false);
+    // Refresh from the canonical tip on every driver tick. A callback that
+    // read the old tip just before an operator rollback may race an atomic
+    // SetLocalTipHeight; the next tick must still overwrite that stale result.
+    if (get_tip_height_callback_) {
+        const uint32_t actual_tip = get_tip_height_callback_();
+        const uint32_t cached_tip = local_tip_height_.exchange(actual_tip);
+        tip_regressed = tip_regressed || actual_tip != cached_tip;
+    }
+    const uint64_t eligibility_generation = header_chain_ ?
+        header_chain_->GetEligibilityGeneration() : 0;
+    if (tip_regressed || eligibility_generation != observed_eligibility_generation_) {
+        // Reconsider may make an old, locally INVALID queue entry eligible
+        // again. Preserve received/connected bodies across rescans, but not a
+        // scheduler rejection from the superseded invalidity generation.
+        if (eligibility_generation != observed_eligibility_generation_) {
+            for (auto& fs : missing_blocks_) {
+                if (fs.status == FetchStatus::INVALID) fs.status = FetchStatus::MISSING;
+            }
+        }
+        observed_eligibility_generation_ = eligibility_generation;
+        headers_processed_.store(true);
+        ScanForMissingBlocks();
+    }
+
     // Defense-in-depth stall net: recover if the tip has been frozen with work
     // queued for too long, regardless of the underlying cause.
     if (stall_watchdog_seconds_ > 0) {
@@ -672,7 +710,7 @@ void BlockDownloadScheduler::TickLocked(std::unique_lock<std::mutex>& lock) {
     if (!headers_processed_.load() && header_chain_) {
         // #441: copy under the selector's lock.
         HeaderIndexEntry best_copy{};
-        if (header_chain_->GetBestHeaderCopy(best_copy)) {
+        if (header_chain_->GetBestEligibleHeaderCopy(best_copy)) {
             headers_processed_.store(true);
             g_logger.info("[BlockDownloadScheduler] Bootstrap scan from persisted headers: best=" +
                           std::to_string(best_copy.height) + " local=" +
@@ -725,7 +763,7 @@ void BlockDownloadScheduler::TickLocked(std::unique_lock<std::mutex>& lock) {
                 return fs.status != FetchStatus::CONNECTED;
             });
         HeaderIndexEntry best{};
-        const bool have_best = header_chain_ && header_chain_->GetBestHeaderCopy(best);
+        const bool have_best = header_chain_ && header_chain_->GetBestEligibleHeaderCopy(best);
         if (first != missing_blocks_.end()) {
             const auto age_ms = first->status == FetchStatus::REQUESTED
                 ? std::chrono::duration_cast<std::chrono::milliseconds>(now - first->request_time).count()
@@ -1222,14 +1260,17 @@ bool BlockDownloadScheduler::IsFullySynchronized() const {
     // gate to permanently return false and drop all subsequent INV blocks.
     if (get_tip_height_callback_) {
         uint32_t actual_tip = get_tip_height_callback_();
-        if (actual_tip > local_tip_height_) {
-            local_tip_height_ = actual_tip;
+        const uint32_t cached_tip = local_tip_height_.exchange(actual_tip);
+        if (actual_tip < cached_tip) {
+            rescan_after_tip_regression_.store(true);
+            driver_cv_.notify_all();
+            return false;
         }
     }
     if (header_chain_) {
         // #441: copy under the selector's lock.
         HeaderIndexEntry best_copy{};
-        if (header_chain_->GetBestHeaderCopy(best_copy) &&
+        if (header_chain_->GetBestEligibleHeaderCopy(best_copy) &&
             best_copy.height > local_tip_height_) {
             return false;  // Headers ahead of our validated tip
         }
@@ -1680,11 +1721,11 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
     // Without this, the scheduler would queue already-synced blocks as MISSING.
     if (get_tip_height_callback_) {
         uint32_t actual_tip = get_tip_height_callback_();
-        if (actual_tip > local_tip_height_) {
+        const uint32_t cached_tip = local_tip_height_.exchange(actual_tip);
+        if (actual_tip != cached_tip) {
             g_logger.info("[BlockDownloadScheduler] Refreshed local tip: " +
-                         std::to_string(local_tip_height_) + " -> " +
+                         std::to_string(cached_tip) + " -> " +
                          std::to_string(actual_tip));
-            local_tip_height_ = actual_tip;
         }
     }
 
@@ -1725,7 +1766,7 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
     // so a concurrent reorg can make the snapshot stale but cannot make it
     // internally inconsistent or leave us dereferencing an evicted entry.
     HeaderIndexEntry best_header{};
-    if (!header_chain_->GetBestHeaderCopy(best_header)) {
+    if (!header_chain_->GetBestEligibleHeaderCopy(best_header)) {
         reset_tip_queue();
         g_logger.info("[BlockDownloadScheduler] No headers available");
         return;
@@ -2047,7 +2088,7 @@ bool BlockDownloadScheduler::GetExpectedHashAtHeight(uint32_t height, uint256& o
     if (!header_chain_) return false;
     // #441: copy under the selector's lock.
     HeaderIndexEntry entry{};
-    if (!header_chain_->GetHeaderAtHeightCopy(height, entry)) return false;
+    if (!header_chain_->GetEligibleHeaderAtHeightCopy(height, entry)) return false;
     out_hash = entry.hash;
     return true;
 }
