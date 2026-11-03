@@ -4312,6 +4312,7 @@ bool ChainstateService::Start() {
 
                 uint32_t fork_loaded = 0;
                 uint32_t fork_skipped = 0;
+                uint32_t fork_invalid_descendants_backfilled = 0;
                 for (const auto& entry : fork_entries) {
                     // A later entry may have been added as a side effect of an
                     // earlier one; re-check rather than assume.
@@ -4337,6 +4338,20 @@ bool ChainstateService::Start() {
                     }
 
                     ApplyPersistedMetadataToBlockIndex(idx, entry.metadata);
+                    // A crash can persist an invalid fork root before its
+                    // descendants receive BLOCK_FAILED_CHILD. The active
+                    // height index above no longer contains that fork after
+                    // rollback, so repair it here in parent-first order.
+                    bool repaired_invalidity = false;
+                    std::string invalidity_error;
+                    if (!BackfillFailedChildFromParent(chain_db_, idx, logger_,
+                                                       &repaired_invalidity,
+                                                       &invalidity_error)) {
+                        logger_->error("[ChainstateService] Failed invalidity backfill during "
+                                       "fork block index rebuild: " + invalidity_error);
+                        return false;
+                    }
+                    if (repaired_invalidity) ++fork_invalid_descendants_backfilled;
                     fork_loaded++;
                 }
 
@@ -4346,6 +4361,11 @@ bool ChainstateService::Start() {
                                    ? "; skipped " + std::to_string(fork_skipped) +
                                          " whose header could not be loaded"
                                    : ""));
+                if (fork_invalid_descendants_backfilled > 0) {
+                    logger_->warning("[ChainstateService] Backfilled " +
+                        std::to_string(fork_invalid_descendants_backfilled) +
+                        " off-active descendant invalidity flags from persisted ancestors");
+                }
             }
         }
 
