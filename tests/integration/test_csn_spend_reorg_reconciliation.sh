@@ -351,8 +351,11 @@ mine_blocks_to_address() {
         echo "generatetoaddress RPC failed or timed out (${total} blocks)" >&2
         return 1
     fi
-    if ! jq -e '.error == null and .result != null' <<<"${result}" >/dev/null 2>&1; then
-        echo "generatetoaddress returned no successful result (${total} blocks)" >&2
+    if ! jq -e --argjson expected "${total}" \
+        '.error == null and (.result.blocks | type == "array") and
+         ((.result.blocks | length) == $expected)' \
+        <<<"${result}" >/dev/null 2>&1; then
+        echo "generatetoaddress returned an incomplete batch (${total} blocks requested)" >&2
         return 1
     fi
     return 0

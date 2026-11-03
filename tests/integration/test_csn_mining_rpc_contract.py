@@ -71,6 +71,15 @@ def main() -> None:
             'fi\n'
         )
         run(source, env)
+        source = (
+            'rpc_call() { printf \'{"error":null,"result":{"blocks":["one"]}}\\n\'; }\n'
+            'rpc_has_error() { return 1; }\n'
+            + mine + '\n'
+            'if mine_blocks_to_address 12345 "$RPC_DATADIR" 120 address; then\n'
+            '  echo "mining helper accepted a short success batch" >&2; exit 1\n'
+            'fi\n'
+        )
+        run(source, env)
     print("PASS: mining RPCs have bounded time and curl failure cannot pass")
 
 
