@@ -108,6 +108,32 @@ require_cmd() {
     command -v "$1" >/dev/null 2>&1 || skip "$1 is required"
 }
 
+# getconnectioncount includes virtual relay peers, so it cannot establish that
+# the target has reconnected to the relay's direct TCP endpoint.
+direct_relay_peer_count() {
+    local endpoint="$1"
+    jq -r --arg endpoint "${endpoint}" \
+        '[.result[]? | select((.addr // "") == $endpoint and .inbound == false)] | length'
+}
+
+# Exercise the peer filter without root, namespaces, or a running daemon.
+# A virtual circuit must never satisfy the direct reconnect assertion.
+if [[ "${DINERO_NETNS_PEER_FILTER_SELFTEST:-0}" == "1" ]]; then
+    require_cmd jq
+    peer_fixture='{"result":[{"addr":"relay:in:10.88.0.10:38702:1234","inbound":true},{"addr":"10.88.0.10:38702","inbound":true}]}'
+    [[ "$(direct_relay_peer_count "10.88.0.10:38702" <<<"${peer_fixture}")" == "0" ]] || {
+        printf '[FAIL] virtual or inbound peer counted as direct outbound relay\n' >&2
+        exit 1
+    }
+    peer_fixture='{"result":[{"addr":"relay:in:10.88.0.10:38702:1234","inbound":true},{"addr":"10.88.0.10:38702","inbound":false}]}'
+    [[ "$(direct_relay_peer_count "10.88.0.10:38702" <<<"${peer_fixture}")" == "1" ]] || {
+        printf '[FAIL] direct outbound relay peer was not counted\n' >&2
+        exit 1
+    }
+    printf '[PASS] direct relay peer filter excludes virtual and inbound peers\n'
+    exit 0
+fi
+
 if [[ "$(uname -s)" != "Linux" ]]; then
     skip "Linux network namespaces are required"
 fi
@@ -191,6 +217,53 @@ wait_connection_count() {
         sleep 1
     done
     fail "${label}: expected at least ${min_count} connection(s)"
+}
+
+# An onetry dial is deliberately not persistent. Under WAN shaping, the first
+# restored TCP connection can drop again, so retry for less than the 90-second
+# directory grace period. Require a new registration for this target, an
+# actual direct outbound peer, and a non-grace directory entry together.
+wait_target_relay_recovery() {
+    local endpoint="${RELAY_IP}:${RELAY_P2P}"
+    local target_id="$1"
+    local before_count="$2"
+    local attempt remaining dial_json peer_json registry_json direct_count registered_count
+    local stable=0
+    for attempt in 1 2 3 4; do
+        dial_json="$(rpc_call "${NS_TARGET}" "${TARGET_RPC}" "${DATA_TARGET}" \
+            "addnode" "[\"${endpoint}\",\"onetry\"]" 2>/dev/null)" ||
+            fail "target addnode RPC failed on reconnect attempt ${attempt}"
+        if ! jq -e '.error == null and (.result.success | type) == "boolean"' \
+            <<<"${dial_json}" >/dev/null 2>&1; then
+            fail "target addnode RPC returned an invalid result: ${dial_json}"
+        fi
+        info "target direct relay redial ${attempt}: addnode success=$(jq -r '.result.success' <<<"${dial_json}")"
+        for ((remaining = 10; remaining > 0; remaining--)); do
+            peer_json="$(rpc_call "${NS_TARGET}" "${TARGET_RPC}" "${DATA_TARGET}" \
+                "getpeerinfo" '[]' 2>/dev/null || true)"
+            direct_count="$(direct_relay_peer_count "${endpoint}" <<<"${peer_json}" 2>/dev/null || printf '0')"
+            registry_json="$(rpc_call "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" \
+                "getnetworkinfo" '[]' 2>/dev/null || true)"
+            registered_count="$(grep -Fc "[P2P] relayreg: registered ${target_id} from " \
+                "${LOG_RELAY}" 2>/dev/null || true)"
+            if [[ "${direct_count}" =~ ^[0-9]+$ ]] && (( direct_count >= 1 )) &&
+                [[ "${registered_count}" =~ ^[0-9]+$ ]] && (( registered_count > before_count )) &&
+                jq -e '(.result.relay.directory.entries // 0) >= 1 and
+                    (.result.relay.directory.grace_pending // 0) == 0' \
+                    <<<"${registry_json}" >/dev/null 2>&1; then
+                stable=$((stable + 1))
+                if (( stable >= 2 )); then
+                    pass "target reconnected outbound directly to relay"
+                    pass "relay restored target registration after reconnect (grace cleared)"
+                    return 0
+                fi
+            else
+                stable=0
+            fi
+            sleep 1
+        done
+    done
+    fail "target relay did not recover after bounded redials (direct=${direct_count:-unknown}, target registrations=${registered_count:-unknown}, baseline=${before_count})"
 }
 
 wait_relay_peerinfo() {
@@ -1164,6 +1237,9 @@ wait_log "${LOG_TARGET}" "[P2P] relay-register: sent to ${RELAY_IP}:${RELAY_P2P}
     "target sent RELAY_REGISTER to configured relay"
 wait_log "${LOG_RELAY}" "[P2P] relayreg: registered" \
     "relay accepted target registration"
+TARGET_NODE_ID="$(rpc_call "${NS_TARGET}" "${TARGET_RPC}" "${DATA_TARGET}" \
+    "getnetworkinfo" '[]' | jq -r '.result.node_id_hex // ""')"
+[[ "${TARGET_NODE_ID}" =~ ^[0-9a-f]{40}$ ]] || fail "target has no node identity for registration recovery check"
 wait_networkinfo_jq "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" \
     '(.result.relay.directory.entries // 0) >= 1' \
     "relay getnetworkinfo exposes registered relay directory entry"
@@ -1269,6 +1345,14 @@ wait_log "${LOG_RELAY}" "[P2P] relay-hints: sent registry catch-up" \
 # When a registered target disconnects from the fleet relay, the relay
 # must hide the target from lookups/catch-up immediately but retain it
 # behind a short grace timer so a brief reconnect can restore the entry.
+# Hold outbound target-to-relay TCP in this run's NAT namespace until grace
+# is observed; otherwise the automatic relay dial can win the race and make
+# this assertion depend on scheduler timing rather than directory behavior.
+target_registration_count_before="$(grep -Fc \
+    "[P2P] relayreg: registered ${TARGET_NODE_ID} from " "${LOG_RELAY}" || true)"
+ip netns exec "${NS_NAT_TARGET}" iptables -I FORWARD 1 \
+    -s "${TARGET_IP}" -d "${RELAY_IP}" -p tcp --dport "${RELAY_P2P}" -j REJECT ||
+    fail "could not hold target-to-relay TCP during grace check"
 rpc_call "${NS_TARGET}" "${TARGET_RPC}" "${DATA_TARGET}" \
     "disconnectnode" "[\"${RELAY_IP}:${RELAY_P2P}\"]" >/dev/null 2>&1 || true
 wait_peer_gone "${NS_TARGET}" "${TARGET_RPC}" "${DATA_TARGET}" \
@@ -1276,12 +1360,9 @@ wait_peer_gone "${NS_TARGET}" "${TARGET_RPC}" "${DATA_TARGET}" \
 wait_networkinfo_jq "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" \
     '(.result.relay.directory.grace_pending // 0) >= 1' \
     "relay marks disconnected registration grace-pending"
-rpc_call "${NS_TARGET}" "${TARGET_RPC}" "${DATA_TARGET}" \
-    "addnode" "[\"${RELAY_IP}:${RELAY_P2P}\",\"onetry\"]" >/dev/null
-wait_connection_count "${NS_TARGET}" "${TARGET_RPC}" "${DATA_TARGET}" 1 \
-    "target reconnected outbound to relay"
-wait_networkinfo_jq "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" \
-    '(.result.relay.directory.entries // 0) >= 1 and (.result.relay.directory.grace_pending // 0) == 0' \
-    "relay restores registration after target reconnect"
+ip netns exec "${NS_NAT_TARGET}" iptables -D FORWARD \
+    -s "${TARGET_IP}" -d "${RELAY_IP}" -p tcp --dport "${RELAY_P2P}" -j REJECT ||
+    fail "could not restore target-to-relay TCP after grace check"
+wait_target_relay_recovery "${TARGET_NODE_ID}" "${target_registration_count_before}"
 
 echo "RELAY_NAT_NETNS_DIAL_THROUGH=PASS"
