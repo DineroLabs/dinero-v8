@@ -506,9 +506,11 @@ if(DINERO_ORCHARD_BUILD_TESTS)
       ${ORCHARD_HOST_ROOT}/tests/integration/test_orchard_daemon_wallet_cycle.py
       $<TARGET_FILE:test_orchard_wallet_cycle_daemon>
       $<TARGET_FILE:migrate_shielded_datadir>)
+    # This full wallet lifecycle performs repeated daemon restarts and reindexes;
+    # a normal-priority Linux run took 1159s, beyond the former 900s limit.
     set_tests_properties(OrchardDaemonWalletCycle PROPERTIES
       LABELS "integration;e2e-daemon;orchard;wallet;restart;reorg;mandatory"
-      TIMEOUT 900 RUN_SERIAL TRUE ENVIRONMENT "RAYON_NUM_THREADS=2")
+      TIMEOUT 1800 RUN_SERIAL TRUE ENVIRONMENT "RAYON_NUM_THREADS=2")
     if(NOT TARGET test_orchard_coupled_cycle_daemon)
       message(FATAL_ERROR "OrchardCoupledWalletCycle requires its coupled release daemon")
     endif()
