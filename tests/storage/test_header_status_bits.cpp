@@ -40,7 +40,9 @@
 #include "consensus/block_index.h"
 #include "consensus/block_lifecycle.h"
 #include "consensus/header_chain.h"
+#ifdef DINERO_TEST_ORCHARD_SNAPSHOT_STORE
 #include "daemon/orchard_snapshot_store.h"
+#endif
 #include "daemon/services/chainstate_service.h"
 #include <rocksdb/db.h>
 #include <atomic>
@@ -63,11 +65,13 @@ struct HeaderMetadataStrictScanTestPeer {
         if (!status.ok()) std::abort();
     }
 };
+#ifdef DINERO_TEST_ORCHARD_SNAPSHOT_STORE
 struct OrchardSnapshotStoreTestAccess {
     static void Seed(const ChainDB& db, consensus::HeaderChainSelector& headers) {
         OrchardSnapshotStore::SeedRetainedHeaders(db, headers);
     }
 };
+#endif
 struct ShieldedStateStartupTestAccess {
     static void Publish(ChainstateService& service, CBlockIndex* tip, bool rollback) {
         service.PublishActiveTip(tip, rollback
@@ -804,6 +808,7 @@ void test14_ReconsiderFindsPersistedHeaderOnlyDescendants() {
     pass("reconsider clears metadata-only descendants without touching siblings");
 }
 
+#ifdef DINERO_TEST_ORCHARD_SNAPSHOT_STORE
 void test15_SnapshotSeedSkipsOnlyPrunedFailedHeaderOnlyRows() {
     cleanTestDatadir();
     ChainDB db;
@@ -842,6 +847,7 @@ void test15_SnapshotSeedSkipsOnlyPrunedFailedHeaderOnlyRows() {
     if (!refused_body) fail("snapshot startup skipped missing body-backed header");
     pass("snapshot seed skips pruned failed header-only rows, not healthy or body-backed rows");
 }
+#endif
 
 void test16_PublishedAncestrySurvivesConcurrentRollback() {
     const auto genesis_hash = uint256::FromHexUnsafe(std::string(64, 'b'));
@@ -948,10 +954,16 @@ int main(int argc, char** argv) {
     test12_HeaderFirstRowAcceptsMetadata();
     test13_StrictFailedHeaderScanRefusesCorruption();
     test14_ReconsiderFindsPersistedHeaderOnlyDescendants();
+#ifdef DINERO_TEST_ORCHARD_SNAPSHOT_STORE
     test15_SnapshotSeedSkipsOnlyPrunedFailedHeaderOnlyRows();
+#endif
     test16_PublishedAncestrySurvivesConcurrentRollback();
 
+#ifdef DINERO_TEST_ORCHARD_SNAPSHOT_STORE
     std::cout << "\n✅ Header status bits: 16/16 properties hold" << std::endl;
+#else
+    std::cout << "\n✅ Header status bits: 15/15 properties hold (Orchard snapshot store disabled)" << std::endl;
+#endif
     cleanTestDatadir();
     return 0;
 }

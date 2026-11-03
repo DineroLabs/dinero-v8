@@ -17357,6 +17357,12 @@ function(dinero_attach_real_mempool_fixture_runtime)
     if(_fixture MATCHES "^(test_orchard_(account|index)_delivery|test_runtime_(prefix_storage|replay_branch_views))$")
       target_sources(${_fixture} PRIVATE src/daemon/config.cpp)
     endif()
+    if(_fixture STREQUAL "test_header_status_bits" AND TARGET dinero_orchard_snapshot_store)
+      # Test 15 calls the Orchard snapshot-store owner directly. This target is
+      # absent in the ordinary Core Heavy build, so compile that case only
+      # when the real backend archive is present in the rescan group below.
+      target_compile_definitions(${_fixture} PRIVATE DINERO_TEST_ORCHARD_SNAPSHOT_STORE=1)
+    endif()
     get_target_property(_sources ${_fixture} SOURCES)
     list(FILTER _sources EXCLUDE REGEX "(^|/)tests/stubs/(mempool_test_stubs|daemon_test_stubs)\\.cpp$")
     set_property(TARGET ${_fixture} PROPERTY SOURCES "${_sources}")
