@@ -363,12 +363,27 @@ jobs:
           PYTEST
       - name: Build and execute real mempool runtime test consumers
         run: |
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          import re
+          source = Path('tests/CMakeLists.txt').read_text()
+          lists = re.findall(r'(?ms)^\s*set\(_real_mempool_fixture_targets\s*\n(.*?)^\s*\)', source)
+          if len(lists) != 1:
+              raise SystemExit('Real mempool fixture declaration missing or duplicated')
+          expected = re.findall(r'\btest_[A-Za-z0-9_]+\b', lists[0])
+          if len(expected) < 31 or len(expected) != len(set(expected)):
+              raise SystemExit('Real mempool fixture declaration is incomplete or duplicated')
+          cache = Path('build-orchard-root/CMakeCache.txt').read_text()
+          qt = re.findall(r'^DINERO_TEST_ORCHARD_QT_CONTRACT:BOOL=(ON|OFF)$', cache, re.M)
+          if len(qt) != 1:
+              raise SystemExit('Orchard Qt contract option missing or duplicated')
+          if qt[0] == 'OFF':
+              expected.remove('test_rpc_orchard_error_envelope')
+          actual = Path('build-orchard-root/real-mempool-fixture-targets.txt').read_text().splitlines()
+          if sorted(actual) != sorted(expected):
+              raise SystemExit(f'Real mempool fixture targets drifted: missing={sorted(set(expected)-set(actual))}, extra={sorted(set(actual)-set(expected))}')
+          PYTEST
           mapfile -t targets < build-orchard-root/real-mempool-fixture-targets.txt
-          if test "${#targets[@]}" -ne 31; then
-            printf 'Expected 31 real mempool fixture targets; found %s\n' "${#targets[@]}" >&2
-            printf '%s\n' "${targets[@]}" >&2
-            exit 1
-          fi
           cmake --build build-orchard-root --parallel 4 --target "${targets[@]}" -- -k 0
           ctest --test-dir build-orchard-root --show-only=json-v1 > orchard-real-mempool-all-inventory.json
           python3 - <<'PYTEST'
