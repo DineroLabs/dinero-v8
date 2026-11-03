@@ -255,10 +255,10 @@ jobs:
           cases=['NewInputProofCodecBounds','InputRequestOutpointUsesWireFieldOrder','NewInputRequestCapacityAndStop','CurrentSourceChangeCancelsBlockedInputFlight','BoundedRequestsAndStoppedOwner','CurrentFullSourceInputProofAndExactSessionDownload','ActualCreationMetadataAndMerkleComparison','ExactSessionAndBodyDataOnly']
           assert sorted(re.findall(r'\[       OK \] WalletFundingDownload\.(\w+)',log))==sorted(cases)
           PYINPUT
-      - name: Exercise phone migration, rollback cleanup and CSN reconnect
+      - name: Exercise phone migration, rollback cleanup, CSN reconnect and pruned header reconsider
         run: |
           cmake --build build-orchard-root --target test_orchard_wallet_cycle_daemon migrate_shielded_datadir --parallel 2
-          for t in PhoneStorageRollbackLifecycle PhoneRollbackWarning PhoneCsnCoinbaseReconnect; do
+          for t in PhoneStorageRollbackLifecycle PhoneRollbackWarning PhoneCsnCoinbaseReconnect PrunedFailedChildReconsider; do
             ctest --test-dir build-orchard-root --verbose --no-tests=error -R "^${t}$" --output-log "orchard-${t}-execution.log"
           done
       - name: Require and execute Orchard release profile and peer capabilities

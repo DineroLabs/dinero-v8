@@ -228,6 +228,22 @@ jobs:
             .github/workflows/core-heavy.yml \
             --baseline scripts/ci/unexecuted_tests_baseline.txt
 
+      # These tests carry the integration label and are excluded from the
+      # broad ctest sweep. Run each by exact name in this backend-off build;
+      # the separate Orchard workflow uses a different configuration and
+      # cannot qualify these registrations. Keep daemon-spawning tests serial.
+      # PrunedFailedChildReconsider needs the real Orchard backend and runs
+      # in orchard-backend.yml instead.
+      - name: Run CSN sidecar and body replacement regressions
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          failed=0
+          for t in CsnMarkerlessSidecarRestart CsnMarkerlessSidecarSameProcess CsnMiningRpcHarness CsnWitnessBodyReplacement FullWitnessBodyReplacement; do
+            echo "=== $t ==="
+            ctest --test-dir build-tests --output-on-failure --no-tests=error -j1 -R "^${t}$" || failed=1
+          done
+          exit "$failed"
+
       # This storage test is registered even with the optional Orchard backend
       # disabled. Its integration-staging label excludes it from the broad
       # sweep; the separate Orchard workflow cannot qualify this build's lane.
