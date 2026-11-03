@@ -1130,6 +1130,16 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_acceptance_parity.sh)
     TIMEOUT 10
   )
 
+  add_test(
+    NAME AcceptanceParityHarnessRpcEnvelope
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/test_acceptance_parity_rpc_envelope.py
+            ${CMAKE_SOURCE_DIR}/tests/test_acceptance_parity.sh
+  )
+  set_tests_properties(AcceptanceParityHarnessRpcEnvelope PROPERTIES
+    LABELS "consensus;parity;regression"
+    TIMEOUT 10
+  )
+
   add_custom_target(test_acceptance_parity
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -R AcceptanceParity
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}

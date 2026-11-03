@@ -337,10 +337,10 @@ trap cleanup EXIT
 submit_with_height_eval() {
     local datadir="$1" rpcport="$2" hex="$3"
 
-    local before="0"
-    before="$(rpc_scalar "${datadir}" "${rpcport}" "getblockcount" "[]" '.' 2>/dev/null || echo "RPC_DOWN")"
-    if [[ "${before}" == "RPC_DOWN" ]]; then
-        echo "RPCERR|0|0|rpc_down"
+    local before
+    if ! before="$(rpc_scalar "${datadir}" "${rpcport}" "getblockcount" "[]" '.' 2>/dev/null)" ||
+       [[ ! "${before}" =~ ^[0-9]+$ ]]; then
+        echo "RPCERR|RPC_DOWN|RPC_DOWN|rpc_before_height_unavailable"
         return 0
     fi
 
@@ -350,8 +350,31 @@ submit_with_height_eval() {
         return 0
     fi
 
-    local after="${before}"
-    after="$(rpc_scalar "${datadir}" "${rpcport}" "getblockcount" "[]" '.' 2>/dev/null || echo "${before}")"
+    local after
+    if ! after="$(rpc_scalar "${datadir}" "${rpcport}" "getblockcount" "[]" '.' 2>/dev/null)" ||
+       [[ ! "${after}" =~ ^[0-9]+$ ]]; then
+        after="RPC_DOWN"
+    fi
+
+    # An empty or malformed HTTP body is an operational error, even if curl
+    # returned success. Keep its exact bytes for fixture diagnosis.
+    if ! jq -e -s 'length == 1 and (.[0] | type == "object" and
+        (has("result") or (has("error") and .error != null)))' \
+        <<<"${resp}" >/dev/null 2>&1; then
+        local evidence
+        evidence="$(mktemp "${WORKDIR}/malformed-submit.XXXXXX")"
+        printf '%s' "${resp}" > "${evidence}"
+        echo "RPCERR|${before}|${after}|rpc_submit_malformed_response evidence=${evidence}"
+        return 0
+    fi
+
+    if [[ "${after}" == "RPC_DOWN" ]]; then
+        local evidence
+        evidence="$(mktemp "${WORKDIR}/unverified-submit.XXXXXX")"
+        printf '%s' "${resp}" > "${evidence}"
+        echo "RPCERR|${before}|RPC_DOWN|rpc_after_height_unavailable evidence=${evidence}"
+        return 0
+    fi
 
     if echo "${resp}" | jq -e '.error != null' >/dev/null 2>&1; then
         local emsg
