@@ -1111,6 +1111,15 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_acceptance_parity.sh)
     TIMEOUT 1800
   )
 
+  add_test(
+    NAME AcceptanceParityHarnessClassification
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/test_acceptance_parity.sh --selftest-classification
+  )
+  set_tests_properties(AcceptanceParityHarnessClassification PROPERTIES
+    LABELS "consensus;parity;regression"
+    TIMEOUT 10
+  )
+
   add_custom_target(test_acceptance_parity
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -R AcceptanceParity
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}

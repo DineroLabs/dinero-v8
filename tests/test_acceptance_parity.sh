@@ -32,11 +32,71 @@ HARNESS_SHA="$(git -C "${ROOT_DIR}" rev-parse --short=12 HEAD 2>/dev/null || ech
 CURRENT_SHA="${CURRENT_SHA:-unknown}"
 
 REQUIRE_BASELINE=0
+SELFTEST_CLASSIFICATION=0
+
+# Compare consensus acceptance rather than the RPC transport used to report a
+# deterministic rejection. Keep this list narrow: an internal, timeout, or
+# transport error must never count as a block rejection.
+classify_fixture_outcome() {
+    local status="$1" before="$2" after="$3" reason="$4"
+    case "${status}" in
+        ACCEPT)
+            if [[ "${before}" =~ ^[0-9]+$ && "${after}" =~ ^[0-9]+$ &&
+                  "${after}" -gt "${before}" ]]; then
+                echo ACCEPT
+            else
+                echo ERROR
+            fi
+            ;;
+        REJECT)
+            if [[ "${before}" =~ ^[0-9]+$ && "${after}" == "${before}" ]]; then
+                echo REJECT
+            else
+                echo ERROR
+            fi
+            ;;
+        RPCERR)
+            if [[ "${before}" =~ ^[0-9]+$ && "${after}" == "${before}" ]]; then
+                case "${reason}" in
+                    'BIP34 height mismatch:'*|'bad-witness-commitment:'*|\
+                    'missing-witness-commitment:'*|'bad-witness-commitment-preactivation'*)
+                        echo REJECT
+                        return 0
+                        ;;
+                esac
+            fi
+            echo ERROR
+            ;;
+        *) echo ERROR ;;
+    esac
+}
+
+# This first factoring preserves the existing valid-replay gate. The complete
+# corpus condition is tightened independently in the following change.
+valid_replay_complete() {
+    [[ "${VALID_MISMATCHES}" -eq 0 && "${BASE_FINAL_HEIGHT}" == "${CUR_FINAL_HEIGHT}" ]]
+}
+
+classification_selftest() {
+    [[ "$(classify_fixture_outcome ACCEPT 129 130 '{}')" == ACCEPT ]]
+    [[ "$(classify_fixture_outcome ACCEPT 129 129 '{}')" == ERROR ]]
+    [[ "$(classify_fixture_outcome REJECT 129 129 '{}')" == REJECT ]]
+    [[ "$(classify_fixture_outcome REJECT 129 130 '{}')" == ERROR ]]
+    [[ "$(classify_fixture_outcome RPCERR 129 129 'bad-witness-commitment: mismatch')" == REJECT ]]
+    [[ "$(classify_fixture_outcome RPCERR 0 0 'BIP34 height mismatch: script=0, expected=1')" == REJECT ]]
+    [[ "$(classify_fixture_outcome RPCERR 129 129 rpc_submit_failed)" == ERROR ]]
+    [[ "$(classify_fixture_outcome RPCERR 129 129 'Wallet recovery seed unavailable')" == ERROR ]]
+    [[ "$(classify_fixture_outcome RPCERR 129 130 'bad-witness-commitment: mismatch')" == ERROR ]]
+    echo 'acceptance fixture classification selftest passed'
+}
 
 for arg in "$@"; do
     case "$arg" in
         --require-baseline)
             REQUIRE_BASELINE=1
+            ;;
+        --selftest-classification)
+            SELFTEST_CLASSIFICATION=1
             ;;
         --help|-h)
             cat <<USAGE
@@ -61,6 +121,11 @@ USAGE
             ;;
     esac
 done
+
+if [[ "${SELFTEST_CLASSIFICATION}" == "1" ]]; then
+    classification_selftest
+    exit 0
+fi
 
 if [[ -z "${BASELINE_BIN}" ]]; then
     if [[ "${REQUIRE_BASELINE}" == "1" ]]; then
@@ -778,7 +843,15 @@ run_fixture_case() {
 
     echo -e "${name}\t${base_index}\t${b_status}\t${b_before}\t${b_after}\t${b_reason}\t${c_status}\t${c_before}\t${c_after}\t${c_reason}" >> "${FIXTURE_RESULTS_FILE}"
 
-    if [[ "${b_status}" != "${c_status}" ]]; then
+    local b_outcome c_outcome
+    b_outcome="$(classify_fixture_outcome "${b_status}" "${b_before}" "${b_after}" "${b_reason}")"
+    c_outcome="$(classify_fixture_outcome "${c_status}" "${c_before}" "${c_after}" "${c_reason}")"
+    if [[ "${b_outcome}" == ERROR || "${c_outcome}" == ERROR ]]; then
+        FIXTURE_ERRORS=$((FIXTURE_ERRORS + 1))
+        if [[ -z "${FIRST_FIXTURE_ERROR}" ]]; then
+            FIRST_FIXTURE_ERROR="fixture=${name} baseline=${b_status}:${b_reason} current=${c_status}:${c_reason}"
+        fi
+    elif [[ "${b_outcome}" != "${c_outcome}" ]]; then
         FIXTURE_MISMATCHES=$((FIXTURE_MISMATCHES + 1))
         if [[ -z "${FIRST_FIXTURE_DIVERGENCE}" ]]; then
             FIRST_FIXTURE_DIVERGENCE="fixture=${name} baseline=${b_status}:${b_reason} current=${c_status}:${c_reason}"
@@ -867,6 +940,8 @@ echo -e "fixture\tbase_index\tbase_status\tbase_before\tbase_after\tbase_reason\
 
 FIXTURE_MISMATCHES=0
 FIRST_FIXTURE_DIVERGENCE=""
+FIXTURE_ERRORS=0
+FIRST_FIXTURE_ERROR=""
 INVALID_ACCEPTED_BOTH=0
 
 log "Running invalid fixture parity checks"
@@ -878,15 +953,15 @@ run_fixture_case "taproot_witness_fail" "$(cat "${TAPROOT_FAIL_FILE}")" "${MULTI
 FAILURES=0
 CHAINWORK_MISMATCH_ON_EQUAL_HASH=0
 
-if [[ "${VALID_MISMATCHES}" -gt 0 ]]; then
-    FAILURES=$((FAILURES + 1))
-fi
-
 if [[ "${FIXTURE_MISMATCHES}" -gt 0 ]]; then
     FAILURES=$((FAILURES + 1))
 fi
 
-if [[ "${BASE_FINAL_HEIGHT}" != "${CUR_FINAL_HEIGHT}" ]]; then
+if [[ "${FIXTURE_ERRORS}" -gt 0 ]]; then
+    FAILURES=$((FAILURES + 1))
+fi
+
+if ! valid_replay_complete; then
     FAILURES=$((FAILURES + 1))
 fi
 
@@ -944,6 +1019,8 @@ VALID_MISMATCHES=${VALID_MISMATCHES}
 FIRST_VALID_DIVERGENCE=${FIRST_VALID_DIVERGENCE}
 FIXTURE_MISMATCHES=${FIXTURE_MISMATCHES}
 FIRST_FIXTURE_DIVERGENCE=${FIRST_FIXTURE_DIVERGENCE}
+FIXTURE_ERRORS=${FIXTURE_ERRORS}
+FIRST_FIXTURE_ERROR=${FIRST_FIXTURE_ERROR:-none}
 INVALID_FIXTURES_ACCEPTED_BY_BOTH=${INVALID_ACCEPTED_BOTH}
 RESULTS_FILE=${RESULTS_FILE}
 FIXTURE_RESULTS_FILE=${FIXTURE_RESULTS_FILE}
