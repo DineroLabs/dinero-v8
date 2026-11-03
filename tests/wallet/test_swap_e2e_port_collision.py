@@ -25,6 +25,13 @@ def probe(script_path: pathlib.Path, seed: int) -> int:
          if line.startswith("source ") and "port_alloc.sh" in line),
         "",
     )
+    # Command substitution starts a Bash subshell that reseeds RANDOM, so
+    # exercise the same allocator directly to make a seeded collision stable.
+    assignment_probe = (
+        "alloc_port_base 24"
+        if assignment.group(0).startswith("DPORT=$(alloc_port_base 24)")
+        else f"{assignment.group(0)}\nprintf '%s\\n' \"$DPORT\""
+    )
     with tempfile.TemporaryDirectory() as temp:
         root = pathlib.Path(temp)
         wallet_dir = root / "tests" / "wallet"
@@ -37,7 +44,7 @@ def probe(script_path: pathlib.Path, seed: int) -> int:
         fixture = wallet_dir / "probe.sh"
         fixture.write_text(
             f"#!/usr/bin/env bash\nset -euo pipefail\nRANDOM={seed}\n"
-            f"{source_helper}\n{assignment.group(0)}\nprintf '%s\\n' \"$DPORT\"\n"
+            f"{source_helper}\n{assignment_probe}\n"
         )
         return int(subprocess.run(
             ["bash", str(fixture)], check=True, capture_output=True, text=True
@@ -47,21 +54,27 @@ def probe(script_path: pathlib.Path, seed: int) -> int:
 def main() -> None:
     script_path = pathlib.Path(sys.argv[1]).resolve()
     for seed in range(1, 101):
-        old_base = int(bash(f"RANDOM={seed}; echo $((20000 + RANDOM % 20000))"))
+        # Same seed must choose the same free topology when the environment is
+        # unchanged. Then occupy that exact choice and require a different one.
+        # Merely changing the random range without checking listeners fails.
+        first = probe(script_path, seed)
+        repeat = probe(script_path, seed)
+        if repeat != first:
+            raise AssertionError(f"seed {seed} picked different free topologies: {first}, {repeat}")
         listener = socket.socket()
         try:
-            listener.bind(("127.0.0.1", old_base))
+            listener.bind(("127.0.0.1", first))
             listener.listen(1)
         except OSError:
             listener.close()
             continue
         try:
             selected = probe(script_path, seed)
-            if selected <= old_base <= selected + 23:
+            if selected <= first <= selected + 23:
                 raise AssertionError(
-                    f"swap topology {selected}..{selected + 23} includes occupied port {old_base}"
+                    f"swap topology {selected}..{selected + 23} includes occupied port {first}"
                 )
-            print(f"PASS: swap topology {selected}..{selected + 23} skipped occupied {old_base}")
+            print(f"PASS: swap topology {selected}..{selected + 23} skipped occupied {first}")
             return
         finally:
             listener.close()
