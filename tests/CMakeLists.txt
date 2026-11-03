@@ -1108,6 +1108,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_acceptance_parity.sh)
     LABELS "consensus;gate;parity;release"
     # Alternate build directories must not compare a stale source-tree binary.
     ENVIRONMENT "CURRENT_DINEROD=$<TARGET_FILE:dinerod>"
+    RUN_SERIAL TRUE
     TIMEOUT 1800
   )
 
@@ -1743,6 +1744,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_release_suite.sh)
 
   set_tests_properties(ReleaseSuite PROPERTIES
     LABELS "release;gate;meta"
+    # This meta-gate launches the fixed-port acceptance parity topology.
+    RUN_SERIAL TRUE
     TIMEOUT 14400
     ENVIRONMENT "BUILD_DIR=${CMAKE_BINARY_DIR}"
   )
