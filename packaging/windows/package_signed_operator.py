@@ -19,8 +19,8 @@ def ordinary(path):
 
 
 def assemble(stage, license_file, output, version):
-    if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
-        raise ValueError('expected numeric release version')
+    if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?', version):
+        raise ValueError('expected safe release version')
     if stage.is_symlink() or not stage.is_dir():
         raise ValueError('signed stage must be an ordinary directory')
     entries = {'bin/' + name: ordinary(stage / name) for name in TOOLS}

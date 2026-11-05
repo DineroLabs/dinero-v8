@@ -44,6 +44,17 @@ class OperatorRuntimeTest(unittest.TestCase):
                 assemble(root, root / 'LICENSE', root / 'output.zip', '8.2.0')
             self.assertFalse((root / 'output.zip').exists())
 
+    def test_development_versions_remain_supported(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            for name in TOOLS + ('nvrtc64_120_0.dll', 'nvrtc-builtins64_122.dll', 'LICENSE'):
+                (root / name).write_bytes(b'fixture')
+            assemble(root, root / 'LICENSE', root / 'development.zip', '0.0.0-dev')
+            self.assertTrue((root / 'development.zip').is_file())
+            with self.assertRaisesRegex(ValueError, 'safe release version'):
+                assemble(root, root / 'LICENSE', root / 'unsafe.zip', '../outside')
+            self.assertFalse((root / 'unsafe.zip').exists())
+
 
 if __name__ == '__main__':
     unittest.main()
