@@ -13491,6 +13491,20 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
 
             return; // Abort reorg on failure
         }
+        if (block_index == disconnect_path.front() && Params().network_id == "regtest") {
+            if (const char* pause_file = std::getenv("DINERO_TEST_REORG_AFTER_DISCONNECT_PAUSE_FILE");
+                pause_file && *pause_file) {
+                const std::string path(pause_file);
+                std::ofstream entered(path + ".entered");
+                if (entered << block_index->height << '\n') {
+                    entered.close();
+                    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(480);
+                    while (std::chrono::steady_clock::now() < deadline &&
+                           !std::filesystem::exists(path + ".release"))
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+            }
+        }
         if (runtime_reorg) runtime_reorg->Disconnected();
     }
 

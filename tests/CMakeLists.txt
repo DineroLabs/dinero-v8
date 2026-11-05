@@ -2,6 +2,18 @@
 # instead of added as a subdirectory. The legacy test definitions below use
 # root-relative source paths and root-scope CTest properties.
 
+foreach(_wallet_reorg_case IN ITEMS Delivery PendingRestart)
+  set(_wallet_reorg_args)
+  if(_wallet_reorg_case STREQUAL "PendingRestart")
+    list(APPEND _wallet_reorg_args --crash-pending-connect)
+  endif()
+  add_test(NAME WalletReorg${_wallet_reorg_case}
+    COMMAND ${CMAKE_COMMAND} -E env DINEROD=$<TARGET_FILE:dinerod>
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_wallet_reorg_delivery.py ${_wallet_reorg_args})
+  set_tests_properties(WalletReorg${_wallet_reorg_case} PROPERTIES
+    LABELS "integration;e2e-daemon;wallet;reorg;mandatory" TIMEOUT 240 RUN_SERIAL TRUE)
+endforeach()
+
 # Release builds define NDEBUG globally, but a test build must never compile
 # its assertions out. Keep this after the Release flags so -U wins over
 # CMake's earlier -DNDEBUG. A dedicated compile/runtime tripwire below proves
