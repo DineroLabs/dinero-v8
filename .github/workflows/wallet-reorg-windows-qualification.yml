@@ -1,0 +1,209 @@
+name: Windows wallet reorg qualification
+
+# CI-only branch. Checkout pins the reviewed product source; no signing,
+# release, merge, deployment, or product artifact upload occurs here.
+on:
+  push:
+    branches: [ci/v820-wallet-reorg-windows]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wallet-reorg-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wallet-reorg-windows:
+    name: Windows MSVC wallet reorg — exact 249b5604d
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: 249b5604def52ff6e1eb42ba265d60f98e7600e6
+          fetch-depth: 4
+          submodules: recursive
+
+      - name: Verify exact qualification source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = '249b5604def52ff6e1eb42ba265d60f98e7600e6'
+          git diff --exit-code -- src include tests
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Check Orchard production and qualification mode boundaries
+        shell: powershell
+        run: |
+          python -B scripts/ci/test_orchard_msvc_bridge.py
+          if ($LASTEXITCODE -ne 0) { throw 'Orchard MSVC bridge contracts failed' }
+          .\scripts\ci\test_windows_ci_qualification.ps1
+
+      - name: Windows monitor header compile regression
+        shell: powershell
+        run: |
+          cl.exe /nologo /std:c++20 /EHsc /DNOMINMAX /DWIN32_LEAN_AND_MEAN /Zs /Iinclude /Isrc tests\consensus\test_monitor_macro_hygiene.cpp
+          if ($LASTEXITCODE -ne 0) { throw 'Windows monitor header regression failed' }
+
+      - name: Cache vendored OpenSSL
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/openssl-3.5.7
+          key: windows-msvc-openssl-3.5.7-${{ hashFiles('scripts/build-openssl-vendored.ps1') }}
+
+      - name: Build vendored OpenSSL 3.5.7
+        shell: powershell
+        run: |
+          $env:OPENSSL_VERSION = '3.5.7'
+          .\scripts\build-openssl-vendored.ps1
+
+      - name: Cache vendored curl
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/curl-8.21.0
+          key: windows-msvc-curl-8.21.0-${{ hashFiles('scripts/build-curl-vendored.ps1') }}
+
+      # Must run after the OpenSSL build (it links the vendored static OpenSSL)
+      # and before the installer build. cmake/VendoredCurl.cmake hard-fails the
+      # configure when third_party/curl-*/prebuilt/windows-x86_64-msvc is absent,
+      # so without this step CI dies at "Build Windows server release and
+      # installer" on a clean checkout, even though a developer machine that had
+      # already run this script by hand builds fine. (The cache above skips the
+      # ~5-10 min rebuild when the builder script is unchanged.)
+      - name: Build vendored static libcurl (OpenSSL 3.5.7)
+        shell: powershell
+        run: |
+          $env:OPENSSL_VERSION = '3.5.7'
+          .\scripts\build-curl-vendored.ps1
+
+      - name: Install NSIS
+        shell: powershell
+        run: choco install nsis --no-progress -y
+
+      # The GitHub runner keeps vcpkg at VCPKG_INSTALLATION_ROOT (C:\vcpkg)
+      # with no packages installed — unlike the owner's box, where
+      # build-server-installer.ps1's default $USERPROFILE\vcpkg layout holds
+      # curl. Without this, configure dies at find_package(CURL)
+      # (CMakeLists.txt:1113) before OpenSSL is ever exercised.
+      - name: Provision curl via runner vcpkg
+        shell: powershell
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install curl:x64-windows --no-print-usage
+
+      # The installer requires these static reachability libraries, just as the
+      # release workflow does. A clean PR runner has no preinstalled copies.
+      - name: Build depends (miniupnpc + libnatpmp, static, /MD)
+        shell: powershell
+        run: |
+          cmake -S depends -B depends\build-msvc -G Ninja `
+            -DCMAKE_TOOLCHAIN_FILE="$PWD\depends\toolchains\windows-msvc-x64.cmake" `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL `
+            -DDINERO_DEPENDS_HOST=windows-AMD64
+          if ($LASTEXITCODE -ne 0) { throw 'depends configure failed' }
+          cmake --build depends\build-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'depends build failed' }
+          $prefix = (Select-String -Path 'depends\current-prefix.env' `
+              -Pattern '^DINERO_DEPENDS_PREFIX=(.*)$').Matches[0].Groups[1].Value
+          "DINERO_DEPENDS_PREFIX=$prefix" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+
+      - name: Build Windows server release and installer
+        shell: powershell
+        run: |
+          # A pull-request runner cannot fetch the new default from v8.1.3:
+          # that release is created only after this PR merges. Exercise the
+          # identical native manifest/NSIS path with the already-published
+          # 73035 anchor here. The tag-triggered windows-release.yml lane uses
+          # the production 84131 default after its assets exist.
+          .\packaging\windows\build-server-installer.ps1 `
+            -Version '8.0.18-openssl357-ci' `
+            -BuildDir 'build-msvc-server' `
+            -VcpkgRoot "$env:VCPKG_INSTALLATION_ROOT" `
+            -VcpkgBin "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" `
+            -SnapshotAssetName 'dinero-assumeutxo-73035-v4.dat' `
+            -SnapshotFileName 'mainnet-snapshot.dat' `
+            -SnapshotReleaseTag 'v8.1.1'
+
+      - name: Assert the linked OpenSSL version
+        shell: powershell
+        run: |
+          .\scripts\ci\check_openssl_version.ps1 `
+            -BuildDir 'build-msvc-server' `
+            -ExpectedVersion '3.5.7'
+
+      - name: Verify compiled reachability stack
+        shell: powershell
+        run: |
+          python scripts/ci/check_reachability_stack.py --dinerod build-msvc-server/Release/dinerod.exe --cli build-msvc-server/Release/dinero-cli.exe
+          if ($LASTEXITCODE -ne 0) { throw 'reachability stack smoke failed' }
+
+      - name: Daemon startup, mining, and restart smoke
+        shell: powershell
+        run: |
+          .\scripts\native-msvc-regtest-smoke.ps1 `
+            -BuildDir 'build-msvc-server\Release' `
+            -TimeoutSeconds 90
+
+      - name: Run both wallet delivery regressions on the fixed source
+        shell: bash
+        timeout-minutes: 10
+        env:
+          DINEROD: ${{ github.workspace }}/build-msvc-server/Release/dinerod.exe
+        run: |
+          python - <<'PYTEST'
+          import os, pathlib, subprocess, sys
+          binary = os.environ['DINEROD']
+          version = subprocess.check_output([binary, '--version'], text=True)
+          print(version)
+          if '249b5604def52ff6e1eb42ba265d60f98e7600e6' not in version:
+              raise SystemExit('fixed Windows binary source mismatch')
+          for label, args in [('delivery', []), ('pending-restart', ['--crash-pending-connect'])]:
+              result = subprocess.run([sys.executable, 'tests/integration/test_wallet_reorg_delivery.py', *args],
+                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+              pathlib.Path(f'wallet-reorg-windows-{label}.log').write_bytes(result.stdout)
+              print(result.stdout.decode('utf-8', errors='replace'))
+              if result.returncode:
+                  raise SystemExit(result.returncode)
+          PYTEST
+
+      - name: Confirm the same regression fails without the product fix
+        shell: bash
+        timeout-minutes: 15
+        env:
+          DINEROD: ${{ github.workspace }}/build-msvc-server/Release/dinerod.exe
+        run: |
+          python - <<'PYTEST'
+          import pathlib, subprocess, sys
+          source = pathlib.Path('src/daemon/services/chainstate_service.cpp')
+          fixed = source.read_bytes()
+          control = subprocess.check_output(['git', 'show',
+              'b2ff46ce4:src/daemon/services/chainstate_service.cpp'])
+          try:
+              source.write_bytes(control)
+              subprocess.run(['cmake', '--build', 'build-msvc-server', '--config', 'Release',
+                  '--target', 'dinerod', '--parallel', '4'], check=True)
+              result = subprocess.run([sys.executable, 'tests/integration/test_wallet_reorg_delivery.py'],
+                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+              pathlib.Path('wallet-reorg-windows-control.log').write_bytes(result.stdout)
+              text = result.stdout.decode('utf-8', errors='replace')
+              print(text)
+              expected = 'orphan survives reorg in index/wallet/history: [1, 1, 1]'
+              if result.returncode == 0 or expected not in text:
+                  raise SystemExit('control did not reproduce the wallet ownership failure')
+          finally:
+              source.write_bytes(fixed)
+          subprocess.run(['git', 'diff', '--exit-code', '--', 'src', 'include', 'tests'], check=True)
+          PYTEST
+
+      - name: Upload regression logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wallet-reorg-windows-regression-logs
+          path: wallet-reorg-windows-*.log
+          if-no-files-found: warn
