@@ -107,6 +107,11 @@ jobs:
 
       - name: Require original QUIC session ThreadSanitizer gate
         run: |
+          # The original TSan step reused prerequisites from its earlier full
+          # build. This artifact-reuse lane must provision them independently.
+          OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+          cmake -S depends -B depends/build
+          cmake --build depends/build -j2
           cmake -S . -B build-quic-tsan -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_TESTING=ON \
             -DDINERO_BUILD_QT=OFF -DDINERO_ENABLE_QUIC=ON -DENABLE_GRPC=OFF \
