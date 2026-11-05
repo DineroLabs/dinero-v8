@@ -1,0 +1,74 @@
+name: Windows signed wallet package qualification
+
+# Test the admitted release artifact, without rebuilding, signing or publishing.
+on:
+  push:
+    branches: [ci/v820-wallet-reorg-packages]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  signed-package-wallet:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dinero-server-windows-x86_64-8.2.0
+          run-id: 42079360640
+          github-token: ${{ github.token }}
+          path: admitted-package
+      - name: Verify signed package identity and run funded recovery regressions
+        shell: powershell
+        run: |
+          @'
+          import hashlib,json,os,pathlib,subprocess,sys,zipfile
+          root=pathlib.Path('admitted-package')
+          archives=list(root.rglob('dinero-v8.2.0-windows-x86_64-msvc.zip'))
+          if len(archives)!=1:raise RuntimeError('operator archive absent or duplicated')
+          archive=archives[0]
+          expected='e1636e21727d1ddda68569a3d026344212d83995f3abaec12b5e3c8afb9c94f8'
+          if hashlib.sha256(archive.read_bytes()).hexdigest()!=expected:raise RuntimeError('admitted package digest differs')
+          out=pathlib.Path(os.environ['RUNNER_TEMP'])/'admitted-wallet-tools';out.mkdir()
+          with zipfile.ZipFile(archive) as z:
+              if z.testzip() is not None:raise RuntimeError('operator ZIP CRC failure')
+              for info in z.infolist():
+                  name=pathlib.PurePosixPath(info.filename.replace('\\','/'))
+                  if name.is_absolute() or '..' in name.parts:raise RuntimeError('unsafe ZIP entry')
+              z.extractall(out)
+          tools=sorted((out/'bin').glob('*.exe'))
+          if len(tools)!=9:raise RuntimeError('signed executable inventory differs')
+          for tool in tools:
+              quoted=str(tool).replace("'","''")
+              status=subprocess.check_output(['powershell','-NoProfile','-Command',
+                  "(Get-AuthenticodeSignature -LiteralPath '"+quoted+"').Status.ToString()"],text=True).strip()
+              if status!='Valid':raise RuntimeError('native Authenticode verification failed: '+tool.name+': '+status)
+          daemon=out/'bin/dinerod.exe'
+          version=subprocess.check_output([str(daemon),'--version'],text=True)
+          source='249b5604def52ff6e1eb42ba265d60f98e7600e6'
+          if source not in version:raise RuntimeError('packaged daemon source differs')
+          harnesses={
+              'owned':('.github/qualification/wallet_reorg_owned_replacement.py','91d84c9bed99e6afd9dee720810400706aff83f7100547432bfc3ef12fa77856'),
+              'mid':('.github/qualification/wallet_reorg_midtransition.py','0b61911713f95dee77104e5df3d70b05fa3c9fe116c5fcff90bfda82d320a697')}
+          for path,pin in harnesses.values():
+              if hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()!=pin:raise RuntimeError('qualified harness changed')
+          cases=[('normal','owned',[]),('pending-restart','owned',['--crash-pending-connect']),('midtransition','mid',[])]
+          for label,key,args in cases:
+              result=subprocess.run([sys.executable,harnesses[key][0],*args],env=dict(os.environ,DINEROD=str(daemon.resolve())),stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=360)
+              pathlib.Path('signed-wallet-'+label+'.log').write_bytes(result.stdout)
+              print(result.stdout.decode('utf-8',errors='replace'))
+              if result.returncode:raise RuntimeError('signed package wallet regression failed: '+label)
+          receipt={'status':'PASS','source_sha':source,'release_run':42079360640,'release_artifact':13448646836,'operator_zip_sha256':expected,'native_authenticode_executables':9,'wallet_regression_cases':3,'qualification_revision':os.environ['GITHUB_SHA']}
+          pathlib.Path('signed-wallet-package-result.json').write_text(json.dumps(receipt,indent=2))
+          print(json.dumps(receipt))
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Signed package wallet qualification failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: signed-wallet-package-qualification
+          path: |
+            signed-wallet-*.log
+            signed-wallet-package-result.json
