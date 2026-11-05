@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <vector>
 #include <string>
+#include "consensus/limits.h"
+#include "consensus/script.h"
 
 // Forward declarations
 namespace dinero {
@@ -38,7 +40,7 @@ namespace consensus {
  * Maximum signature operations cost per block
  * Bitcoin-compatible value: 80,000 sigops
  */
-static constexpr unsigned int MAX_BLOCK_SIGOPS_COST = 80000;
+// MAX_BLOCK_SIGOPS_COST is defined once in consensus/limits.h.
 
 /**
  * Witness scale factor for sigop cost calculation
@@ -50,25 +52,12 @@ static constexpr unsigned int WITNESS_SCALE_FACTOR = 4;
  * Maximum sigops in a single transaction (mempool policy)
  * More restrictive than block limit for DoS protection
  */
-static constexpr unsigned int MAX_TX_SIGOPS_COST = 16000;
+// MAX_TX_SIGOPS_COST is defined once in consensus/limits.h.
 
 /**
  * Maximum multisig public keys per script (consensus rule)
  */
 static constexpr unsigned int MAX_PUBKEYS_PER_MULTISIG = 20;
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Script Opcodes (for sigop counting)
-// ═══════════════════════════════════════════════════════════════════════════
-
-enum ScriptOpcode : uint8_t {
-    OP_0 = 0x00,
-    OP_1 = 0x51,
-    OP_CHECKSIG = 0xac,
-    OP_CHECKSIGVERIFY = 0xad,
-    OP_CHECKMULTISIG = 0xae,
-    OP_CHECKMULTISIGVERIFY = 0xaf,
-};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Legacy Sigop Counting

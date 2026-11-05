@@ -1,9 +1,11 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdint>
 #include <limits>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace dinero::daemon {
@@ -12,6 +14,39 @@ struct BlockRequestPeerCandidate {
     std::string key;
     double average_latency_ms{0.0};
 };
+
+struct BlockBodyPeerAvailability {
+    std::string key;
+    uint32_t advertised_height{0};
+    bool archival_bridge{false};
+};
+
+// Identify archival bridge peers worth probing when every peer advertising the
+// requested height has already failed to deliver its body. Ordinarily the
+// height filter remains authoritative; this is only a liveness escape for
+// stale peer height announcements.
+inline std::vector<std::string> LaggingArchivalBridgeFallback(
+        const std::vector<BlockBodyPeerAvailability>& peers,
+        uint32_t target_height,
+        const std::unordered_set<std::string>& unavailable) {
+    if (target_height == 0) return {};
+    bool advertised_capable = false;
+    for (const auto& peer : peers) {
+        if (peer.advertised_height < target_height) continue;
+        advertised_capable = true;
+        if (unavailable.count(peer.key) == 0) return {};
+    }
+    if (!advertised_capable) return {};
+
+    std::vector<std::string> fallback;
+    for (const auto& peer : peers) {
+        if (peer.advertised_height < target_height && peer.archival_bridge &&
+                unavailable.count(peer.key) == 0) {
+            fallback.push_back(peer.key);
+        }
+    }
+    return fallback;
+}
 
 // Deterministic peer ordering for one logical block request. Normal tip-sync
 // requests retain identity order. AssumeUTXO backfill prefers measured low

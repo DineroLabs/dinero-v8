@@ -530,6 +530,13 @@ TEST_F(CovenantSystemLifecycleTest, AuthBlockResourceGateRejectsBeforeStateMutat
     Transaction tx;
     tx.version = Transaction::TX_VERSION_SHIELDED_V2;
     tx.witness_version = 0;
+    // The block resource gate follows the H1 coinbase structural check.
+    // Give this oversized first transaction a canonical coinbase prevout so
+    // the test still reaches the resource limit without mutating the UTXO set.
+    tx.vin.emplace_back();
+    tx.vin[0].prevout.txid = TxId(dinero::uint256{});
+    tx.vin[0].prevout.vout = UINT32_MAX;
+    ASSERT_TRUE(tx.IsCoinbase());
     tx.shielded_bundle_bytes.resize(sh::kAuthMaxTxBytes, 0);
     Block block;
     block.vtx.push_back(tx);

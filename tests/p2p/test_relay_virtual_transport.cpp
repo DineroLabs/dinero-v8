@@ -425,6 +425,47 @@ TEST(RelayOrchestrator, InstallOutboundVirtualPeerSetsViaRelayClientToTarget) {
               static_cast<uint8_t>(P2PMessage::RelayDirection::ClientToTarget));
 }
 
+// A circuit is a numeric ID on the wire. The install and reply-demultiplex
+// paths must use the same key even when its hexadecimal form has leading zeros.
+// Exercise an ACK followed by actual return traffic, rather than comparing two
+// formatting helpers that could be wrong in the same way.
+TEST(RelayOrchestrator, LeadingZeroCircuitAckRoutesReturnTrafficToInstalledPeer) {
+    for (const uint64_t circuit_id : {uint64_t{1}, uint64_t{0x0caa664d03d5eb13},
+                                      uint64_t{0x1020304050607080}}) {
+        SCOPED_TRACE(circuit_id);
+        P2PManager manager(0);
+        manager.set_plaintext_relay_dev_override_for_tests(true);
+        const auto target = MakeNodeId(0x70);
+        constexpr uint64_t request_id = 0x8877665544332211ULL;
+        std::string installed_key;
+        manager.test_insert_pending_relay_connect(
+            request_id, target, kRelayPeer,
+            [&](bool ok, uint64_t acknowledged_circuit, const std::string&) {
+                EXPECT_TRUE(ok);
+                EXPECT_EQ(acknowledged_circuit, circuit_id);
+                installed_key = manager.install_outbound_virtual_relay_peer(
+                    target, kRelayPeer, acknowledged_circuit);
+            });
+        manager.handle_relay_connect_ack(kRelayPeer,
+            P2PMessage::create_relay_connect_ack(request_id, circuit_id,
+                P2PMessage::RelayConnectStatus::Ok, "ok"));
+        ASSERT_FALSE(installed_key.empty());
+        ASSERT_NE(manager.get_peer_info(installed_key), nullptr);
+        ASSERT_EQ(manager.test_originated_circuit_count(), 1u);
+        const auto ping = MakePing(0x424242);
+        manager.handle_relay_data(kRelayPeer, P2PMessage::create_relay_data(
+            circuit_id, P2PMessage::RelayDirection::TargetToClient,
+            ping.serialize()));
+        auto received = manager.test_receive_peer_message(
+            installed_key, std::chrono::milliseconds(50));
+        EXPECT_NE(received, nullptr);
+        if (received) {
+            EXPECT_EQ(received->command, "ping");
+            EXPECT_EQ(received->payload, ping.payload);
+        }
+    }
+}
+
 TEST(RelayOrchestrator, OrchestratorSkipsTargetsAlreadyHavingProvenPeer) {
     // Sanity-check: when a target's proven node_id matches a connected peer,
     // priming relay_hints_by_target_ + invoking the orchestrator does NOT

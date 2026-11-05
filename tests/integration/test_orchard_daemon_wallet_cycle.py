@@ -353,12 +353,26 @@ class Node:
         print("PASS JSON-RPC explicit copied storage migration preserved original and selected tip", flush=True)
 
     def synced(self, account):
+        settled = None
         def caught_up():
-            view = self.rpc("wallet.orchard.listoperations", {"account": account})
-            return (view["account_sequence"] == view["captured_source_sequence"] and
-                    view["account_digest"] == view["captured_source_digest"])
+            nonlocal settled
+            try:
+                view = self.rpc("wallet.orchard.listoperations", {"account": account})
+            except RpcError as error:
+                # Provider delivery may change the two authenticated catalog
+                # snapshots through all four RPC-side attempts. Only that
+                # exact read race belongs in this bounded catch-up wait.
+                if (error.method == "wallet.orchard.listoperations" and error.code == -32603 and
+                        error.rpc_message == "Authenticated Orchard catalog changed during read"):
+                    return False
+                raise
+            if (view["account_sequence"] == view["captured_source_sequence"] and
+                    view["account_digest"] == view["captured_source_digest"]):
+                settled = view
+                return True
+            return False
         self.wait(caught_up, f"account {account} actual provider delivery")
-        return self.rpc("wallet.orchard.listoperations", {"account": account})
+        return settled
 
     def status(self, account, request_id):
         view = self.synced(account)
@@ -615,6 +629,7 @@ def main():
                 assert after["account_sequence"] == original["account_sequence"]
                 assert after["account_digest"] == original["account_digest"]
 
+        old_branch_height = node.rpc("getblockcount")
         node.rpc("blockchain.invalidateblock", [activation])
         assert node.rpc("getblockcount") == 101
         assert node.rpc("getbestblockhash") == activation_parent
@@ -627,9 +642,22 @@ def main():
         if coupled_release:
             assert node.check_profile() == (100, 120)
         retained_reindex()
+        # A persisted invalidated H101 branch still has H102+ raw headers.
+        # Reindex must retain those headers for reconsiderblock, while all
+        # public sync/readiness views project the honest selected H100 tip.
+        header_view = node.rpc("getblockchaininfo")
+        assert header_view["blocks"] == 100 and header_view["headers"] == 100
+        header_sync = node.rpc("getdaemonstatus")["sync"]
+        assert header_sync["converged"] is True
+        assert header_sync["active_tip"]["height"] == header_sync["best_header"]["height"] == 100
         print("PASS JSON-RPC historical disconnect reindex retained delivery chronology", flush=True)
         replacement_parent = node.generate(1, address)[0]
         assert replacement_parent != activation_parent
+        replacement_view = node.rpc("getblockchaininfo")
+        assert replacement_view["blocks"] == 101 and replacement_view["headers"] == 101
+        replacement_sync = node.rpc("getdaemonstatus")["sync"]
+        assert replacement_sync["converged"] is True
+        assert replacement_sync["active_tip"]["hash"] == replacement_sync["best_header"]["hash"] == replacement_parent
         replacement_activation = node.mine(address)
         assert replacement_activation != activation and node.rpc("getblockcount") == 102
         if coupled_release:
@@ -639,6 +667,13 @@ def main():
             assert node.check_profile() == (102, 60)
             print("PASS JSON-RPC coupled timing rewind reactivation and reindex retained profile", flush=True)
         print("PASS JSON-RPC historical replacement and reactivation reindex retained original accounts", flush=True)
+        # Reconsider after the durable H101 invalidation and multiple reindex
+        # restarts. The raw headers were retained, so the old higher-work branch
+        # becomes eligible again without losing the honest replacement header.
+        node.rpc("blockchain.reconsiderblock", [activation_parent])
+        reconsidered = node.rpc("getdaemonstatus")["sync"]
+        assert reconsidered["best_header"]["height"] >= old_branch_height
+        print("PASS JSON-RPC reconsider restored retained header eligibility", flush=True)
         node.stop()
     finally:
         # Stop only this isolated child. A timed-out graceful stop is a failure;

@@ -297,6 +297,16 @@ HeaderSyncManager::ProcessResult HeaderSyncManager::ProcessHeadersWithResult(
         auto peer_it = peers_.find(peer_id);
         if (peer_it != peers_.end()) {
             peer_it->second.last_response_time = GetCurrentTimeMs();
+            HeaderIndexEntry eligible{};
+            const uint32_t eligible_height = chain_selector_->GetBestHeaderCopy(eligible) ?
+                eligible.height : 0;
+            if (may_drive_state && peer_it->second.best_height > eligible_height) {
+                // A peer claiming to be ahead but returning no headers cannot
+                // advance this node. Rotate to another peer; the short cooldown
+                // also lets a stale but honest peer retry after it catches up.
+                peer_it->second.is_stalled = true;
+                peer_it->second.penalty_expires_at_ms = GetCurrentTimeMs() + 30'000;
+            }
         }
 
         // Check if we're caught up with all peers
@@ -390,6 +400,29 @@ HeaderSyncManager::ProcessResult HeaderSyncManager::ProcessHeadersWithResult(
     // Validation is complete. Release only the request this response owns.
     if (owns_request) {
         active_sync_peer_ = 0;
+    }
+
+    HeaderIndexEntry eligible_after{};
+    const uint32_t eligible_height = chain_selector_->GetBestHeaderCopy(eligible_after) ?
+        eligible_after.height : 0;
+    auto progress_peer = peers_.find(peer_id);
+    const bool failed_lineage_only = std::all_of(headers.begin(), headers.end(),
+        [&](const BlockHeader& header) {
+            return chain_selector_->IsHeaderFailedForSelection(header.GetHash());
+        });
+    if (may_drive_state && progress_peer != peers_.end() &&
+        progress_peer->second.best_height > eligible_height &&
+        (failed_lineage_only ||
+         (result.inserted == 0 && headers.size() < MAX_HEADERS_PER_MSG))) {
+        // A failed-branch stream, or a short duplicate-only response, cannot
+        // advance the eligible branch. A full duplicate batch may be the
+        // prelude to more honest headers, so preserve its continuation.
+        progress_peer->second.is_stalled = true;
+        progress_peer->second.penalty_expires_at_ms = GetCurrentTimeMs() + 30'000;
+        TransitionTo(HeaderSyncState::IDLE);
+        result.accepted_height = accepted_height;
+        result.accepted = true;
+        return result;
     }
 
     // Check if we got a full batch (2000 headers)

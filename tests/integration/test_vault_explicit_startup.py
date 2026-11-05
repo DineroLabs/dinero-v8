@@ -209,7 +209,10 @@ try:
     assert rpc("vault.open", [{"vault_id": first_id}])["attached"] is True
     assert rpc("vault.getoperator")["account"] == "owned-account"
     stop()
-    assert owner_rows(db_path) == original, "Reopen changed vault rows or issued addresses"
+    reopened = owner_rows(db_path)
+    assert reopened == original, ("Reopen changed vault rows or issued addresses: "
+        f"vault_rows_changed={reopened[0] != original[0]}, "
+        f"address_count={original[1]}->{reopened[1]}")
     print("PASS restart requires explicit attachment and preserves exact owner rows", flush=True)
 
     legacy = datadir / "vault"

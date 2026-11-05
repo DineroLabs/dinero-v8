@@ -58,7 +58,7 @@ constexpr uint32_t MAX_BLOCK_WEIGHT = 4000000;  // 4 million weight units
  * @brief Maximum block sigops cost (signature operations)
  *
  * Prevents DoS attacks via excessive signature validation.
- * Defined in consensus/sigops.h as MAX_BLOCK_SIGOPS_COST.
+ * Shared by the ingress and connect-time checks in consensus/sigops.h.
  *
  * Value: 80,000 sigops (Bitcoin limit)
  *

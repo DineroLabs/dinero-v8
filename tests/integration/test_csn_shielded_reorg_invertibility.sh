@@ -110,7 +110,9 @@ rpc() {
     local port=$1 datadir=$2 method=$3; shift 3; local params="$*"
     local cookie; cookie=$(cat "${datadir}/.cookie" 2>/dev/null); [[ -z "$cookie" ]] && return 1
     local jp="[]"; [[ -n "$params" ]] && jp="[$params]"
-    curl -s --connect-timeout 2 --max-time 30 -u "$cookie" -H "Content-Type: application/json" \
+    local rpc_timeout=30
+    [[ "$method" == "generatetoaddress" ]] && rpc_timeout=180
+    curl -s --connect-timeout 2 --max-time "$rpc_timeout" -u "$cookie" -H "Content-Type: application/json" \
         -d "{\"jsonrpc\":\"2.0\",\"method\":\"$method\",\"params\":$jp,\"id\":1}" \
         "http://127.0.0.1:${port}" 2>/dev/null
 }

@@ -45,6 +45,96 @@ TEST(WalletProofSnapshot, StrictInputBeforeServices) {
     auto numeric=din::arr();numeric.append(3);invalid.push_back(numeric);
     for(const auto& p:invalid)ExpectProofRefusal(rpc_context_wallet_proofstatus(ctx,p));
 }
+namespace {
+// Genuine pre-Orchard full state, with no imported/frozen snapshot owner and
+// no legacy validated_tip row. Older production writers used forest_tip.
+struct LegacyFullAccumulatorFixture {
+    SnapshotCacheConfig config;
+    WalletIndexOwnerFixture owner;
+    SnapshotWalletSourceFixture chain;
+    CBlockIndex tip;
+    const ChainWriteToken token=ChainWriteToken::CreateForTesting();
+    LegacyFullAccumulatorFixture()
+        : tip(chain.blocks.back().header,uint32_t(chain.blocks.size())) {
+        tip.chainwork=ChainworkToHex(arith_uint256(tip.height+1));
+        ShieldedStateStartupTestAccess::BoundaryState(*owner.source,tip,chain.replay);
+        const auto genesis=SelectedGenesis();
+        Require(owner.db.putHeader(token,genesis.GetHash(),genesis.header,0,arith_uint256(1)));
+        Require(owner.db.putHeightIndex(token,0,genesis.GetHash()));
+        for(uint32_t i=0;i<chain.blocks.size();++i) {
+            const auto& block=chain.blocks[i];
+            Require(owner.db.putHeader(token,block.GetHash(),block.header,int(i+1),arith_uint256(i+2)));
+            Require(owner.db.putHeightIndex(token,int(i+1),block.GetHash()));
+        }
+        Require(owner.db.setTip(token,tip.hash,int(tip.height),arith_uint256(tip.height+1)));
+        Require(owner.db.putForestTipMarker(token,{int32_t(tip.height),tip.hash,chain.blocks.back().header.utreexo_root}));
+        if(owner.db.getValidatedTip().status()!=Status::NotFound ||
+            owner.db.getPreBaseCoinSetBase().status()!=Status::NotFound)
+            throw std::runtime_error("legacy full fixture must not have snapshot/validated markers");
+    }
+    static void Require(Status status) {if(status!=Status::Ok)throw std::runtime_error("legacy full fixture storage");}
+    ~LegacyFullAccumulatorFixture(){owner.source->Stop();owner.context.chainstate.reset();owner.source.reset();}
+    void LegacyMarker(std::string value) {
+        rocksdb::WriteBatch batch;batch.Put(ChainDBTransactionReadTestPeer::HandoffMeta(owner.db),"validated_tip",value);
+        Require(owner.db.writeBatch(token,std::move(batch),true));
+    }
+};
+}
+TEST(WalletProofSnapshot, LegacyFullForestMarkerWithoutValidatedTipIsReadOnly) {
+    LegacyFullAccumulatorFixture f;ExecutionContext ctx;ctx.daemon=&f.owner.context;
+    const auto before=ChainDBTransactionReadTestPeer::HandoffRows(f.owner.db);
+    ASSERT_NO_FATAL_FAILURE(CheckProofSnapshot(ctx,*f.owner.source));
+    EXPECT_EQ(f.owner.db.getValidatedTip().status(),Status::NotFound);
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(f.owner.db),before);
+}
+TEST(WalletProofSnapshot, LegacyAbsenceNeverIgnoresConflictingOrCorruptValidatedTip) {
+    LegacyFullAccumulatorFixture f;
+    ASSERT_EQ(f.owner.db.setValidatedTip(f.token,f.tip.hash,int(f.tip.height)-1),Status::Ok);
+    EXPECT_FALSE(f.owner.source->getUtreexoRpcSnapshot().ok());
+    f.LegacyMarker("malformed");
+    EXPECT_EQ(f.owner.db.getValidatedTip().status(),Status::Serialization);
+    EXPECT_FALSE(f.owner.source->getUtreexoRpcSnapshot().ok());
+}
+TEST(WalletProofSnapshot, LegacyAbsenceRequiresExactForestMarkerAndCanonicalSelection) {
+    LegacyFullAccumulatorFixture f;
+    auto root=f.chain.blocks.back().header.utreexo_root;root.data[0]^=1;
+    ASSERT_EQ(f.owner.db.putForestTipMarker(f.token,{int32_t(f.tip.height),f.tip.hash,root}),Status::Ok);
+    EXPECT_FALSE(f.owner.source->getUtreexoRpcSnapshot().ok());
+    ASSERT_EQ(f.owner.db.putForestTipMarker(f.token,{int32_t(f.tip.height),f.tip.hash,f.chain.blocks.back().header.utreexo_root}),Status::Ok);
+    ASSERT_EQ(f.owner.db.putHeightIndex(f.token,int(f.tip.height),SelectedGenesis().GetHash()),Status::Ok);
+    EXPECT_FALSE(f.owner.source->getUtreexoRpcSnapshot().ok());
+}
+TEST(WalletProofSnapshot, LegacyAbsenceCannotAdmitAssumedPromotedOrOrchardState) {
+    LegacyFullAccumulatorFixture f;
+    ShieldedStateStartupTestAccess::CacheSnapshotBase(*f.owner.source,f.tip.hash,f.tip.height);
+    EXPECT_FALSE(f.owner.source->getUtreexoRpcSnapshot().ok());
+    ShieldedStateStartupTestAccess::CacheSnapshotBase(*f.owner.source,f.tip.hash,f.tip.height,true);
+    EXPECT_FALSE(f.owner.source->getUtreexoRpcSnapshot().ok());
+    ShieldedStateStartupTestAccess::CacheSnapshotBase(*f.owner.source,uint256{},0,true);
+    GetConfig().utreexo_stateless=true;EXPECT_FALSE(f.owner.source->getUtreexoRpcSnapshot().ok());
+    GetConfig().utreexo_stateless=false;
+    MutableParams().orchard_activation_height=f.tip.height;MutableParams().orchard_branch_id=1;
+    EXPECT_FALSE(f.owner.source->getUtreexoRpcSnapshot().ok());
+}
+TEST(WalletProofSnapshot, LegacyAbsenceCannotUseFrozenCoinMarkersOrAnUnmatchedForest) {
+    {
+        LegacyFullAccumulatorFixture f;
+        const std::vector<ChainDB::PreBaseCoinRecord> empty;
+        ASSERT_EQ(f.owner.db.replacePreBaseCoins(f.token,f.tip.hash,f.tip.height,empty),Status::Ok);
+        EXPECT_FALSE(f.owner.source->getUtreexoRpcSnapshot().ok());
+    }
+    {
+        LegacyFullAccumulatorFixture f;
+        f.owner.source->GetConsensusUTXOSet()->ReplaceForestGuarded(consensus::UtreexoForest{});
+        EXPECT_FALSE(f.owner.source->getUtreexoRpcSnapshot().ok());
+    }
+    {
+        LegacyFullAccumulatorFixture f;
+        rocksdb::WriteBatch missing;missing.Delete(ChainDBTransactionReadTestPeer::HandoffMeta(f.owner.db),"forest_tip");
+        ASSERT_EQ(f.owner.db.writeBatch(f.token,std::move(missing),true),Status::Ok);
+        EXPECT_FALSE(f.owner.source->getUtreexoRpcSnapshot().ok());
+    }
+}
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
 TEST(WalletProofSnapshot, FullOwnerAndDurableMismatch) {
     CanonicalRecoveryFixture f;ExecutionContext ctx;ctx.daemon=&f.context;

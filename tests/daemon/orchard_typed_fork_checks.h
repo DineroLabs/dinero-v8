@@ -284,7 +284,15 @@ TEST(OrchardTypedFork, HeaderSelectedSchedulerRetainsThenAcknowledgesActualFork)
     EXPECT_EQ(observer->progress[1].disconnected,1u);EXPECT_EQ(observer->progress[1].connected,2u);
     EXPECT_EQ(observer->event_count,published+3u);
     scheduler.Tick();
-    EXPECT_TRUE(scheduler.IsBlockConnected(a102->hash));EXPECT_TRUE(scheduler.IsBlockConnected(a103->hash));
+    // A synchronized scheduler clears its missing-block queue. Confirm the
+    // actual selected chain, rather than querying the queue after it is gone.
+    {
+        auto selected=f.f.service->AcquireBlockIngressActivationLock();
+        uint256 selected102,selected103;
+        ASSERT_TRUE(consensus::GetActiveChainHashAtHeight(f.f.service->GetActiveTip(),102,selected102));
+        ASSERT_TRUE(consensus::GetActiveChainHashAtHeight(f.f.service->GetActiveTip(),103,selected103));
+        EXPECT_EQ(selected102,a102->hash);EXPECT_EQ(selected103,a103->hash);
+    }
     EXPECT_EQ(offers[a102->hash],1u);EXPECT_EQ(offers[a103->hash],1u);
     EXPECT_TRUE(scheduler.IsFullySynchronized());EXPECT_EQ(scheduler.GetLocalTipHeight(),103u);
     EXPECT_EQ(f.queue->getMetrics().blocks_connected.load(),connected);

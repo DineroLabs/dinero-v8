@@ -519,6 +519,8 @@ static void longpoll_watcher(const string& rpc_url,
         Json::Value params(Json::arrayValue);
         Json::Value param_obj(Json::objectValue);
         param_obj["address"] = mining_address;
+        param_obj["capabilities"] = Json::Value(Json::arrayValue);
+        param_obj["capabilities"].append("orchard-immutable-jobs-v1");
         if (!last_longpollid.empty()) {
             param_obj["longpollid"] = last_longpollid;
         }

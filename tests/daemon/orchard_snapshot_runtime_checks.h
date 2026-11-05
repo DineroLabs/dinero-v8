@@ -252,6 +252,31 @@ TEST(OrchardReopenIntent, OnlyExplicitCurrentCaptureIsSelectedAndSurvivesGuardRe
     EXPECT_TRUE(std::filesystem::is_regular_file(path/abandoned->Name()/"candidates.sealed"));
     EXPECT_ANY_THROW(Access::Select(*pending,guard,"recovery-owner"));
 }
+TEST(OrchardReopenIntent, SelectedDormantProfileJournalSurvivesOnlyScheduledCoinbaseChange){
+    using Journal=daemon::ReopenCandidateJournal;using Access=ReopenIntentTestAccess;
+    CanonicalPoolFixture fixture;const auto survivor=CanonicalPoolSurvivor(fixture);
+    ASSERT_TRUE(fixture.f.ingress->SubmitBody(survivor,TxOrigin::INTERNAL).accepted());
+    const auto path=ReopenJournalEvidence();daemon::DatadirGuard guard;std::string error,wallet;
+    ASSERT_TRUE(guard.Acquire(path,error))<<error;
+    struct RestoreParams { ChainParams saved;~RestoreParams(){MutableParams()=saved;} } restore{Params()};
+    auto& params=MutableParams();
+    ASSERT_NE(params.coinbase_structure_activation_height,UINT32_MAX);
+    params.coinbase_structure_activation_height=UINT32_MAX;
+    auto fence=MempoolService::FenceForReopen(fixture.f.ingress,std::chrono::milliseconds(100));
+    auto captured=Journal::Capture(guard,fixture.f.ingress,*fence);ASSERT_EQ(captured->Count(),1u);
+    Access::Select(*captured,guard,"existing-wallet");captured.reset();
+    params.coinbase_structure_activation_height=restore.saved.coinbase_structure_activation_height;
+    std::unique_ptr<Journal> pending;
+    ASSERT_NO_THROW(pending=Journal::OpenPending(guard,wallet));ASSERT_TRUE(pending);
+    EXPECT_EQ(wallet,"existing-wallet");unsigned visited=0;
+    pending->ForEach(guard,[&](const auto& candidate){EXPECT_EQ(candidate.body,survivor.Serialize());++visited;});
+    EXPECT_EQ(visited,1u);
+    ++params.target_spacing;wallet="unchanged";
+    EXPECT_ANY_THROW(Journal::OpenPending(guard,wallet));EXPECT_EQ(wallet,"unchanged");
+    params.target_spacing=restore.saved.target_spacing;
+    EXPECT_TRUE(Journal::OpenPending(guard,wallet));
+    Access::Archive(*pending,guard,"existing-wallet");EXPECT_FALSE(Journal::OpenPending(guard,wallet));
+}
 TEST(OrchardReopenIntent, PartialPublicationAndCompletionNeverBecomeMissingWork){
     using Journal=daemon::ReopenCandidateJournal;using Access=ReopenIntentTestAccess;CanonicalPoolFixture fixture;
     const auto survivor=CanonicalPoolSurvivor(fixture);ASSERT_TRUE(fixture.f.ingress->SubmitBody(survivor,TxOrigin::INTERNAL).accepted());
@@ -340,6 +365,10 @@ struct ActivationHandoffFixture {
         auto name=(std::filesystem::temp_directory_path()/"orchard-handoff-evidence-XXXXXX").string();
         OrchardAdmissionFixture::Require(::mkdtemp(name.data())!=nullptr);root=std::filesystem::canonical(name);
         std::filesystem::create_directory(root/"blockchain");path=root/"blockchain"/"chaindb";
+        // Handoff requires an owner-only blockchain directory even when the
+        // test process inherited a group-writable umask (for example 0002).
+        std::filesystem::permissions(root/"blockchain",std::filesystem::perms::owner_all,
+            std::filesystem::perm_options::replace);
         std::string error;OrchardAdmissionFixture::Require(guard.Acquire(root,error));
         if(lifecycle){
 #ifdef DINERO_TEST_REAL_CORE_HANDOFF
@@ -371,6 +400,8 @@ struct ActivationHandoffFixture {
 #endif
         }
         std::filesystem::copy(full.f.path,path,std::filesystem::copy_options::recursive);
+        std::filesystem::permissions(path,std::filesystem::perms::owner_all,
+            std::filesystem::perm_options::replace);
         {std::ofstream wallet(root/"named-wallet.sentinel");wallet<<"opaque test-only named wallet/pending bytes";}
         {std::ofstream lifecycle(root/"blockchain"/"original-lifecycle.sentinel");lifecycle<<"do not rebase or promote original history";}
         std::cout<<"Activation handoff evidence: "<<root.string()<<"\n";
@@ -583,10 +614,11 @@ void GenerateSdkActivationFixture(){
         constexpr std::string_view memo="authenticated phone history";
         std::copy(memo.begin(),memo.end(),source.f.shield_memo.begin());
         if(assumed){
-            // The SDK, not a SQL fixture, must import this ordinary legacy
-            // snapshot into a NEW root. This isolated profile has dormant
-            // legacy state commitments, so the normal exporter emits v4.
-            assumed_snapshot=source.f.path.string()+".sdk-input.v4";
+            // The SDK, not a SQL fixture, imports this genuine legacy file
+            // into a new root. The private crossing variant enables DNRS and
+            // emits v5 while retaining the original v4 fixture unchanged.
+            const bool v5=std::getenv("DINERO_SDK_V5_ACTIVATION_FIXTURE")!=nullptr;
+            assumed_snapshot=source.f.path.string()+(v5?".sdk-input.v5":".sdk-input.v4");
             const auto exported=source.f.service->ExportSnapshot(assumed_snapshot);
             OrchardAdmissionFixture::Require(exported.success&&exported.block_height==101);
         }
@@ -618,6 +650,8 @@ void GenerateSdkActivationFixture(){
     const auto archives=f.full.files->getBlockFilePath(0).parent_path();
     std::filesystem::copy(archives,f.root/"blocks",std::filesystem::copy_options::recursive);
     Json::Value row;row["datadir"]=f.root.string();row["profile"]=ConsensusChecksum(Params());
+    row["producer_coinbase_structure_height"]=Json::UInt(Params().coinbase_structure_activation_height);
+    row["producer_state_commitment_height"]=Json::UInt(Params().state_commitment_activation_height);
     row["magic"]=Json::UInt(Params().magic);row["parent"]=f.proof->parent_catalog.block.GetHex();
     row["first_hash"]=f.full.first->Header().GetHash().GetHex();row["second_hash"]=f.full.second->Header().GetHash().GetHex();
     if(assumed){
@@ -626,8 +660,13 @@ void GenerateSdkActivationFixture(){
         consensus::HeaderStore store((mobile/"headers").string());ASSERT_TRUE(store.Open());
         consensus::HeaderChainSelector selected(&store);
         for(const auto& block:f.full.f.blocks)ASSERT_TRUE(selected.AddHeader(block.header));
+        // A v5 base needs the selected next header for the test profile's
+        // one-block state-commitment burial before the SDK loads it.
+        if(std::getenv("DINERO_SDK_V5_ACTIVATION_FIXTURE"))
+            ASSERT_TRUE(selected.AddHeader(f.full.first->Header()));
         row["assumed_datadir"]=mobile.string();row["assumed_snapshot"]=assumed_snapshot.string();
-        row["assumed_snapshot_version"]=4;row["assumed_base"]=101;
+        row["assumed_snapshot_version"]=std::getenv("DINERO_SDK_V5_ACTIVATION_FIXTURE")?5:4;
+        row["assumed_base"]=101;
         // No ChainDB, forest, wallet index, lifecycle keys or historical body
         // is copied into this new SDK root.
         ASSERT_FALSE(std::filesystem::exists(mobile/"blockchain"));
@@ -1366,6 +1405,40 @@ TEST(OrchardActivationHandoff, ClosedCopyConvertsWithoutMovingHistoryMarkersOrOr
     EXPECT_EQ(ActivationHandoffFixture::Files(f.path),original);
     ChainDB cold;ASSERT_EQ(cold.init(candidate_path),Status::Ok);EXPECT_TRUE(storage::ReadOrchardActivationOrigin(cold));
     EXPECT_EQ(cold.getValidatedTip()->height,0);EXPECT_ANY_THROW(storage::RequireFullOrchardStorage(cold));cold.close();
+}
+TEST(OrchardActivationHandoff, H1OriginRefusesDormantProfileWithoutChangingCandidate){
+    struct RestoreParams { ChainParams saved;~RestoreParams(){MutableParams()=saved;} } restore{Params()};
+    MutableParams().coinbase_structure_activation_height=1;
+    ActivationHandoffFixture fixture;
+    auto prepared=fixture.Prepare();ASSERT_TRUE(prepared);
+    const auto scheduled_profile=ConsensusChecksum(Params());
+    const auto origin=storage::ReadOrchardActivationOrigin(prepared->CandidateForInspection());
+    ASSERT_TRUE(origin);EXPECT_EQ(origin->profile,scheduled_profile);
+    MutableParams().coinbase_structure_activation_height=UINT32_MAX;
+    ASSERT_NE(ConsensusChecksum(Params()),scheduled_profile);
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::CheckHandoff(fixture.guard,*prepared));
+    const auto after=storage::ReadOrchardActivationOrigin(prepared->CandidateForInspection());
+    ASSERT_TRUE(after);EXPECT_EQ(after->Encode(),origin->Encode());
+    MutableParams().coinbase_structure_activation_height=1;
+    EXPECT_NO_THROW(OrchardSnapshotStoreTestAccess::CheckHandoff(fixture.guard,*prepared));
+}
+TEST(OrchardActivationHandoff, DormantOriginRefusesH1ProfileWithoutChangingCandidate){
+    struct RestoreParams { ChainParams saved;~RestoreParams(){MutableParams()=saved;} } restore{Params()};
+    MutableParams().coinbase_structure_activation_height=UINT32_MAX;
+    ActivationHandoffFixture fixture;
+    auto prepared=fixture.Prepare();ASSERT_TRUE(prepared);
+    const auto dormant_profile=ConsensusChecksum(Params());
+    const auto origin=storage::ReadOrchardActivationOrigin(prepared->CandidateForInspection());
+    ASSERT_TRUE(origin);EXPECT_EQ(origin->profile,dormant_profile);
+    const auto rows=ChainDBTransactionReadTestPeer::HandoffRows(prepared->CandidateForInspection());
+    MutableParams().coinbase_structure_activation_height=1;
+    ASSERT_NE(ConsensusChecksum(Params()),dormant_profile);
+    EXPECT_ANY_THROW(OrchardSnapshotStoreTestAccess::CheckHandoff(fixture.guard,*prepared));
+    const auto after=storage::ReadOrchardActivationOrigin(prepared->CandidateForInspection());
+    ASSERT_TRUE(after);EXPECT_EQ(after->Encode(),origin->Encode());
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(prepared->CandidateForInspection()),rows);
+    MutableParams().coinbase_structure_activation_height=UINT32_MAX;
+    EXPECT_NO_THROW(OrchardSnapshotStoreTestAccess::CheckHandoff(fixture.guard,*prepared));
 }
 TEST(OrchardActivationHandoff, MissingCorruptOriginOrSelectionCannotBecomeFreshParentAuthority){
     ActivationHandoffFixture f;auto prepared=f.Prepare();const auto candidate=prepared->CandidatePath();prepared.reset();
@@ -2271,6 +2344,7 @@ TEST(OrchardSnapshotRuntime, FullNodeRejectsBadDnorst02WithCompactBootstrapOff) 
 }
 TEST(OrchardSnapshotRuntime, RealRegtestActivationFullAndCompactImportReopenAndFloor) {
     using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
+    struct RestoreParams { ChainParams saved;~RestoreParams(){MutableParams()=saved;} } restore{Params()};
     CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
     MutableParams().state_commitment_burial_depth=0;
     const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);
@@ -2311,6 +2385,10 @@ TEST(OrchardSnapshotRuntime, RealRegtestActivationFullAndCompactImportReopenAndF
         EXPECT_EQ(db.getOrchardUndoParent(section.state).status(),Status::Corruption);
         EXPECT_ANY_THROW(Access::Install(mutex,db,source.f.token,files,headers,decoded));
         EXPECT_EQ(db.getOrchardState()->block_hash,section.state.block_hash);
+        // The imported proof was admitted with the fresh-import rule above.
+        // A restart at the base has no selected descendants, but must still
+        // authenticate and restore that durable base for both profiles.
+        MutableParams().state_commitment_burial_depth=1;
         installed.full.reset();installed.compact.reset();db.close();ASSERT_EQ(db.init(database_path),Status::Ok);
         auto restored=Access::Restore(mutex,db,headers);
         if(profile==OrchardSnapshotProfile::Full) {
@@ -2349,6 +2427,113 @@ TEST(OrchardSnapshotRuntime, RealRegtestActivationFullAndCompactImportReopenAndF
         EXPECT_ANY_THROW(Access::Restore(mutex,db,headers));EXPECT_EQ(db.getTip()->hash,section.state.block_hash);
         {rocksdb::WriteBatch batch;batch.Put(key,proof);ASSERT_EQ(db.writeBatch(source.f.token,std::move(batch),true),Status::Ok);}
         ASSERT_NO_THROW(Access::Restore(mutex,db,headers));db.close();
+        MutableParams().state_commitment_burial_depth=0;
+    }
+}
+TEST(OrchardSnapshotRuntime, DormantCoinbaseProfileV6FileImportsUnderH1Schedule) {
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
+    struct RestoreParams { ChainParams saved;~RestoreParams(){MutableParams()=saved;} } restore{Params()};
+    MutableParams().coinbase_structure_activation_height=UINT32_MAX;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);
+    const auto accepted=source.Submit(first->WireBytes());ASSERT_TRUE(accepted.connected)<<accepted.reason;
+    HeaderChainSelector headers;for(const auto& block:source.f.blocks)ASSERT_TRUE(headers.AddHeader(block.header));
+    ASSERT_TRUE(headers.AddHeader(first->Header()));
+    auto& live=ShieldedStateStartupTestAccess::CatalogWriterCoins(*source.f.service);
+    const auto full=Access::Capture(source.f.db,OrchardSnapshotProfile::Full,live.GetForest().serialize());
+    const auto dormant_profile=ConsensusChecksum(Params());
+    for(const auto profile:{OrchardSnapshotProfile::Full,OrchardSnapshotProfile::Compact}) {
+        MutableParams().coinbase_structure_activation_height=UINT32_MAX;
+        auto section=full;section.profile=profile;OrchardSnapshotCoins coins;
+        if(profile==OrchardSnapshotProfile::Full)coins=live.GetUTXOs();
+        else section.accumulator=section.base_catalog.stump;
+        SnapshotMetadata header;header.version=SNAPSHOT_VERSION_V6;header.block_hash=section.state.block_hash;
+        header.block_height=section.state.height;header.timestamp=first->Header().timestamp;header.utxo_count=coins.size();
+        std::ostringstream encoded(std::ios::binary);
+        ASSERT_NO_THROW(WriteOrchardSnapshotFile(encoded,header,section,coins));
+        const auto bytes=encoded.str();
+
+        // The new release changes the consensus fingerprint, but the v6 file
+        // authenticates the selected block/state rather than a software profile.
+        MutableParams().coinbase_structure_activation_height=1;
+        ASSERT_NE(ConsensusChecksum(Params()),dormant_profile);
+        std::istringstream input(bytes,std::ios::binary);
+        const auto decoded=ReadOrchardSnapshotFile(input,bytes.size(),profile);
+        shielded_store_fixture::TempDir directory;const auto database_path=directory.path/"chainstate";
+        ASSERT_NO_THROW(Access::CreateFresh(database_path));
+        ChainDB db;ASSERT_EQ(db.init(database_path),Status::Ok);
+        BlockStorage files;ASSERT_EQ(files.init(directory.path/"files"),Status::Ok);
+        AnnotatedRecursiveMutex mutex;
+        auto installed=Access::Install(mutex,db,source.f.token,files,headers,decoded);
+        ASSERT_TRUE(db.getTip().ok());EXPECT_EQ(db.getTip()->hash,section.state.block_hash);
+        EXPECT_EQ(bool(installed.full),profile==OrchardSnapshotProfile::Full);
+        EXPECT_EQ(bool(installed.compact),profile==OrchardSnapshotProfile::Compact);
+        installed.full.reset();installed.compact.reset();db.close();
+        ASSERT_EQ(db.init(database_path),Status::Ok);
+        auto reopened=Access::Restore(mutex,db,headers);
+        EXPECT_EQ(bool(reopened.full),profile==OrchardSnapshotProfile::Full);
+        EXPECT_EQ(bool(reopened.compact),profile==OrchardSnapshotProfile::Compact);
+        ASSERT_TRUE(db.getTip().ok());EXPECT_EQ(db.getTip()->hash,section.state.block_hash);
+        reopened.full.reset();reopened.compact.reset();db.close();files.close();
+    }
+}
+TEST(OrchardSnapshotRuntime, DeferredV5WaitsForBurialBeforeLoaderAttempt) {
+    using namespace consensus;
+    OrchardAdmissionFixture source(true);
+    MutableParams().state_commitment_burial_depth=2;
+    for (const uint32_t version : {SNAPSHOT_VERSION_V4, SNAPSHOT_VERSION_V5}) {
+        shielded_store_fixture::TempDir directory;
+        const auto snapshot=directory.path/"snapshot.dat";
+        // A complete preview but deliberately incomplete body: reaching the
+        // loader is observable as refusal, without admitting forged state.
+        SnapshotMetadata metadata;
+        metadata.version=version;metadata.block_hash=source.blocks.at(1).GetHash();
+        metadata.block_height=1;metadata.timestamp=source.blocks.at(1).header.timestamp;
+        {
+            std::ofstream out(snapshot,std::ios::binary);
+            const auto field=[&](const auto& value){out.write(reinterpret_cast<const char*>(&value),sizeof(value));};
+            field(metadata.magic);field(metadata.version);out.write(reinterpret_cast<const char*>(metadata.block_hash.data),32);
+            field(metadata.block_height);field(metadata.utxo_count);field(metadata.timestamp);field(metadata.reserved);
+        }
+        const auto path=directory.path/"chainstate";
+        OrchardSnapshotStoreTestAccess::CreateFresh(path);
+        RawIngressGraph isolated;
+        struct ContextGuard {DaemonContext* prior=DaemonContext::instance();
+            ~ContextGuard(){BlockAcceptor::SetContext(prior);DaemonContext::setInstance(prior);}} guard;
+        auto db=std::make_shared<ChainDB>();ASSERT_EQ(db->init(path),Status::Ok);
+        DaemonContext context;context.config=std::make_shared<ConfigService>();
+        context.config->Set("datadir",directory.path.string());
+        context.config->Set("assumeutxo_snapshot",snapshot.string());
+        context.config->Set("assumeutxo_require_manifest","0");
+        context.logger=std::make_shared<LoggerService>("");
+        context.block_storage=std::make_shared<BlockStorage>();
+        ASSERT_EQ(context.block_storage->init(directory.path/"files"),Status::Ok);
+        auto service=std::make_shared<ChainstateService>();context.chainstate=service;
+        struct StopGuard {std::shared_ptr<ChainstateService> service;~StopGuard(){service->Stop();}} stop{service};
+        DaemonContext::setInstance(&context);service->setOwnedChainDB(db);
+        ASSERT_TRUE(service->Init(context));ASSERT_TRUE(service->Start());
+        ASSERT_TRUE(service->IsSnapshotBootstrapPending());
+        auto headers=std::make_shared<HeaderChainSelector>();
+        ASSERT_TRUE(headers->AddHeader(source.blocks.at(0).header));
+        ASSERT_TRUE(headers->AddHeader(source.blocks.at(1).header));
+        service->setHeaderChainSelector(headers);
+        service->TryDeferredSnapshotBootstrap();
+        if (version==SNAPSHOT_VERSION_V4) {
+            // Legacy v4 remains eligible at its base; the invalid body is
+            // refused immediately instead of gaining a new burial wait.
+            EXPECT_FALSE(service->IsSnapshotBootstrapPending());
+        } else {
+            ASSERT_TRUE(service->IsSnapshotBootstrapPending()) << "base presence alone is not v5 burial";
+            ASSERT_TRUE(headers->AddHeader(source.blocks.at(2).header));
+            service->TryDeferredSnapshotBootstrap();
+            ASSERT_TRUE(service->IsSnapshotBootstrapPending()) << "one descendant is insufficient";
+            ASSERT_TRUE(headers->AddHeader(source.blocks.at(3).header));
+            service->TryDeferredSnapshotBootstrap();
+            EXPECT_FALSE(service->IsSnapshotBootstrapPending()) << "at exact burial the loader must run and refuse the invalid body";
+        }
+        EXPECT_EQ(db->getTip()->height,0);
+        EXPECT_EQ(std::filesystem::file_size(snapshot),68u);
     }
 }
 TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles) {

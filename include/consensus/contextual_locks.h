@@ -10,7 +10,10 @@
 
 namespace dinero::consensus {
 
-// Input heights are confirmed creation heights. A mempool parent uses the
+// Input heights are confirmed creation heights, except a stateless v1-leaf
+// caller may supply the latest possible creation height as a conservative
+// upper bound. Such a caller must treat a relative-lock failure on the bound
+// as unverified rather than consensus-invalid. A mempool parent uses the
 // candidate block height. Unknown metadata is not height zero.
 using LockMtpLookup = std::function<std::optional<uint64_t>(uint32_t)>;
 inline bool CheckContextualLocks(const Transaction& tx, uint32_t height,

@@ -49,6 +49,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Preserve Docker fresh and existing configuration authority
+        run: python3 -B tests/integration/test_docker_entrypoint_config.py -v
+
       - name: Resolve version
         id: v
         env:

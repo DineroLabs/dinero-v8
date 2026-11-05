@@ -35,13 +35,16 @@ permissions:
   contents: write        # required to attach artifacts to the release
 
 env:
-  SV2_REF: 5f3054367646d4abc667d501e01669ff24979e14
+  SV2_REF: fa7538d85a22dfbb345c508354a9e4dc2eeebc7b
 
 jobs:
   windows-release:
     name: Windows MSVC x86_64 — release installer
     runs-on: windows-2022
-    timeout-minutes: 120
+    # Two native builds plus CUDA, signing and package verification exceed two
+    # hours on a cold runner (30721e5 was cancelled during signed packaging).
+    # Keep the whole qualification intact rather than losing its final checks.
+    timeout-minutes: 180
     # `release` environment carries the Azure OIDC federation for Windows
     # code signing (subject repo:DineroLabs/dinero-v8:environment:release).
     environment: release

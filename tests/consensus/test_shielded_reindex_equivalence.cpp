@@ -862,6 +862,87 @@ int main(int argc, char** argv) {
                        prefix);
         }
 
+        // A historical first transaction with a non-null prevout must still
+        // replay under the old rule. Point it at a real unspent output so the
+        // forest can compute the root that the legacy replay path expects.
+        // This exercises processBlock through execute(), including its forest
+        // and durable tip writes, rather than merely testing the height gate.
+        {
+            ReferenceState branch_state;
+            branch_state.forest = state.forest.clone();
+            branch_state.tree = state.tree;
+            branch_state.anchor_history = state.anchor_history;
+            branch_state.utxos = state.utxos;
+            branch_state.nullifier_rows = state.nullifier_rows;
+
+            dinero::Block malformed;
+            malformed.vtx.push_back(MakeCoinbaseTx(6, 50, 0x26));
+            malformed.vtx.front().vin.front().prevout = dinero::TxOutPoint(
+                blocks.back().vtx.front().GetTxid(), 0);
+            Require(!malformed.vtx.front().IsCoinbase(),
+                    "replay boundary fixture must have a malformed first transaction");
+            const auto expected = FinalizeAndApplyReferenceBlock(
+                malformed, 6, blocks.back().GetHash(), branch_state);
+            blocks.push_back(std::move(malformed));
+            expectations.push_back(expected);
+
+            auto& params = dinero::MutableParams();
+            const auto prior_activation = params.coinbase_structure_activation_height;
+            params.coinbase_structure_activation_height = 7;
+            const fs::path legacy_dir = base_dir / "legacy_first_tx";
+            fs::create_directories(legacy_dir);
+            run_prefix(legacy_dir,
+                       legacy_dir / "blockchain" / "chaindb.reindex",
+                       legacy_dir / "blockchain" / "shielded_frontier.reindex.bin",
+                       legacy_dir / "blockchain" / "shielded_nullifiers.reindex.db",
+                       blocks.size());
+
+            // Replay the exact same serialized blocks with the boundary at
+            // this block. The structural failure must abort before publishing
+            // the malformed tip; all other fixture inputs are identical.
+            params.coinbase_structure_activation_height = 6;
+            const fs::path active_dir = base_dir / "active_first_tx";
+            fs::create_directories(active_dir);
+            dinero::BlockStorage active_storage;
+            Require(active_storage.init(active_dir) == dinero::Status::Ok,
+                    "failed to init active-boundary BlockStorage");
+            Require(active_storage.writeBlock(genesis_hash, genesis_block).ok(),
+                    "failed to write active-boundary genesis");
+            for (const auto& replay_block : blocks) {
+                Require(active_storage.writeBlock(replay_block.GetHash(), replay_block).ok(),
+                        "failed to write active-boundary block");
+            }
+            Require(active_storage.flush() == dinero::Status::Ok,
+                    "failed to flush active-boundary blocks");
+
+            dinero::ChainDB active_db;
+            Require(active_db.init(active_dir / "blockchain" / "chaindb.reindex") ==
+                        dinero::Status::Ok,
+                    "failed to init active-boundary ChainDB");
+            dinero::consensus::BlockReindexer::Config active_config;
+            active_config.mode = dinero::consensus::BlockReindexer::Mode::FULL;
+            active_config.use_assumevalid = true;
+            active_config.progress_interval = 1000;
+            active_config.shielded_frontier_output_path =
+                active_dir / "blockchain" / "shielded_frontier.reindex.bin";
+            active_config.shielded_nullifier_db_path =
+                active_dir / "blockchain" / "shielded_nullifiers.reindex.db";
+            dinero::consensus::BlockReindexer active_reindexer(
+                active_dir, &active_db, &active_storage, active_config);
+            auto active_result = active_reindexer.execute();
+            Require(active_result.ok() && !active_result.value().success,
+                    "active-boundary replay accepted malformed first transaction");
+            auto active_tip = active_db.getTip();
+            Require(active_tip.ok() && active_tip.value().height == 5,
+                    "active-boundary replay published malformed tip");
+            active_storage.close();
+            active_db.close();
+
+            params.coinbase_structure_activation_height = prior_activation;
+            expectations.pop_back();
+            blocks.pop_back();
+        }
+
         // Replaying the reset must remove authoritative rows from the old
         // epoch as well as emptying the SQLite cache. Derive the expected
         // post-reset state directly: empty tree and no spent-note records.
@@ -962,6 +1043,82 @@ int main(int argc, char** argv) {
                     "truncate-and-mark-invalid (failure misclassification)");
             Require(!bad_stats.error.empty(),
                     "aborting reindex must report an error");
+        }
+
+        // Real canonical mainnet H0/H1 wire, independently pinned from the
+        // selected chain. The H1 rule must leave genesis seeding and the first
+        // historical block's durable replay intact.
+        {
+            const auto original_chain = dinero::GetActiveChain();
+            dinero::SelectParams(dinero::Chain::MAINNET);
+            Require(dinero::Params().coinbase_structure_activation_height == 1,
+                    "mainnet structural rule must start at H1");
+            const auto mainnet_genesis = dinero::BuildCanonicalGenesis(dinero::Params());
+            dinero::Transaction mainnet_genesis_tx;
+            const auto genesis_bytes = dinero::TransactionSerializer::FromHex(
+                mainnet_genesis.coinbase_hex);
+            size_t consumed = 0;
+            Require(dinero::TransactionSerializer::Deserialize(
+                        mainnet_genesis_tx, genesis_bytes, consumed) &&
+                        consumed == genesis_bytes.size(),
+                    "failed to decode mainnet genesis coinbase");
+            dinero::Block mainnet_block0;
+            mainnet_block0.header = mainnet_genesis.header;
+            mainnet_block0.vtx.push_back(mainnet_genesis_tx);
+            Require(mainnet_block0.GetHash().GetHex() == dinero::Params().genesis_hash,
+                    "mainnet genesis hash changed");
+
+            const std::string mainnet_h1_hex =
+                "010000006fb72815ae47a082ff3b0f45246c928888c0d00ef43f232c7ef2ab361c0000009ac4ea55ba6a0da81f58164b"
+                "a9bc890c112b5f0f121ba3722ab2caeb6b74e5ff77ed0ec9b61c081cbf8a322363243913d0e0e21388f82d9c8e4a5291"
+                "4cad237cad83e36900000000ffc7001e20b37c0000000000000000000000000001010000000001010000000000000000"
+                "000000000000000000000000000000000000000000000000ffffffff020101ffffffff0300e40b5402000000225120d0"
+                "9a7dccc98a44fb62121ee035cac4dcf69908a8b0c20be5aff2233adda99d420000000000000000276a25444e525701e2"
+                "f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90000000000000000276a25444e524601c1"
+                "b41eb2e699bf0ef45afa45a72ef2086e406ad2ccc8d24ea9b663d61cfbee17010800000000000000000000000000";
+            const auto h1_bytes = dinero::TransactionSerializer::FromHex(mainnet_h1_hex);
+            const auto mainnet_h1 = dinero::Block::Deserialize(h1_bytes);
+            Require(mainnet_h1.has_value(), "failed to decode canonical mainnet H1 block");
+            Require(mainnet_h1->GetHash().GetHex() ==
+                        "000000194ff6bff58b929bc41978ef1b329a1d3737598eac86a57ec481c4d643",
+                    "canonical mainnet H1 hash changed");
+            Require(mainnet_h1->header.prev_block_hash == mainnet_block0.GetHash() &&
+                        mainnet_h1->vtx.size() == 1 &&
+                        mainnet_h1->vtx.front().IsCoinbase(),
+                    "canonical mainnet H1 ancestry or coinbase shape changed");
+
+            const fs::path mainnet_dir = base_dir / "mainnet_h0_h1";
+            fs::create_directories(mainnet_dir);
+            dinero::BlockStorage mainnet_storage;
+            Require(mainnet_storage.init(mainnet_dir) == dinero::Status::Ok,
+                    "failed to init mainnet BlockStorage");
+            Require(mainnet_storage.writeBlock(mainnet_block0.GetHash(), mainnet_block0).ok() &&
+                        mainnet_storage.writeBlock(mainnet_h1->GetHash(), *mainnet_h1).ok() &&
+                        mainnet_storage.flush() == dinero::Status::Ok,
+                    "failed to persist canonical mainnet H0/H1");
+            dinero::ChainDB mainnet_db;
+            Require(mainnet_db.init(mainnet_dir / "blockchain" / "chaindb.reindex") ==
+                        dinero::Status::Ok,
+                    "failed to init mainnet ChainDB");
+            dinero::consensus::BlockReindexer::Config mainnet_config;
+            mainnet_config.mode = dinero::consensus::BlockReindexer::Mode::FULL;
+            mainnet_config.use_assumevalid = true;
+            mainnet_config.shielded_frontier_output_path =
+                mainnet_dir / "blockchain" / "shielded_frontier.reindex.bin";
+            mainnet_config.shielded_nullifier_db_path =
+                mainnet_dir / "blockchain" / "shielded_nullifiers.reindex.db";
+            dinero::consensus::BlockReindexer mainnet_reindexer(
+                mainnet_dir, &mainnet_db, &mainnet_storage, mainnet_config);
+            const auto replay = mainnet_reindexer.execute();
+            Require(replay.ok() && replay.value().success,
+                    "canonical mainnet H0/H1 replay failed under structural rule");
+            const auto mainnet_tip = mainnet_db.getTip();
+            Require(mainnet_tip.ok() && mainnet_tip.value().height == 1 &&
+                        mainnet_tip.value().hash == mainnet_h1->GetHash(),
+                    "canonical mainnet H1 was not published by replay");
+            mainnet_storage.close();
+            mainnet_db.close();
+            dinero::SelectParams(original_chain);
         }
 
         fs::remove_all(base_dir, ec);

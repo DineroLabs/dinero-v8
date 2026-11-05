@@ -6,6 +6,8 @@
  */
 
 #include "consensus/filter_commitment.h"
+#include "consensus/chainparams.h"
+#include "consensus/coinbase_structure.h"
 #include <cstring>
 
 namespace dinero::consensus {
@@ -39,12 +41,8 @@ std::vector<uint8_t> BuildFilterCommitmentScript(const uint256& filter_hash) {
     return script;
 }
 
-std::optional<size_t> FindFilterCommitmentIndex(const Transaction& coinbase) {
-    // Must be a coinbase transaction
-    if (coinbase.vin.size() != 1 || !coinbase.vin[0].prevout.txid.AsUint256().IsNull()) {
-        return std::nullopt;
-    }
-
+namespace {
+std::optional<size_t> FindFilterCommitmentIndexInOutputs(const Transaction& coinbase) {
     // Search outputs backwards (last matching output wins)
     for (size_t i = coinbase.vout.size(); i-- > 0; ) {
         const auto& script = coinbase.vout[i].scriptPubKey;
@@ -64,6 +62,24 @@ std::optional<size_t> FindFilterCommitmentIndex(const Transaction& coinbase) {
     }
 
     return std::nullopt;
+}
+} // namespace
+
+std::optional<size_t> FindFilterCommitmentIndex(const Transaction& coinbase) {
+    if (!coinbase.IsCoinbase()) return std::nullopt;
+    return FindFilterCommitmentIndexInOutputs(coinbase);
+}
+
+std::optional<size_t> FindFilterCommitmentIndexForBlock(
+    const Transaction& coinbase, uint64_t height) {
+    if (IsCoinbaseStructureActive(
+            height, Params().coinbase_structure_activation_height)) {
+        return FindFilterCommitmentIndex(coinbase);
+    }
+    if (coinbase.vin.size() != 1 || !coinbase.vin[0].prevout.txid.IsNull()) {
+        return std::nullopt;
+    }
+    return FindFilterCommitmentIndexInOutputs(coinbase);
 }
 
 std::optional<uint256> ExtractFilterCommitment(
@@ -99,7 +115,10 @@ bool ValidateFilterCommitment(
     std::string& error
 ) {
     // Find filter commitment in coinbase
-    auto index_opt = FindFilterCommitmentIndex(coinbase);
+    // Historical validation used a txid-only test here. Preserve it below
+    // the separately scheduled coinbase-structure boundary; after activation
+    // use the same canonical predicate as ingress, connect and reindex.
+    auto index_opt = FindFilterCommitmentIndexForBlock(coinbase, height);
 
     // No commitment found
     if (!index_opt.has_value()) {

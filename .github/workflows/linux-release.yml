@@ -78,8 +78,11 @@ jobs:
             echo "::error::Linux Release requires candidate_source (a full reviewed commit SHA) or release_tag, or must run on a release tag. No source/version was selected."
             exit 1
           fi
-          echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$V"
+            echo "release_tag=$TAG"
+            echo "source_sha=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
           echo "Building Linux release for version: $V"
 
       # Kept in sync with tests.yml. The first dry-run of this lane failed at
@@ -282,6 +285,12 @@ jobs:
           echo "sumfile=SHA256SUMS-linux-x86_64-$V" >> "$GITHUB_OUTPUT"
           echo "debug_tarball=$DEBUG_ARCHIVE.tar.gz" >> "$GITHUB_OUTPUT"
           echo "debug_sumfile=SHA256SUMS-linux-x86_64-debug-symbols-$V" >> "$GITHUB_OUTPUT"
+
+      # The Debian package uses a separate CMake build. Keep the verified
+      # tarballs and checksums, but reclaim the first build and unpacked
+      # staging trees before dpkg-buildpackage starts its own build.
+      - name: Reclaim verified first-build workspace for Debian packaging
+        run: bash scripts/ci/prune_linux_release_build_space.sh "${{ steps.ver.outputs.version }}" "${{ steps.ver.outputs.source_sha }}"
 
       - name: Build and verify packaged-service Debian artifact
         env:

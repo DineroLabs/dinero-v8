@@ -669,6 +669,50 @@ void TestPeerBlockHeaderRefusal() {
     std::cout << "PASS PeerHeaderProgress.RefusalWithoutPublication\n";
 }
 
+void Test12_FailedBranchPeerCannotStarveHonestPeer() {
+    for (int response_kind = 0; response_kind < 3; ++response_kind) {
+        HeaderChainSelector selector;
+        const auto genesis = CreateTestHeader(uint256(), 1'000'000);
+        assert(selector.AddHeader(genesis));
+        const auto failed = CreateHeaderChain(genesis.GetHash(), 5, 1'000'001);
+        for (const auto& header : failed) assert(selector.AddHeader(header));
+        selector.MarkFailedHeader(failed.front().GetHash());
+        assert(selector.GetBestHeaderValue()->hash == genesis.GetHash());
+        assert(selector.GetRawBestHeaderValue()->hash == failed.back().GetHash());
+
+        HeaderSyncP2P sync(&selector);
+        P2PCallbackMocks mocks;
+        sync.SetSendGetheadersCallback(
+            [&](uint64_t peer, const std::vector<uint256>& locator, const uint256& stop) {
+                return mocks.OnSendGetheaders(peer, locator, stop);
+            });
+        const auto fresh_failed = CreateTestHeader(failed.back().GetHash(), 1'000'006);
+        sync.OnPeerConnected(1, response_kind == 2 ? 6 : 5,
+                             response_kind == 2 ? fresh_failed.GetHash() : failed.back().GetHash(), true);
+        sync.OnPeerConnected(2, 4, uint256(), true);
+        sync.StartSync();
+        assert(mocks.getheaders_calls.size() == 1 &&
+               mocks.getheaders_calls.back().peer_id == 1);
+        assert(mocks.getheaders_calls.back().locator.front() == genesis.GetHash());
+
+        const auto response = response_kind == 0 ? std::vector<BlockHeader>{} :
+            response_kind == 1 ? failed : std::vector<BlockHeader>{fresh_failed};
+        const auto no_progress = sync.ProcessHeaders(1, response);
+        assert(no_progress.accepted && no_progress.inserted == (response_kind == 2 ? 1u : 0u));
+        sync.Tick();
+        assert(mocks.getheaders_calls.size() == 2 &&
+               mocks.getheaders_calls.back().peer_id == 2);
+
+        const auto honest = CreateHeaderChain(genesis.GetHash(), 4, 1'000'101);
+        const auto progress = sync.ProcessHeaders(2, honest);
+        assert(progress.accepted && progress.inserted == 4);
+        assert(selector.GetBestHeaderValue()->hash == honest.back().GetHash());
+        assert(selector.GetRawBestHeaderValue()->hash ==
+               (response_kind == 2 ? fresh_failed.GetHash() : failed.back().GetHash()));
+    }
+    std::cout << "PASS FailedBranchPeer.NoProgressRotatesToHonestPeer\n";
+}
+
 int main(int argc, char** argv) {
     if (argc == 2 && std::string(argv[1]) == "--peer-progress") {
         SelectParams(Chain::REGTEST);
@@ -692,6 +736,7 @@ int main(int argc, char** argv) {
     Test9_ConcurrentTriggersProduceOneRequest();
     Test10_SideBranchContinuationUsesReceivedFrontier();
     Test11_LocalRateDropReleasesOnlyItsRequest();
+    Test12_FailedBranchPeerCannotStarveHonestPeer();
 
     std::cout << "\n=== ALL P2P INTEGRATION TESTS PASSED ===" << std::endl;
     std::cout << "\nPhase N.2 Step 2C Verification:" << std::endl;

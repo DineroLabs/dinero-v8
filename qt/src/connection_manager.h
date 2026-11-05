@@ -29,7 +29,7 @@ public:
         Connecting,      // Attempting to connect
         Connected,       // Connected and verified
         Reconnecting,    // Lost connection, attempting to reconnect
-        Failed          // Connection failed permanently (user action needed)
+        Failed          // Fast retries exhausted; slow readiness probes continue
     };
     Q_ENUM(ConnectionState)
 

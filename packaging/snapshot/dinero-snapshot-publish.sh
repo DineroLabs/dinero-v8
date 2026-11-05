@@ -20,15 +20,22 @@ SNAPSHOT_PROFILE=${SNAPSHOT_PROFILE:-compact}
 case "$SNAPSHOT_PROFILE" in compact) SYNC_PROFILE=ios_utreexo;; full) SYNC_PROFILE=mac_fullblock;; *) echo "invalid SNAPSHOT_PROFILE" >&2; exit 2;; esac
 
 DATADIR=${DATADIR:-/var/lib/dinero}
-DUMPDIR=$DATADIR/snapshots
+SNAPSHOT_ROOT=$DATADIR/snapshots
+# Keep the existing compact/legacy and H149999 capture path. Full v6 uses a
+# separate pending namespace so neither profile can consume or delete the
+# other's retained candidate while it waits for burial.
+DUMPDIR=$SNAPSHOT_ROOT
+if [ "$SNAPSHOT_PROFILE" = full ]; then DUMPDIR=$SNAPSHOT_ROOT/full; fi
 PUBROOT=${PUBROOT:-/var/www/dinero-snapshots}
 KEY=${KEY:-/etc/dinero-snapshot/ed25519.key}
 CLI=("${CLI_BIN:-dinero-cli}" "-datadir=$DATADIR")
 DINEROD=${DINEROD:-/usr/bin/dinerod}
 GATE_PORT=${GATE_PORT:-26999}
 GATE_RPC=${GATE_RPC:-26998}
+GATE_WALLET=${GATE_WALLET:-27000}
 GATE_TIMEOUT=${GATE_TIMEOUT:-1200}
 KEEP=7
+PIN_V5_HEIGHT=${SNAPSHOT_PIN_V5_HEIGHT:-149999}
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 LOG_PREFIX="[snapshot-publish $TS]"
 
@@ -36,18 +43,97 @@ log() { echo "$LOG_PREFIX $*"; }
 fail() { log "FAIL: $*"; exit 1; }
 
 mkdir -p "$DUMPDIR" "$PUBROOT/archive"
-chown dinero:dinero "$DUMPDIR" || true
+chown dinero:dinero "$SNAPSHOT_ROOT" "$DUMPDIR" || true
 
-# Only one dump / publication may manipulate the pending candidate at a time.
-exec 9>"$DUMPDIR/publisher.lock"
+# Serialize both profiles' exports and the exact-height boundary capture.
+exec 9>"$SNAPSHOT_ROOT/publisher.lock"
 flock -n 9 || { log "another publisher run is active"; exit 0; }
+
+# Publishers using different datadirs do not share publisher.lock. Hold an
+# endpoint lock through the final latest swap as well, so even an initially
+# empty PUBROOT can be claimed by only one profile at a time.
+exec 8>"$PUBROOT/.publisher.lock"
+flock -w "${PUBROOT_LOCK_TIMEOUT:-1800}" 8 || fail "publication root is locked by another publisher"
+
+# A full v6 artifact must never replace the phone endpoint's latest (or the
+# reverse). Existing public v5 manifests predate snapshot_profile: that
+# legacy endpoint is the compact/phone endpoint. A durable claim also binds a
+# new empty root before its first latest symlink exists.
+verify_endpoint_profile() {
+    python3 - "$PUBROOT" "$SNAPSHOT_PROFILE" <<'PYENDPOINT' \
+        || fail "endpoint profile collision or unreadable latest manifest; kept latest"
+import json, os, pathlib, sys
+try:
+    root, requested = pathlib.Path(sys.argv[1]), sys.argv[2]
+    marker = root / '.snapshot-profile'
+    if marker.exists() or marker.is_symlink():
+        if marker.is_symlink() or not marker.is_file() or marker.read_text() != requested + '\n':
+            raise ValueError(f'publication root profile claim differs from {requested}')
+    latest = root / 'latest'
+    if latest.exists() or latest.is_symlink():
+        with (latest / 'manifest.json').open() as stream:
+            data = json.load(stream)
+        if data.get('network') != 'mainnet' or type(data.get('format_version')) is not int:
+            raise ValueError('latest is not a mainnet snapshot manifest')
+        profile = data.get('snapshot_profile')
+        if 4 <= data['format_version'] < 6 and profile in (None, 'legacy'):
+            endpoint = 'compact'
+        elif data['format_version'] == 6 and profile in ('compact', 'full'):
+            endpoint = profile
+        else:
+            raise ValueError('latest has an unknown snapshot profile')
+        if endpoint != requested:
+            raise ValueError(f'latest belongs to {endpoint}, requested {requested}')
+    if not marker.exists():
+        # O_EXCL makes the claim atomic even if an uncooperative publisher
+        # ignores .publisher.lock. An interrupted partial claim fails closed.
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        try:
+            os.write(fd, (requested + '\n').encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        directory = os.open(root, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+except (OSError, ValueError, TypeError, AttributeError) as error:
+    raise SystemExit(f'endpoint profile check refused: {error}')
+PYENDPOINT
+}
+verify_endpoint_profile
 
 # Keep one candidate while waiting for burial. The daemon exports its current
 # state, so repeatedly dumping the tip would never produce a buried candidate.
 DUMP_FILE=$DUMPDIR/pending.dat
 PENDING=$DUMPDIR/pending.json
+discard_pending_unless_boundary() {
+    local reason=$1
+    # A malformed metadata file or a reorg must never silently erase the
+    # one-time H149999 export. Retain it for selected-chain review or recovery.
+    if [ -f "$DUMP_FILE" ] && python3 - "$SCRIPT_DIR" "$DUMP_FILE" "$PIN_V5_HEIGHT" <<'PYBOUNDARY'
+import sys
+sys.path.insert(0,sys.argv[1])
+from snapshot_transport import inspect
+try:
+    version,height,_,profile=inspect(sys.argv[2])
+except (OSError,ValueError):
+    raise SystemExit(1)
+raise SystemExit(0 if (version,height,profile)==(5,int(sys.argv[3]),'legacy') else 1)
+PYBOUNDARY
+    then
+        fail "$reason; retained exact v5 boundary payload for review"
+    fi
+    rm -f "$PENDING" "$DUMP_FILE"
+}
 if [ ! -f "$PENDING" ]; then
-    rm -f "$DUMP_FILE"
+    # A process may have stopped after installing the exact H149999 payload
+    # but before its metadata. Never erase an unpaired export automatically:
+    # the boundary capture can validate and recover it after the tip advances.
+    if [ -e "$DUMP_FILE" ] || [ -L "$DUMP_FILE" ]; then
+        fail "unpaired pending payload; inspect or recover before exporting again"
+    fi
     EXPORT_ARGS=(); [ "$SNAPSHOT_PROFILE" != compact ] || EXPORT_ARGS+=(compact)
     OUT=$("${CLI[@]}" dumptxoutset "$DUMP_FILE" "${EXPORT_ARGS[@]}") || fail "dumptxoutset RPC failed"
     printf '%s\n' "$OUT" > "$PENDING.tmp"
@@ -66,11 +152,11 @@ require(isinstance(d['base_hash'],str) and d['base_hash'].lower()==block, 'RPC/h
 require(version!=6 or profile==sys.argv[4], 'exporter profile differs from publication profile')
 print(height,block,version,profile)
 PYFIELDS
-) || { rm -f "$PENDING" "$DUMP_FILE"; fail "invalid pending snapshot metadata/header/profile"; }
+) || { discard_pending_unless_boundary "invalid pending metadata/header/profile"; fail "invalid pending snapshot metadata/header/profile"; }
 read -r HEIGHT BASE_HASH FORMAT FILE_PROFILE <<< "$FIELDS"
 CURRENT_HASH=$("${CLI[@]}" getblockhash "$HEIGHT" | tr -d '\"\r\n') || fail "base ancestry RPC failed"
 if [ "$CURRENT_HASH" != "$BASE_HASH" ]; then
-    rm -f "$PENDING" "$DUMP_FILE"
+    discard_pending_unless_boundary "pending base left selected chain"
     fail "pending base left selected chain; discarded candidate, kept latest"
 fi
 if [ "$FORMAT" -ge 5 ]; then
@@ -117,7 +203,8 @@ openssl pkeyutl -verify -pubin \
     -rawin -in "$MANIFEST" -sigfile "$SIG" >/dev/null \
     || fail "signature self-verification failed"
 
-elif [ "$SNAPSHOT_PROFILE" = compact ] || [ "$FORMAT" -lt 5 ] || [ "$HEIGHT" -lt 111000 ]; then
+elif [ "$SNAPSHOT_PROFILE" = compact ] || [ "$FORMAT" -lt 5 ] || [ "$HEIGHT" -lt 111000 ] ||
+     { [ "$FORMAT" = 5 ] && [ "$HEIGHT" = "$PIN_V5_HEIGHT" ]; }; then
     fail "phone/legacy publication requires a signing key"
 else
     log "publishing v$FORMAT without optional publisher signature; chain binding is mandatory"
@@ -128,20 +215,24 @@ GATE_DIR=$(mktemp -d /tmp/dinero-snapgate.XXXXXX)
 GATE_PID=""
 trap '[ -z "$GATE_PID" ] || kill -9 "$GATE_PID" 2>/dev/null || true; rm -rf "$GATE_DIR"' EXIT
 mkdir -p "$GATE_DIR/datadir"
+# The manifest names the public payload. The native loader checks that basename
+# as well as its hash; pending.dat is only the publisher's private staging name.
+cp "$DUMP_FILE" "$GATE_DIR/snapshot.dat"
 cat > "$GATE_DIR/datadir/dinero.conf" <<EOF
 sync-profile=$SYNC_PROFILE
-utreexo_bridge=0
+utreexo-bridge=0
+lightning.oracles.enable=0
 assumeutxo_forward_connect=1
 port=$GATE_PORT
 rpcport=$GATE_RPC
 portmap=0
 listen=0
 connect=127.0.0.1:20999
-assumeutxo_snapshot=$DUMP_FILE
+assumeutxo_snapshot=$GATE_DIR/snapshot.dat
 assumeutxo_manifest=$MANIFEST
 assumeutxo_require_manifest=1
 EOF
-"$DINEROD" --datadir="$GATE_DIR/datadir" > "$GATE_DIR/node.log" 2>&1 &
+"$DINEROD" --datadir="$GATE_DIR/datadir" --wallet-socket-port="$GATE_WALLET" 8>&- 9>&- > "$GATE_DIR/node.log" 2>&1 &
 GATE_PID=$!
 log "gate node started (pid $GATE_PID), waiting up to ${GATE_TIMEOUT}s"
 
@@ -149,24 +240,28 @@ DEADLINE=$(( $(date +%s) + GATE_TIMEOUT ))
 GATE_OK=0
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
     kill -0 $GATE_PID 2>/dev/null || break
-    if grep -qE "rejected|checksum mismatch|refusing partial|FATAL" "$GATE_DIR/node.log"; then
-        break
-    fi
-    # RPC state is shared by legacy and v6 loaders. Log text is not an import receipt.
-    if "${CLI[0]}" -rpcport="$GATE_RPC" -datadir="$GATE_DIR/datadir" getbackgroundvalidationprogress > "$GATE_DIR/state.json" 2>/dev/null \
-       && python3 - "$GATE_DIR/state.json" "$HEIGHT" "$BASE_HASH" <<'PYGATE'
+    # RPC state is shared by legacy and v6 loaders. Ordinary startup metrics
+    # include "blocks_rejected_total"; matching arbitrary log words aborts a
+    # healthy gate before its headers arrive. Logs are not an import receipt.
+    if "${CLI[0]}" -rpcport="$GATE_RPC" -datadir="$GATE_DIR/datadir" getbackgroundvalidationprogress > "$GATE_DIR/state.json" 2>/dev/null; then
+      if python3 - "$GATE_DIR/state.json" "$HEIGHT" "$BASE_HASH" <<'PYGATE'
 import json,sys
 with open(sys.argv[1]) as f: state=json.load(f)
+if state.get('status')=='Failed' or state.get('error_message'):
+    raise SystemExit(2)
 if (state.get('assumeutxo_active') is not True or
     type(state.get('snapshot_base_height')) is not int or
     state['snapshot_base_height']!=int(sys.argv[2]) or
-    state.get('snapshot_base_block')!=sys.argv[3] or
-    state.get('status')=='Failed' or state.get('error_message')):
-    raise ValueError('native gate has not admitted the expected snapshot base')
+    state.get('snapshot_base_block')!=sys.argv[3]):
+    raise SystemExit(1)
 PYGATE
-    then
+      then
         GATE_OK=1
         break
+      else
+        GATE_STATUS=$?
+        [ "$GATE_STATUS" -ne 2 ] || fail "native gate reported snapshot failure; kept latest"
+      fi
     fi
     sleep 10
 done
@@ -192,15 +287,73 @@ GATE_PID=""
 
 # Recheck ancestry after the potentially long native validation gate.
 CURRENT_HASH=$("${CLI[@]}" getblockhash "$HEIGHT" | tr -d '\"\r\n') || fail "final ancestry RPC failed"
-[ "$CURRENT_HASH" = "$BASE_HASH" ] || { rm -f "$PENDING" "$DUMP_FILE"; fail "base left selected chain during gate"; }
+[ "$CURRENT_HASH" = "$BASE_HASH" ] || { discard_pending_unless_boundary "base left selected chain during gate"; fail "base left selected chain during gate"; }
 
 # ── 5. Publish atomically ───────────────────────────────────────────────────
+verify_endpoint_profile
 SET_DIR=$PUBROOT/archive/$TS
 mkdir -p "$SET_DIR"
 cp "$DUMP_FILE"  "$SET_DIR/snapshot.dat"
 cp "$MANIFEST"   "$SET_DIR/manifest.json"
 if [ -f "$SIG" ]; then cp "$SIG" "$SET_DIR/manifest.sig"; fi
 chmod -R o+rX "$SET_DIR"
+# The exact last pre-Orchard v5 base is a permanent recovery artifact. Pin it
+# before exposing it via latest; normal seven-set archive rotation excludes it.
+if [ "$FORMAT" = 5 ] && [ "$HEIGHT" = "$PIN_V5_HEIGHT" ]; then
+    PIN_ROOT=$PUBROOT/pinned
+    PIN_DIR=$PIN_ROOT/v5-h$HEIGHT
+    mkdir -p "$PIN_ROOT"
+    if [ -e "$PIN_DIR" ]; then
+        python3 - "$PIN_DIR" "$HEIGHT" "$BASE_HASH" "$SHA" "$BYTES" <<'PYPIN' \
+            || fail "existing permanent v5 boundary artifact differs or is incomplete"
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]);height=int(sys.argv[2]);block=sys.argv[3];sha=sys.argv[4];size=int(sys.argv[5])
+data=json.loads((root/'manifest.json').read_text())
+if data.get('format_version')!=5 or data.get('network')!='mainnet' or data.get('snapshot_profile')!='legacy':
+    raise SystemExit('wrong pinned format, network or profile')
+if data['snapshot']['height']!=height or data['snapshot']['block_hash']!=block:
+    raise SystemExit('wrong pinned base')
+if (data['snapshot']['sha256']!=sha or data['snapshot'].get('bytes')!=size or
+    data['snapshot'].get('snapshot_file')!='snapshot.dat' or
+    not (root/'manifest.sig').is_file()):
+    raise SystemExit('incomplete pinned identity')
+with (root/'snapshot.dat').open('rb') as stream:
+    digest=hashlib.file_digest(stream,'sha256').hexdigest()
+if digest!=sha:
+    raise SystemExit('pinned payload hash differs')
+PYPIN
+        # Existence is not a signature check: a damaged retained signature
+        # would leave the permanent recovery URL unusable by clients.
+        openssl pkeyutl -verify -pubin \
+            -inkey <(openssl pkey -in "$KEY" -pubout) \
+            -rawin -in "$PIN_DIR/manifest.json" \
+            -sigfile "$PIN_DIR/manifest.sig" >/dev/null \
+            || fail "existing permanent v5 boundary signature is invalid"
+    else
+        PIN_TMP=$(mktemp -d "$PIN_ROOT/.v5-h$HEIGHT.XXXXXX")
+        cp "$SET_DIR/snapshot.dat" "$SET_DIR/manifest.json" "$SET_DIR/manifest.sig" "$PIN_TMP/" \
+            || fail "permanent v5 boundary copy failed"
+        python3 - "$PIN_TMP" <<'PYSYNC' || fail "permanent v5 boundary durability sync failed"
+import os,pathlib,sys
+root=pathlib.Path(sys.argv[1])
+for name in ('snapshot.dat','manifest.json','manifest.sig'):
+    with (root/name).open('rb') as stream:
+        os.fsync(stream.fileno())
+fd=os.open(root,os.O_RDONLY)
+try: os.fsync(fd)
+finally: os.close(fd)
+PYSYNC
+        chmod -R o+rX "$PIN_TMP"
+        mv -T "$PIN_TMP" "$PIN_DIR" || fail "permanent v5 boundary install failed"
+        python3 - "$PIN_ROOT" <<'PYSYNC' || fail "permanent v5 boundary parent sync failed"
+import os,sys
+fd=os.open(sys.argv[1],os.O_RDONLY)
+try: os.fsync(fd)
+finally: os.close(fd)
+PYSYNC
+    fi
+    log "pinned permanent v5 boundary: $PIN_DIR"
+fi
 ln -sfn "archive/$TS" "$PUBROOT/latest.tmp"
 mv -Tf "$PUBROOT/latest.tmp" "$PUBROOT/latest"
 log "published: $SET_DIR -> latest"

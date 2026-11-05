@@ -322,12 +322,25 @@ PARENT_HASH="$(get_block_hash 21)"
 
 [[ -n "${TARGET_HASH}" && -n "${CHILD_HASH}" && -n "${TIP_HASH}" && -n "${PARENT_HASH}" ]] || \
     fail "failed to capture branch hashes"
+TIP_WIRE="$(rpc_call "getblock" "[\"${TIP_HASH}\",0]" | jq -r '.result // empty')"
+[[ -n "${TIP_WIRE}" ]] || fail "could not capture tip body for duplicate delivery"
 
 INVALIDATE_RESULT="$(rpc_call "blockchain.invalidateblock" "[\"${TARGET_HASH}\"]")"
 rpc_has_error "${INVALIDATE_RESULT}" && fail "invalidateblock failed: ${INVALIDATE_RESULT}"
 
 assert_height 21 "live post-invalidate height"
 assert_best_hash "${PARENT_HASH}" "live post-invalidate best hash"
+
+# Re-deliver a disconnected descendant after its ancestor is invalidated. The
+# block remains stored with a valid undo locator; BlockAcceptor processes the
+# duplicate as a side branch. Its in-memory index must retain the same undo
+# flag that putHeaderMetadataPreservingExistingUndo retains on disk.
+REDRIVE_RESULT="$(rpc_call "submitblock" "[\"${TIP_WIRE}\"]")"
+rpc_has_error "${REDRIVE_RESULT}" && fail "duplicate tip delivery failed: ${REDRIVE_RESULT}"
+TIP_AFTER_REDRIVE="$(get_block_header "${TIP_HASH}")"
+jq -e '(.status_flags % 512 >= 256) and .failed_child' <<<"${TIP_AFTER_REDRIVE}" >/dev/null || \
+    fail "duplicate side-branch delivery lost undo or invalidity status"
+
 capture_invalidity_bundle "${PARENT_HASH}" "${TARGET_HASH}" "${CHILD_HASH}" "${TIP_HASH}" > "${STATE_LIVE_FILE}"
 pass "Captured live invalidity bundle"
 

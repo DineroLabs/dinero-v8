@@ -2112,14 +2112,10 @@ std::string P2PManager::install_outbound_virtual_relay_peer(
     const std::array<uint8_t, 20>& target_node_id,
     const std::string& relay_peer_address,
     uint64_t circuit_id) {
-    std::ostringstream key_oss;
-    key_oss << "relay:";
-    key_oss << std::hex << std::setfill('0');
-    for (auto b : target_node_id) {
-        key_oss << std::setw(2) << static_cast<unsigned int>(b);
-    }
-    key_oss << ":" << std::hex << circuit_id;
-    const std::string virtual_peer_key = key_oss.str();
+    // Reply demultiplexing reconstructs this name from the acknowledged
+    // numeric circuit ID. Use its canonical, fixed-width representation so
+    // circuits with leading zero hex digits remain addressable.
+    const std::string virtual_peer_key = RelayVirtualPeerAddress(target_node_id, circuit_id);
 
     auto peer = std::make_shared<PeerInfo>();
     peer->address = virtual_peer_key;

@@ -20,7 +20,7 @@
  *  - Notify() never blocks on drain work and never loses a wakeup: a notify
  *    that arrives while drain_step is running guarantees one more drain pass.
  *  - Stop() (also run by the destructor) wakes the worker and joins; a
- *    drain_step in flight completes first.
+ *    drain_step in flight completes first; queued work does not delay Stop.
  */
 
 #include <condition_variable>
@@ -75,12 +75,16 @@ private:
             cv_.wait(l, [this]() { return pending_ || stop_; });
             if (stop_) break;
             pending_ = false;
-            l.unlock();
-            // Drain until the step reports no progress. drain_step_ manages
-            // its own (caller-owned) locking; this class holds no lock here.
-            while (drain_step_()) {
-            }
-            l.lock();
+            // Check Stop between items, even when incoming work never runs
+            // out. Finish the current item before joining; the caller-owned
+            // state remains alive throughout it. Never hold our wake mutex
+            // across the drain callback or any of its caller-owned locks.
+            do {
+                l.unlock();
+                const bool progress = drain_step_();
+                l.lock();
+                if (!progress) break;
+            } while (!stop_);
         }
     }
 

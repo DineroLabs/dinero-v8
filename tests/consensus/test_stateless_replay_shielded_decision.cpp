@@ -29,6 +29,18 @@ TEST(StatelessReplayShieldedDecision, MarkerAtOrAheadSkips) {
     ASSERT_EQ(StatelessReplayShieldedDecision(1000, 10), A::Skip);
 }
 
+TEST(StatelessReplayShieldedDecision, RecoverySkipRequiresExactBlockAndState) {
+    // The broad apply guard skips at or ahead; recovery may only adopt an
+    // already-applied shielded block when the durable marker is its own and
+    // the loaded pool agrees. An ahead marker would be restamped backward by
+    // per-block bookkeeping, so it must fail closed.
+    EXPECT_TRUE(StatelessReplayShieldedSkipMatches(10, 10, true, true));
+    EXPECT_FALSE(StatelessReplayShieldedSkipMatches(10, 10, false, true));
+    EXPECT_FALSE(StatelessReplayShieldedSkipMatches(10, 10, true, false));
+    EXPECT_FALSE(StatelessReplayShieldedSkipMatches(11, 10, true, true));
+    EXPECT_FALSE(StatelessReplayShieldedSkipMatches(9, 10, true, true));
+}
+
 // marker more than one behind -> GapFail (a hole; contiguous-recovery invariant
 // is broken, must fail loud rather than silently apply into a gap).
 TEST(StatelessReplayShieldedDecision, MarkerBehindGapFails) {

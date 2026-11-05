@@ -580,6 +580,104 @@ TEST(PersistStoredBodyPosition_ReplacesStaleMetadataOnly) {
     std::filesystem::remove_all(root);
 }
 
+TEST(PersistStoredBodyPosition_ReplacesUnboundStoredBody) {
+    const auto root = MakeTempRoot();
+    ChainDB chain_db;
+    ASSERT_TRUE(chain_db.init(root / "chaindb") == Status::Ok);
+    BlockStorage block_storage;
+    ASSERT_TRUE(block_storage.init(root) == Status::Ok);
+    const auto token = ChainWriteToken::CreateForTesting();
+    const Block correct = MakeBlock(78);
+    const auto hash = correct.GetHash();
+    Block wrong = correct;
+    wrong.vtx.front().vout.front().value = AmountUna::Una(51);
+    ASSERT_TRUE(wrong.GetHash() == hash);
+    ASSERT_TRUE(wrong.vtx.front().GetTxid() != correct.vtx.front().GetTxid());
+    const auto wrong_pos = block_storage.writeBlock(hash, wrong);
+    const auto correct_pos = block_storage.writeBlock(hash, correct);
+    ASSERT_TRUE(wrong_pos.ok() && correct_pos.ok());
+    ChainDB::PersistedHeaderMetadata metadata;
+    metadata.height = 78;
+    metadata.status_flags = BLOCK_VALID_HEADER | BLOCK_HAVE_DATA;
+    metadata.file_number = wrong_pos->file_number;
+    metadata.data_pos = static_cast<uint32_t>(wrong_pos->offset);
+    metadata.data_size = wrong_pos->size;
+    ASSERT_TRUE(chain_db.putHeaderMetadata(token, hash, metadata) == Status::Ok);
+
+    const auto result = storage::PersistVerifiedArchivalBodyPosition(
+        chain_db, &block_storage, hash, correct_pos.value());
+    ASSERT_TRUE(result.ok() &&
+                result.value() == storage::BodyPositionPersistResult::ReplacedStale);
+    const auto repaired = storage::ReadArchivalBlockDetailed(
+        chain_db, &block_storage, hash,
+        storage::ArchivalReadMode::RequireFlatfiles);
+    ASSERT_TRUE(repaired.result.ok() &&
+                repaired.result->vtx.front().GetTxid() == correct.vtx.front().GetTxid());
+    block_storage.close();
+    chain_db.close();
+    std::filesystem::remove_all(root);
+}
+
+TEST(PersistStoredBodyPosition_ReplacesUnboundWitnessBody) {
+    const auto root = MakeTempRoot();
+    ChainDB chain_db;
+    ASSERT_TRUE(chain_db.init(root / "chaindb") == Status::Ok);
+    BlockStorage block_storage;
+    ASSERT_TRUE(block_storage.init(root) == Status::Ok);
+    const auto token = ChainWriteToken::CreateForTesting();
+
+    Block correct = MakeBlock(79);
+    Transaction spend;
+    TxInput input;
+    input.prevout.txid = TxId();
+    input.prevout.vout = 1;
+    input.witness.push_back({0x30, 0x31, 0x32});
+    spend.vin.push_back(input);
+    TxOutput output;
+    output.value = AmountUna::Una(1);
+    output.scriptPubKey = {0x51};
+    spend.vout.push_back(output);
+    correct.vtx.push_back(spend);
+    TxOutput commitment;
+    commitment.value = AmountUna::Zero();
+    commitment.scriptPubKey = consensus::BuildWitnessCommitment(correct.vtx);
+    correct.vtx.front().vout.push_back(commitment);
+    correct.header.merkle_root = consensus::ComputeMerkleRoot(correct.vtx);
+    std::string error;
+    ASSERT_TRUE(consensus::ValidateWitnessCommitment(correct.vtx, error));
+
+    Block wrong = correct;
+    wrong.vtx[1].vin[0].witness[0][0] ^= 1;
+    ASSERT_TRUE(wrong.GetHash() == correct.GetHash());
+    ASSERT_TRUE(wrong.vtx[1].GetTxid() == correct.vtx[1].GetTxid());
+    ASSERT_TRUE(consensus::ComputeMerkleRoot(wrong.vtx) == correct.header.merkle_root);
+    ASSERT_TRUE(!consensus::ValidateWitnessCommitment(wrong.vtx, error));
+    const auto hash = correct.GetHash();
+    const auto wrong_pos = block_storage.writeBlock(hash, wrong);
+    const auto correct_pos = block_storage.writeBlock(hash, correct);
+    ASSERT_TRUE(wrong_pos.ok() && correct_pos.ok());
+    ChainDB::PersistedHeaderMetadata metadata;
+    metadata.height = 78;
+    metadata.status_flags = BLOCK_VALID_HEADER | BLOCK_HAVE_DATA;
+    metadata.file_number = wrong_pos->file_number;
+    metadata.data_pos = static_cast<uint32_t>(wrong_pos->offset);
+    metadata.data_size = wrong_pos->size;
+    ASSERT_TRUE(chain_db.putHeaderMetadata(token, hash, metadata) == Status::Ok);
+
+    const auto replaced = storage::PersistVerifiedArchivalBodyPosition(
+        chain_db, &block_storage, hash, correct_pos.value());
+    ASSERT_TRUE(replaced.ok() &&
+                replaced.value() == storage::BodyPositionPersistResult::ReplacedStale);
+    const auto repaired = storage::ReadArchivalBlockDetailed(
+        chain_db, &block_storage, hash,
+        storage::ArchivalReadMode::RequireFlatfiles);
+    ASSERT_TRUE(repaired.result.ok() &&
+                consensus::ValidateWitnessCommitment(repaired.result->vtx, error));
+    block_storage.close();
+    chain_db.close();
+    std::filesystem::remove_all(root);
+}
+
 int main() {
     SelectParams(Chain::MAINNET);
     std::cout << "\n===========================================================\n";
@@ -608,6 +706,12 @@ int main() {
     std::cout << " OK" << std::endl;
     std::cout << "Running: PersistStoredBodyPosition_ReplacesStaleMetadataOnly..." << std::flush;
     test_PersistStoredBodyPosition_ReplacesStaleMetadataOnly();
+    std::cout << " OK" << std::endl;
+    std::cout << "Running: PersistStoredBodyPosition_ReplacesUnboundStoredBody..." << std::flush;
+    test_PersistStoredBodyPosition_ReplacesUnboundStoredBody();
+    std::cout << " OK" << std::endl;
+    std::cout << "Running: PersistStoredBodyPosition_ReplacesUnboundWitnessBody..." << std::flush;
+    test_PersistStoredBodyPosition_ReplacesUnboundWitnessBody();
     std::cout << " OK" << std::endl;
     std::cout << "\nALL ARCHIVAL BLOCK READER TESTS PASSED!" << std::endl;
     std::cout << "===========================================================\n" << std::endl;

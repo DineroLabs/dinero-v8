@@ -1,3 +1,4 @@
+#include "consensus/chainparams.h"
 #include "consensus/shielded/commitment_tree.h"
 #include "consensus/shielded/nullifier_set.h"
 #include "crypto/sha256.h"
@@ -343,6 +344,10 @@ int main(int argc, char** argv) {
         PrintUsage();
         return 2;
     }
+
+    // The fixture builder emits regtest block frames. Read them under the
+    // matching network magic when checking shielded-inactive ranges.
+    dinero::SelectParams(dinero::Chain::REGTEST);
 
     ChainDB chain_db;
     const auto chain_db_status = chain_db.init(datadir / "blockchain" / "chaindb");

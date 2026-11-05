@@ -431,6 +431,7 @@ public:
     );
 
 private:
+    friend class BlockReindexerStructuralTestAccess;
     // Configuration
     std::filesystem::path datadir_;
     ChainDB* chain_db_;

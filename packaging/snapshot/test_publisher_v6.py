@@ -1,40 +1,116 @@
 """Real publisher shell + filesystem + Ed25519; RPC/native gate is an explicit fixture.
 Native v6 proof/import is independently exercised by OrchardSnapshotRuntime.
 """
-import hashlib,json,os,struct,subprocess,tempfile,unittest,shutil
+import hashlib,json,os,struct,subprocess,tempfile,unittest,shutil,time
 from pathlib import Path
 SCRIPT=Path(__file__).with_name('dinero-snapshot-publish.sh').resolve()
+CAPTURE=Path(__file__).with_name('capture_boundary_v5.py').resolve()
 
 class PublisherV6(unittest.TestCase):
-    def run_publication(self, profile=2, gate=True, reorg=False, key=True, fresh=False, optimize=False):
+    def run_publication(self, profile=2, gate=True, reorg=False, key=True, fresh=False, optimize=False, failed=False, boundary=False, bad_pin=False, capture_first=False, publisher_profile='compact', other_pending_profile=None, orphan_pending=False, existing_pin_fault=None, bad_metadata=False, previous_profile='legacy', prior_archives=0, endpoint_switch_during_gate=False, prepare_only=False):
         tmp=tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
-        root=Path(tmp.name); dumps=root/'data/snapshots'; dumps.mkdir(parents=True)
-        section=b'ORCH'+struct.pack('<I',1)+bytes([profile])+bytes(1048576)
-        payload=b'UXTO'+struct.pack('<I',6)+bytes.fromhex('ab'*32)+struct.pack('<I',150000)+bytes(24)+struct.pack('<Q',len(section))+section+bytes(32)
+        root=Path(tmp.name); snapshot_root=root/'data/snapshots'; snapshot_root.mkdir(parents=True)
+        dumps=snapshot_root if publisher_profile=='compact' else snapshot_root/'full'; dumps.mkdir(parents=True,exist_ok=True)
+        height=149999 if boundary else 150000
+        version=5 if boundary else 6
+        def make_payload(section_profile):
+            section=b'ORCH'+struct.pack('<I',1)+bytes([section_profile])+bytes(1048576)
+            data=b'UXTO'+struct.pack('<I',version)+bytes.fromhex('ab'*32)+struct.pack('<I',height)+bytes(24)
+            if version==6: data+=struct.pack('<Q',len(section))+section+bytes(32)
+            return data
+        payload=make_payload(profile)
         (root/'template.dat').write_bytes(payload)
         (dumps/'pending.dat').write_bytes(payload)
-        (dumps/'pending.json').write_text(json.dumps({'base_height':150000,'base_hash':'ab'*32}))
+        (dumps/'pending.json').write_text(json.dumps({'base_height':height,'base_hash':'ab'*32}))
+        if other_pending_profile:
+            other_dumps=snapshot_root if other_pending_profile=='compact' else snapshot_root/'full'
+            assert other_dumps!=dumps
+            other_dumps.mkdir(parents=True,exist_ok=True)
+            other_payload=make_payload(2 if other_pending_profile=='compact' else 1)
+            (other_dumps/'pending.dat').write_bytes(other_payload)
+            (other_dumps/'pending.json').write_text(json.dumps({'base_height':height,'base_hash':'ab'*32}))
+            (root/'other-candidate.sha256').write_text(hashlib.sha256(other_payload).hexdigest())
         previous=root/'www/archive/previous';previous.mkdir(parents=True)
         (previous/'retained').write_text('previous publication')
+        previous_manifest={'network':'mainnet','format_version':5 if previous_profile=='legacy' else 6}
+        if previous_profile!='legacy': previous_manifest['snapshot_profile']=previous_profile
+        (previous/'manifest.json').write_text(json.dumps(previous_manifest))
         (root/'www/latest').symlink_to('archive/previous')
-        if fresh:
+        for n in range(prior_archives):
+            old=root/'www/archive'/f'202501{n+1:02}T000000Z'
+            old.mkdir()
+            (old/'retained').write_text('old publication')
+        if bad_pin:
+            pinned=root/'www/pinned/v5-h149999';pinned.mkdir(parents=True)
+            (pinned/'manifest.json').write_text('{}')
+        if fresh or capture_first:
             (dumps/'pending.dat').unlink();(dumps/'pending.json').unlink()
+        if orphan_pending:
+            (dumps/'pending.json').unlink()
+        if bad_metadata:
+            (dumps/'pending.json').write_text('{}')
         bin=root/'bin';bin.mkdir()
         def executable(name, text):
             p=bin/name;p.write_text(text);p.chmod(0o755);return p
-        for name in ('flock','chown'):executable(name,'#!/bin/sh\nexit 0\n')
+        executable('chown','#!/bin/sh\nexit 0\n')
+        executable('flock','''#!/usr/bin/env python3
+import fcntl,sys,time
+args=sys.argv[1:]
+if len(args)==2 and args[0]=='-n':
+    fd=int(args[1]); deadline=time.monotonic()
+elif len(args)==3 and args[0]=='-w':
+    fd=int(args[2]); deadline=time.monotonic()+float(args[1])
+else: sys.exit(99)
+while True:
+    try: fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);sys.exit(0)
+    except BlockingIOError:
+        if time.monotonic()>=deadline:sys.exit(1)
+        time.sleep(.01)
+''')
         executable('stat','#!/usr/bin/env python3\nimport os,sys\nprint(os.stat(sys.argv[-1]).st_size)\n')
         executable('mv','#!/usr/bin/env python3\nimport os,sys\nos.replace(sys.argv[-2],sys.argv[-1])\n')
         executable('sleep','#!/bin/sh\n/bin/sleep 0.01\n')
         executable('head','#!/usr/bin/env python3\nimport sys\ndata=sys.stdin.readlines()\nn=int(sys.argv[2]);sys.stdout.writelines(data[:n] if n<0 else data[:n])\n')
-        state={'assumeutxo_active':gate,'snapshot_base_height':150000,'snapshot_base_block':'ab'*32,'status':'NotStarted','error_message':''}
-        cli=executable('cli', '#!/usr/bin/env python3\nimport json,sys,pathlib,shutil\na=sys.argv\nr=pathlib.Path('+repr(str(root))+')\nif "dumptxoutset" in a:\n i=a.index("dumptxoutset");shutil.copyfile(r/"template.dat",a[i+1]);(r/"export-args.json").write_text(json.dumps(a[i+1:]));print(json.dumps({"base_height":150000,"base_hash":"ab"*32}))\nelif "getbackgroundvalidationprogress" in a:\n (r/"gate-ran").touch(); print('+repr(json.dumps(state))+')\nelif "getblockcount" in a: print(150288)\nelif "getblockhash" in a: print("cd"*32 if '+repr(reorg)+' and (r/"gate-ran").exists() else "ab"*32)\nelse: sys.exit(99)\n')
-        daemon=executable('daemon','#!/bin/sh\ntrap "exit 0" TERM\nwhile :; do /bin/sleep 0.1; done\n')
+        state={'assumeutxo_active':gate,'snapshot_base_height':height,'snapshot_base_block':'ab'*32,'status':'Failed' if failed else 'NotStarted','error_message':''}
+        cli=executable('cli', '#!/usr/bin/env python3\nimport json,sys,pathlib,shutil\na=sys.argv\nr=pathlib.Path('+repr(str(root))+')\nif "getblockchaininfo" in a: print(json.dumps({"chain":"mainnet"}))\nelif "dumptxoutset" in a:\n i=a.index("dumptxoutset");shutil.copyfile(r/"template.dat",a[i+1]);(r/"export-args.json").write_text(json.dumps(a[i+1:]));print(json.dumps({"base_height":'+str(height)+',"base_hash":"ab"*32}))\nelif "getbackgroundvalidationprogress" in a:\n sys.exit(1) if not (r/"configured-gate").exists() else None; ready=(r/"first-gate-probe").exists(); (r/"first-gate-probe").touch(); sys.exit(1) if not ready else None; (r/"gate-ran").touch(); print('+repr(json.dumps(state))+')\nelif "getblockcount" in a: print(int((r/"tip").read_text()) if (r/"tip").exists() else '+str(height+288)+')\nelif "getblockhash" in a: print(json.dumps("cd"*32 if '+repr(reorg)+' and (r/"gate-ran").exists() else "ab"*32))\nelse: sys.exit(99)\n')
+        if endpoint_switch_during_gate:
+            needle='(r/"gate-ran").touch(); print('
+            changed='(r/"gate-ran").touch(); (r/"www/archive/previous/manifest.json").write_text(json.dumps({"network":"mainnet","format_version":6,"snapshot_profile":"full"})); print('
+            original=cli.read_text();assert needle in original
+            cli.write_text(original.replace(needle,changed))
+        daemon=executable('daemon','#!/usr/bin/env python3\nimport pathlib,sys,time,signal,json\nr=pathlib.Path('+repr(str(root))+')\nd=pathlib.Path(next(a.split("=",1)[1] for a in sys.argv if a.startswith("--datadir=")))\nif not all(setting in (d/"dinero.conf").read_text().splitlines() for setting in ("lightning.oracles.enable=0","utreexo-bridge=0")):\n print("FATAL: Scheduled Orchard requires explicit disabled legacy oracles",flush=True);sys.exit(1)\nprint("# HELP din_blocks_rejected_total Number of rejected blocks",flush=True)\nprint("din_blocks_rejected_total 0",flush=True)\nc=dict(line.split("=",1) for line in (d/"dinero.conf").read_text().splitlines() if "=" in line)\npayload=pathlib.Path(c["assumeutxo_snapshot"]);manifest=json.loads(pathlib.Path(c["assumeutxo_manifest"]).read_text())\nif payload.name!=manifest["snapshot"]["snapshot_file"]:print("FATAL: Snapshot manifest snapshot_file mismatch",flush=True);sys.exit(1)\n(r/"gate-payload-name").write_text(payload.name)\n(r/"configured-gate").touch();(r/"gate-argv.json").write_text(json.dumps(sys.argv[1:]))\nsignal.signal(signal.SIGTERM,lambda *_:sys.exit(0))\nwhile True:time.sleep(.01)\n')
         ssl=shutil.which('openssl'); keypath=root/'key.pem'
         subprocess.run([ssl,'genpkey','-algorithm','ED25519','-out',str(keypath)],check=True,capture_output=True)
         pub=subprocess.check_output([ssl,'pkey','-in',str(keypath),'-pubout','-outform','DER'])[-32:]
-        env=dict(os.environ,DATADIR=str(root/'data'),PUBROOT=str(root/'www'),KEY=str(keypath if key else root/'missing'),CLI_BIN=str(cli),DINEROD=str(daemon),GATE_TIMEOUT='2',PATH=str(bin)+os.pathsep+os.environ['PATH'])
+        if existing_pin_fault:
+            assert boundary
+            pin=root/'www/pinned/v5-h149999';pin.mkdir(parents=True)
+            (pin/'snapshot.dat').write_bytes(payload)
+            pinned_manifest={
+                'format_version':5,'network':'regtest' if existing_pin_fault=='network' else 'mainnet',
+                'snapshot_profile':'full' if existing_pin_fault=='profile' else 'legacy',
+                'snapshot':{'height':height,'block_hash':'ab'*32,'sha256':hashlib.sha256(payload).hexdigest(),
+                            'bytes':len(payload),'snapshot_file':'snapshot.dat'},
+            }
+            manifest_file=pin/'manifest.json';manifest_file.write_text(json.dumps(pinned_manifest))
+            signature=pin/'manifest.sig'
+            if existing_pin_fault=='signature':
+                signature.write_bytes(bytes(64))
+            else:
+                subprocess.run([ssl,'pkeyutl','-sign','-inkey',str(keypath),'-rawin','-in',str(manifest_file),'-out',str(signature)],check=True,capture_output=True)
+        env=dict(os.environ,DATADIR=str(root/'data'),PUBROOT=str(root/'www'),KEY=str(keypath if key else root/'missing'),CLI_BIN=str(cli),DINEROD=str(daemon),GATE_TIMEOUT='2',SNAPSHOT_PROFILE=publisher_profile,PATH=str(bin)+os.pathsep+os.environ['PATH'])
         if optimize: env['PYTHONOPTIMIZE']='1'
+        if prepare_only: return root,payload,pub,env
+        if capture_first:
+            assert boundary
+            (root/'tip').write_text(str(height))
+            captured=subprocess.run(['python3',str(CAPTURE)],env=env,capture_output=True,text=True,timeout=5)
+            assert captured.returncode==0,captured.stdout+captured.stderr
+            (root/'tip').write_text(str(height+287))
+            early=subprocess.run(['bash',str(SCRIPT)],env=env,capture_output=True,text=True,timeout=5)
+            assert early.returncode==0,early.stdout+early.stderr
+            assert (dumps/'pending.json').exists() and (root/'www/latest/retained').exists()
+            (root/'tip').write_text(str(height+288))
         result=subprocess.run(['bash',str(SCRIPT)],env=env,capture_output=True,text=True,timeout=15)
         return root,payload,pub,result
     def test_signed_compact_publication_and_manifest(self):
@@ -48,11 +124,177 @@ class PublisherV6(unittest.TestCase):
             dest=Path(export);dest.mkdir(parents=True,exist_ok=True)
             for name in ('snapshot.dat','manifest.json','manifest.sig'):shutil.copyfile(latest/name,dest/name)
             (dest/'public-key.raw').write_bytes(pub)
+    def test_last_v5_is_pinned_outside_rotating_archive(self):
+        root,payload,_,r=self.run_publication(boundary=True);self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        pin=root/'www/pinned/v5-h149999'
+        self.assertEqual((pin/'snapshot.dat').read_bytes(),payload)
+        self.assertEqual(json.loads((pin/'manifest.json').read_text())['snapshot']['height'],149999)
+        self.assertTrue((pin/'manifest.sig').is_file())
+        self.assertEqual((root/'www/latest/manifest.json').read_bytes(),(pin/'manifest.json').read_bytes())
+    def test_v5_pin_survives_archive_rotation(self):
+        root,payload,_,r=self.run_publication(boundary=True,prior_archives=8)
+        self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertFalse((root/'www/archive/20250101T000000Z').exists())
+        self.assertEqual((root/'www/pinned/v5-h149999/snapshot.dat').read_bytes(),payload)
+        self.assertTrue((root/'www/latest/manifest.json').is_file())
+    def test_exact_capture_waits_288_then_pins_v5(self):
+        root,payload,_,r=self.run_publication(boundary=True,capture_first=True)
+        self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        pin=root/'www/pinned/v5-h149999'
+        self.assertEqual((pin/'snapshot.dat').read_bytes(),payload)
+        self.assertFalse((root/'data/snapshots/pending.json').exists())
+    def test_orphan_boundary_payload_is_preserved_for_capture_recovery(self):
+        root,payload,_,r=self.run_publication(boundary=True,orphan_pending=True)
+        self.assertNotEqual(r.returncode,0)
+        self.assertEqual((root/'data/snapshots/pending.dat').read_bytes(),payload)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_boundary_payload_survives_bad_metadata(self):
+        root,payload,_,r=self.run_publication(boundary=True,bad_metadata=True)
+        self.assertNotEqual(r.returncode,0)
+        self.assertEqual((root/'data/snapshots/pending.dat').read_bytes(),payload)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_boundary_payload_survives_reorg_during_gate(self):
+        root,payload,_,r=self.run_publication(boundary=True,reorg=True)
+        self.assertNotEqual(r.returncode,0)
+        self.assertEqual((root/'data/snapshots/pending.dat').read_bytes(),payload)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_corrupt_existing_pin_signature_refuses_publication(self):
+        root,_,_,r=self.run_publication(boundary=True,existing_pin_fault='signature')
+        self.assertNotEqual(r.returncode,0)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_wrong_network_existing_pin_refuses_publication(self):
+        root,_,_,r=self.run_publication(boundary=True,existing_pin_fault='network')
+        self.assertNotEqual(r.returncode,0)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_wrong_profile_existing_pin_refuses_publication(self):
+        root,_,_,r=self.run_publication(boundary=True,existing_pin_fault='profile')
+        self.assertNotEqual(r.returncode,0)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_valid_existing_pin_allows_republication(self):
+        root,_,_,r=self.run_publication(boundary=True,existing_pin_fault='valid')
+        self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertTrue((root/'www/latest/manifest.json').is_file())
+    def test_different_existing_v5_pin_preserves_latest(self):
+        root,_,_,r=self.run_publication(boundary=True,bad_pin=True);self.assertNotEqual(r.returncode,0)
+        self.assertIn('existing permanent v5 boundary artifact differs',r.stdout)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_different_pin_cannot_pass_python_optimization(self):
+        root,_,_,r=self.run_publication(boundary=True,bad_pin=True,optimize=True)
+        self.assertNotEqual(r.returncode,0)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_scheduled_orchard_gate_declares_legacy_oracles_disabled(self):
+        root,_,_,r=self.run_publication();self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertTrue((root/'configured-gate').exists())
+        self.assertIn('--wallet-socket-port=27000',json.loads((root/'gate-argv.json').read_text()))
+    def test_normal_rejection_metric_is_not_a_snapshot_failure(self):
+        root,_,_,r=self.run_publication();self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertTrue((root/'www/latest/manifest.json').is_file())
+    def test_terminal_native_failure_preserves_latest(self):
+        root,_,_,r=self.run_publication(failed=True);self.assertNotEqual(r.returncode,0)
+        self.assertIn('native gate reported snapshot failure',r.stdout)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_gate_payload_matches_published_manifest_filename(self):
+        root,_,_,r=self.run_publication();self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        manifest=json.loads((root/'www/latest/manifest.json').read_text())
+        self.assertEqual((root/'gate-payload-name').read_text(),manifest['snapshot']['snapshot_file'])
     def test_fresh_dump_explicitly_requests_compact(self):
         root,_,_,r=self.run_publication(fresh=True);self.assertEqual(r.returncode,0,r.stdout+r.stderr)
         args=json.loads((root/'export-args.json').read_text());self.assertEqual(args[-1],'compact')
     def test_full_export_cannot_publish_to_phone(self):
         root,_,_,r=self.run_publication(profile=1);self.assertNotEqual(r.returncode,0);self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_full_publish_preserves_compact_pending_in_shared_datadir(self):
+        root,_,_,r=self.run_publication(profile=1,publisher_profile='full',other_pending_profile='compact',previous_profile='full')
+        self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        other=root/'data/snapshots/pending.dat'
+        self.assertEqual(hashlib.sha256(other.read_bytes()).hexdigest(),(root/'other-candidate.sha256').read_text())
+        self.assertTrue((root/'data/snapshots/pending.json').is_file())
+        self.assertEqual(json.loads((root/'www/latest/manifest.json').read_text())['snapshot_profile'],'full')
+    def test_full_profile_mismatch_cannot_delete_compact_pending(self):
+        root,_,_,r=self.run_publication(profile=2,publisher_profile='full',other_pending_profile='compact',previous_profile='full')
+        self.assertNotEqual(r.returncode,0)
+        other=root/'data/snapshots/pending.dat'
+        self.assertEqual(hashlib.sha256(other.read_bytes()).hexdigest(),(root/'other-candidate.sha256').read_text())
+        self.assertTrue((root/'data/snapshots/pending.json').is_file())
+        self.assertFalse((root/'data/snapshots/full/pending.dat').exists())
+    def test_compact_publish_preserves_full_pending_in_shared_datadir(self):
+        root,_,_,r=self.run_publication(profile=2,publisher_profile='compact',other_pending_profile='full')
+        self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        other=root/'data/snapshots/full/pending.dat'
+        self.assertEqual(hashlib.sha256(other.read_bytes()).hexdigest(),(root/'other-candidate.sha256').read_text())
+        self.assertTrue((root/'data/snapshots/full/pending.json').is_file())
+    def test_full_cannot_replace_unmarked_legacy_phone_latest(self):
+        root,_,_,r=self.run_publication(profile=1,publisher_profile='full')
+        self.assertNotEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertIn('endpoint profile',r.stdout+r.stderr)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+        self.assertTrue((root/'data/snapshots/full/pending.dat').is_file())
+        self.assertFalse((root/'gate-ran').exists())
+    def test_full_cannot_replace_compact_v6_latest(self):
+        root,_,_,r=self.run_publication(profile=1,publisher_profile='full',previous_profile='compact')
+        self.assertNotEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertIn('endpoint profile',r.stdout+r.stderr)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_compact_cannot_replace_full_v6_latest(self):
+        root,_,_,r=self.run_publication(previous_profile='full')
+        self.assertNotEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertIn('endpoint profile',r.stdout+r.stderr)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_endpoint_switch_during_native_gate_refuses_publication(self):
+        root,_,_,r=self.run_publication(endpoint_switch_during_gate=True)
+        self.assertNotEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertTrue((root/'gate-ran').exists())
+        self.assertIn('endpoint profile',r.stdout+r.stderr)
+        self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
+    def test_concurrent_distinct_datadirs_cannot_share_empty_pubroot(self):
+        shared=Path(tempfile.mkdtemp());self.addCleanup(shutil.rmtree,shared)
+        compact_root,_,_,compact_env=self.run_publication(prepare_only=True)
+        full_root,_,_,full_env=self.run_publication(profile=1,publisher_profile='full',prepare_only=True)
+        compact_env['PUBROOT']=full_env['PUBROOT']=str(shared)
+        compact_env['GATE_TIMEOUT']=full_env['GATE_TIMEOUT']='5'
+        compact_env['PUBROOT_LOCK_TIMEOUT']=full_env['PUBROOT_LOCK_TIMEOUT']='5'
+        daemon=compact_root/'bin/daemon'
+        original=daemon.read_text();needle='(r/"configured-gate").touch();'
+        hold='(r/"gate-entered").touch()\nwhile not (r/"gate-release").exists():time.sleep(.01)\n'+needle
+        self.assertIn(needle,original)
+        daemon.write_text(original.replace(needle,hold))
+        compact=subprocess.Popen(['bash',str(SCRIPT)],env=compact_env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        full=None
+        try:
+            deadline=time.monotonic()+5
+            while not (compact_root/'gate-entered').exists() and time.monotonic()<deadline:
+                time.sleep(.01)
+            self.assertTrue((compact_root/'gate-entered').exists(),'compact publisher did not enter native gate')
+            full=subprocess.Popen(['bash',str(SCRIPT)],env=full_env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+            time.sleep(.15)
+            blocked=full.poll() is None and not (full_root/'configured-gate').exists()
+            (compact_root/'gate-release').touch()
+            compact_out,compact_err=compact.communicate(timeout=8)
+            full_out,full_err=full.communicate(timeout=8)
+        finally:
+            (compact_root/'gate-release').touch()
+            if compact.poll() is None:compact.kill();compact.communicate()
+            if full is not None and full.poll() is None:full.kill();full.communicate()
+        self.assertTrue(blocked,'second publisher ran before first released the publication root')
+        self.assertEqual(compact.returncode,0,compact_out+compact_err)
+        self.assertNotEqual(full.returncode,0,full_out+full_err)
+        self.assertEqual((shared/'.snapshot-profile').read_text().strip(),'compact')
+        self.assertEqual(json.loads((shared/'latest/manifest.json').read_text())['snapshot_profile'],'compact')
+        self.assertFalse((full_root/'configured-gate').exists())
+    def test_empty_root_claim_survives_failed_native_gate(self):
+        shared=Path(tempfile.mkdtemp());self.addCleanup(shutil.rmtree,shared)
+        compact_root,_,_,compact_env=self.run_publication(gate=False,prepare_only=True)
+        compact_env['PUBROOT']=str(shared)
+        compact_env['GATE_TIMEOUT']='1'
+        failed=subprocess.run(['bash',str(SCRIPT)],env=compact_env,capture_output=True,text=True,timeout=5)
+        self.assertNotEqual(failed.returncode,0)
+        self.assertEqual((shared/'.snapshot-profile').read_text(),'compact\n')
+        self.assertFalse((shared/'latest').exists())
+        full_root,_,_,full_env=self.run_publication(profile=1,publisher_profile='full',prepare_only=True)
+        full_env['PUBROOT']=str(shared)
+        refused=subprocess.run(['bash',str(SCRIPT)],env=full_env,capture_output=True,text=True,timeout=5)
+        self.assertNotEqual(refused.returncode,0,refused.stdout+refused.stderr)
+        self.assertIn('endpoint profile',refused.stdout+refused.stderr)
+        self.assertFalse((full_root/'configured-gate').exists())
     def test_native_gate_refusal_preserves_latest(self):
         root,_,_,r=self.run_publication(gate=False);self.assertNotEqual(r.returncode,0);self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
     def test_reorg_during_gate_refuses(self):

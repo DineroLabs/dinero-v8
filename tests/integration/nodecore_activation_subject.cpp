@@ -3,13 +3,16 @@
 // No owner, proof verifier, database, service or lifecycle function is replaced.
 #include "consensus/chainparams.h"
 #include "util/hex.h"
+#include <cstdlib>
 #include <stdexcept>
 namespace dinero {
 void SelectSdkActivationFixture(Chain chain) {
     if(chain!=Chain::REGTEST)throw std::runtime_error("SDK activation subject is regtest-only");
     SelectParams(chain);
     auto& p=MutableParams();p.magic=0x02a1c925;
-    p.state_commitment_activation_height=UINT32_MAX;p.regtest_enforce_pow=true;
+    p.state_commitment_activation_height=std::getenv("DINERO_SDK_V5_ACTIVATION_FIXTURE")?1:UINT32_MAX;
+    if(std::getenv("DINERO_SDK_V5_ACTIVATION_FIXTURE"))p.coinbase_structure_activation_height=1;
+    p.regtest_enforce_pow=true;
     p.sixty_second_activation_height=102;p.orchard_activation_height=102;p.orchard_branch_id=1;
     p.shielded_activation_height=1;p.shielded_epoch_reset_height=UINT32_MAX;
     p.shielded_spend_auth_epoch_reset_height=UINT32_MAX;
@@ -76,6 +79,8 @@ Json::Value SdkActivationTestState(){
     row["global_context_matches"]=&context==DaemonContext::instance();
     row["stateless"]=GetConfig().utreexo_stateless;
     row["profile_valid"]=dinero::consensus::OrchardProfileConfigurationValid(dinero::Params());
+    row["coinbase_structure_height"]=Json::UInt(dinero::Params().coinbase_structure_activation_height);
+    row["state_commitment_height"]=Json::UInt(dinero::Params().state_commitment_activation_height);
     row["work_directory"]=GetConfig().datadir;
     if(context.header_chain){
         const auto best=context.header_chain->GetBestHeaderValue();

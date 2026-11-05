@@ -438,6 +438,12 @@ public:
     // failures (missing-utxo, I/O) un-poisoned.
     bool ConnectTip(class CBlockIndex* tip_to_connect, std::string* out_error = nullptr,
                     bool* out_consensus_invalid = nullptr);
+    enum class StoredBodyBindingResult { Bound, Quarantined, StorageError };
+    // Used before both ordinary connect and the CSN reorg replay path, which
+    // deliberately bypasses ConnectTip. StorageError must abort activation.
+    StoredBodyBindingResult QuarantineIfStoredBodyUnbound(
+        class CBlockIndex* index, const Block& body);
+    bool QuarantineStoredBodyForReplacement(class CBlockIndex* index);
 
     // Mixed-body transitions require a complete typed consumer implementation.
     // Absence/refusal prevents the durable write; this is not an optional event.
@@ -603,7 +609,11 @@ public:
     // Export current UTXO set to snapshot file
     consensus::SnapshotExportResult ExportSnapshot(const std::filesystem::path& snapshot_path, bool compact_export = false);
     // Load UTXO set from snapshot file (fast sync)
-    consensus::SnapshotImportResult LoadSnapshot(const std::filesystem::path& snapshot_path);
+    // persisted_base_rehydrate is reserved for startup recovery of the exact
+    // base already recorded in the durable AssumeUTXO lifecycle. Fresh imports
+    // must use the default and satisfy the full header burial rule.
+    consensus::SnapshotImportResult LoadSnapshot(const std::filesystem::path& snapshot_path,
+                                                 bool persisted_base_rehydrate = false);
 
     // Phase 42: AssumeUTXO State Management
     bool IsAssumeUTXOActive() const { return assumeutxo_active_; }
@@ -899,6 +909,7 @@ public:
         if (!published_tip_valid_) return std::nullopt;
         return published_tip_height_;
     }
+    bool GetPublishedActiveHashAtHeight(uint32_t height, uint256& out_hash) const;
 
     std::string getBestBlockHash() const;
 
@@ -1203,6 +1214,11 @@ public:
      * @return true if block was accepted, false if rejected
      */
     bool ProcessIncomingBlockHex(const std::string& blockHex, const std::string& peer_id);
+    // The ordered CSN worker may receive ingress acceptance without active-tip
+    // connection. Permit a corrected same-hash body to reach ingress again.
+    void ForgetCompletedBlockForRetry(const uint256& hash);
+    // Dispatches CSN body retries after the activation lock has been released.
+    void DispatchQueuedCsnBodyRefetches();
 
     /**
      * @brief Process incoming block from P2P network (Block struct)
@@ -1560,6 +1576,9 @@ public:
         std::shared_ptr<ChainstateService> owner);
 
 private:
+    // Refill the full-node coin cache only after restoring the selected forest
+    // and exact snapshot lifecycle. Frozen rows alone do not authorize a spend.
+    bool RestoreStatefulSnapshotCoinCache(std::string& error);
     friend class DaemonApp;
     std::shared_ptr<ChainDB> StageCompletedActivationRoot(const daemon::DatadirGuard&);
     // Startup-only reconstruction. The caller owns the datadir and has not
@@ -1781,6 +1800,7 @@ private:
     bool LoadShieldedState();
     consensus::SnapshotExportResult ExportOrchardSnapshot(const std::filesystem::path&, bool compact_export = false);
     consensus::SnapshotImportResult LoadOrchardSnapshot(const std::filesystem::path&);
+    bool HasPersistedActiveSnapshotBase(const uint256& base_hash, uint32_t base_height) const;
     bool InitOrchardSnapshotStorage();
     bool StartOrchardSnapshotStorage();
     bool InitCompactSnapshotBootstrap(const std::filesystem::path&);
@@ -2120,7 +2140,7 @@ private:
     std::unique_ptr<CompactStartupState> compact_startup_;
     std::unique_ptr<OrchardSnapshotStartupState> orchard_snapshot_startup_;
     std::atomic<bool> orchard_compact_bootstrap_pending_{false};
-    bool snapshot_bootstrap_v6_=false;
+    bool snapshot_bootstrap_requires_burial_=false;
 
     // Phase 43: Safe mode state (deep reorg protection)
     bool safe_mode_active_ = false;
@@ -2362,6 +2382,8 @@ private:
     // CSN reorg support: StatelessNode for forest checkpoint restore during reorg
     std::shared_ptr<network::StatelessNode> stateless_node_;
     std::atomic<uint32_t> csn_reorg_reset_height_{0};
+    // Under activation_mutex_; drained only after leaving that lock.
+    std::set<uint256> pending_csn_body_refetches_;
     std::shared_ptr<pool::PoolManager> pool_manager_;
 
     // Phase C.3: Block download scheduling (Phase 3)

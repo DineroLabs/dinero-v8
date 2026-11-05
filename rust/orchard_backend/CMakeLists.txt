@@ -498,13 +498,19 @@ if(DINERO_ORCHARD_BUILD_TESTS)
       message(FATAL_ERROR "OrchardDaemonWalletCycle requires the native copied-datadir migration target")
     endif()
     add_dependencies(test_orchard_wallet_cycle_daemon migrate_shielded_datadir)
+    add_test(NAME OrchardCatalogReadRetry COMMAND python3 -B
+      ${ORCHARD_HOST_ROOT}/tests/integration/test_orchard_catalog_read_retry.py)
+    set_tests_properties(OrchardCatalogReadRetry PROPERTIES
+      LABELS "integration;orchard;wallet;regression" TIMEOUT 30)
     add_test(NAME OrchardDaemonWalletCycle COMMAND python3
       ${ORCHARD_HOST_ROOT}/tests/integration/test_orchard_daemon_wallet_cycle.py
       $<TARGET_FILE:test_orchard_wallet_cycle_daemon>
       $<TARGET_FILE:migrate_shielded_datadir>)
+    # This full wallet lifecycle performs repeated daemon restarts and reindexes;
+    # a normal-priority Linux run took 1159s, beyond the former 900s limit.
     set_tests_properties(OrchardDaemonWalletCycle PROPERTIES
       LABELS "integration;e2e-daemon;orchard;wallet;restart;reorg;mandatory"
-      TIMEOUT 900 RUN_SERIAL TRUE ENVIRONMENT "RAYON_NUM_THREADS=2")
+      TIMEOUT 1800 RUN_SERIAL TRUE ENVIRONMENT "RAYON_NUM_THREADS=2")
     if(NOT TARGET test_orchard_coupled_cycle_daemon)
       message(FATAL_ERROR "OrchardCoupledWalletCycle requires its coupled release daemon")
     endif()
@@ -693,7 +699,14 @@ if(DINERO_ORCHARD_BUILD_TESTS)
     add_executable(test_runtime_replay_branch_views
       "${ORCHARD_HOST_ROOT}/tests/wallet/test_runtime_replay_branch_views.cpp"
       "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
-    target_link_libraries(test_runtime_replay_branch_views PRIVATE dinero_orchard_account_replay dinero_orchard_chainstate_write dinero_orchard_block_staging dinero_crypto RocksDB::rocksdb)
+    # The fixture's core closure discovers chainstate-write references after
+    # GNU ld's first archive pass. Pull its one object in on that first pass.
+    target_link_libraries(test_runtime_replay_branch_views PRIVATE
+      dinero_orchard_account_replay
+      "$<$<PLATFORM_ID:Linux>:-Wl,--whole-archive>"
+      dinero_orchard_chainstate_write
+      "$<$<PLATFORM_ID:Linux>:-Wl,--no-whole-archive>"
+      dinero_orchard_block_staging dinero_crypto RocksDB::rocksdb)
     target_include_directories(test_runtime_replay_branch_views PRIVATE "${ORCHARD_HOST_ROOT}/src")
     add_test(NAME RuntimeReplayBranchViews COMMAND test_runtime_replay_branch_views "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     set_tests_properties(RuntimeReplayBranchViews PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE

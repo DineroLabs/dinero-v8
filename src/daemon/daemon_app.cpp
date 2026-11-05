@@ -1621,8 +1621,14 @@ bool DaemonApp::Init(int argc, char** argv) {
             const auto retained = chain_db_->getRaw("runtime_orchard_outbox:v1:head", head);
             if (retained != Status::Ok && retained != Status::NotFound) return retained;
             const auto old_tip = chain_db_->getTip();
-            if (!old_tip.ok()) return old_tip.status();
-            if (retained == Status::Ok || (old_tip->height >= 0 &&
+            if (!old_tip.ok()) {
+                if (old_tip.status() != Status::NotFound || retained == Status::Ok) {
+                    return old_tip.status();
+                }
+                // A raw-block-only datadir has no chainstate tip yet; the
+                // ordinary reindexer must be allowed to reconstruct it.
+            }
+            if (retained == Status::Ok || (old_tip.ok() && old_tip->height >= 0 &&
                 uint64_t(old_tip->height) >= Params().orchard_activation_height)) {
                 ChainWriteToken reindex_token;
                 return OrchardReindexOwner::Run(*chain_db_, *rebuilt_chain_db, reindex_token,
@@ -2355,8 +2361,27 @@ bool DaemonApp::Init(int argc, char** argv) {
     ctx_.header_store = header_store;
     std::cout << "[DaemonApp] ✅ HeaderStore initialized (" << datadir << "/headers)" << std::endl;
 
+    // ChainDB invalidity is authoritative. Load it before HeaderStore's
+    // retention trim, otherwise the lower-work valid sibling could be
+    // discarded while the failed max-work branch survives a restart.
+    std::vector<uint256> failed_header_roots;
+    if (chain_db_ptr) {
+        const auto status = chain_db_ptr->forEachHeaderMetadataStrict(
+            [&](const uint256& hash, const ChainDB::PersistedHeaderMetadata& metadata) {
+                if (metadata.status_flags & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD)) {
+                    failed_header_roots.push_back(hash);
+                }
+                return true;
+            });
+        if (status != Status::Ok) {
+            std::cerr << "[DaemonApp] Failed to read persisted invalid header status" << std::endl;
+            return false;
+        }
+    }
+
     // Initialize HeaderChainSelector (consensus logic)
-    auto header_chain = std::make_shared<dinero::consensus::HeaderChainSelector>(header_store.get());
+    auto header_chain = std::make_shared<dinero::consensus::HeaderChainSelector>(
+        header_store.get(), failed_header_roots);
     ctx_.header_chain = header_chain;
     std::cout << "[DaemonApp] ✅ HeaderChainSelector initialized" << std::endl;
 
@@ -2410,7 +2435,8 @@ bool DaemonApp::Init(int argc, char** argv) {
         }
         ctx_.header_store = header_store;
 
-        header_chain = std::make_shared<dinero::consensus::HeaderChainSelector>(header_store.get());
+        header_chain = std::make_shared<dinero::consensus::HeaderChainSelector>(
+            header_store.get(), failed_header_roots);
         ctx_.header_chain = header_chain;
         std::cout << "[DaemonApp] ✅ Clean HeaderStore reinitialized (" << headers_path
                   << ")" << std::endl;
@@ -4669,6 +4695,10 @@ bool DaemonApp::Init(int argc, char** argv) {
                                             MakeUtreexoDeltaUndoKey(
                                                 pending.proof_msg.block_hash),
                                             delta_blob);
+                                        batch.Put(
+                                            consensus::CsnSpeculativeProofMarkerKey(
+                                                pending.proof_msg.block_hash),
+                                            consensus::CSN_SPECULATIVE_PROOF_MARKER_VALUE);
                                     }
                                     if (replay_status != Status::Ok ||
                                         cdb->writeBatch(token, std::move(batch), true) != Status::Ok) {
@@ -4851,6 +4881,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                             }
                             return true;
                         }
+                        const uint256 proof_parent_hash = proof_tip->hash;
+                        const int proof_parent_height = proof_tip->height;
 
                         uint64_t peer_id = GetPeerID(pending.peer_addr);
                             const bool use_transition_proof = csn_should_use_transition_proof(pending);
@@ -4860,6 +4892,41 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     : pending.proof_msg.proof_data.spend_proof.targets;
                             consensus::UtreexoDelta utreexo_delta;
                             std::string delta_error;
+                            auto* forest_owner = chainstate_service->GetConsensusUTXOSet();
+                            if (!forest_owner) {
+                                g_logger.error("[CSN] Consensus forest unavailable at height " +
+                                               std::to_string(h));
+                                return false;
+                            }
+                            // Proof verification advances the live CSN forest before
+                            // chainstate accepts/connects this body. Keep an exact
+                            // pre-proof state so any later failure leaves the forest
+                            // and proof cursor at the active parent.
+                            auto forest_before_proof = [&] {
+                                auto forest_lock = forest_owner->LockForestShared();
+                                return forest_owner->GetForest().clone();
+                            }();
+                            const uint32_t sync_height_before_proof =
+                                stateless_node->GetSyncHeight();
+                            auto restore_unconnected_proof = [&] {
+                                forest_owner->ReplaceForestGuarded(forest_before_proof.clone());
+                                stateless_node->SyncToForestState(sync_height_before_proof);
+                            };
+                            auto restore_if_parent_unchanged = [&] {
+                                const auto* active = chainstate_service->GetActiveTip();
+                                if (active && active->height == proof_parent_height &&
+                                    active->hash == proof_parent_hash) {
+                                    restore_unconnected_proof();
+                                }
+                            };
+                            // Also restore on exceptional exits before ingress commits.
+                            // Dismiss immediately when the active tip changes: copying
+                            // the old forest over a connected descendant is unsafe.
+                            struct ProofRestoreGuard {
+                                std::function<void()> restore;
+                                ~ProofRestoreGuard() { if (restore) restore(); }
+                                void dismiss() { restore = {}; }
+                            } proof_guard{restore_if_parent_unchanged};
                             auto* forest_before = stateless_node->GetForest();
                             bool valid = forest_before && BuildStatelessUtreexoDelta(
                                 *forest_before, pending.block, h, replay_targets,
@@ -4951,7 +5018,59 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     snprintf(buf, sizeof(buf), "%02x", byte);
                                     blockHex += buf;
                                 }
-                                chainstate_service->ProcessIncomingBlockHex(blockHex, pending.peer_addr);
+                                const bool accepted = chainstate_service->ProcessIncomingBlockHex(
+                                    blockHex, pending.peer_addr);
+                                const CBlockIndex* connected_tip = chainstate_service->GetActiveTip();
+                                const bool pending_is_tip = accepted && connected_tip &&
+                                    connected_tip->height == static_cast<int>(h) &&
+                                    connected_tip->hash == pending.proof_msg.block_hash;
+                                if (!pending_is_tip) {
+                                    const bool still_at_parent = connected_tip &&
+                                        connected_tip->height == proof_parent_height &&
+                                        connected_tip->hash == proof_parent_hash;
+                                    if (still_at_parent) {
+                                        restore_unconnected_proof();
+                                        proof_guard.dismiss();
+                                        chainstate_service->ForgetCompletedBlockForRetry(
+                                            pending.proof_msg.block_hash);
+                                    } else {
+                                        proof_guard.dismiss();
+                                        // ProcessIncoming may recursively connect an
+                                        // orphan descendant before returning. Never
+                                        // roll its committed forest back to this h-1
+                                        // snapshot or write an h checkpoint from it.
+                                        const CBlockIndex* ancestor = connected_tip;
+                                        while (ancestor && ancestor->height > static_cast<int>(h)) {
+                                            ancestor = ancestor->pprev;
+                                        }
+                                        if (accepted && ancestor &&
+                                            ancestor->height == static_cast<int>(h) &&
+                                            ancestor->hash == pending.proof_msg.block_hash) {
+                                            stateless_node->SyncToForestState(connected_tip->height);
+                                            activation_lock.unlock();
+                                            chainstate_service->DispatchQueuedCsnBodyRefetches();
+                                            {
+                                                std::lock_guard<std::mutex> rl(*buffer_mutex);
+                                                *next_validate_height = std::max(
+                                                    *next_validate_height,
+                                                    static_cast<uint32_t>(connected_tip->height) + 1);
+                                            }
+                                            if (block_download_for_csn) block_download_for_csn->Tick();
+                                            return true;
+                                        }
+                                    }
+                                    g_logger.warning("[CSN] Proof-valid body did not connect at height " +
+                                                     std::to_string(h) + "; retaining active-parent cursor");
+                                    activation_lock.unlock();
+                                    chainstate_service->DispatchQueuedCsnBodyRefetches();
+                                    if (still_at_parent && block_download_for_csn) {
+                                        block_download_for_csn->ReRequestBlock(
+                                            pending.proof_msg.block_hash);
+                                        block_download_for_csn->Tick();
+                                    }
+                                    return false;
+                                }
+                                proof_guard.dismiss();
                                 if (block_download_for_csn) {
                                     block_download_for_csn->MarkBlockConnected(
                                         pending.proof_msg.block_hash
@@ -4993,9 +5112,13 @@ bool DaemonApp::Init(int argc, char** argv) {
                                         g_logger.warning("[CSN] Failed preparing post-connect checkpoint batch");
                                     }
                                 }
-
                             }
+                        if (!valid) {
+                            restore_unconnected_proof();
+                            proof_guard.dismiss();
+                        }
                         activation_lock.unlock();
+                        chainstate_service->DispatchQueuedCsnBodyRefetches();
                         if (valid) {
                             csn_request_frontier_headers(pending.peer_addr, h);
                             {
@@ -5346,8 +5469,12 @@ bool DaemonApp::Init(int argc, char** argv) {
                         }
 
                         // Notify scheduler: download completed (frees in-flight slot)
-                        if (block_download_for_csn) {
-                            block_download_for_csn->OnBlockReceived(block);
+                        if (block_download_for_csn &&
+                            !block_download_for_csn->OnBlockReceived(block)) {
+                            g_logger.warning("[CSN] Rejected unbound body before proof buffering at height " +
+                                             std::to_string(block_height));
+                            block_download_for_csn->ReRequestBlock(block_hash);
+                            return;
                         }
                         if (parallel_download_for_csn) {
                             parallel_download_for_csn->notifyBlockReceived(block_hash);
@@ -6688,6 +6815,33 @@ bool DaemonApp::Init(int argc, char** argv) {
                     }
                 }
 
+                // An archival bridge can have the requested body despite a
+                // stale height announcement. If every height-capable peer has
+                // already timed out or returned NOTFOUND, probe such bridges
+                // before retrying the same unavailable peers. Keep CSN's
+                // bridge-specific filtering and ordinary height filtering as-is.
+                if (sched && !csn_mode && !skip_below_height.empty()) {
+                    std::vector<dinero::daemon::BlockBodyPeerAvailability>
+                        availability;
+                    availability.reserve(peers.size());
+                    for (const auto& peer : peers) {
+                        const auto key = peer.to_string();
+                        const bool archival_bridge =
+                            p2p_service->get().peer_has_service_flags(
+                                key, ServiceFlags::NODE_NETWORK) &&
+                            p2p_service->get().peer_has_service_flags(
+                                key, ServiceFlags::NODE_UTREEXO_BRIDGE);
+                        availability.push_back({key, peer_advertised_height(peer),
+                                                archival_bridge});
+                    }
+                    for (const auto& key :
+                            dinero::daemon::LaggingArchivalBridgeFallback(
+                                availability, block_height,
+                                sched->CurrentRequestSkipPeers())) {
+                        skip_below_height.erase(key);
+                    }
+                }
+
                 // Also skip peers the scheduler has marked body-incapable at or
                 // below this height (issue #241). AssumeUTXO/snapshot peers
                 // advertise the full chain height but lack pre-snapshot block
@@ -6872,8 +7026,10 @@ bool DaemonApp::Init(int argc, char** argv) {
                 block_download->SetGetTipHeightCallback(
                     [chainstate_for_drain]() -> uint32_t {
                         if (!chainstate_for_drain) return 0;
-                        auto* tip = chainstate_for_drain->GetActiveTip();
-                        return tip ? tip->height : 0;
+                        // The scheduler can refresh on every tick. Read the
+                        // published value snapshot, never the bare tip pointer.
+                        const auto published = chainstate_for_drain->GetPublishedTipHeight();
+                        return published ? *published : 0;
                     }
                 );
 
@@ -6886,11 +7042,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                 block_download->SetGetBlockHashAtHeightCallback(
                     [chainstate_for_drain](uint32_t height, uint256& out_hash) -> bool {
                         if (!chainstate_for_drain) return false;
-                        return consensus::GetActiveChainHashAtHeight(
-                            chainstate_for_drain->GetActiveTip(),
-                            height,
-                            out_hash
-                        );
+                        return chainstate_for_drain->GetPublishedActiveHashAtHeight(
+                            height, out_hash);
                     }
                 );
             }

@@ -116,6 +116,7 @@ using CfUPtr = std::unique_ptr<rocksdb::ColumnFamilyHandle, CfDeleter>;
  */
 class ChainDB {
     friend class ChainDBTransactionReadTestPeer;
+    friend struct HeaderMetadataStrictScanTestPeer;
 public:
     ChainDB() = default;
     ~ChainDB() { close(); }
@@ -736,10 +737,23 @@ public:
     // Checked row decoding and terminal iterator status; malformed records
     // refuse rather than disappear. Visitor exceptions propagate. A false
     // visitor result still deliberately stops early (not a complete inventory).
-    Status forEachUTXO(std::function<bool(const uint256& txid, uint32_t vout, const Coin& coin)> callback) const;
+    // NewIterator owns a consistent RocksDB read view. snapshot_ready runs
+    // after that view is captured and before scanning, so a caller can release
+    // its selected-chain lock without mixing rows from different commits.
+    Status forEachUTXO(std::function<bool(const uint256& txid, uint32_t vout, const Coin& coin)> callback,
+                       std::function<void()> snapshot_ready = {}) const;
 
     // Phase H.3: Iterate all header metadata (restart recovery - rebuild header tree)
     Status forEachHeaderMetadata(std::function<bool(const uint256& hash, const PersistedHeaderMetadata& metadata)> callback) const;
+    // Strict startup scan for consensus-invalidity hydration. Unlike the
+    // legacy enumerator, malformed metadata or iterator errors refuse the
+    // scan; canonical header-only legacy rows remain valid omissions.
+    Status forEachHeaderMetadataStrict(
+        std::function<bool(const uint256& hash, const PersistedHeaderMetadata& metadata)> callback) const;
+    // Enumerate durable failed-status descendants through metadata parent
+    // links, including header-only rows absent from the in-memory block index.
+    // Reconsider uses this before its one-batch status clear.
+    StatusOr<std::vector<uint256>> getFailedHeaderDescendants(const uint256& root) const;
 
     // Schema and metadata
     Status getSchemaVersion(int& version) const;

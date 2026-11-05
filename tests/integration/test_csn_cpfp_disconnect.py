@@ -75,32 +75,52 @@ def main():
     h.require_no_recovery_fuse()
     print("PASS CSN disconnect and offline restart preserve only pre-block coins", flush=True)
 
-    # Keep the bridge on the invalidated package until the CSN actually
-    # processes its refetched proof. Immediately invalidating the bridge too
-    # hid a race: the worker could advance the canonical forest for a block
-    # whose persistent failure flag later prevented chain activation.
+    # Keep the bridge on the invalidated package while it re-announces its
+    # header. An older selector refetched the body and the CSN worker had to
+    # skip its proof. An eligible-header selector leaves the failed header
+    # known but does not request its body. In either case the canonical forest
+    # and durable coins must stay at the ancestor.
     csn_log = h.WORK / "csn.log"
     replay_log_start = csn_log.stat().st_size
     full.start()
+    ancestor_height = csn.call("getblockcount")
+    package_height = full.call("getblockcount")
+    h.require(package_height == ancestor_height + 1, "re-announced package height changed")
 
-    def refetched_package_processed():
+    def invalidated_package_handled():
         with csn_log.open("rb") as log:
             log.seek(replay_log_start)
             text = log.read().decode(errors="replace")
-        # Wait for a completed worker decision, not merely receipt. The old
-        # path marks the block connected even though it cannot activate it.
-        return (f"Skipping canonical proof for invalidated block {package}" in text or
-                f"Block marked CONNECTED: {package}" in text)
+        processed = (f"Skipping canonical proof for invalidated block {package}" in text or
+                     f"Block marked CONNECTED: {package}" in text)
+        if processed:
+            return True
+        # Under eligible-header selection, require a real response to the
+        # restarted peer's advertised higher tip before checking that the
+        # failed header remains ineligible and no body was requested.
+        probe = (f"reason=peer-connect best_header={ancestor_height} "
+                 f"peer_best={package_height}")
+        response = f"Header batch peer=127.0.0.1:{full.p2p} received="
+        return probe in text and response in text
 
-    h.wait(refetched_package_processed, "invalidated package proof processed")
+    h.wait(invalidated_package_handled, "invalidated package re-announcement handled")
+    with csn_log.open("rb") as log:
+        log.seek(replay_log_start)
+        replay_text = log.read().decode(errors="replace")
+    if f"reason=peer-connect best_header={ancestor_height} peer_best={package_height}" in replay_text:
+        tips = csn.call("getchaintips")
+        h.require(any(tip["hash"] == package and tip["status"] == "invalid" for tip in tips),
+                  "invalidated package is not an invalid known tip")
+        h.require(f"Requested block: {package}" not in replay_text,
+                  "eligible-header scheduler refetched invalidated package")
     h.require(csn.call("getbestblockhash") == ancestor and h.root(csn) == ancestor_root,
-              "refetched invalidated proof changed canonical tip/forest")
+              "invalidated package re-announcement changed canonical tip/forest")
     h.require(csn.call("gettxoutsetinfo") == ancestor_coins["csn"],
-              "refetched invalidated proof changed durable coins")
+              "invalidated package re-announcement changed durable coins")
     verified = csn.call("blockchain.verifyutxoproofs_batch", [original_proof])
     h.require(verified["valid"] == 1 and verified["invalid"] == 0,
-              f"refetched invalidated proof invalidated ancestor proof: {verified}")
-    print("PASS refetched invalidated package leaves canonical state unchanged", flush=True)
+              f"invalidated package re-announcement invalidated ancestor proof: {verified}")
+    print("PASS invalidated package re-announcement leaves canonical state unchanged", flush=True)
 
     full.call("blockchain.invalidateblock", [package])
     h.require(full.call("getbestblockhash") == ancestor and h.root(full) == ancestor_root,

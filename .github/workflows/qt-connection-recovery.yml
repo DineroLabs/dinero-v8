@@ -1,0 +1,20 @@
+name: Qt connection recovery
+on:
+  pull_request:
+    paths:
+      - 'qt/src/connection_manager.*'
+      - 'qt/tests/test_connection_manager.cpp'
+      - 'qt/tests/connection-recovery/**'
+      - '.github/workflows/qt-connection-recovery.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  late-startup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends qt6-base-dev ninja-build
+      - run: cmake -S qt/tests/connection-recovery -B build-qt-connection -G Ninja && cmake --build build-qt-connection --parallel 2
+      - run: ctest --test-dir build-qt-connection --output-on-failure

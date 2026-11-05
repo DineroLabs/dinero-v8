@@ -533,17 +533,31 @@ else
 fi
 
 # ── CASE 4: reorg back to base and forward again ────────────────────────
-# Settle first. The consumer is still syncing from the source, so a root
-# captured before the round trip can belong to a DIFFERENT tip than the one
-# after it — comparing those is a false positive, not a commitment change.
-for _ in $(seq 1 40); do
-    a="$(tip_of "$CON_RPC" "$CON_DIR")"; sleep 2
-    b="$(tip_of "$CON_RPC" "$CON_DIR")"
-    [[ "$a" == "$b" ]] && break
+# Case 2b may have advanced the source from 205 to 207 while the consumer is
+# still catching up. A quiet tip at 205 or 206 is not a settled chain: it can
+# advance between the root and best-hash RPCs or during the round trip. First
+# rendezvous on the source's exact final hash, then compare state at that hash.
+RT_HASH_BEFORE="$(rpc "$SRC_RPC" "$SRC_DIR" getbestblockhash | jq -r '.result // ""')"
+RT_SOURCE_TIP="$(tip_of "$SRC_RPC" "$SRC_DIR")"
+[[ "$RT_HASH_BEFORE" =~ ^[0-9a-fA-F]{64}$ && "$RT_SOURCE_TIP" =~ ^[0-9]+$ ]] \
+    || fail "case 4: source tip is unavailable for the round trip"
+# Case 6 restarts can drop the peer; restore it before waiting for catch-up.
+rpc "$CON_RPC" "$CON_DIR" addnode "[\"127.0.0.1:${SRC_P2P}\",\"onetry\"]" >/dev/null 2>&1 || true
+RT_CAUGHT_UP=0
+for _ in $(seq 1 90); do
+    [[ "$(rpc "$CON_RPC" "$CON_DIR" getbestblockhash | jq -r '.result // ""')" == "$RT_HASH_BEFORE" ]] \
+        && { RT_CAUGHT_UP=1; break; }
+    sleep 2
 done
+[[ "$RT_CAUGHT_UP" == "1" ]] \
+    || fail "case 4: consumer did not catch up to source hash $RT_HASH_BEFORE at height $RT_SOURCE_TIP"
 RT_TIP_BEFORE="$(tip_of "$CON_RPC" "$CON_DIR")"
+[[ "$RT_TIP_BEFORE" == "$RT_SOURCE_TIP" ]] \
+    || fail "case 4: consumer hash matches source but height $RT_TIP_BEFORE differs from $RT_SOURCE_TIP"
 RT_ROOT_BEFORE="$(shielded_root_settled "$CON_RPC" "$CON_DIR")"
-info "case 4: settled at tip=$RT_TIP_BEFORE root=${RT_ROOT_BEFORE:0:32}..."
+[[ "$(rpc "$CON_RPC" "$CON_DIR" getbestblockhash | jq -r '.result // ""')" == "$RT_HASH_BEFORE" ]] \
+    || fail "case 4: consumer tip changed while sampling the pre-reorg root"
+info "case 4: caught up at tip=$RT_TIP_BEFORE hash=${RT_HASH_BEFORE:0:16} root=${RT_ROOT_BEFORE:0:32}..."
 
 B1_HASH="$(rpc "$CON_RPC" "$CON_DIR" getblockhash "[$((BASE + 1))]" | jq -r '.result // ""')"
 if [[ "$B1_HASH" =~ ^[0-9a-fA-F]{64}$ ]]; then
@@ -552,21 +566,24 @@ if [[ "$B1_HASH" =~ ^[0-9a-fA-F]{64}$ ]]; then
     AT_BASE_TIP="$(tip_of "$CON_RPC" "$CON_DIR")"
     info "case 4: after invalidating base+1, tip=$AT_BASE_TIP (base=$BASE)"
     rpc "$CON_RPC" "$CON_DIR" reconsiderblock "[\"$B1_HASH\"]" >/dev/null 2>&1
-    # Wait for the tip to return to exactly where it was, so the comparison is
-    # at equal heights.
+    # Wait for the exact original block, not just its height: a different fork
+    # at the same height cannot establish a valid commitment round trip.
     # Re-establish the peer: the restarts in case 6 can drop it, and without a
-    # peer the node cannot re-fetch 201..205, so the tip never returns and the
+    # peer the node cannot re-fetch 201..tip, so the tip never returns and the
     # case times out having proved nothing.
     rpc "$CON_RPC" "$CON_DIR" addnode "[\"127.0.0.1:${SRC_P2P}\",\"onetry\"]" >/dev/null 2>&1 || true
     RT_OK=0
     for _ in $(seq 1 90); do
-        [[ "$(tip_of "$CON_RPC" "$CON_DIR")" == "$RT_TIP_BEFORE" ]] && { RT_OK=1; break; }
+        [[ "$(rpc "$CON_RPC" "$CON_DIR" getbestblockhash | jq -r '.result // ""')" == "$RT_HASH_BEFORE" ]] \
+            && { RT_OK=1; break; }
         sleep 2
     done
     RT_TIP_AFTER="$(tip_of "$CON_RPC" "$CON_DIR")"
     RT_ROOT="$(shielded_root_settled "$CON_RPC" "$CON_DIR")"
     info "case 4: after round trip tip=$RT_TIP_AFTER root=${RT_ROOT:0:32}..."
     if [[ "$RT_OK" == "1" ]]; then
+        [[ "$(rpc "$CON_RPC" "$CON_DIR" getbestblockhash | jq -r '.result // ""')" == "$RT_HASH_BEFORE" ]] \
+            || fail "case 4: consumer tip changed while sampling the post-reorg root"
         [[ "$RT_ROOT" == "$RT_ROOT_BEFORE" ]] \
             || fail "case 4: round trip to tip $RT_TIP_BEFORE changed the commitment ($RT_ROOT != $RT_ROOT_BEFORE)"
         pass "case 4: reorg to base and forward reproduces the commitment at tip $RT_TIP_BEFORE"
@@ -596,12 +613,12 @@ if [[ "$B1_HASH" =~ ^[0-9a-fA-F]{64}$ ]]; then
             || fail "case 4: $DESC_BAD descendant(s) between $((BASE + 1)) and $RT_TIP_BEFORE are not cleanly on the active chain"
         pass "case 4: all $((RT_TIP_BEFORE - BASE)) descendants cleared and on the active chain"
 
-        # Candidate membership: the restored tip must be reported as the best
-        # chain tip, not merely reachable.
+        # Candidate membership: the exact restored tip must be the best chain
+        # tip, not merely reachable or replaced by a different same-height fork.
         BEST="$(rpc "$CON_RPC" "$CON_DIR" getbestblockhash | jq -r '.result // ""')"
         TIP_HASH="$(rpc "$CON_RPC" "$CON_DIR" getblockhash "[$RT_TIP_BEFORE]" | jq -r '.result // ""')"
-        [[ -n "$BEST" && "$BEST" == "$TIP_HASH" ]] \
-            || fail "case 4: best block hash ($BEST) is not the restored tip ($TIP_HASH) — candidate membership did not recover"
+        [[ "$BEST" == "$RT_HASH_BEFORE" && "$TIP_HASH" == "$RT_HASH_BEFORE" ]] \
+            || fail "case 4: best block ($BEST) or selected height-$RT_TIP_BEFORE block ($TIP_HASH) differs from restored $RT_HASH_BEFORE"
         pass "case 4: restored tip is the best chain tip (candidate membership recovered)"
     else
         # HARD FAILURE. The round trip is the property under test; if it does

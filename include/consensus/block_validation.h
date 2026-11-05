@@ -10,6 +10,7 @@
 #include <optional>
 #include "consensus/block_undo.h"
 #include "consensus/block_reward.h"
+#include "consensus/contextual_locks.h"
 #include "consensus/utreexo_accumulator.h"  // v0.14.0.4: Utreexo enforcement
 #include "consensus/ibd_mode.h"              // Phase 5: Stateless IBD support
 #include "consensus/validation_mode.h"       // Phase 8: Stateless validation mode
@@ -19,6 +20,17 @@
 
 namespace dinero {
 namespace consensus {
+
+// Read-only contextual preflight for a proof-authenticated stateless block.
+// The caller must first authenticate spent_outputs against the parent forest;
+// this routine does not verify accumulator membership or mutate chain state.
+// It shares ValidateSpend, CheckContextualLocks, block resource and sigops
+// predicates with ordinary connection, so a CSN replay cannot treat a valid
+// accumulator transition as authorization to spend someone else's output.
+bool CheckStatelessBlockContextReadOnly(
+    const Block& block, uint32_t height,
+    const std::vector<SpentOutputData>* spent_outputs,
+    const LockMtpLookup& branch_mtp, std::string& error);
 
 // Forward declaration for CPU budget monitoring (Phase E.3)
 class CPUBudgetMonitor;

@@ -617,26 +617,78 @@ void Save(Store& candidate, const Journal& journal, rocksdb::WriteBatch& batch) 
     batch.Put(candidate.families.at("meta"), kLayout, Layout(journal));
     batch.Put(candidate.families.at("meta"), kJournal, journal.Encode());
 }
-void Compare(const Store& original, const Store& candidate, const Journal& journal, bool started) {
-    // Walk both directions, including every unknown nonselected record. Point
-    // reads require byte equality, not merely equal counts or a root match.
+void Compare(const Store& original, const Store& candidate, const Journal& journal, bool started,
+             const ShieldedMigrationLimits& limits) {
+    // Stream bounded batches and compare exact keys/values in order. Holding
+    // only one archival iterator at a time avoids pinning two stores' entire
+    // level-zero file sets under a constrained descriptor limit.
+    const auto iterator = [](const Store& store, const std::string& family,
+                             const std::optional<std::string>& previous) {
+        rocksdb::ReadOptions options;
+        options.verify_checksums = true; options.fill_cache = false;
+        auto it = std::unique_ptr<rocksdb::Iterator>(store.db->NewIterator(options, store.families.at(family)));
+        if (previous) {
+            it->Seek(*previous);
+            if (it->Valid() && it->key() == *previous) it->Next();
+        } else it->SeekToFirst();
+        return it;
+    };
+    // Moving nullifiers honors batch_rows; read-only comparison uses a fixed
+    // 4096-row cap plus batch_bytes, so one-row WAL batches do not repeatedly
+    // reopen the entire archival L0 set for every unrelated record.
     uint64_t selected = 0;
-    for (const auto& [family, handle] : original.families) original.Scan(family, [&](const rocksdb::Slice& key, const rocksdb::Slice& value) {
-        const auto old = candidate.Get(family, key);
-        if (family == "utreexo" && Selected(key)) {
-            const auto moved = candidate.Get(kFamily, key);
-            Require((old || moved) && (!old || *old == value) && (!moved || *moved == value), "missing or conflicting selected copy");
-            const bool retired = selected++ < journal.retired;
-            Require(retired ? (!old && moved) : old.has_value(), "retirement disagrees with durable journal");
-            if (!started || journal.phase == "PREPARING") Require(!moved, "unexpected early destination record");
-        } else Require(old && *old == value, "nonselected record changed or missing");
-    });
+    for (const auto& [family, handle] : original.families) {
+        std::optional<std::string> previous;
+        bool exhausted = false;
+        while (!exhausted) {
+            std::vector<std::pair<std::string, std::string>> rows;
+            uint64_t bytes = 0;
+            {
+                auto source = iterator(original, family, previous);
+                while (source->Valid()) {
+                    const uint64_t size = uint64_t(source->key().size()) + source->value().size();
+                    // Legacy nonselected records have no size limit. Admit a
+                    // single oversized row, as the previous exact lookup did.
+                    if (!rows.empty() && (rows.size() >= 4096 ||
+                        size > limits.batch_bytes - std::min(bytes, limits.batch_bytes))) break;
+                    rows.emplace_back(source->key().ToString(), source->value().ToString());
+                    bytes += size;
+                    source->Next();
+                }
+                Check(source->status(), "migration source comparison iterator");
+                exhausted = !source->Valid();
+            }
+            auto old = iterator(candidate, family, previous);
+            const auto skip_controls = [&] {
+                while (started && old->Valid() && Control(family, old->key())) old->Next();
+            };
+            for (const auto& [key, value] : rows) {
+                skip_controls();
+                Require(!old->Valid() || old->key().compare(key) >= 0, "candidate contains unexplained record");
+                const bool has_old = old->Valid() && old->key() == key;
+                if (family == "utreexo" && Selected(key)) {
+                    const auto moved = candidate.Get(kFamily, key);
+                    Require((has_old || moved) && (!has_old || old->value() == value) &&
+                            (!moved || *moved == value), "missing or conflicting selected copy");
+                    const bool retired = selected++ < journal.retired;
+                    Require(retired ? (!has_old && moved) : has_old, "retirement disagrees with durable journal");
+                    if (!started || journal.phase == "PREPARING") Require(!moved, "unexpected early destination record");
+                } else Require(has_old && old->value() == value, "nonselected record changed or missing");
+                if (has_old) old->Next();
+            }
+            skip_controls();
+            Check(old->status(), "migration candidate comparison iterator");
+            if (exhausted) Require(!old->Valid(), "candidate contains unexplained record");
+            if (!rows.empty()) previous = rows.back().first;
+        }
+    }
     Require(selected == journal.rows, "source selected count changed");
-    for (const auto& [family, handle] : candidate.families) candidate.Scan(family, [&](const rocksdb::Slice& key, const rocksdb::Slice& value) {
-        if (started && Control(family, key)) return;
-        if (family == kFamily) Require(Selected(key), "unexpected destination record");
-        const auto expected = original.Get(family == kFamily ? "utreexo" : family, key);
-        Require(expected && *expected == value, "candidate contains unexplained record");
+    // Relocated records are a small, separately bounded inventory. Check all
+    // of them against the original, including unexpected destination keys.
+    candidate.Scan(kFamily, [&](const rocksdb::Slice& key, const rocksdb::Slice& value) {
+        Require(Selected(key), "unexpected destination record");
+        const auto expected = original.Get("utreexo", key);
+        Require(expected && *expected == value, "candidate contains unexplained destination record");
     });
     if (journal.phase == "VERIFYING" || journal.phase == "READY") Require(journal.retired == journal.rows, "premature completion");
 }
@@ -687,7 +739,7 @@ static ShieldedMigrationResult RunMigration(const fs::path& original_path, const
             Require((journal.phase == "PREPARING" || candidate.families.count(kFamily)) &&
                     (journal.phase != "PREPARING" || journal.retired == 0), "missing destination or early retirement");
         } else Require(!layout && !candidate.families.count(kFamily), "unexplained destination layout");
-        Compare(original, candidate, journal, started);
+        Compare(original, candidate, journal, started, limits);
         result.phase = started ? journal.phase : "LEGACY"; result.retired_rows = journal.retired;
         if (!apply || journal.phase == "READY") {
             identity_check(); result.ok = true; result.ready = journal.phase == "READY"; return result;
@@ -739,7 +791,7 @@ static ShieldedMigrationResult RunMigration(const fs::path& original_path, const
             });
             flush(); publish("VERIFYING"); hit("after_verifying");
         }
-        Compare(original, candidate, journal, true); identity_check(); hit("before_ready");
+        Compare(original, candidate, journal, true, limits); identity_check(); hit("before_ready");
         publish("READY"); hit("after_ready");
         result.ok = result.ready = true;
     } catch (const std::exception& error) {

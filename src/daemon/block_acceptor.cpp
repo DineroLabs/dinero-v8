@@ -10,6 +10,7 @@
 #include "consensus/pow_context.h"
 #include "consensus/pow.hpp"
 #include "consensus/chainparams.h"  // For dinero::Params()
+#include "consensus/coinbase_structure.h"
 #include "consensus/utreexo_activation.h"  // Phase 11a: IsUtreexoActive check
 #include "consensus/block_status_generation.h"
 #include "common/crash_injection.h"
@@ -20,6 +21,7 @@
 #include "consensus/parallel_block_validator.h"  // Phase 6B: Parallel script validation
 #include "consensus/sigops.h"       // Mainnet Blocker: MAX_BLOCK_SIGOPS enforcement
 #include "consensus/merkle_root.h"  // Phase 11a: Canonical merkle computation
+#include "consensus/witness_commitment.h"
 #include "consensus/block_index.h"  // For FindBlockIndex, CBlockIndex::GetMedianTimePast (Reorg MTP fix)
 #include "consensus/block_lifecycle.h"  // BLOCK_HAVE_DATA status flag
 #include "consensus/fork_acceptance_policy.h"  // #803: fork-prior-to-checkpoint, overlay depth cap
@@ -260,9 +262,15 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
         }
 
         // 4. Validate merkle root
-        if (!ValidateMerkleRoot(block, error)) {
-            dinero::metrics::MetricsRegistry::IncrementBlocksRejected("invalid-merkle");
-            return BlockAcceptResult::Rejected(BlockRejectCode::INVALID_MERKLE_ROOT, error, block_hash, newHeight);
+        if (!ValidateBodyCommitments(block, static_cast<uint32_t>(newHeight), error)) {
+            const bool witness_failure = error.rfind("bad-witness-commitment", 0) == 0 ||
+                                         error.rfind("missing-witness-commitment", 0) == 0;
+            dinero::metrics::MetricsRegistry::IncrementBlocksRejected(
+                witness_failure ? "invalid-witness-commitment" : "invalid-merkle");
+            return BlockAcceptResult::Rejected(
+                witness_failure ? BlockRejectCode::INVALID_TRANSACTION :
+                                  BlockRejectCode::INVALID_MERKLE_ROOT,
+                error, block_hash, newHeight);
         }
 
         // 4.5. Validate signature operations (MAINNET BLOCKER FIX)
@@ -1470,7 +1478,8 @@ bool BlockAcceptor::ValidateParentLink(const ParsedBlock& block, uint64_t parent
     return true;
 }
 
-bool BlockAcceptor::ValidateMerkleRoot(const ParsedBlock& block, std::string& error) {
+bool BlockAcceptor::ValidateBodyCommitments(const ParsedBlock& block,
+                                             uint32_t height, std::string& error) {
     if (block.transactions.empty()) {
         error = "No transactions in block";
         return false;
@@ -1501,7 +1510,21 @@ bool BlockAcceptor::ValidateMerkleRoot(const ParsedBlock& block, std::string& er
         return false;
     }
 
-    LOG_INFO("✅ Merkle root validation passed");
+    // The transaction Merkle root binds txids, not witness bytes. Check the
+    // witness commitment using the same converted block before ConnectBlock
+    // stores this body under an honest header hash.
+    if (consensus::FullRulesActive(height)) {
+        if (!consensus::EnforceWitnessCommitment(
+                consensus_block.vtx, height, dinero::Params().enforce_witness_commitment,
+                dinero::Params().witness_commitment_enforcement_height, error)) {
+            return false;
+        }
+    } else if (consensus::FindWitnessCommitmentIndex(
+                   consensus_block.vtx[0]).has_value()) {
+        error = "bad-witness-commitment-preactivation";
+        return false;
+    }
+    LOG_INFO("✅ Body commitments validated");
     return true;
 }
 
@@ -1585,7 +1608,7 @@ bool BlockAcceptor::ValidateCoinbase(const std::string& coinbaseTx, uint64_t exp
     // Parse coinbase transaction to extract height
     std::vector<uint8_t> txBytes = HexToBytes(coinbaseTx);
     size_t offset = 0;
-    
+
     // Skip version (4 bytes)
     if (txBytes.size() < 4) {
         error = "Coinbase transaction too short";
@@ -1613,6 +1636,24 @@ bool BlockAcceptor::ValidateCoinbase(const std::string& coinbaseTx, uint64_t exp
         return false;
     }
     
+    // This parser already requires exactly one input. Under the separately
+    // scheduled structural rule, its 36-byte prevout must be the canonical
+    // null outpoint (zero txid, index 0xffffffff). Checking the existing
+    // bytes avoids imposing a second transaction decoder or a new wire format.
+    if (dinero::consensus::IsCoinbaseStructureActive(
+            expectedHeight, Params().coinbase_structure_activation_height)) {
+        const bool null_txid = std::all_of(
+            txBytes.begin() + offset, txBytes.begin() + offset + 32,
+            [](uint8_t byte) { return byte == 0; });
+        const bool null_index = std::all_of(
+            txBytes.begin() + offset + 32, txBytes.begin() + offset + 36,
+            [](uint8_t byte) { return byte == 0xff; });
+        if (!null_txid || !null_index) {
+            error = "Invalid coinbase prevout structure";
+            return false;
+        }
+    }
+
     // Skip previous output (32 bytes + 4 bytes)
     offset += 36;
     
@@ -2424,6 +2465,17 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
                 auto* block_index = chainstate->AddBlockIndex(header, height);
 
                 if (block_index) {
+                    // The metadata writer above preserves an existing undo
+                    // locator when this block is delivered again as a side
+                    // branch. Mirror that committed result in the live index:
+                    // ConnectTip owns undo, so a duplicate body cannot clear
+                    // BLOCK_HAVE_UNDO only in memory.
+                    const auto committed_metadata = chain_db->getHeaderMetadata(blockHash);
+                    if (!committed_metadata.ok()) {
+                        error = "Failed to read committed block header metadata";
+                        LOG_ERROR("❌ " + error);
+                        return false;
+                    }
                     // Apr 14 2026 (Bug #6 / #38) — preserve any pre-existing
                     // BLOCK_FAILED_VALID / BLOCK_FAILED_CHILD flag. Without
                     // this, a peer re-relaying a previously-invalidated block
@@ -2509,18 +2561,16 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
                                          dinero::BLOCK_VALID_TRANSACTIONS |
                                          dinero::BLOCK_VALID_CHAIN |
                                          dinero::BLOCK_HAVE_DATA |
-                                         (apply_canonical_writes ? dinero::BLOCK_HAVE_UNDO : 0u) |
+                                         (committed_metadata.value().status_flags & dinero::BLOCK_HAVE_UNDO) |
                                          preserved_failure_flags;
                     if (flatfile_pos.has_value()) {
                         block_index->file_number = flatfile_pos->file_number;
                         block_index->data_pos = static_cast<uint32_t>(flatfile_pos->offset);
                         block_index->data_size = flatfile_pos->size;
                     }
-                    if (undo_flatfile_pos.has_value()) {
-                        block_index->undo_file = undo_flatfile_pos->file_number;
-                        block_index->undo_pos = static_cast<uint32_t>(undo_flatfile_pos->offset);
-                        block_index->undo_size = undo_flatfile_pos->size;
-                    }
+                    block_index->undo_file = committed_metadata.value().undo_file;
+                    block_index->undo_pos = committed_metadata.value().undo_pos;
+                    block_index->undo_size = committed_metadata.value().undo_size;
 
                     // Add to candidate tips for fork selection — but skip if
                     // the block has been persistently invalidated. AddCandidate

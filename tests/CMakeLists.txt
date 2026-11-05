@@ -2,6 +2,18 @@
 # instead of added as a subdirectory. The legacy test definitions below use
 # root-relative source paths and root-scope CTest properties.
 
+foreach(_wallet_reorg_case IN ITEMS Delivery PendingRestart)
+  set(_wallet_reorg_args)
+  if(_wallet_reorg_case STREQUAL "PendingRestart")
+    list(APPEND _wallet_reorg_args --crash-pending-connect)
+  endif()
+  add_test(NAME WalletReorg${_wallet_reorg_case}
+    COMMAND ${CMAKE_COMMAND} -E env DINEROD=$<TARGET_FILE:dinerod>
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_wallet_reorg_delivery.py ${_wallet_reorg_args})
+  set_tests_properties(WalletReorg${_wallet_reorg_case} PROPERTIES
+    LABELS "integration;e2e-daemon;wallet;reorg;mandatory" TIMEOUT 240 RUN_SERIAL TRUE)
+endforeach()
+
 # Release builds define NDEBUG globally, but a test build must never compile
 # its assertions out. Keep this after the Release flags so -U wins over
 # CMake's earlier -DNDEBUG. A dedicated compile/runtime tripwire below proves
@@ -160,6 +172,13 @@ if(NOT WIN32)
     $<TARGET_FILE:test_daemon_service_release>)
   set_tests_properties(DaemonServiceRelease PROPERTIES
     LABELS "integration;restart;mandatory" TIMEOUT 300 RUN_SERIAL TRUE)
+
+  if(UNIX)
+    add_test(NAME DockerEntrypointConfig COMMAND python3 -B
+      ${CMAKE_SOURCE_DIR}/tests/integration/test_docker_entrypoint_config.py)
+    set_tests_properties(DockerEntrypointConfig PROPERTIES
+      LABELS "unit;packaging;mandatory" TIMEOUT 30)
+  endif()
 
   add_test(NAME OrchardWalletCycleHttpContract COMMAND python3 -B
     ${CMAKE_SOURCE_DIR}/tests/integration/test_orchard_wallet_cycle_http_contract.py)
@@ -877,6 +896,13 @@ target_include_directories(test_chain_db_prebase_coins PRIVATE
   ${CMAKE_SOURCE_DIR}/src
 )
 add_test(NAME ChainDBPreBaseCoins COMMAND test_chain_db_prebase_coins)
+add_executable(test_chain_db_scan_view tests/storage/test_chain_db_scan_view.cpp src/common/logger.cpp)
+target_link_libraries(test_chain_db_scan_view PRIVATE dinero_chainstate dinero_crypto
+  RocksDB::rocksdb OpenSSL::Crypto GTest::gtest GTest::gtest_main)
+link_zstd_if_needed(test_chain_db_scan_view)
+target_include_directories(test_chain_db_scan_view PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME ChainDBScanView COMMAND test_chain_db_scan_view)
+set_tests_properties(ChainDBScanView PROPERTIES LABELS "storage;rpc;regression" TIMEOUT 30)
 set_tests_properties(ChainDBPreBaseCoins PROPERTIES
   LABELS "storage;persistence;assumeutxo;regression"
   TIMEOUT 30
@@ -1094,7 +1120,36 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_acceptance_parity.sh)
     LABELS "consensus;gate;parity;release"
     # Alternate build directories must not compare a stale source-tree binary.
     ENVIRONMENT "CURRENT_DINEROD=$<TARGET_FILE:dinerod>"
+    RUN_SERIAL TRUE
     TIMEOUT 1800
+  )
+
+  add_test(
+    NAME AcceptanceParityHarnessClassification
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/test_acceptance_parity.sh --selftest-classification
+  )
+  set_tests_properties(AcceptanceParityHarnessClassification PROPERTIES
+    LABELS "consensus;parity;regression"
+    TIMEOUT 10
+  )
+
+  add_test(
+    NAME AcceptanceParityHarnessCompleteness
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/test_acceptance_parity.sh --selftest-completeness
+  )
+  set_tests_properties(AcceptanceParityHarnessCompleteness PROPERTIES
+    LABELS "consensus;parity;regression"
+    TIMEOUT 10
+  )
+
+  add_test(
+    NAME AcceptanceParityHarnessRpcEnvelope
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/test_acceptance_parity_rpc_envelope.py
+            ${CMAKE_SOURCE_DIR}/tests/test_acceptance_parity.sh
+  )
+  set_tests_properties(AcceptanceParityHarnessRpcEnvelope PROPERTIES
+    LABELS "consensus;parity;regression"
+    TIMEOUT 10
   )
 
   add_custom_target(test_acceptance_parity
@@ -1711,6 +1766,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_release_suite.sh)
 
   set_tests_properties(ReleaseSuite PROPERTIES
     LABELS "release;gate;meta"
+    # This meta-gate launches the fixed-port acceptance parity topology.
+    RUN_SERIAL TRUE
     TIMEOUT 14400
     ENVIRONMENT "BUILD_DIR=${CMAKE_BINARY_DIR}"
   )
@@ -5835,6 +5892,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     --gtest_filter=AssumeUtxoReplay.*:SelectedWalletHistory.*:RuntimeOriginProjection.*:WalletRestorePreflight.*:SnapshotWalletSource.*:SnapshotWalletRecovery.*)
   add_test(NAME AssumeUtxoPromotion COMMAND test_assumeutxo_replay
     --gtest_filter=AssumeUtxoPromotion.*)
+  add_test(NAME StatefulSnapshotCache COMMAND test_assumeutxo_replay
+    --gtest_filter=StatefulSnapshotCache.*)
+  set_tests_properties(StatefulSnapshotCache PROPERTIES LABELS "snapshot;daemon;restart;mandatory" TIMEOUT 120)
   set_tests_properties(AssumeUtxoPromotion PROPERTIES LABELS "snapshot;daemon;restart;mandatory" TIMEOUT 120)
   set_tests_properties(AssumeUtxoReplay PROPERTIES
     LABELS "daemon;assumeutxo;replay"
@@ -9756,12 +9816,24 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/storage/test_header_status_bits.cpp)
   target_include_directories(test_header_status_bits PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/rust/orchard_backend/include
   )
   add_test(NAME HeaderStatusBits COMMAND test_header_status_bits)
   set_tests_properties(HeaderStatusBits PROPERTIES
     LABELS "storage;persistence;critical;regression"
     TIMEOUT 30
   )
+  # The daemon fixture exits at startup without the real Orchard backend.
+  # Register this integration only in the configuration that can run it.
+  if(DINERO_BUILD_ORCHARD_BACKEND AND TARGET test_orchard_wallet_cycle_daemon)
+    add_test(NAME PrunedFailedChildReconsider COMMAND python3 -B
+      ${CMAKE_SOURCE_DIR}/tests/integration/test_pruned_failed_child_reconsider.py
+      $<TARGET_FILE:test_orchard_wallet_cycle_daemon>
+      $<TARGET_FILE:test_header_status_bits>)
+    set_tests_properties(PrunedFailedChildReconsider PROPERTIES
+      LABELS "integration;header;invalidity;restart;regression"
+      TIMEOUT 240 RUN_SERIAL TRUE)
+  endif()
   message(STATUS "✅ Header status-bits regression guard enabled")
 endif()
 
@@ -10007,6 +10079,13 @@ if(TARGET nodecore_ffi)
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_activation_wire.py)
     set_tests_properties(NodeCoreAssumedMobileCrossing PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE
       LABELS "integration;nodecore;orchard;assumedmobile;wallet")
+    add_test(NAME NodeCoreAssumedMobileV5H1Crossing COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
+      ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
+      DINERO_SDK_ASSUMED_MOBILE_FIXTURE=1 DINERO_SDK_V5_ACTIVATION_FIXTURE=1
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_activation_wire.py)
+    set_tests_properties(NodeCoreAssumedMobileV5H1Crossing PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE
+      LABELS "integration;nodecore;orchard;assumedmobile;wallet;snapshot-v5")
     add_test(NAME NodeCoreFundedCrossing COMMAND ${CMAKE_COMMAND} -E env
       NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
       ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
@@ -10652,7 +10731,7 @@ if(UNIX AND NOT IOS)
   )
   target_compile_definitions(test_shielded_state_migration PRIVATE DINERO_SHIELDED_MIGRATION_FAULT_TESTING=1)
   add_test(NAME ShieldedStateMigration COMMAND test_shielded_state_migration)
-  set_tests_properties(ShieldedStateMigration PROPERTIES LABELS "storage;smoke" TIMEOUT 180)
+  set_tests_properties(ShieldedStateMigration PROPERTIES LABELS "storage;smoke" RUN_SERIAL TRUE TIMEOUT 300)
 
   add_executable(test_shielded_migration_cohort
     tests/storage/test_shielded_migration_cohort.cpp
@@ -10669,7 +10748,7 @@ if(UNIX AND NOT IOS)
     ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
   )
   add_test(NAME ShieldedMigrationCohort COMMAND test_shielded_migration_cohort)
-  set_tests_properties(ShieldedMigrationCohort PROPERTIES LABELS "storage;smoke" TIMEOUT 180)
+  set_tests_properties(ShieldedMigrationCohort PROPERTIES LABELS "storage;smoke" RUN_SERIAL TRUE TIMEOUT 300)
   # Explicit metadata-only selections avoid executing unrelated cohort cases.
   add_test(NAME ShieldedMigrationMetadataV1 COMMAND test_shielded_migration_cohort --metadata-v1)
   add_test(NAME ShieldedMigrationMetadataV2 COMMAND test_shielded_migration_cohort --metadata-v2)
@@ -15312,6 +15391,31 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_forward_sync_activation_retry.cp
   target_include_directories(test_forward_sync_activation_retry PRIVATE
     ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
   add_test(NAME ForwardSyncActivationRetry COMMAND test_forward_sync_activation_retry)
+  add_test(NAME CsnLegacyContextRetrySibling
+    COMMAND test_forward_sync_activation_retry --csn-abc-legacy-retry-sibling)
+  set_tests_properties(CsnLegacyContextRetrySibling PROPERTIES
+    LABELS "daemon;consensus;csn;regression;mandatory" TIMEOUT 30)
+  add_test(NAME CsnMalformedCoinbaseSibling
+    COMMAND test_forward_sync_activation_retry --csn-abc-malformed-coinbase)
+  set_tests_properties(CsnMalformedCoinbaseSibling PROPERTIES
+    LABELS "daemon;consensus;csn;regression;mandatory" TIMEOUT 30)
+  add_test(NAME CsnMalformedCoinbaseUnbound
+    COMMAND test_forward_sync_activation_retry --csn-abc-unbound-malformed)
+  set_tests_properties(CsnMalformedCoinbaseUnbound PROPERTIES
+    LABELS "daemon;consensus;csn;regression;mandatory" TIMEOUT 30)
+  add_test(NAME CsnMalformedCoinbaseDirect
+    COMMAND test_forward_sync_activation_retry --csn-direct-malformed)
+  set_tests_properties(CsnMalformedCoinbaseDirect PROPERTIES
+    LABELS "daemon;consensus;csn;regression;mandatory" TIMEOUT 30)
+  add_test(NAME CsnMarkerlessDispatchLiveness
+    COMMAND test_forward_sync_activation_retry --markerless-dispatch)
+  set_tests_properties(CsnMarkerlessDispatchLiveness PROPERTIES
+    LABELS "daemon;consensus;csn;regression;mandatory" TIMEOUT 30)
+  add_test(NAME CandidateAncestryCost
+    COMMAND test_forward_sync_activation_retry --ancestor-cost)
+  set_tests_properties(CandidateAncestryCost PROPERTIES
+    LABELS "daemon;consensus;regression;mandatory" TIMEOUT 15)
+
   set_tests_properties(ForwardSyncActivationRetry PROPERTIES
     LABELS "daemon;consensus;regression;mandatory" TIMEOUT 30)
 endif()
@@ -17220,6 +17324,8 @@ function(dinero_attach_real_mempool_fixture_runtime)
     test_header_status_bits
     test_orchard_account_delivery
     test_orchard_index_delivery
+    test_runtime_prefix_storage
+    test_runtime_replay_branch_views
     test_reindex_deep_chain
     test_header_metadata_recovery
     test_assumeutxo_replay
@@ -17262,8 +17368,14 @@ function(dinero_attach_real_mempool_fixture_runtime)
     if(NOT TARGET ${_fixture})
       continue()
     endif()
-    if(_fixture MATCHES "^test_orchard_(account|index)_delivery$")
+    if(_fixture MATCHES "^(test_orchard_(account|index)_delivery|test_runtime_(prefix_storage|replay_branch_views))$")
       target_sources(${_fixture} PRIVATE src/daemon/config.cpp)
+    endif()
+    if(_fixture STREQUAL "test_header_status_bits" AND TARGET dinero_orchard_snapshot_store)
+      # Test 15 calls the Orchard snapshot-store owner directly. This target is
+      # absent in the ordinary Core Heavy build, so compile that case only
+      # when the real backend archive is present in the rescan group below.
+      target_compile_definitions(${_fixture} PRIVATE DINERO_TEST_ORCHARD_SNAPSHOT_STORE=1)
     endif()
     get_target_property(_sources ${_fixture} SOURCES)
     list(FILTER _sources EXCLUDE REGEX "(^|/)tests/stubs/(mempool_test_stubs|daemon_test_stubs)\\.cpp$")
@@ -17649,7 +17761,13 @@ if(TARGET dinerod AND TARGET dinero-swap-tower AND DINERO_BITCOIND)
   add_test(NAME SwapE2ERegtest
     COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_e2e_regtest.sh $<TARGET_FILE:swap_e2e_fixture_daemon> $<TARGET_FILE:swap_e2e_tool>
             $<TARGET_FILE:dinero-swap-tower>)
-  set_tests_properties(SwapE2ERegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900)
+  # The twelve scenarios launch independent Bitcoin, bridge, CSN and tower
+  # processes; run them clear of other daemon topologies in the full CTest run.
+  set_tests_properties(SwapE2ERegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900 RUN_SERIAL TRUE)
+  add_test(NAME SwapE2EPortCollision
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/wallet/test_swap_e2e_port_collision.py
+            ${CMAKE_SOURCE_DIR}/tests/wallet/swap_e2e_regtest.sh)
+  set_tests_properties(SwapE2EPortCollision PROPERTIES LABELS "wallet;swap;harness" TIMEOUT 30)
 endif()
 
 # Escrow builders must fail safe: no buyer key-path in the Taproot escrow, and

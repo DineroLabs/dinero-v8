@@ -87,6 +87,32 @@ TEST(VaultStateStore, ExplicitCreationAndAuthenticatedServiceReopen) {
     EXPECT_THROW(reopened.service->processNextWithdrawal(),std::runtime_error);
     EXPECT_EQ(vault::EncodeVaultState(reopened.service->captureState()),saved);EXPECT_EQ(f.Rows(),rows);
 }
+TEST(VaultStateStore, CanonicalNoOpAndReopenPreserveExactDurableOwner) {
+    VaultStateStoreFixture f;unsigned captures=0;bool available=true;
+    auto capture=[&](uint64_t height,const std::vector<vault::VaultDepositQuery>& queries) {
+        ++captures;if(!available)throw std::runtime_error("fixture canonical source unavailable");
+        return f.Capture()(height,queries);
+    };
+    auto bound=vault::WalletVaultStateOwner::CreateNewService(f.wallet.service,f.Session(),f.domain,f.config,
+        f.Backend(),[](uint64_t){return std::array<uint8_t,32>{};},
+        [](const auto&,uint64_t,const auto&){return false;},capture);
+    const auto original=f.Rows(),state=vault::EncodeVaultState(bound.service->captureState());
+    for(unsigned i=0;i<3;++i) {
+        const auto observed=bound.service->tipChanged(20+i);
+        EXPECT_EQ(observed.height,20u+i);EXPECT_EQ(observed.block_hash,f.block);
+        EXPECT_EQ(f.Rows(),original);EXPECT_EQ(vault::EncodeVaultState(bound.service->captureState()),state);
+    }
+    EXPECT_EQ(captures,3u);available=false;
+    EXPECT_THROW(bound.service->tipChanged(23),std::exception);
+    EXPECT_EQ(captures,4u);EXPECT_EQ(f.Rows(),original);available=true;
+    auto reopened=f.Open(bound.identity);reopened.service->tipChanged(24);
+    EXPECT_EQ(f.Rows(),original);EXPECT_EQ(vault::EncodeVaultState(reopened.service->captureState()),state);
+    // A real credit transition must still persist, and its later identical
+    // canonical observation must preserve the newly authenticated row exactly.
+    f.Fund(reopened.service);const auto funded=f.Rows();EXPECT_NE(funded,original);
+    EXPECT_EQ(reopened.service->accountConfirmed(vault::AccountId{"preserved-account"}),1000u);
+    reopened.service->tipChanged(20);EXPECT_EQ(f.Rows(),funded);
+}
 TEST(VaultStateStore, RequiredWriteAndCommitRefusalPreserveLiveAndDurableState) {
     VaultStateStoreFixture f;auto bound=f.Create();f.Fund(bound.service);
     const auto saved=vault::EncodeVaultState(bound.service->captureState()),rows=f.Rows();

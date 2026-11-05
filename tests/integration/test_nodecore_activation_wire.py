@@ -18,6 +18,11 @@ with (root/'generator.log').open('xb') as log:
         stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,timeout=120)
 assert result.returncode==0,(root/'generator.log')
 fixture=json.loads(manifest.read_text());assumed=bool(os.environ.get('DINERO_SDK_ASSUMED_MOBILE_FIXTURE'))
+if os.environ.get('DINERO_SDK_V5_ACTIVATION_FIXTURE'):
+    assert assumed and fixture['assumed_snapshot_version']==5,fixture
+    assert fixture['producer_coinbase_structure_height']==2**32-1,fixture
+    assert fixture['producer_state_commitment_height']==1,fixture
+    assert struct.unpack_from('<II',Path(fixture['assumed_snapshot']).read_bytes())==(0x4f545855,5)
 datadir=Path(fixture['assumed_datadir'] if assumed else fixture['datadir'])
 proof=Path(fixture['proof']).read_bytes();assert 0<len(proof)<=1<<30
 magic=fixture['magic'];headers=[bytes.fromhex(h) for h in fixture['headers']]
@@ -136,6 +141,9 @@ def original_lifecycle():
 try:
     assert call('sdk_activation_events') is True
     assert call('start',datadir=str(datadir),config=config)==0
+    if os.environ.get('DINERO_SDK_V5_ACTIVATION_FIXTURE'):
+        profile=call('sdk_activation_state')
+        assert profile['coinbase_structure_height']==1 and profile['state_commitment_height']==1,profile
     if assumed:
         deadline=time.monotonic()+45
         while time.monotonic()<deadline:

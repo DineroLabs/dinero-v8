@@ -18,6 +18,7 @@
 #include "daemon/utreexo_tx_payload.h"
 #include "daemon/utreexo_tx_reader.h"
 #include "rpc/rpc_registry.h"
+din::Json rpc_getblocktemplate_v14(const ExecutionContext&, const din::Json&);
 din::Json rpc_mining_getjob(const ExecutionContext&, const din::Json&);
 din::Json rpc_mining_submit(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_getblock(const ExecutionContext&, const din::Json&);
@@ -97,7 +98,11 @@ din::Json rpc_context_wallet_decoderawtransaction(const ExecutionContext&, const
 #include <sqlite3.h>
 #include <filesystem>
 #include <future>
+#ifdef _WIN32
+#include <process.h>
+#else
 #include <unistd.h>
+#endif
 
 #include <string>
 #include <vector>
@@ -141,6 +146,14 @@ din::Json rpc_context_wallet_unlock(const ExecutionContext&, const din::Json&);
 
 namespace dinero {
 
+static int TestProcessId() {
+#ifdef _WIN32
+    return _getpid();
+#else
+    return getpid();
+#endif
+}
+
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
 struct RuntimeOriginProjectionTestAccess {
     static auto Capture(WalletManager& wallet,uint64_t session) {return RuntimeOrdinaryDelivery::CaptureOriginDomain(wallet,session);}
@@ -172,6 +185,16 @@ struct RuntimeOriginProjectionTestAccess {
 #endif
 
 struct ShieldedStateStartupTestAccess {
+    static bool RestoreSnapshotCache(ChainstateService& service, std::string& error) {
+        return service.RestoreStatefulSnapshotCoinCache(error);
+    }
+    static void CacheSnapshotBase(ChainstateService& service, const uint256& hash,
+                                  uint32_t height, bool promoted = false) {
+        service.assumeutxo_active_ = !promoted;
+        service.assumeutxo_base_block_ = promoted ? uint256{} : hash;
+        service.assumeutxo_base_height_ = promoted ? 0 : height;
+        service.promoted_base_height_ = promoted ? height : 0;
+    }
     static auto SnapshotBootstrapConfig(ChainstateService& service) {
         if(!service.config_)service.config_=std::make_shared<ConfigService>();
         return service.config_;
@@ -726,7 +749,7 @@ TEST(AssumeUtxoReplay, TimeLocksUseOwnedAncestryWithoutGlobalIndex) {
 
 
 TEST(SelectedWalletHistory, ValidatesBeforeEffectsAndUsesOwnedBodies) {
-    const auto dir=std::filesystem::temp_directory_path()/("selected_wallet_history_"+std::to_string(getpid()));
+    const auto dir=std::filesystem::temp_directory_path()/("selected_wallet_history_"+std::to_string(TestProcessId()));
     std::filesystem::create_directories(dir);
     WalletManager wallet(dir/"wallet"); wallet.create("selected"); wallet.open("selected");
     auto blocks=BuildDeterministicChain(3); ASSERT_EQ(blocks.size(),3u);
@@ -808,7 +831,7 @@ TEST(SelectedWalletHistory, ValidatesBeforeEffectsAndUsesOwnedBodies) {
 
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
 TEST(RuntimeOriginProjection, BindsCapturedWalletAndScriptDomain) {
-    const auto dir=std::filesystem::temp_directory_path()/("origin_wallet_domain_"+std::to_string(getpid()));
+    const auto dir=std::filesystem::temp_directory_path()/("origin_wallet_domain_"+std::to_string(TestProcessId()));
     WalletManager wallet(dir);wallet.create("origin");wallet.open("origin");
     const auto session=wallet.AcquireDatabaseLease()->Session();
     {const auto lease=wallet.AcquireDatabaseLease();
@@ -860,7 +883,7 @@ TEST(RuntimeOriginProjection, KeepsSpentCoinsAndExactTransactionHistory) {
 #else
 TEST(RuntimeOriginProjection, UnavailableWithoutBackend) {
     ChainstateService service;
-    WalletManager wallet(std::filesystem::temp_directory_path()/("origin_backend_off_"+std::to_string(getpid())));
+    WalletManager wallet(std::filesystem::temp_directory_path()/("origin_backend_off_"+std::to_string(TestProcessId())));
     // No wallet or chain is opened: the absent implementation must refuse
     // without acquiring either source or silently constructing a projection.
     const auto origin=service.getRuntimeWalletOrigin(wallet,0);
@@ -905,7 +928,14 @@ int main(int argc, char** argv) {
     // without coinbase DNRS commitments and its subject is replay digest
     // equivalence, not commitment enforcement (which the state-commitment
     // suites and the forged-snapshot e2e exercise on the active default).
-    dinero::MutableParams().state_commitment_activation_height = UINT32_MAX;
+    if (std::getenv("DINERO_SDK_V5_ACTIVATION_FIXTURE")) {
+        // Test-only old-profile producer: the real SDK consumer below selects
+        // the H1 rule while importing this pre-Orchard v5 parent.
+        dinero::MutableParams().state_commitment_activation_height = 1;
+        dinero::MutableParams().coinbase_structure_activation_height = UINT32_MAX;
+    } else {
+        dinero::MutableParams().state_commitment_activation_height = UINT32_MAX;
+    }
     ::testing::InitGoogleTest(&argc, argv);
 #ifdef DINERO_TEST_REAL_CORE_HANDOFF
     if(argc==2&&std::string(argv[1])=="--export-sdk-activation-fixture") {
@@ -959,6 +989,7 @@ int main(int argc, char** argv) {
 #include "chainstate_wallet_index_owner_checks.h"
 #include "wallet_restore_preflight_checks.h"
 #include "snapshot_wallet_source_checks.h"
+#include "stateful_snapshot_cache_checks.h"
 
 #include "wallet_canonical_recovery_checks.h"
 #include "orchard_rpc_binding_fixture.h"

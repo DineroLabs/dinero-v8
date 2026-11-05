@@ -23,9 +23,11 @@
  */
 
 #include "din_json.h"
+#include "util/hex.h"
 #include "rpc/rpc_registry.h"
 #include "rpc/gbt_template_time.h"
 #include "consensus/state_commitment.h"
+#include "consensus/merkle_root.h"
 #include "rpc/longpoll_notifier.h"  // Server-side long-poll for getblocktemplate
 #include "daemon/daemon_context.h"
 #include "daemon/config.h"
@@ -300,6 +302,31 @@ din::Json rpc_getblocktemplate_v14(const ExecutionContext& ctx, const din::Json&
         result["best_header_hash"] = readiness.best_header_hash;
         result["best_header_height"] = readiness.best_header_height;
         ::dinero::g_logger.warning("[v14 GBT] Header/body convergence pending; serving validated active-tip continuity job");
+    }
+
+    // A legacy GBT does not contain the mandatory typed Orchard proof frame.
+    // Advertise the immutable-job contract only to upgraded clients; never
+    // issue legacy work that cannot be accepted at the activation boundary.
+    const auto routing_tip = chain_db->getTip();
+    if (!routing_tip.ok() || routing_tip->height < 0 || routing_tip->height >= INT32_MAX) {
+        result["error"] = "Selected mining parent unavailable";
+        return result;
+    }
+    if (::dinero::consensus::OrchardActiveForHeight(::dinero::Params(), uint32_t(routing_tip->height) + 1)) {
+        bool capable = false;
+        if (params_obj["capabilities"].isArray())
+            for (const auto& capability : params_obj["capabilities"])
+                if (capability.isString() && capability.asString() == "orchard-immutable-jobs-v1") capable = true;
+        if (!capable || !excluded_txids.empty()) {
+            result["error"] = "Orchard mining requires immutable job support; use mining.getjob and mining.submit";
+            return result;
+        }
+        result["profile"] = "orchard-v1";
+        result["height"] = routing_tip->height + 1;
+        result["previousblockhash"] = routing_tip->hash.GetHex();
+        result["longpollid"] = routing_tip->hash.GetHex();
+        result["immutable_job_rpc"] = "mining.getjob";
+        return result;
     }
 
     // ========================================================================
@@ -728,6 +755,8 @@ struct MiningJob {
 class MiningJobStore {
     mutable std::mutex mutex_;
     std::map<std::string, std::shared_ptr<const MiningJob>> jobs_;
+    std::map<std::string, uint64_t> last_use_;
+    uint64_t access_counter_ = 0;
     uint64_t counter_ = 0;
     static constexpr size_t MAX_JOBS = 32;
     static constexpr int TTL_SECONDS = 600;  // 10 minutes
@@ -739,6 +768,7 @@ class MiningJobStore {
             auto age_s = std::chrono::duration_cast<std::chrono::seconds>(
                 now - it->second->created_at).count();
             if (age_s > TTL_SECONDS) {
+                last_use_.erase(it->first);
                 it = jobs_.erase(it);
             } else {
                 ++it;
@@ -754,14 +784,17 @@ public:
         ++counter_;
         std::ostringstream oss;
         oss << std::hex << std::setfill('0')
-            << std::setw(4) << (counter_ & 0xFFFF)
+            << std::setw(16) << counter_
             << std::setw(8) << job.height;
         std::string id = oss.str();
         job.job_id = id;
 
         while (jobs_.size() >= MAX_JOBS) {
-            jobs_.erase(jobs_.begin());
+            const auto oldest = std::min_element(last_use_.begin(), last_use_.end(),
+                [](const auto& a, const auto& b) { return a.second < b.second; });
+            jobs_.erase(oldest->first); last_use_.erase(oldest);
         }
+        last_use_[id] = ++access_counter_;
 
         jobs_[id] = std::make_shared<const MiningJob>(std::move(job));
         return id;
@@ -773,19 +806,21 @@ public:
         evict_expired_locked();
         auto it = jobs_.find(job_id);
         if (it == jobs_.end()) return nullptr;
+        last_use_[job_id] = ++access_counter_;
         return it->second;
     }
 
     // Remove a single job (e.g. after successful block submission).
     void remove(const std::string& job_id) {
         std::lock_guard<std::mutex> lock(mutex_);
-        jobs_.erase(job_id);
+        jobs_.erase(job_id); last_use_.erase(job_id);
     }
 
     // Remove every cached job (used when mining readiness becomes unsafe).
     void invalidate_all() {
         std::lock_guard<std::mutex> lock(mutex_);
         jobs_.clear();
+        last_use_.clear();
     }
 
     // Evict all jobs whose tip doesn't match current_tip.
@@ -793,6 +828,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         for (auto it = jobs_.begin(); it != jobs_.end(); ) {
             if (!(it->second->tip_hash_at_creation == current_tip)) {
+                last_use_.erase(it->first);
                 it = jobs_.erase(it);
             } else {
                 ++it;
@@ -808,6 +844,70 @@ void InvalidateMiningJobsForSafety() {
     g_job_store.invalidate_all();
 }
 }  // namespace
+
+namespace {
+std::shared_ptr<const dinero::OrchardMiningTemplate> DeriveOrchardPayoutJob(
+    const dinero::OrchardMiningTemplate& base, const din::Json& request,
+    dinero::MiningChainstateReadGuard& guard) {
+    auto coinbase = base.Transactions().front().Historical();
+    uint64_t expected = 0;
+    for (const auto& output : coinbase.vout) {
+        const auto sum = dinero::CheckedAddUna(expected, output.value.GetUna());
+        if (!sum) throw std::invalid_argument("Coinbase value overflow");
+        expected = *sum;
+    }
+    // The selected owner regenerates every witness/filter/state commitment.
+    // They are never supplied by a pool or copied from a previous coinbase ID.
+    std::erase_if(coinbase.vout, [](const auto& output) {
+        return !output.scriptPubKey.empty() && output.scriptPubKey.front() == 0x6a;
+    });
+    if (request.isMember("coinbase_outputs")) {
+        const auto& outputs = request["coinbase_outputs"];
+        if (!outputs.isArray() || outputs.empty() || outputs.size() > 1024)
+            throw std::invalid_argument("Invalid pool payout count");
+        std::vector<dinero::TxOutput> payouts;
+        uint64_t sum = 0;
+        for (const auto& output : outputs) {
+            if (!output.isObject() || !output["value_una"].isUInt64() ||
+                !output["script_pubkey_hex"].isString())
+                throw std::invalid_argument("Invalid pool payout output");
+            const auto script_hex = output["script_pubkey_hex"].asString();
+            std::vector<uint8_t> script;
+            if (script_hex.empty() || script_hex.size() > 20000 ||
+                !::util::unhex(script_hex, script) || script.empty() || script.front() == 0x6a)
+                throw std::invalid_argument("Invalid pool payout script");
+            const auto value = output["value_una"].asUInt64();
+            const auto total = dinero::CheckedAddUna(sum, value);
+            if (!total || *total > expected) throw std::invalid_argument("Pool payout exceeds coinbase value");
+            sum = *total;
+            payouts.emplace_back(dinero::AmountUna::Una(value), script);
+        }
+        if (sum != expected) throw std::invalid_argument("Pool payouts must equal the exact coinbase value");
+        coinbase.vout = std::move(payouts);
+    }
+    if (request.isMember("coinbase_extranonce")) {
+        if (!request["coinbase_extranonce"].isUInt())
+            throw std::invalid_argument("Invalid pool coinbase extranonce");
+        const uint32_t extranonce = request["coinbase_extranonce"].asUInt();
+        auto& script = coinbase.vin.front().scriptSig;
+        if (script.size() > 95) throw std::invalid_argument("Coinbase script exceeds extranonce bound");
+        script.push_back(4);
+        for (unsigned i = 0; i < 4; ++i) script.push_back(uint8_t(extranonce >> (8 * i)));
+    }
+    const auto& transactions = base.Transactions();
+    const auto result = guard.BuildOrchardTemplate(base.Header(), coinbase,
+        std::span<const dinero::MempoolTransaction>(transactions).subspan(1), base.Height());
+    if (!result || result->Height() != base.Height() ||
+        result->Header().prev_block_hash != base.Header().prev_block_hash ||
+        result->TotalFees() != base.TotalFees() || result->Weight() > 4000000 ||
+        result->Transactions().size() != transactions.size())
+        throw std::runtime_error("Derived pool job identity unavailable");
+    for (size_t i = 1; i < transactions.size(); ++i)
+        if (result->Transactions()[i].Serialize() != transactions[i].Serialize())
+            throw std::runtime_error("Derived pool job changed selected transactions");
+    return result;
+}
+} // namespace
 
 // ---------------------------------------------------------------------------
 // mining.getjob — build immutable block, store server-side, return header
@@ -849,6 +949,10 @@ din::Json rpc_mining_getjob(const ExecutionContext& ctx, const din::Json& params
     else if (params.isObject())                       params_obj = params;
     else { result["error"] = "Missing required parameter: address"; return result; }
 
+    if (params_obj.isMember("include_block") && !params_obj["include_block"].isBool()) {
+        result["error"] = "include_block must be a boolean";
+        return result;
+    }
     if (!params_obj.isMember("address") || !params_obj["address"].isString()) {
         result["error"] = "Missing or invalid address parameter";
         return result;
@@ -904,7 +1008,18 @@ din::Json rpc_mining_getjob(const ExecutionContext& ctx, const din::Json& params
     MiningJob job;
     if (::dinero::consensus::OrchardActiveForHeight(::dinero::Params(), uint32_t(selected_tip->height) + 1)) {
         try {
-            job.orchard = assembler.CreateOrchardBlock(mining_address, *chain_guard);
+            if (params_obj.isMember("base_job_id")) {
+                if (!params_obj["base_job_id"].isString())
+                    throw std::invalid_argument("Invalid base job identity");
+                const auto base = g_job_store.lookup(params_obj["base_job_id"].asString());
+                if (!base || !base->orchard || base->orchard_owner.lock() != chainstate ||
+                    base->tip_hash_at_creation != selected_tip->hash)
+                    throw std::invalid_argument("Pool base job expired or selected parent changed");
+                job.orchard = base->orchard;
+            } else job.orchard = assembler.CreateOrchardBlock(mining_address, *chain_guard);
+            if (job.orchard && (params_obj.isMember("coinbase_outputs") ||
+                params_obj.isMember("coinbase_extranonce")))
+                job.orchard = DeriveOrchardPayoutJob(*job.orchard, params_obj, *chain_guard);
         } catch (const std::exception& error) {
             // Keep the RPC refusal stable; retain the construction cause in
             // the node log for diagnosis without exposing it over JSON-RPC.
@@ -920,6 +1035,11 @@ din::Json rpc_mining_getjob(const ExecutionContext& ctx, const din::Json& params
         job.orchard_owner = chainstate;
         job.coinbase_txid_hex = job.orchard->Transactions().front().GetTxid().AsUint256().GetHex();
     } else {
+        if (params_obj.isMember("base_job_id") || params_obj.isMember("coinbase_outputs") ||
+            params_obj.isMember("coinbase_extranonce")) {
+            result["error"] = "Pool payout jobs require the Orchard profile";
+            return result;
+        }
         auto* utreexo_forest = chainstate->utreexoForest();
         auto* utxo_index = chainstate->utxoIndex();
         auto* consensus_utxo_set = chainstate->GetConsensusUTXOSet();
@@ -962,7 +1082,46 @@ din::Json rpc_mining_getjob(const ExecutionContext& ctx, const din::Json& params
         job.block = *block_ptr;
         if (!block_ptr->vtx.empty()) job.coinbase_txid_hex = block_ptr->vtx[0].GetTxid().AsUint256().GetHex();
     }
-    const auto stats = assembler.getBlockTemplateStats();
+    auto stats = assembler.getBlockTemplateStats();
+    if (job.orchard) {
+        stats.height = job.orchard->Height();
+        stats.total_txs = job.orchard->Transactions().size();
+        stats.total_fees = job.orchard->TotalFees();
+        result["profile"] = "orchard-v1";
+        const auto& coinbase = job.orchard->Transactions().front().Historical();
+        const auto bytes = coinbase.Serialize(dinero::TxSerializationMode::WithWitness);
+        result["coinbase_hex"] = to_hex(bytes.data(), bytes.size());
+        if (params_obj.get("include_block", false).asBool()) {
+            const auto& wire = job.orchard->WireBytes();
+            result["block_hex"] = to_hex(wire.data(), wire.size());
+            std::vector<dinero::TxId> level;
+            for (const auto& transaction : job.orchard->Transactions()) level.push_back(transaction.GetTxid());
+            result["coinbase_merkle_path"] = din::Json(Json::arrayValue);
+            while (level.size() > 1) {
+                const auto& sibling = level[1].AsUint256();
+                result["coinbase_merkle_path"].append(to_hex(sibling.begin(), 32));
+                if (level.size() % 2) level.push_back(level.back());
+                std::vector<dinero::TxId> next;
+                next.reserve(level.size() / 2);
+                for (size_t i = 0; i < level.size(); i += 2)
+                    next.emplace_back(dinero::consensus::ComputeTransactionMerkleRoot(
+                        std::span<const dinero::TxId>(level).subspan(i, 2)));
+                level = std::move(next);
+            }
+            if (level.empty() || level.front().AsUint256() != job.orchard->Header().merkle_root) {
+                result = din::Json(); result["error"] = "Coinbase branch construction unavailable"; return result;
+            }
+        }
+        uint64_t value = 0;
+        for (const auto& output : coinbase.vout) {
+            const auto sum = dinero::CheckedAddUna(value, output.value.GetUna());
+            if (!sum) { result["error"] = "Coinbase value overflow"; return result; }
+            value = *sum;
+        }
+        result["coinbase_value_una"] = static_cast<Json::UInt64>(value);
+        result["transaction_count"] = static_cast<Json::UInt64>(stats.total_txs);
+        result["total_fees_una"] = static_cast<Json::UInt64>(stats.total_fees);
+    } else result["profile"] = "historical";
     const auto header = job.Header();
     job.tip_hash_at_creation = header.prev_block_hash;
     job.height = stats.height;

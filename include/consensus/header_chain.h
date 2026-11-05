@@ -196,6 +196,10 @@ public:
      */
     explicit HeaderChainSelector(class HeaderStore* store);
 
+    // Startup form: load the durable failed roots before enforcing the
+    // side-branch budget, so a valid sibling is not pruned first.
+    HeaderChainSelector(class HeaderStore* store, std::span<const uint256> failed_roots);
+
     // Build an unpublished selector from an independently authenticated complete
     // selected ancestry and the store's checked snapshot. Revalidates all
     // present branches and stored height/work. Never evicts, rewrites, clears or
@@ -204,11 +208,13 @@ public:
     // incompatible row or over-budget branch inventory. The caller retains the
     // store and serializes startup; this does not authenticate block bodies.
     static std::shared_ptr<HeaderChainSelector> RestorePreservingBranches(
-        class HeaderStore& store, std::span<const HeaderIndexEntry> selected);
+        class HeaderStore& store, std::span<const HeaderIndexEntry> selected,
+        std::span<const uint256> failed_roots = {});
     // Owned form for daemon composition: callers retaining the returned
     // selector also retain its backing store after service shutdown.
     static std::shared_ptr<HeaderChainSelector> RestorePreservingBranches(
-        std::shared_ptr<class HeaderStore> store, std::span<const HeaderIndexEntry> selected);
+        std::shared_ptr<class HeaderStore> store, std::span<const HeaderIndexEntry> selected,
+        std::span<const uint256> failed_roots = {});
 
 
 
@@ -301,7 +307,25 @@ public:
      * @param out Filled with a by-value copy of the best header (parent == nullptr)
      * @return true iff a best header exists
      */
+    // Public chain-view accessors use the highest-work branch that has no
+    // durable failed-status ancestor. Raw headers remain indexed by hash.
     bool GetBestHeaderCopy(HeaderIndexEntry& out) const;
+
+    // The best-work header whose ancestry has no ChainDB failed-status root.
+    // Raw best/header storage are retained for reconsiderblock and reindex.
+    bool GetBestEligibleHeaderCopy(HeaderIndexEntry& out) const;
+
+    // Explicit raw view for retention diagnostics and tests only.
+    bool GetRawBestHeaderCopy(HeaderIndexEntry& out) const;
+    std::optional<HeaderIndexEntry> GetRawBestHeaderValue() const;
+
+    // Diagnostic snapshot of currently retained header hashes.
+    std::vector<uint256> GetAllHeaderHashesCopy() const;
+    void ReplaceFailedHeaderHashes(const std::vector<uint256>& hashes);
+    void MarkFailedHeader(const uint256& hash);
+    void ClearFailedHeaderHashes(std::span<const uint256> hashes);
+    bool IsHeaderFailedForSelection(const uint256& hash) const;
+    uint64_t GetEligibilityGeneration() const;
 
     /** Value-returning best-header accessor; parent is always null. */
     std::optional<HeaderIndexEntry> GetBestHeaderValue() const;
@@ -378,6 +402,11 @@ public:
      * @return true iff a best-chain header exists at that height
      */
     bool GetHeaderAtHeightCopy(uint32_t height, HeaderIndexEntry& out) const;
+
+    // Resolve a locator hash only if it is on the eligible ancestry.
+    bool GetEligibleAncestorCopy(const uint256& hash, HeaderIndexEntry& out) const;
+
+    bool GetEligibleHeaderAtHeightCopy(uint32_t height, HeaderIndexEntry& out) const;
 
     /**
      * @brief Compute a header's Median Time Past entirely under the lock (#441).
@@ -528,6 +557,14 @@ private:
     // Best header tip (highest chainwork)
     const HeaderIndexEntry* best_header_;
 
+    // A separate eligibility projection keeps the raw best and its storage
+    // retention semantics unchanged. Rebuilt in height order on hydration and
+    // explicit invalidity changes; new headers inherit their parent's flag.
+    const HeaderIndexEntry* eligible_best_header_{nullptr};
+    std::unordered_set<uint256> failed_header_roots_;
+    std::unordered_set<uint256> failed_header_branch_;
+    uint64_t eligibility_generation_{0};
+
     // Persistent storage (Phase N.1: restart safety)
     class HeaderStore* header_store_;  // Not owned, optional
     std::shared_ptr<class HeaderStore> header_store_owner_; // Owned startup form only.
@@ -578,6 +615,9 @@ private:
      * @param new_entry Newly added header
      */
     void UpdateBestHeader(const HeaderIndexEntry* new_entry);
+    void UpdateEligibleBestHeader(const HeaderIndexEntry* new_entry);
+    std::vector<HeaderIndexEntry*> HeadersByHeightUnderLock() const;
+    void RebuildEligibleHeadersUnderLock(const std::vector<HeaderIndexEntry*>& by_height);
 
     /**
      * @brief Compute chainwork for a header

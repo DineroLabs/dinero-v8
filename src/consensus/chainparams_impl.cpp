@@ -139,6 +139,11 @@ static ChainParams g_mainnet = {
     // Reject shielded coinbase bundles at the Auth cutover; coinbase funds
     // continue to use transparent outputs and their existing maturity rules.
     .shielded_coinbase_reject_activation_height = 110000,
+    // Candidate-only F-C3 repair: all post-genesis blocks use one canonical
+    // first-transaction shape, including newly presented historical forks.
+    // Canonical history must be scanned through the deploy tip and existing
+    // snapshot/journal profile compatibility resolved before deployment.
+    .coinbase_structure_activation_height = 1,
 
     // Operator-selected DNRS cutover, 2026-09-09: mandatory coinbase
     // commitment and v5 snapshot authentication from block 111000.
@@ -353,6 +358,7 @@ static ChainParams g_testnet = {
     // constrains coinbase SHAPE and is independent of shielded activation, so
     // leaving it at UINT32_MAX would mean testnet never exercises it at all.
     .shielded_coinbase_reject_activation_height = 0,
+    .coinbase_structure_activation_height = UINT32_MAX,
 
     // state_commitment_v1, TESTNET: DORMANT — snapshot-trust activation is a
     // separate policy from shielded-transaction activation, and neither
@@ -464,6 +470,7 @@ static ChainParams g_regtest = {
     // Reject a coinbase carrying a shielded bundle, REGTEST: active from
     // genesis so the rule is exercised end-to-end by tests.
     .shielded_coinbase_reject_activation_height = 0,
+    .coinbase_structure_activation_height = 1,
 
     // state_commitment_v1, REGTEST: active from height 1 — NOT 0, because the
     // genesis coinbase carries no DNRS commitment; activating at 0 would make
@@ -539,6 +546,14 @@ std::string ConsensusChecksum(const ChainParams& params) {
         ss << "compact-shielded-v1\n"
            << "shielded_compact_activation_height="
            << params.shielded_compact_activation_height << '\n';
+    }
+
+    // A dormant mainnet/testnet value must preserve the existing handshake
+    // fingerprint. Once scheduled, a different validity boundary is visible
+    // to fleet peers and operator drift checks.
+    if (params.coinbase_structure_activation_height != UINT32_MAX) {
+        ss << "coinbase_structure_height="
+           << params.coinbase_structure_activation_height << '\n';
     }
 
     if (params.release_v8113_activation_height != UINT32_MAX) {

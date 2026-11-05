@@ -528,7 +528,15 @@ public:
      * @param height The current local tip height
      */
     void SetLocalTipHeight(uint32_t height) {
-        local_tip_height_.store(height);
+        const uint32_t prior = local_tip_height_.exchange(height);
+        if (height < prior) rescan_after_tip_regression_.store(true);
+        driver_cv_.notify_all();
+    }
+
+    // Safe while the chainstate's activation lock is held: this only sets an
+    // atomic flag. Tick performs the actual rescan after that lock is released.
+    void RequestTipRescan() {
+        rescan_after_tip_regression_.store(true);
         driver_cv_.notify_all();
     }
 
@@ -776,6 +784,10 @@ private:
     // Local chainstate tip height (blocks at or below are already synced).
     // Mutable: IsFullySynchronized() refreshes from callback to prevent stale-tip stalls.
     mutable std::atomic<uint32_t> local_tip_height_{0};
+    // Operator invalidation/reorg can lower the active tip while the download
+    // driver is running. The setter is lock-free; Tick rebuilds under mutex_.
+    mutable std::atomic<bool> rescan_after_tip_regression_{false};
+    uint64_t observed_eligibility_generation_{0};  // guarded by mutex_
 
     // True after OnHeadersProcessed() has been called at least once.
     // Before this, the scheduler hasn't populated missing_blocks_ yet,
@@ -933,7 +945,7 @@ private:
     std::atomic<bool> driver_stop_{false};
     std::thread driver_thread_;
     mutable std::mutex driver_mutex_;
-    std::condition_variable driver_cv_;
+    mutable std::condition_variable driver_cv_;
 
     // ── AssumeUTXO backfill private state ────────────────────────────────────
     // Backfill queue entries reuse BlockFetchState (hash, height, status,

@@ -30,6 +30,7 @@
 #include "common/logger.h"
 #include "common/serialization.h"
 #include "consensus/chainparams.h"
+#include "consensus/coinbase_structure.h"
 #include "consensus/pow.h"
 #include "consensus/pow.hpp"
 #include <chrono>
@@ -2213,6 +2214,15 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
     // Cleared per block: only applyBlockToForest's root-mismatch path may set
     // it, and the Step 5 recovery branch reads it for THIS block only.
     last_failure_was_forest_root_mismatch_ = false;
+    // Replay must apply the same first-transaction validity boundary as live
+    // admission and connection before chainwork or state is changed. Older
+    // blocks remain under their historical rules.
+    if (IsCoinbaseStructureActive(height, Params().coinbase_structure_activation_height) &&
+        (block.vtx.empty() || !block.vtx.front().IsCoinbase())) {
+        g_logger.error("[reindex] Invalid coinbase prevout structure at height " +
+                       std::to_string(height));
+        return Status::Invalid;
+    }
     std::string resource_error;
     if (!shielded::CheckAuthBlockResources(block.vtx, height,
             Params().shielded_spend_auth_activation_height, resource_error,

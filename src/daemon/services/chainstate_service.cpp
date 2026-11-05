@@ -18,6 +18,7 @@
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/csn_replay_data.h"
 #include "daemon/services/chainstate_service.h"
+#include "consensus/candidate_ancestry.h"
 #include "daemon/runtime_reorg_readmission.h"
 #include "daemon/utreexo_tx_reader.h"
 #include "consensus/genesis_canonical.h"
@@ -64,6 +65,9 @@
 #include "daemon/snapshot_bootstrap_policy.h"
 #include "daemon/services/replay_failure_policy.h"  // confirm-before-fatal for replay validation failures
 #include "consensus/merkle_root.h"  // torn-body guard on replay reads
+#include "consensus/witness_commitment.h"  // bind stored legacy witness before activation
+#include "consensus/utreexo_activation.h"
+#include "consensus/coinbase_structure.h"
 #include "daemon/services/config_service.h"
 #include "daemon/config.h"
 #include "daemon/prepared_pool_tip.h"
@@ -89,6 +93,7 @@
 #include "ipc/oracles/transaction_oracle_client.h"  // Phase 9.2: For Lightning TX tracking
 #include "network/bridge_node.h"  // Phase P.2: For Utreexo proof pre-caching
 #include "network/stateless_node.h"  // CSN reorg: For RewindToCheckpoint/ReplayBlock
+#include "consensus/block_validation.h"  // Read-only contextual CSN replay preflight
 #include "storage/chain_write_token.h"  // For genesis bootstrap token
 #include "consensus/chainparams.h"   // For Params()
 #include "consensus/state_commitment.h"  // IsStateCommitmentActive — the single dormancy authority
@@ -200,6 +205,30 @@ constexpr uint32_t kInvMsgBlock = 2u;
 constexpr uint32_t kInvMsgUtreexoBlock = 0x50000002u;
 using consensus::CsnReplayData;
 using consensus::DecodeCsnReplayData;
+
+// Only call this after a private forest replay authenticated the block's
+// spent-output scripts and metadata. These failures depend solely on the
+// bound body/branch context; missing proof, height or MTP remains retryable.
+bool IsDeterministicStatelessContextFailure(const std::string& error) {
+    static constexpr const char* kExact[] = {
+        "stateless-context-script-verification-failed",
+        "stateless-context-bip34-height-mismatch",
+        "stateless-context-invalid-coinbase-height-script",
+        "stateless-context-invalid-coinbase-framing",
+        "invalid-coinbase-prevout-structure",
+        "stateless-context-missing-dnrf",
+        "stateless-context-invalid-state-commitment",
+        "coinbase-carries-shielded-bundle",
+        "stateless-context-double-spend",
+        "stateless-context-invalid-transaction-inputs",
+        "stateless-coinbase-maturity-violation",
+    };
+    for (const char* candidate : kExact) {
+        if (error == candidate) return true;
+    }
+    return error.rfind("block-sigops-exceeded", 0) == 0 ||
+           error.rfind("non-final-", 0) == 0;
+}
 
 bool RuntimeRetainsHistoricalBodies() {
     const auto& config = GetConfig();
@@ -1120,6 +1149,25 @@ void ChainstateService::setOwnedChainDB(std::shared_ptr<ChainDB> db) {
 
 ChainstateService::ChainstateService() = default;
 ChainstateService::~ChainstateService() = default;
+
+bool ChainstateService::GetPublishedActiveHashAtHeight(uint32_t height,
+                                                      uint256& out_hash) const {
+    // Copy the canonical identity first. Never hold the publication lock while
+    // taking the global block-index lock: startup can relink pprev under that
+    // index lock, and the scheduler must not introduce a lock inversion.
+    uint256 tip_hash;
+    uint32_t tip_height = 0;
+    {
+        std::lock_guard<std::mutex> lock(published_tip_mutex_);
+        if (!published_tip_valid_ || height > published_tip_height_) return false;
+        tip_hash = published_tip_hash_;
+        tip_height = published_tip_height_;
+    }
+    std::lock_guard<std::recursive_mutex> index_lock(g_block_index_mutex);
+    const CBlockIndex* tip = dinero::FindBlockIndex(tip_hash);
+    if (!tip || tip->height != tip_height) return false;
+    return consensus::GetActiveChainHashAtHeight(tip, height, out_hash);
+}
 
 bool ChainstateService::ResolveCanonicalBlockHash(uint32_t height,
                                                   uint256& out_hash) const {
@@ -4266,6 +4314,7 @@ bool ChainstateService::Start() {
 
                 uint32_t fork_loaded = 0;
                 uint32_t fork_skipped = 0;
+                uint32_t fork_invalid_descendants_backfilled = 0;
                 for (const auto& entry : fork_entries) {
                     // A later entry may have been added as a side effect of an
                     // earlier one; re-check rather than assume.
@@ -4291,6 +4340,20 @@ bool ChainstateService::Start() {
                     }
 
                     ApplyPersistedMetadataToBlockIndex(idx, entry.metadata);
+                    // A crash can persist an invalid fork root before its
+                    // descendants receive BLOCK_FAILED_CHILD. The active
+                    // height index above no longer contains that fork after
+                    // rollback, so repair it here in parent-first order.
+                    bool repaired_invalidity = false;
+                    std::string invalidity_error;
+                    if (!BackfillFailedChildFromParent(chain_db_, idx, logger_,
+                                                       &repaired_invalidity,
+                                                       &invalidity_error)) {
+                        logger_->error("[ChainstateService] Failed invalidity backfill during "
+                                       "fork block index rebuild: " + invalidity_error);
+                        return false;
+                    }
+                    if (repaired_invalidity) ++fork_invalid_descendants_backfilled;
                     fork_loaded++;
                 }
 
@@ -4300,6 +4363,11 @@ bool ChainstateService::Start() {
                                    ? "; skipped " + std::to_string(fork_skipped) +
                                          " whose header could not be loaded"
                                    : ""));
+                if (fork_invalid_descendants_backfilled > 0) {
+                    logger_->warning("[ChainstateService] Backfilled " +
+                        std::to_string(fork_invalid_descendants_backfilled) +
+                        " off-active descendant invalidity flags from persisted ancestors");
+                }
             }
         }
 
@@ -5303,6 +5371,27 @@ bool ChainstateService::Start() {
                 config_ ? config_->GetString("assumeutxo_snapshot", "") : "";
 
             if (!snapshot_path.empty()) {
+                // Refuse a mismatched configured file before clearing any
+                // surviving consensus UTXOs. The deeper file checks remain in
+                // LoadSnapshot; this guards the destructive preparation step.
+                consensus::SnapshotMetadata configured_base;
+                std::string preview_error;
+                const uint64_t maximum_mb = config_
+                    ? static_cast<uint64_t>(std::max(0, config_->GetInt(
+                          "assumeutxo_snapshot_max_mb", 64 * 1024)))
+                    : 64ULL * 1024ULL;
+                if (!ValidateSnapshotTransportPreflight(
+                        snapshot_path, maximum_mb * 1024ULL * 1024ULL,
+                        preview_error) ||
+                    !ReadSnapshotHeaderPreview(snapshot_path, configured_base,
+                                               preview_error) ||
+                    configured_base.magic != consensus::SNAPSHOT_MAGIC ||
+                    !HasPersistedActiveSnapshotBase(configured_base.block_hash,
+                                                    configured_base.block_height)) {
+                    logger_->error("[AssumeUTXO restore] Configured snapshot cannot rehydrate the persisted active base" +
+                                   (preview_error.empty() ? std::string() : ": " + preview_error));
+                    return false;
+                }
                 const uint64_t stale_utxos = consensus_utxo_set_->GetSetSize();
                 logger_->warning("[AssumeUTXO restore] Consensus UTXO set is not at snapshot base "
                                  "(utxo-tip=" +
@@ -5320,7 +5409,8 @@ bool ChainstateService::Start() {
                     consensus_utxo_set_->Clear();
                 }
 
-                auto import_result = LoadSnapshot(std::filesystem::path(snapshot_path));
+                auto import_result = LoadSnapshot(std::filesystem::path(snapshot_path),
+                                                  /*persisted_base_rehydrate=*/true);
                 if (!import_result.success) {
                     logger_->error("[AssumeUTXO restore] Snapshot rehydrate failed: " +
                                    import_result.error_message);
@@ -5455,6 +5545,15 @@ bool ChainstateService::Start() {
     // This enables fast sync for new nodes (minutes instead of days)
     // ═════════════════════════════════════════════════════════════════════════
 
+    // ChainDB's ordinary coin family contains only post-base changes while
+    // AssumeUTXO is active. A full validator also needs the still-live imported
+    // coins after restart, before startup activation can spend any of them.
+    std::string snapshot_cache_error;
+    if (!RestoreStatefulSnapshotCoinCache(snapshot_cache_error)) {
+        logger_->error("[AssumeUTXO restore] " + snapshot_cache_error);
+        return false;
+    }
+
     if (IsInIBD()) {
         logger_->info("════════════════════════════════════════════════════════════════");
         logger_->info("🔄 INITIAL BLOCK DOWNLOAD DETECTED");
@@ -5499,7 +5598,12 @@ bool ChainstateService::Start() {
                     snapshot_bootstrap_path_ = snapshot_path;
                     snapshot_bootstrap_base_hash_ = peek.block_hash;
                     snapshot_bootstrap_base_height_ = peek.block_height;
-                    snapshot_bootstrap_v6_ = peek.version==consensus::SNAPSHOT_VERSION_V6;
+                    // v5 and v6 both authenticate their base with buried state
+                    // commitments. Do not invoke the loader on a partial header
+                    // batch: its correct refusal would permanently select full IBD.
+                    snapshot_bootstrap_requires_burial_ =
+                        peek.version==consensus::SNAPSHOT_VERSION_V5 ||
+                        peek.version==consensus::SNAPSHOT_VERSION_V6;
                     logger_->info("[snapshot] pending — base height " +
                                   std::to_string(peek.block_height) + ", base hash " +
                                   peek.block_hash.GetHex().substr(0, 16) +
@@ -6347,13 +6451,30 @@ StatusOr<ChainstateService::UtreexoRpcSnapshot> ChainstateService::UtreexoRpcSna
     const auto canonical=chain_db_->getBlockHashByHeight(int(live.height));
     const auto height=chain_db_->getBlockHeight(live.hash);
     const auto work=chain_db_->getBlockWork(live.hash);
-    if (!tip.ok() || !validated.ok() || !header.ok() ||
+    if (!tip.ok() || (!validated.ok() && validated.status()!=Status::NotFound) || !header.ok() ||
         !height.ok() || !work.ok()) return Status::Internal;
     if (*height!=int(live.height) ||
         ChainworkFromHex(live.chainwork)!=*work || header->GetHash()!=live.hash ||
         header->prev_block_hash!=live.prev_hash || header->version!=live.version ||
         header->merkle_root!=live.merkle_root || header->timestamp!=live.timestamp ||
         header->difficulty!=live.bits || header->nonce!=live.nonce) return Status::Corruption;
+    // Older full-node writers persisted forest_tip without validated_tip.
+    // Admit only their exact canonical, pre-Orchard full owner. An imported
+    // or promoted snapshot must retain its existing history/origin checks;
+    // never manufacture a validated_tip row to make a read succeed.
+    bool legacy_full_origin=false;
+    if (!validated.ok()) {
+        if (GetConfig().utreexo_stateless || compact_startup_ || orchard_snapshot_startup_ ||
+            consensus::OrchardActiveForHeight(Params(),live.height) || assumeutxo_active_ ||
+            assumeutxo_base_height_!=0 || !assumeutxo_base_block_.IsNull() || promoted_base_height_!=0 ||
+            chain_db_->getPreBaseCoinSetBase().status()!=Status::NotFound)
+            return Status::Corruption;
+        const auto marker=chain_db_->getForestTipMarker();
+        if (!marker.ok() || marker->height!=int(live.height) ||
+            marker->block_hash!=live.hash || marker->forest_root!=header->utreexo_root)
+            return Status::Corruption;
+        legacy_full_origin=true;
+    }
     bool selected_origin=false;
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     // A completed activation handoff authenticates selected state without
@@ -6364,14 +6485,15 @@ StatusOr<ChainstateService::UtreexoRpcSnapshot> ChainstateService::UtreexoRpcSna
 #endif
     const bool canonical_selection=canonical.ok()&&*canonical==live.hash&&
         tip->hash==live.hash&&tip->height==int(live.height)&&*work==tip->work&&
-        (selected_origin||(validated->hash==tip->hash&&validated->height==tip->height));
+        (legacy_full_origin||selected_origin||
+         (validated.ok()&&validated->hash==tip->hash&&validated->height==tip->height));
     if(!canonical_selection) {
         // Legacy v5 owns authenticated state at its exact imported base while
         // history validation deliberately leaves the durable tip below it.
         // This is a read-only assumed-base observation, NOT permission to
         // fabricate canonical heights or advance validatedTip. Rebind the
         // existing imported owner, frozen coin marker and selected PoW ancestry.
-        if(compact_startup_||orchard_snapshot_startup_||
+        if(!validated.ok()||compact_startup_||orchard_snapshot_startup_||
             consensus::OrchardActiveForHeight(Params(),live.height)||!assumeutxo_active_||
             live.hash!=assumeutxo_base_block_||live.height!=assumeutxo_base_height_||
             tip->height<0||uint32_t(tip->height)>live.height||
@@ -7772,8 +7894,10 @@ void ChainstateService::PublishActiveTipLocked(CBlockIndex* tip, TipPublishReaso
     // only. A synchronization failure cannot return to a caller that might
     // continue with durable state and an unpublished service tip.
     bool changed=false;
+    uint32_t prior_height=0;
     try {
         std::lock_guard<std::mutex> lock(published_tip_mutex_);
+        prior_height=published_tip_height_;
         changed=published_tip_valid_!=bool(tip) ||
             published_tip_hash_!=(tip?tip->GetBlockHash():uint256{}) ||
             published_tip_height_!=(tip?uint32_t(tip->height):0);
@@ -7799,6 +7923,18 @@ void ChainstateService::PublishActiveTipLocked(CBlockIndex* tip, TipPublishReaso
         rpc::LongPollNotifier::instance().notifyTipChanged();
     };
     if(changed)wake_miners();
+
+    // A rollback or same-height reorg can leave the scheduler's queue on the
+    // previous branch. Signal a later authoritative callback refresh rather
+    // than publishing a height here: a callback already in flight could
+    // otherwise overwrite this downshift with the old tip.
+    if (changed) {
+        if (auto* ctx = DaemonContext::instance();
+            ctx && ctx->chainstate.get() == this && ctx->block_download) {
+            const uint32_t new_height = tip ? static_cast<uint32_t>(tip->height) : 0;
+            if (new_height <= prior_height) ctx->block_download->RequestTipRescan();
+        }
+    }
 
     // Diagnostics allocate and may throw. They are best-effort AFTER both tip
     // representations agree, never a prerequisite for post-commit publication.
@@ -8844,6 +8980,11 @@ StatusOr<UndoRecord> ChainstateService::ReadStoredUndo(const uint256& hash) cons
 // Phase C.1: P2P Block Relay Integration
 // ═══════════════════════════════════════════════════════════════════════════
 
+void ChainstateService::ForgetCompletedBlockForRetry(const uint256& hash) {
+    std::lock_guard<std::mutex> lock(block_request_state_mutex_);
+    completed_blocks_.erase(hash.GetHex());
+}
+
 bool ChainstateService::ProcessIncomingBlockHex(const std::string& blockHex, const std::string& peer_id) {
     std::cout << "[CHAINSTATE-DEBUG] >>> ProcessIncomingBlockHex ENTRY from " << peer_id
               << " hex_size=" << blockHex.size() << std::endl;
@@ -9290,7 +9431,16 @@ std::shared_ptr<consensus::HeaderChainSelector> ChainstateService::RestoreCompac
     }
     // No service/selected/wallet lock spans the complete historical header
     // validation. The startup use pins shutdown, not ordinary read admission.
-    auto headers=consensus::HeaderChainSelector::RestorePreservingBranches(std::move(store),selected);
+    std::vector<uint256> failed_roots;
+    if (!chain_db_ || chain_db_->forEachHeaderMetadataStrict(
+            [&](const uint256& hash, const ChainDB::PersistedHeaderMetadata& metadata) {
+                if (metadata.status_flags & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD))
+                    failed_roots.push_back(hash);
+                return true;
+            }) != Status::Ok)
+        throw std::runtime_error("Compact header invalidity hydration failed");
+    auto headers=consensus::HeaderChainSelector::RestorePreservingBranches(
+        std::move(store), selected, failed_roots);
     {
         std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
         std::lock_guard<std::mutex> lifetime(wallet_index_use_mutex_);
@@ -9313,12 +9463,46 @@ void ChainstateService::setHeaderChainSelector(std::shared_ptr<dinero::consensus
     // Startup wiring follows Init in DaemonApp. Preserve that order, and never
     // replace a selector already bound to a reconstructed compact owner.
     std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+    if (header_chain && chain_db_) {
+        // HeaderStore deliberately retains invalidated branches for
+        // reconsiderblock. Its raw max-work tip therefore cannot authorize
+        // block download after restart. Hydrate a separate selector projection
+        // from the durable ChainDB flags before publishing this selector to
+        // the running scheduler. The strict scan refuses malformed rows rather
+        // than silently forgetting an operator's failed-branch decision.
+        std::vector<uint256> failed_headers;
+        size_t scanned = 0;
+        const auto started = std::chrono::steady_clock::now();
+        const auto status = chain_db_->forEachHeaderMetadataStrict(
+            [&](const uint256& hash, const ChainDB::PersistedHeaderMetadata& metadata) {
+                ++scanned;
+                if (metadata.status_flags & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD)) {
+                    failed_headers.push_back(hash);
+                }
+                return true;
+            });
+        if (status != Status::Ok) {
+            throw std::runtime_error("Failed to hydrate persisted invalid header branches");
+        }
+        header_chain->ReplaceFailedHeaderHashes(failed_headers);
+        if (logger_) {
+            logger_->info("[ChainstateService] Header invalidity hydration: scanned=" +
+                std::to_string(scanned) + " failed=" +
+                std::to_string(failed_headers.size()) + " elapsed_ms=" +
+                std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - started).count()));
+        }
+    }
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     if(orchard_snapshot_startup_&&header_chain&&chain_db_)
         OrchardSnapshotStore::SeedRetainedHeaders(*chain_db_,*header_chain);
+#endif
+    // A repeated binding still has to seed any retained Orchard headers.
+    // That was the existing idempotent startup behavior.
+    if (header_chain_selector_ == header_chain) return;
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     if (compact_startup_) {
         if (header_chain_selector_) {
-            if (header_chain_selector_==header_chain) return;
             throw std::logic_error("Cannot replace compact startup header selector");
         }
         if (!header_chain || !compact_startup_->owner)
@@ -11406,9 +11590,40 @@ void ChainstateService::ActivateBestChain() {
     }
     std::unique_ptr<ActivationParentPlan> request;
     ActivateBestChainPass(nullptr,request,may_prepare,inverse.get());
-    if(!request || !CompleteActivationParentPlan(*request)) return;
+    if(!request || !CompleteActivationParentPlan(*request)) {
+        DispatchQueuedCsnBodyRefetches();
+        return;
+    }
     std::unique_ptr<ActivationParentPlan> unused;
     ActivateBestChainPass(request.get(),unused,false,inverse.get());
+    DispatchQueuedCsnBodyRefetches();
+}
+
+void ChainstateService::DispatchQueuedCsnBodyRefetches() {
+    if (activation_mutex_.HeldByCurrentThread()) return;
+    auto* ctx = DaemonContext::instance();
+    if (!ctx || !ctx->block_download) return;
+    std::set<uint256> hashes;
+    {
+        std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+        hashes.swap(pending_csn_body_refetches_);
+    }
+    if (hashes.empty()) return;
+    // A quarantined old side-branch body may not have an entry in the
+    // scheduler's current window. Rebuild it once after the durable metadata
+    // clear, then force RECEIVED/proof-staged entries back to MISSING.
+    ctx->block_download->OnHeadersProcessed();
+    std::set<uint256> deferred;
+    for (const auto& hash : hashes) {
+        if (!ctx->block_download->ReRequestBlock(hash)) deferred.insert(hash);
+    }
+    if (!deferred.empty()) {
+        std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+        pending_csn_body_refetches_.insert(deferred.begin(), deferred.end());
+        if (logger_) logger_->warning(
+            "[CSN] Body refetch awaits scheduler header-window admission");
+    }
+    ctx->block_download->Tick();
 }
 
 bool ChainstateService::CompleteActivationParentPlan(ActivationParentPlan& request) {
@@ -11791,8 +12006,10 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                     // worker verifies their accumulator transition. Import only
                     // after either (a) the reorg worker persisted hash-anchored
                     // replay data for a genuinely competing branch, or (b)
-                    // AcceptBlockFromRPC durably marked transaction validation
-                    // before a crash stopped tip connection. Forward-sync replay
+                    // AcceptBlockFromRPC durably marked its transaction-stage
+                    // receipt before a crash stopped tip connection. Neither
+                    // marker alone attests script/contextual validity.
+                    // Forward-sync replay
                     // data is not an activation marker: the ordered worker still
                     // owns submission of that block. A raw scheduler body may
                     // carry proof bytes too, so payload shape is not a validation
@@ -11800,14 +12017,45 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                     // preserving store-ahead crash recovery.
                     if (GetConfig().utreexo_stateless) {
                         const auto metadata = chain_db_->getHeaderMetadata(entry.hash);
-                        const bool transaction_validated =
+                        // This status is a staging/ingress marker, not proof
+                        // that CSN replay checked scripts or contextual locks.
+                        const bool ingress_marked_transactions =
                             metadata.status() == Status::Ok &&
                             (metadata.value().status_flags &
                              BLOCK_VALID_TRANSACTIONS) != 0;
-                        const bool reorg_plan_validated =
-                            importing_competing_branch &&
+                        const bool has_replay_sidecar = importing_competing_branch &&
                             chain_db_->getCSNSpendTargets(entry.hash).status() == Status::Ok;
-                        if (!transaction_validated && !reorg_plan_validated) {
+                        std::string proof_marker;
+                        const Status marker_status = importing_competing_branch
+                            ? chain_db_->getRaw(
+                                  consensus::CsnSpeculativeProofMarkerKey(entry.hash),
+                                  proof_marker)
+                            : Status::NotFound;
+                        if (marker_status != Status::Ok && marker_status != Status::NotFound) {
+                            if (logger_) logger_->error(
+                                "[ActivateBestChain] Cannot read CSN speculative proof marker");
+                            return;
+                        }
+                        const bool reorg_plan_validated =
+                            has_replay_sidecar && marker_status == Status::Ok &&
+                            proof_marker == consensus::CSN_SPECULATIVE_PROOF_MARKER_VALUE;
+                        if (!ingress_marked_transactions && !reorg_plan_validated) {
+                            // Older versions could leave a valid speculative sidecar
+                            // without a distinct proof-staged marker, or a forward
+                            // sidecar after ingress rejected the body. Make either
+                            // body refetchable so the speculative worker verifies it
+                            // again, rather than silently stranding the branch.
+                            if (has_replay_sidecar && metadata.ok()) {
+                                if (!QuarantineStoredBodyForReplacement(idx)) {
+                                    if (logger_) logger_->error(
+                                        "[ActivateBestChain] Cannot quarantine CSN body without proof marker");
+                                    return;
+                                }
+                                pending_csn_body_refetches_.insert(entry.hash);
+                                missing_block_bodies.push_back(entry.hash.GetHex());
+                                if (logger_) logger_->warning(
+                                    "[ActivateBestChain] Re-requesting CSN body without speculative proof marker");
+                            }
                             if (logger_) {
                                 logger_->debug("[ActivateBestChain] CSN body at height " +
                                                std::to_string(entry.height) +
@@ -12358,6 +12606,37 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
             if (logger_) logger_->error("[ABC-CSN] Stateless reorg requested but consensus UTXO set is unavailable");
             return;
         }
+        const auto retry_candidate_after_preflight = [&] {
+            // An unavailable body, proof, or contextual fact is not evidence
+            // against the header. Retain the candidate but let another
+            // equal-work branch run while this one cools down.
+            activation_retries_.RecordFailure(
+                best_candidate->hash, std::chrono::steady_clock::now());
+        };
+        const auto reject_proven_invalid = [&](CBlockIndex* index,
+                                               const std::string& reason) {
+            // Only a body-bound structural failure or an authenticated
+            // contextual failure may poison a header. Missing proof, branch
+            // MTP or legacy creation height never reaches this path.
+            ChainWriteToken token;
+            if (chain_db_->setHeaderStatusBits(
+                    token, index->hash, BLOCK_FAILED_VALID) != Status::Ok) {
+                EnterSafeMode("CSN contextual rejection status could not be persisted");
+                return;
+            }
+            {
+                std::lock_guard<std::recursive_mutex> index_lock(g_block_index_mutex);
+                index->status |= BLOCK_FAILED_VALID;
+                InvalidateAncestryCache();
+            }
+            if (header_chain_selector_) header_chain_selector_->MarkFailedHeader(index->hash);
+            RemoveCandidate(index);
+            if (best_candidate != index) RemoveCandidate(best_candidate);
+            activation_retries_.Clear(best_candidate->hash);
+            if (logger_) logger_->warning(
+                "[ABC-CSN] Persisted consensus-invalid branch block at height " +
+                std::to_string(index->height) + ": " + reason);
+        };
 
         // Preflight the complete branch before touching any canonical state.
         // A side branch becomes visible to candidate import only after the CSN
@@ -12366,7 +12645,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
         // other body, absence means the plan is incomplete or stale. Previously a
         // missing body was discovered only after DisconnectTip had already
         // moved the active chain to the fork, leaving the node stranded there.
-        for (const auto* block_index : connect_path) {
+        for (auto* block_index : connect_path) {
             const auto block_result = ReadStoredBlock(block_index->hash);
             if (block_result.status() != Status::Ok) {
                 if (logger_) {
@@ -12374,10 +12653,63 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                                      std::to_string(block_index->height) +
                                      " — canonical state left untouched");
                 }
+                retry_candidate_after_preflight();
                 return;
             }
             const auto replay_result = chain_db_->getCSNSpendTargets(block_index->hash);
             const auto& candidate = block_result.value();
+            // This replay path does not enter ConnectTip. A body inherited
+            // from an older scheduler may share the honest header and txid
+            // Merkle root while carrying a different witness commitment.
+            // Quarantine it before rewinding the active chain or forest.
+            const auto body_binding = QuarantineIfStoredBodyUnbound(
+                block_index, candidate);
+            if (body_binding != StoredBodyBindingResult::Bound) {
+                if (body_binding == StoredBodyBindingResult::Quarantined) {
+                    pending_csn_body_refetches_.insert(block_index->hash);
+                }
+                if (logger_) logger_->warning(
+                    body_binding == StoredBodyBindingResult::Quarantined
+                        ? "[ABC-CSN] Reorg plan has an unbound stored body; awaiting replacement"
+                        : "[ABC-CSN] Could not durably quarantine unbound reorg body");
+                return;
+            }
+            // ReplayBlock checks reward before the contextual validator and
+            // reports only a boolean. A persisted malformed transaction-stage
+            // receipt would otherwise remain retryable across cooldowns and
+            // restarts. The body is bound to this header above.
+            if (consensus::IsCoinbaseStructureActive(
+                    block_index->height,
+                    Params().coinbase_structure_activation_height) &&
+                (candidate.vtx.empty() || !candidate.vtx.front().IsCoinbase())) {
+                reject_proven_invalid(block_index,
+                                      "invalid-coinbase-prevout-structure");
+                return;
+            }
+            const auto replay_metadata = chain_db_->getHeaderMetadata(block_index->hash);
+            const bool ingress_marked_transactions = replay_metadata.ok() &&
+                (replay_metadata->status_flags & BLOCK_VALID_TRANSACTIONS) != 0;
+            std::string proof_marker;
+            const Status marker_status = chain_db_->getRaw(
+                consensus::CsnSpeculativeProofMarkerKey(block_index->hash), proof_marker);
+            if (marker_status != Status::Ok && marker_status != Status::NotFound) {
+                if (logger_) logger_->error(
+                    "[ABC-CSN] Cannot read speculative proof marker before reorg");
+                return;
+            }
+            const bool speculative_proof_staged = marker_status == Status::Ok &&
+                proof_marker == consensus::CSN_SPECULATIVE_PROOF_MARKER_VALUE;
+            if (!ingress_marked_transactions && !speculative_proof_staged) {
+                if (!QuarantineStoredBodyForReplacement(block_index)) {
+                    if (logger_) logger_->error(
+                        "[ABC-CSN] Cannot durably quarantine reorg body without proof marker");
+                    return;
+                }
+                pending_csn_body_refetches_.insert(block_index->hash);
+                if (logger_) logger_->warning(
+                    "[ABC-CSN] Reorg body has no durable proof-staged marker; awaiting revalidation");
+                return;
+            }
             CsnReplayData replay_data;
             const std::string* record = replay_result.status() == Status::Ok ? &replay_result.value() : nullptr;
             if ((replay_result.status() != Status::Ok && replay_result.status() != Status::NotFound) ||
@@ -12387,6 +12719,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                                      std::to_string(block_index->height) +
                                      " — canonical state left untouched");
                 }
+                retry_candidate_after_preflight();
                 return;
             }
             // Stored proof/transition records prove a forest transition, not
@@ -12394,7 +12727,10 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
             // rewinding the canonical tip. Bind input amounts to the stored
             // targets and real intra-block outputs here; ReplayBlock repeats
             // this gate and verifies the resulting forest against the header.
-            if (record && !EnsureCsnReplayMetadata(block_index, candidate, *record, replay_data)) return;
+            if (record && !EnsureCsnReplayMetadata(block_index, candidate, *record, replay_data)) {
+                retry_candidate_after_preflight();
+                return;
+            }
             const auto* fee_coins = replay_data.has_spent_outputs
                 ? &replay_data.spent_outputs
                 : (candidate.utreexo ? &candidate.utreexo->spent_outputs : nullptr);
@@ -12405,6 +12741,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                 if (logger_) logger_->error("[ABC-CSN] Reorg reward preflight failed at height " +
                     std::to_string(block_index->height) + ": " + reward_error +
                     " — canonical state left untouched");
+                retry_candidate_after_preflight();
                 return;
             }
         }
@@ -12481,6 +12818,231 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                               std::to_string(fork_point->height));
             }
         }
+
+        // Both staging provenance and BLOCK_VALID_TRANSACTIONS stop short of
+        // script validation. Re-derive each stored spend from the fork forest
+        // before trusting its script and height metadata. This private forest
+        // advances over the proposed branch without changing canonical state.
+        consensus::UtreexoForest preflight_forest = restored_forest;
+        network::StatelessNode preflight_node(&preflight_forest);
+
+        // Replay the shielded side against a private fork state as well. A
+        // Utreexo proof does not authenticate a shielded anchor, nullifier or
+        // the post-block DNRS value. The latter changes on transparent-only
+        // blocks too, so every connect-path block must pass this preflight.
+        consensus::shielded::CommitmentTree preflight_shielded_tree = shielded_tree_;
+        consensus::shielded::AnchorHistory preflight_anchors = shielded_anchor_history_;
+        consensus::shielded::NullifierSet preflight_nullifiers;
+        const auto live_nullifier_count = shielded_nullifiers_.TryCount();
+        if (!live_nullifier_count ||
+            preflight_nullifiers.Open(":memory:") !=
+                consensus::shielded::NullifierSet::OpenResult::Ok) {
+            if (logger_) logger_->error(
+                "[ABC-CSN] Shielded preflight cannot clone nullifier state");
+            return;
+        }
+        std::vector<std::pair<consensus::shielded::Hash, uint32_t>> nullifier_rows;
+        if (*live_nullifier_count > static_cast<uint64_t>(SIZE_MAX)) {
+            if (logger_) logger_->error(
+                "[ABC-CSN] Shielded preflight nullifier count exceeds addressable memory");
+            return;
+        }
+        nullifier_rows.reserve(static_cast<size_t>(*live_nullifier_count));
+        const bool enumerated = shielded_nullifiers_.ForEach(
+            [&](uint32_t height, const uint8_t* bytes) {
+                consensus::shielded::Hash nullifier{};
+                std::copy_n(bytes, nullifier.size(), nullifier.begin());
+                nullifier_rows.emplace_back(nullifier, height);
+                return true;
+            });
+        if (!enumerated || nullifier_rows.size() != *live_nullifier_count ||
+            !preflight_nullifiers.InsertBatch(nullifier_rows) ||
+            preflight_nullifiers.TryCount() != live_nullifier_count) {
+            if (logger_) logger_->error(
+                "[ABC-CSN] Shielded preflight nullifier clone incomplete");
+            return;
+        }
+        // Apply exactly the disconnect twin used by DisconnectTip, in the
+        // same tip-to-fork order. The epoch-reset undo restores the whole
+        // pre-reset pool; a simple RollbackAbove cannot recreate wiped rows.
+        for (const auto* block_index : disconnect_path) {
+            const auto undo_result = ReadStoredUndo(block_index->hash);
+            if (undo_result.status() != Status::Ok) {
+                if (logger_) logger_->error(
+                    "[ABC-CSN] Shielded preflight missing disconnect undo at height " +
+                    std::to_string(block_index->height));
+                return;
+            }
+            const auto& undo = undo_result.value();
+            if ((consensus::shielded::IsShieldedEpochResetHeight(
+                     static_cast<uint32_t>(block_index->height),
+                     Params().shielded_epoch_reset_height,
+                     Params().shielded_spend_auth_epoch_reset_height) &&
+                 !undo.pre_reset_shielded_epoch) ||
+                (block_index->height >= static_cast<int>(Params().shielded_activation_height) &&
+                 !undo.pre_reset_shielded_epoch &&
+                 (!undo.pre_block_shielded_frontier ||
+                  !undo.pre_block_shielded_anchors))) {
+                if (logger_) logger_->error(
+                    "[ABC-CSN] Shielded preflight undo lacks fork state at height " +
+                    std::to_string(block_index->height));
+                return;
+            }
+            std::string undo_error;
+            if (!consensus::shielded::DisconnectBlockShieldedSection(
+                    static_cast<uint32_t>(block_index->height),
+                    undo.pre_reset_shielded_epoch,
+                    undo.pre_block_shielded_frontier,
+                    preflight_shielded_tree, preflight_nullifiers,
+                    &preflight_anchors, undo_error,
+                    undo.pre_block_shielded_anchors)) {
+                if (logger_) logger_->error(
+                    "[ABC-CSN] Shielded preflight cannot rewind to fork: " +
+                    undo_error);
+                return;
+            }
+        }
+        // A failed SQLite rollback is otherwise silent (RollbackAbove is a
+        // void legacy API). Enumerate to verify that no old-branch nullifier
+        // remains above the fork point.
+        if (!preflight_nullifiers.ForEach(
+                [&](uint32_t height, const uint8_t*) {
+                    return height <= static_cast<uint32_t>(fork_point->height);
+                })) {
+            if (logger_) logger_->error(
+                "[ABC-CSN] Shielded preflight nullifier rewind incomplete");
+            return;
+        }
+        // Only a DNRS committed by the selected fork block can turn a
+        // post-state mismatch into proof that the proposed body is invalid.
+        // A pruned fork body or a fork before DNRS activation still permits
+        // safe preflight refusal, but never permanent header invalidation.
+        bool authenticated_shielded_fork = false;
+        if (consensus::IsStateCommitmentActive(
+                static_cast<uint32_t>(fork_point->height),
+                Params().state_commitment_activation_height)) {
+            const auto fork_body = ReadStoredBlock(fork_point->hash);
+            const auto fork_root = consensus::shielded::ComputeShieldedRoot(
+                preflight_shielded_tree, preflight_nullifiers, preflight_anchors);
+            if (!fork_root) {
+                if (logger_) logger_->error(
+                    "[ABC-CSN] Shielded preflight fork root unavailable");
+                return;
+            }
+            if (fork_body.status() == Status::Ok && !fork_body->vtx.empty()) {
+                // The stored body's header hash matches the selected fork,
+                // but that alone does not bind its coinbase to the header.
+                // A stale or corrupted copy must not authorize permanent
+                // failure of a different branch's header.
+                bool merkle_mutated = false;
+                const bool fork_coinbase_bound =
+                    consensus::ComputeMerkleRoot(fork_body->vtx, &merkle_mutated) ==
+                        fork_body->header.merkle_root &&
+                    !merkle_mutated;
+                const auto committed = consensus::FindStateCommitment(
+                    fork_body->vtx.front());
+                authenticated_shielded_fork =
+                    fork_coinbase_bound &&
+                    committed.status == consensus::StateCommitmentStatus::Ok &&
+                    committed.root == *fork_root;
+            }
+        }
+        consensus::ConsensusUTXOSet preflight_utxo_set;
+        consensus::BlockValidator preflight_validator(&preflight_utxo_set);
+        preflight_validator.setShieldedState(
+            &preflight_shielded_tree, &preflight_nullifiers, &preflight_anchors);
+        for (auto* block_index : connect_path) {
+            const auto block_result = ReadStoredBlock(block_index->hash);
+            if (block_result.status() != Status::Ok) {
+                retry_candidate_after_preflight();
+                return;
+            }
+            const auto& candidate = block_result.value();
+            const auto replay_result = chain_db_->getCSNSpendTargets(block_index->hash);
+            CsnReplayData replay_data;
+            const std::string* record = replay_result.status() == Status::Ok
+                ? &replay_result.value() : nullptr;
+            if ((replay_result.status() != Status::Ok &&
+                 replay_result.status() != Status::NotFound) ||
+                !consensus::DecodeCsnReplayDataForBlock(candidate, record, replay_data) ||
+                (record && !EnsureCsnReplayMetadata(
+                    block_index, candidate, *record, replay_data))) {
+                if (logger_) logger_->error("[ABC-CSN] Context preflight: replay data unavailable");
+                retry_candidate_after_preflight();
+                return;
+            }
+            const auto* spent_outputs = replay_data.has_spent_outputs
+                ? &replay_data.spent_outputs
+                : (candidate.utreexo ? &candidate.utreexo->spent_outputs : nullptr);
+            if (!preflight_node.ReplayBlock(candidate, block_index->height,
+                                            replay_data.spend_targets, spent_outputs)) {
+                if (logger_) logger_->error("[ABC-CSN] Context preflight: stored spends not authenticated at height " +
+                                            std::to_string(block_index->height));
+                retry_candidate_after_preflight();
+                return;
+            }
+            const auto branch_mtp = [block_index](uint32_t wanted)
+                    -> std::optional<uint64_t> {
+                auto* cursor = block_index->pprev;
+                while (cursor && cursor->height > wanted) cursor = cursor->pprev;
+                if (!cursor || cursor->height != wanted) return std::nullopt;
+                return cursor->GetMedianTimePast();
+            };
+            std::string context_error;
+            if (!consensus::CheckStatelessBlockContextReadOnly(
+                    candidate, block_index->height, spent_outputs,
+                    branch_mtp, context_error)) {
+                if (logger_) logger_->error("[ABC-CSN] Context preflight rejected height " +
+                    std::to_string(block_index->height) + ": " + context_error +
+                    " — canonical state left untouched");
+                if (IsDeterministicStatelessContextFailure(context_error)) {
+                    reject_proven_invalid(block_index, context_error);
+                } else {
+                    retry_candidate_after_preflight();
+                }
+                return;
+            }
+            std::vector<int64_t> shielded_deltas;
+            std::string shielded_error;
+            if (!preflight_validator.ComputeShieldedDeltasForStoredBlock(
+                    candidate, static_cast<uint32_t>(block_index->height),
+                    shielded_deltas, shielded_error, spent_outputs)) {
+                if (logger_) logger_->error(
+                    "[ABC-CSN] Shielded preflight rejected height " +
+                    std::to_string(block_index->height) + ": " + shielded_error +
+                    " — canonical state left untouched");
+                retry_candidate_after_preflight();
+                return;
+            }
+            consensus::BlockUndo shielded_undo;
+            if (!preflight_validator.ApplyBlockShieldedSection(
+                    candidate, static_cast<uint32_t>(block_index->height),
+                    shielded_deltas, shielded_undo, shielded_error)) {
+                if (logger_) logger_->error(
+                    "[ABC-CSN] Shielded preflight rejected height " +
+                    std::to_string(block_index->height) + ": " + shielded_error +
+                    " — canonical state left untouched");
+                if (authenticated_shielded_fork &&
+                    shielded_error.rfind(
+                        "coinbase-state-commitment-mismatch", 0) == 0) {
+                    reject_proven_invalid(block_index, shielded_error);
+                } else {
+                    retry_candidate_after_preflight();
+                }
+                return;
+            }
+        }
+        const auto expected_shielded_root =
+            consensus::shielded::ComputeShieldedRoot(
+                preflight_shielded_tree, preflight_nullifiers,
+                preflight_anchors);
+        if (!expected_shielded_root) {
+            if (logger_) logger_->error(
+                "[ABC-CSN] Shielded preflight final root unavailable");
+            return;
+        }
+        const auto expected_anchors =
+            preflight_anchors.SerializePersistenceBytes();
 
         // Step 2: Restore forest + StatelessNode state
         stateless_node_->RewindToCheckpoint(static_cast<uint32_t>(fork_point->height), restored_forest);
@@ -12626,6 +13188,22 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                                             std::to_string(block_index->height) + ": " + bk_err);
                 return;
             }
+        }
+
+        // The real replay must reproduce the entire private-fork shielded
+        // result. The commitment binds tree, nullifiers and the consensus
+        // anchor window; the persistence comparison also checks the bounded
+        // anchor eviction journal needed for a subsequent reorg.
+        const auto selected_shielded_root =
+            consensus::shielded::ComputeShieldedRoot(
+                shielded_tree_, shielded_nullifiers_,
+                shielded_anchor_history_);
+        if (!selected_shielded_root ||
+            *selected_shielded_root != *expected_shielded_root ||
+            shielded_anchor_history_.SerializePersistenceBytes() !=
+                expected_anchors) {
+            EnterSafeMode("CSN shielded state diverged from private-fork preflight");
+            return;
         }
 
         // Step 5: Signal OnUtxoBlock handler to reset
@@ -12805,12 +13383,9 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
 
     // Durable advisory marker for interrupted canonical transitions.
     //
-    // `reorg_in_progress` lives inside the wallet SQLite transaction below, so
-    // it is intentionally atomic with wallet-side reorg state and may vanish on
-    // crash-before-commit. That makes it the wrong durability layer for
-    // "process died mid-transition". Use the datadir recovery marker for that
-    // role instead: it survives abrupt termination and is only cleared after a
-    // later successful canonical transition or healthy startup reconciliation.
+    // Wallet delivery runs asynchronously and owns its own SQLite transactions.
+    // The index marker below is advisory; the datadir recovery marker tracks
+    // interrupted canonical transitions independently of wallet delivery.
     bool activation_recovery_marker_written = false;
     if ((!disconnect_path.empty() || !connect_path.empty()) && !datadir_.empty()) {
         std::string marker_error;
@@ -12843,29 +13418,19 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // Crash Safety: Mark reorg in progress (Priority 4 FIX - Transactional)
-    // ═══════════════════════════════════════════════════════════════════════════
-    // If the process crashes during reorg, this marker allows detection and
-    // recovery on next startup. The marker stores:
-    // - pre_reorg_height: Height before disconnect started
-    // - fork_height: Height of fork point
-    // - target_height: Height we're trying to reach
-    //
-    // Priority 4 FIX: Marker is now set within a transaction that spans the
-    // entire wallet reorg operation. This ensures marker and state are atomic.
-    // ═══════════════════════════════════════════════════════════════════════════
-    bool wallet_transaction_started = false;
+    // Record advisory intent in autocommit. An outer index transaction here
+    // spans notification handoff to WalletWorker, whose per-block ApplyAtomically
+    // and RevertBlock transactions then fail on the same SQLite connection.
+    // A chainstate transaction cannot make two asynchronous wallet stores atomic.
+    // Keep transaction ownership entirely with the worker.
     if (utxo_index_ && !disconnect_path.empty()) {
-        // Priority 4 FIX: Begin transaction for atomic marker + state changes
-        wallet_transaction_started = utxo_index_->BeginTransaction();
-        if (!wallet_transaction_started) {
-            if (logger_) logger_->warning("[ActivateBestChain] Failed to begin wallet transaction for reorg");
+        const std::string reorg_marker = std::to_string(active_tip_ ? active_tip_->height : 0) + ":" +
+                                        std::to_string(fork_point ? fork_point->height : 0) + ":" +
+                                        std::to_string(best_candidate->height);
+        if (!utxo_index_->SetMetadata("reorg_in_progress", reorg_marker)) {
+            if (logger_) logger_->error("[ActivateBestChain] Failed to persist advisory reorg marker");
+            return;
         }
-
-        std::string reorg_marker = std::to_string(active_tip_ ? active_tip_->height : 0) + ":" +
-                                   std::to_string(fork_point ? fork_point->height : 0) + ":" +
-                                   std::to_string(best_candidate->height);
-        utxo_index_->SetMetadata("reorg_in_progress", reorg_marker);
         if (logger_) logger_->info("[ActivateBestChain] Reorg marker set: " + reorg_marker);
     }
 
@@ -12881,11 +13446,6 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
         if (!DisconnectTip(block_index)) {
             if (logger_) logger_->error("[ActivateBestChain] Failed to disconnect block at height " +
                           std::to_string(block_index->height));
-            // Priority 4 FIX: Rollback wallet transaction on abort
-            if (wallet_transaction_started && utxo_index_) {
-                utxo_index_->RollbackTransaction();
-                if (logger_) logger_->info("[ActivateBestChain] Wallet transaction rolled back after disconnect failure");
-            }
 
             // Disconnect failures are operational/runtime faults, not consensus
             // invalidity. Preserve the best-work candidate and cool it down so a
@@ -12913,6 +13473,20 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
 
             return; // Abort reorg on failure
         }
+        if (block_index == disconnect_path.front() && Params().network_id == "regtest") {
+            if (const char* pause_file = std::getenv("DINERO_TEST_REORG_AFTER_DISCONNECT_PAUSE_FILE");
+                pause_file && *pause_file) {
+                const std::string path(pause_file);
+                std::ofstream entered(path + ".entered");
+                if (entered << block_index->height << '\n') {
+                    entered.close();
+                    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(480);
+                    while (std::chrono::steady_clock::now() < deadline &&
+                           !std::filesystem::exists(path + ".release"))
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+            }
+        }
         if (runtime_reorg) runtime_reorg->Disconnected();
     }
 
@@ -12926,7 +13500,6 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
     if (!disconnect_path.empty() && (consensus_utxo_set_ || compact_transition) && fork_point) {
         if (!VerifyForkPointForestUnderLock(fork_point)) {
             if (logger_) logger_->error("[ActivateBestChain] Fork-point body/state verification failed; aborting reorg");
-            if (wallet_transaction_started && utxo_index_) utxo_index_->RollbackTransaction();
             return;
         }
         if (logger_) logger_->info("[ActivateBestChain] Post-disconnect forest root verified at fork height " +
@@ -13008,11 +13581,6 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
             if (missing_utxo) {
                 EnterSafeMode("connect-tip missing utxo at height " + std::to_string(block_index->height));
             }
-            // Priority 4 FIX: Rollback wallet transaction on abort
-            if (wallet_transaction_started && utxo_index_) {
-                utxo_index_->RollbackTransaction();
-                if (logger_) logger_->info("[ActivateBestChain] Wallet transaction rolled back after connect failure");
-            }
 
             // #309/I2: a consensus-rule violation (BlockValidator::ConnectBlock
             // rejected this block) on a speculative reorg branch must be marked
@@ -13025,14 +13593,26 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                 if (logger_) logger_->warning("[ActivateBestChain] REORG ABORT: consensus-invalid block at height " +
                                               std::to_string(block_index->height) +
                                               " — marking BLOCK_FAILED_VALID (#309/I2)");
+                // Persist the deterministic rejection before the in-memory
+                // candidate graph can forget it. A failed status write is a
+                // local persistence fault, never permission to silently retry
+                // the same invalid branch after a restart.
+                const auto failed_status = chain_db_ ? [&] {
+                    ChainWriteToken token;
+                    return chain_db_->setHeaderStatusBits(
+                        token, block_index->hash, BLOCK_FAILED_VALID);
+                }() : Status::Internal;
                 {
                     std::lock_guard<std::recursive_mutex> index_lock(g_block_index_mutex);
                     block_index->status |= BLOCK_FAILED_VALID;
                     InvalidateAncestryCache();
                 }
-                if (chain_db_) {
-                    ChainWriteToken token = ChainWriteToken::CreateForTesting();
-                    chain_db_->setHeaderStatusBits(token, block_index->hash, BLOCK_FAILED_VALID);
+                if (failed_status != Status::Ok) {
+                    if (logger_) logger_->error(
+                        "[ActivateBestChain] Failed to persist consensus-invalid block status");
+                    EnterSafeMode("failed to persist consensus-invalid block status");
+                } else if (header_chain_selector_) {
+                    header_chain_selector_->MarkFailedHeader(block_index->hash);
                 }
             }
 
@@ -13106,9 +13686,6 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
     if (best_candidate->height < 0) {
         if (logger_) logger_->error("INVARIANT D1 VIOLATION: Tip height is negative (" +
                       std::to_string(best_candidate->height) + ")");
-        if (wallet_transaction_started && utxo_index_) {
-            utxo_index_->RollbackTransaction();
-        }
         return;
     }
 
@@ -13118,9 +13695,6 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
         if (logger_) logger_->error("INVARIANT D6 VIOLATION: Tip height decreased without reorg (" +
                       std::to_string(active_tip_->height) + " -> " +
                       std::to_string(best_candidate->height) + ")");
-        if (wallet_transaction_started && utxo_index_) {
-            utxo_index_->RollbackTransaction();
-        }
         return;
     }
 
@@ -13194,21 +13768,11 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                                   dinero::Params().network_id == "regtest");
 
     if (utxo_index_) {
-        utxo_index_->DeleteMetadata("reorg_in_progress");
+        if (!utxo_index_->DeleteMetadata("reorg_in_progress") && logger_)
+            logger_->warning("[ActivateBestChain] Failed to clear advisory reorg marker");
         ClearActivationFailure(utxo_index_.get());
 
-        // Priority 4 FIX: Commit the wallet transaction
-        // This ensures marker deletion and all wallet state changes are atomic
-        if (wallet_transaction_started) {
-            if (utxo_index_->CommitTransaction()) {
-                if (logger_) logger_->debug("[ActivateBestChain] Reorg marker cleared + wallet transaction committed");
-            } else {
-                if (logger_) logger_->error("[ActivateBestChain] Failed to commit wallet transaction!");
-                // State may be inconsistent - ValidateAgainstConsensus will fix on restart
-            }
-        } else {
-            if (logger_) logger_->debug("[ActivateBestChain] Reorg marker cleared (no transaction)");
-        }
+        if (logger_) logger_->debug("[ActivateBestChain] Advisory reorg marker cleared");
     }
 
     if (activation_recovery_marker_written) {
@@ -13599,7 +14163,7 @@ bool ChainstateService::InitCompactSnapshotBootstrap(const std::filesystem::path
         wallet->RequireMetadataAbsent({"reorg_in_progress",assumeutxo::kActiveKey,assumeutxo::kBaseBlockKey,
             assumeutxo::kBaseHeightKey,assumeutxo::kLifecycleStateKey,assumeutxo::kLcBaseBlockKey});
         utxo_index_=std::move(wallet);snapshot_bootstrap_path_=std::move(bootstrap_path);snapshot_bootstrap_base_hash_=metadata.block_hash;
-        snapshot_bootstrap_base_height_=metadata.block_height;snapshot_bootstrap_v6_=true;
+        snapshot_bootstrap_base_height_=metadata.block_height;snapshot_bootstrap_requires_burial_=true;
         snapshot_bootstrap_state_.store(SnapshotBootstrapState::Pending);orchard_compact_bootstrap_pending_.store(true);
         // No temporary full coin owner/forest is exposed to later provider
         // construction. Selected-state reads stay unavailable until v6 enrolls.
@@ -14931,7 +15495,26 @@ ChainstateService::SnapshotImportPublication::~SnapshotImportPublication(){
     source_.snapshot_import_publishing_=false;
 }
 
-consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::filesystem::path& snapshot_path) {
+bool ChainstateService::HasPersistedActiveSnapshotBase(
+    const uint256& base_hash, uint32_t base_height) const {
+    if (!utxo_index_ || !assumeutxo_lifecycle_ || !assumeutxo_active_ ||
+        assumeutxo_base_block_ != base_hash ||
+        assumeutxo_base_height_ != base_height) return false;
+    const auto active = utxo_index_->GetMetadata(assumeutxo::kActiveKey);
+    const auto persisted_hash = utxo_index_->GetMetadata(assumeutxo::kBaseBlockKey);
+    const auto persisted_height = utxo_index_->GetMetadata(assumeutxo::kBaseHeightKey);
+    const auto lifecycle = assumeutxo_lifecycle_->GetStatus(
+        std::chrono::steady_clock::now());
+    return active && active.value() == "true" &&
+           persisted_hash && persisted_hash.value() == base_hash.GetHex() &&
+           persisted_height && persisted_height.value() == std::to_string(base_height) &&
+           lifecycle.assumeutxo_active &&
+           lifecycle.snapshot_base_block == base_hash &&
+           lifecycle.snapshot_base_height == base_height;
+}
+
+consensus::SnapshotImportResult ChainstateService::LoadSnapshot(
+    const std::filesystem::path& snapshot_path, bool persisted_base_rehydrate) {
     using namespace consensus;
     // rc24.1 single-flight: LoadSnapshot mutates the consensus UTXO set in place
     // and is reachable from the auto-bootstrap path AND the manual RPC path.
@@ -15310,6 +15893,22 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
                     return result;
                 }
                 // same base: benign rehydrate, continue
+            }
+        }
+
+        // A node may later invalidate back to its already-imported base. At
+        // that point the selected best header is the base itself, so a fresh
+        // import's burial depth is no longer available. Permit this narrow
+        // startup rehydrate only when the durable active/base markers and the
+        // restored lifecycle all identify this exact snapshot. The selected
+        // chain ancestry and every v5 binding proof are still checked below.
+        if (persisted_base_rehydrate) {
+            if (!HasPersistedActiveSnapshotBase(header.block_hash,
+                                                header.block_height)) {
+                result.error_message =
+                    "Persisted snapshot base does not match the active AssumeUTXO lifecycle";
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
             }
         }
 
@@ -15773,16 +16372,18 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
                         ancestor_at_base = at_base.hash;
                     }
                 }
+                const uint32_t required_depth = persisted_base_rehydrate
+                    ? 0 : Params().state_commitment_burial_depth;
                 const auto burial = consensus::EvaluateSnapshotBurial(
                     header.block_hash, header.block_height, ancestor_at_base,
-                    best_height, Params().state_commitment_burial_depth);
+                    best_height, required_depth);
                 if (burial != consensus::SnapshotBindingVerdict::Ok) {
                     if (binding_fail(burial,
                             "base " + header.block_hash.GetHex().substr(0, 16) +
                             "…@" + std::to_string(header.block_height) +
                             " vs best-work height " + std::to_string(best_height) +
                             ", required depth " +
-                            std::to_string(Params().state_commitment_burial_depth))) {
+                            std::to_string(required_depth))) {
                         return result;
                     }
                 } else {
@@ -16507,34 +17108,18 @@ bool ChainstateService::IsReorgCandidateEligible(CBlockIndex* block_index) {
 }
 
 CBlockIndex* ChainstateService::GetBestCandidate() {
+    // Keep the per-pass memo and its raw parent pointers in one selected graph
+    // snapshot. Both production callers already hold the recursive selected
+    // lock; this also enforces the established selected -> index order here.
+    std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+    std::lock_guard<std::recursive_mutex> graph_lock(dinero::g_block_index_mutex);
     if (candidates_.empty()) return nullptr;
 
-    // Only select candidates that share ancestry with the active chain.
-    // Incompatible candidates (no common ancestor) can appear from stale/forked
-    // header data and would make FindFork() return null, stalling activation.
-    auto shares_active_ancestor = [this](CBlockIndex* candidate) -> bool {
-        if (!candidate || !active_tip_) {
-            return true;
-        }
-
-        CBlockIndex* a = active_tip_;
-        CBlockIndex* b = candidate;
-
-        while (a && b && a->height > b->height) {
-            a = a->pprev;
-        }
-        while (a && b && b->height > a->height) {
-            b = b->pprev;
-        }
-        while (a && b) {
-            if (a->hash == b->hash) {
-                return true;
-            }
-            a = a->pprev;
-            b = b->pprev;
-        }
-        return false;
-    };
+    // Reuse the active and fork ancestry within this pass. Walking down from
+    // active_tip_ for every historical candidate is quadratic and holds block
+    // ingress while peers leave already-delivered bytes unread (SJ incident).
+    // The view is discarded before any later graph/status/tip transition.
+    consensus::CandidateAncestryView ancestry(active_tip_);
 
     std::vector<CBlockIndex*> incompatible;
     std::vector<CBlockIndex*> invalid;
@@ -16545,7 +17130,7 @@ CBlockIndex* ChainstateService::GetBestCandidate() {
             invalid.push_back(candidate);
             return false;
         }
-        if (!shares_active_ancestor(candidate)) {
+        if (!ancestry.SharesActiveAncestor(candidate)) {
             incompatible.push_back(candidate);
             return false;
         }
@@ -16690,7 +17275,6 @@ bool ChainstateService::InvalidateBlockPass(const uint256& hash, std::string& er
         error = "Operator status generation unavailable";
         return false;
     }
-
     // Rebind even if a changed graph would now classify the target as a
     // side branch. Detached preparation never authorizes a different operator
     // decision after a selected-tip, target, ancestry or generation change.
@@ -16751,7 +17335,9 @@ bool ChainstateService::InvalidateBlockPass(const uint256& hash, std::string& er
             // bookkeeping. ABC normally rewinds its forest first; the manual
             // invalidation entry must do the same. Reconstruct and verify the
             // destination before changing the tip, forest or invalidity flags.
-            if (!compact_startup_ && GetConfig().utreexo_stateless) {
+            const bool csn_manual_rewind =
+                !compact_startup_ && GetConfig().utreexo_stateless;
+            if (csn_manual_rewind) {
                 const auto* parent = target->pprev;
                 if (!parent || !chain_db_ || !consensus_utxo_set_ || !stateless_node_) {
                     error = "CSN invalidation requires a parent and initialized chainstate";
@@ -16786,7 +17372,6 @@ bool ChainstateService::InvalidateBlockPass(const uint256& hash, std::string& er
                     }
                 }
                 stateless_node_->RewindToCheckpoint(static_cast<uint32_t>(parent->height), restored);
-                csn_reorg_reset_height_.store(static_cast<uint32_t>(parent->height + 1));
             }
 
             // Disconnect from tip down to the invalidated block (inclusive)
@@ -16794,6 +17379,12 @@ bool ChainstateService::InvalidateBlockPass(const uint256& hash, std::string& er
                 CBlockIndex* to_disconnect = active_tip_;
                 manually_disconnected_blocks.push_back(to_disconnect);
                 if (!DisconnectTip(to_disconnect)) {
+                    // Earlier disconnects may already have moved the active tip.
+                    // Publish only that committed prefix on a partial failure.
+                    if (csn_manual_rewind && active_tip_ && active_tip_->height >= 0) {
+                        csn_reorg_reset_height_.store(
+                            static_cast<uint32_t>(active_tip_->height + 1));
+                    }
                     error = "Failed to disconnect tip at height " +
                             std::to_string(to_disconnect->height);
                     return false;
@@ -16814,6 +17405,14 @@ bool ChainstateService::InvalidateBlockPass(const uint256& hash, std::string& er
                 ChainWriteToken token;
                 arith_uint256 work = ChainworkFromHex(active_tip_->chainwork);
                 chain_db_->setTip(token, active_tip_->hash, active_tip_->height, work);
+            }
+            // The P2P dispatcher can consume this one-shot signal concurrently.
+            // Publish it only after every disconnect has lowered the active tip;
+            // otherwise cursor reconciliation can immediately advance it back
+            // to the old tip and discard the first block of the replacement fork.
+            if (csn_manual_rewind && active_tip_ && active_tip_->height >= 0) {
+                csn_reorg_reset_height_.store(
+                    static_cast<uint32_t>(active_tip_->height + 1));
             }
         }
     }
@@ -16847,6 +17446,7 @@ bool ChainstateService::InvalidateBlockPass(const uint256& hash, std::string& er
         target->status |= BLOCK_FAILED_VALID;
         InvalidateAncestryCache();
     }
+    if (header_chain_selector_) header_chain_selector_->MarkFailedHeader(target->hash);
     RemoveCandidate(target);
 
     dinero::testing::MaybeAbortAt("after_invalid_target_before_descendants",
@@ -16950,13 +17550,37 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
     std::lock_guard<AnnotatedRecursiveMutex> activation_lock(activation_mutex_);
 
     CBlockIndex* target = FindBlockIndex(hash);
+    std::optional<ChainDB::PersistedHeaderMetadata> metadata_only_target;
     if (!target) {
-        error = "Block not found in block index";
-        return false;
+        // A failed header-only root may have lost its separate HeaderStore row
+        // to bounded side-branch retention. The durable status still belongs
+        // to the operator's invalidation, so it must remain reconsiderable.
+        // A missing index for a body-backed block instead indicates a broken
+        // recovery path; do not silently clear that block's validity.
+        if (!chain_db_) {
+            error = "Block not found in block index";
+            return false;
+        }
+        const auto persisted = chain_db_->getHeaderMetadata(hash);
+        if (!persisted.ok()) {
+            error = "Block not found in block index or durable metadata";
+            return false;
+        }
+        if (persisted->height <= 0 ||
+            (persisted->status_flags & BLOCK_VALID_MASK) != BLOCK_VALID_HEADER ||
+            (persisted->status_flags & (BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO)) ||
+            persisted->file_number != 0 || persisted->data_pos != 0 ||
+            persisted->data_size != 0 || persisted->undo_file != 0 ||
+            persisted->undo_pos != 0 || persisted->undo_size != 0) {
+            error = "Body-backed block missing from block index";
+            return false;
+        }
+        metadata_only_target = *persisted;
     }
 
     // Not invalid?
-    if (!(target->status & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD))) {
+    const uint32_t target_status = target ? target->status : metadata_only_target->status_flags;
+    if (!(target_status & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD))) {
         error = "Block is not marked as invalid";
         return false;
     }
@@ -16966,17 +17590,30 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
         error = "Operator status generation unavailable";
         return false;
     }
+    // The in-memory fork index can omit a persisted header-only descendant
+    // whose separate HeaderStore row was pruned. Reconsider must clear its
+    // failed flag too, or startup hydration will keep excluding that branch.
+    if (!chain_db_) {
+        error = "Chain database unavailable for reconsider";
+        return false;
+    }
+    const auto persisted_descendants = chain_db_->getFailedHeaderDescendants(hash);
+    if (!persisted_descendants.ok()) {
+        error = "Failed to enumerate persisted invalid descendants";
+        return false;
+    }
 
     if (logger_) {
         logger_->info("[ReconsiderBlock] Reconsidering block at height " +
-                     std::to_string(target->height) + " hash=" +
+                     std::to_string(target ? target->height : metadata_only_target->height) + " hash=" +
                      hash.GetHex().substr(0, 16) + "...");
     }
 
     std::vector<CBlockIndex*> subtree;
-    subtree.push_back(target);
+    if (target) subtree.push_back(target);
     std::vector<CBlockIndex*> queue;
-    queue.insert(queue.end(), target->children.begin(), target->children.end());
+    if (target)
+        queue.insert(queue.end(), target->children.begin(), target->children.end());
     while (!queue.empty()) {
         CBlockIndex* child = queue.back();
         queue.pop_back();
@@ -16988,6 +17625,24 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
     // Clear invalid flags durably as one logical operation. A crash in the
     // middle of reconsider must not leave the target reconsidered while its
     // descendants stay BLOCK_FAILED_CHILD on disk.
+    std::vector<uint256> cleared_header_hashes;
+    cleared_header_hashes.reserve(subtree.size() + persisted_descendants->size() + 1);
+    std::unordered_set<uint256> indexed_subtree_hashes;
+    indexed_subtree_hashes.reserve(subtree.size());
+    if (!target) cleared_header_hashes.push_back(hash);
+    for (const auto* node : subtree) {
+        if (node) {
+            cleared_header_hashes.push_back(node->hash);
+            indexed_subtree_hashes.insert(node->hash);
+        }
+    }
+    std::vector<CBlockIndex*> extra_indexed_descendants;
+    for (const auto& descendant : *persisted_descendants) {
+        if (indexed_subtree_hashes.contains(descendant)) continue;
+        cleared_header_hashes.push_back(descendant);
+        if (auto* index = FindBlockIndex(descendant))
+            extra_indexed_descendants.push_back(index);
+    }
     if (chain_db_) {
         ChainWriteToken token;
         rocksdb::WriteBatch status_batch;
@@ -17021,7 +17676,11 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
             return true;
         };
 
-        if (!stage_clear(target)) {
+        if (target) {
+            if (!stage_clear(target)) return false;
+        } else if (chain_db_->clearHeaderStatusBits(token, hash,
+                       BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD, &status_batch) != Status::Ok) {
+            error = "Failed to stage metadata-only invalid root clear";
             return false;
         }
 
@@ -17030,6 +17689,14 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
 
         for (size_t i = 1; i < subtree.size(); ++i) {
             if (!stage_clear(subtree[i])) {
+                return false;
+            }
+        }
+        for (const auto& descendant : *persisted_descendants) {
+            if (indexed_subtree_hashes.contains(descendant)) continue;
+            if (chain_db_->clearHeaderStatusBits(token, descendant,
+                    BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD, &status_batch) != Status::Ok) {
+                error = "Failed to stage persisted header-only descendant invalidity clear";
                 return false;
             }
         }
@@ -17064,6 +17731,11 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
             node->status &= ~(BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD);
         }
     }
+    for (CBlockIndex* node : extra_indexed_descendants)
+        node->status &= ~(BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD);
+    if (header_chain_selector_) {
+        header_chain_selector_->ClearFailedHeaderHashes(cleared_header_hashes);
+    }
 
     // A header-only descendant is not the connectable branch tip. Offer the
     // subtree parent-first: AddCandidate keeps the existing eligibility checks
@@ -17072,6 +17744,8 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
     for (CBlockIndex* node : subtree) {
         AddCandidate(node);
     }
+    for (CBlockIndex* node : extra_indexed_descendants)
+        AddCandidate(node);
 
     // Crash boundary: the cleared flags and the advanced generation are
     // DURABLE at this point, but the chain has not been re-activated. A restart
@@ -17100,6 +17774,63 @@ bool ChainstateService::ForceSetActiveTip(const uint256& hash, std::string& erro
         return false;
     }
     PublishActiveTip(idx, TipPublishReason::kReorgInvalidate);
+    return true;
+}
+
+bool ChainstateService::RestoreStatefulSnapshotCoinCache(std::string& error) {
+    std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+    if (GetConfig().utreexo_stateless ||
+        (!assumeutxo_active_ && promoted_base_height_ == 0)) return true;
+    if (!chain_db_ || !consensus_utxo_set_) {
+        error = "Snapshot coin cache has no chainstate owner";
+        return false;
+    }
+    // Check the base even for an empty frozen set; never turn an unreadable or
+    // foreign snapshot marker into an apparently successful empty restore.
+    const auto marker = chain_db_->getPreBaseCoinSetBase();
+    bool bound = marker.ok() && assumeutxo_active_ && !assumeutxo_base_block_.IsNull() &&
+        marker->first == assumeutxo_base_block_ &&
+        marker->second == assumeutxo_base_height_;
+    if (!bound && marker.ok() && promoted_base_height_ > 0 &&
+        marker->second == promoted_base_height_) {
+        const auto canonical = chain_db_->getBlockHashByHeight(promoted_base_height_);
+        bound = canonical.ok() && *canonical == marker->first;
+    }
+    if (!bound) {
+        error = "Frozen snapshot coin cache base is unavailable or mismatched";
+        return false;
+    }
+    std::vector<std::pair<OutPoint, consensus::UTXOEntry>> additions;
+    bool valid = true;
+    const auto status = chain_db_->forEachPreBaseCoin(
+        [&](const uint256& txid, uint32_t vout, const Coin&) {
+            const OutPoint point(TxId(txid), vout);
+            const auto coin = ResolveLivePreBaseCoinChecked(point);
+            if (coin.status() == Status::NotFound) return true; // Already spent.
+            if (!coin.ok()) { valid = false; return false; }
+            if (const auto* current = consensus_utxo_set_->GetCoin(point)) {
+                valid = current->value == coin->value && current->scriptPubKey == coin->scriptPubKey &&
+                    current->height == coin->height && current->isCoinbase == coin->isCoinbase &&
+                    current->is_confidential == coin->is_confidential && current->commitment == coin->commitment;
+                return valid;
+            }
+            additions.emplace_back(point, *coin);
+            return true;
+        });
+    if (status != Status::Ok || !valid) {
+        error = "Frozen snapshot coin cache contains unreadable or conflicting records";
+        return false;
+    }
+    // No durable writes, no forest rebuild and no tip change. Stage the whole
+    // checked set first so corrupt rows cannot publish a partial cache restore.
+    for (const auto& [point, coin] : additions) {
+        if (!consensus_utxo_set_->AddCoin(point, coin)) {
+            error = "Snapshot coin cache changed during selected restore";
+            return false;
+        }
+    }
+    if (logger_) logger_->info("[AssumeUTXO restore] Restored " + std::to_string(additions.size()) +
+                               " live pre-base coins into the full validator cache");
     return true;
 }
 
@@ -17139,7 +17870,7 @@ bool ChainstateService::RestoreUtreexoCheckpoint(uint32_t height, std::string& e
             return false;
         }
         consensus_utxo_set_->ReplaceForestGuarded(std::move(restored));
-        return true;
+        return RestoreStatefulSnapshotCoinCache(error);
     } catch (const std::exception& e) {
         error = std::string("Failed to restore Utreexo checkpoint: ") + e.what();
         return false;
@@ -18945,6 +19676,8 @@ bool IsUnambiguousConsensusViolation(const std::string& err) {
         "double-spend-in-block",
         "Coinbase pays too much",
         "Block has no transactions",
+        "invalid-coinbase-prevout-structure",
+        "block-sigops-exceeded",
         "Stateless validation: Script validation failed",
         "utreexo-phase3-height-limit-exceeded",
         "shielded-delta-accounting-mismatch",
@@ -23077,6 +23810,65 @@ void ChainstateService::RunPostConnectStorageCleanup() noexcept {
     } catch (...) {}
 }
 
+bool ChainstateService::QuarantineStoredBodyForReplacement(CBlockIndex* index) {
+    unreadable_blocks_.mark(index->hash);
+    const auto saved = chain_db_->getHeaderMetadata(index->hash);
+    if (!saved.ok()) return false;
+    auto metadata = saved.value();
+    const uint32_t stale_body_flags = static_cast<uint32_t>(BLOCK_HAVE_DATA) |
+                                      static_cast<uint32_t>(BLOCK_VALID_TRANSACTIONS);
+    metadata.status_flags &= ~stale_body_flags;
+    metadata.data_size = 0;
+    metadata.data_pos = 0;
+    metadata.file_number = 0;
+    ChainWriteToken token;
+    // This is a full read-modify-write of the row, including its undo fields.
+    // The preserving-undo writer ORs old status bits back and would undo the
+    // HAVE_DATA clear, so it cannot be used for quarantine.
+    if (chain_db_->putHeaderMetadata(token, index->hash, metadata) != Status::Ok) {
+        return false;
+    }
+    index->status &= ~stale_body_flags;
+    return true;
+}
+
+ChainstateService::StoredBodyBindingResult
+ChainstateService::QuarantineIfStoredBodyUnbound(
+    CBlockIndex* index, const Block& body) {
+    bool merkle_mutated = false;
+    const auto body_merkle = consensus::ComputeMerkleRoot(body.vtx, &merkle_mutated);
+    // An empty body with an empty Merkle root belongs to this header. It is
+    // consensus-invalid, not a replaceable bad copy of an honest body.
+    const bool merkle_unbound = merkle_mutated ||
+                                body_merkle != body.header.merkle_root;
+    std::string witness_error;
+    bool witness_unbound = false;
+    if (!merkle_unbound && !body.vtx.empty() &&
+        index->height < Params().orchard_activation_height) {
+        const auto height = static_cast<uint32_t>(index->height);
+        witness_unbound = consensus::FullRulesActive(height)
+            ? !consensus::EnforceWitnessCommitment(
+                  body.vtx, height, Params().enforce_witness_commitment,
+                  Params().witness_commitment_enforcement_height, witness_error)
+            : consensus::FindWitnessCommitmentIndex(body.vtx[0]).has_value();
+    }
+    if (!merkle_unbound && !witness_unbound) return StoredBodyBindingResult::Bound;
+    if (!QuarantineStoredBodyForReplacement(index)) {
+        if (logger_) logger_->error(
+            "[Chainstate] Could not durably quarantine unbound body for " +
+            index->hash.GetHex());
+        return StoredBodyBindingResult::StorageError;
+    }
+    if (logger_) {
+        logger_->warning("[Chainstate] Stored body " +
+                         std::string(merkle_unbound ? "Merkle mismatch or mutation" :
+                             "witness commitment mismatch") + " for " +
+                         index->hash.GetHex() +
+                         "; preserving header and requesting a replacement body");
+    }
+    return StoredBodyBindingResult::Quarantined;
+}
+
 bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out_error,
                                    bool* out_consensus_invalid) {
     std::unique_lock<AnnotatedRecursiveMutex> delivery_lock(activation_mutex_);
@@ -23202,6 +23994,25 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
         return fail("read-block-failed-status-" + std::to_string(static_cast<int>(block_result.status())));
     }
     Block block = block_result.value();
+    // A body persisted by an older scheduler may have the right header hash
+    // but unrelated transactions. It has not necessarily passed AcceptBlock's
+    // Merkle check, especially on a below-tip fork-heal branch. Do this before
+    // the DNRF precheck or ConnectBlock can classify a failure as consensus
+    // invalid and permanently mark the honest header BLOCK_FAILED_VALID.
+    const auto body_binding = QuarantineIfStoredBodyUnbound(tip_to_connect, block);
+    if (body_binding != StoredBodyBindingResult::Bound) {
+        if (out_consensus_invalid) *out_consensus_invalid = false;
+        return fail(body_binding == StoredBodyBindingResult::Quarantined
+            ? "stored-body-unbound" : "stored-body-quarantine-failed");
+    }
+    if (GetConfig().utreexo_stateless &&
+        consensus::IsCoinbaseStructureActive(
+            tip_to_connect->height,
+            Params().coinbase_structure_activation_height) &&
+        (block.vtx.empty() || !block.vtx.front().IsCoinbase())) {
+        if (out_consensus_invalid) *out_consensus_invalid = true;
+        return fail("invalid-coinbase-prevout-structure");
+    }
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     std::optional<PreparedHistoricalRuntimeOutbox> historical_delivery;
     try {
@@ -23323,11 +24134,16 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
     // Full filter hash verification happens after ConnectBlock (needs undo data).
     // ═══════════════════════════════════════════════════════════════════════════
     if (consensus::RequiresFilterCommitment(tip_to_connect->height) && !block.vtx.empty()) {
-        auto dnrf_idx = consensus::FindFilterCommitmentIndex(block.vtx[0]);
+        auto dnrf_idx = consensus::FindFilterCommitmentIndexForBlock(
+            block.vtx[0], tip_to_connect->height);
         if (!dnrf_idx.has_value()) {
             if (logger_) logger_->error("[ConnectTip] REJECTING block " +
                 std::to_string(tip_to_connect->height) +
                 ": Missing mandatory DNRF filter commitment in coinbase");
+            // The body was read successfully and a mandatory commitment is
+            // absent. This is a deterministic consensus failure, not a
+            // missing local proof/resource that should stay retryable.
+            if (out_consensus_invalid) *out_consensus_invalid = true;
             return fail("bad-filter-commitment: Missing DNRF commitment (pre-check)");
         }
     }
@@ -23376,6 +24192,114 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
                 if (replay_data.has_spent_outputs) {
                     replay_spent_outputs = std::move(replay_data.spent_outputs);
                     spent_outputs = &replay_spent_outputs;
+                }
+            }
+
+            // A recovery sidecar is not script authorization. Authenticate it
+            // against a private copy of the current forest before using its
+            // spent-output scripts, then reject any invalid spend before the
+            // shared forest or shielded state changes.
+            consensus::UtreexoForest replay_preflight_forest;
+            {
+                auto forest_lock = consensus_utxo_set_->LockForestShared();
+                replay_preflight_forest = consensus_utxo_set_->GetForest();
+            }
+            network::StatelessNode replay_preflight(&replay_preflight_forest);
+            if (!replay_preflight.ReplayBlock(block, tip_to_connect->height,
+                                              replay_targets, spent_outputs)) {
+                return fail("stateless-replay-context-metadata-unverified");
+            }
+            const auto branch_mtp = [tip_to_connect](uint32_t wanted)
+                    -> std::optional<uint64_t> {
+                auto* cursor = tip_to_connect->pprev;
+                while (cursor && cursor->height > wanted) cursor = cursor->pprev;
+                if (!cursor || cursor->height != wanted) return std::nullopt;
+                return cursor->GetMedianTimePast();
+            };
+            std::string context_error;
+            if (!consensus::CheckStatelessBlockContextReadOnly(
+                    block, tip_to_connect->height, spent_outputs,
+                    branch_mtp, context_error)) {
+                if (out_consensus_invalid &&
+                    IsDeterministicStatelessContextFailure(context_error)) {
+                    *out_consensus_invalid = true;
+                }
+                return fail("stateless-replay-context-invalid: " + context_error);
+            }
+            // Recovery may replay a shielded-bearing selected block that was
+            // stored just before a crash. Check the pool transition on a
+            // private copy before touching the shared forest or pool. Use the
+            // same delta and shielded-section validators as the live apply.
+            const bool has_shielded = std::any_of(
+                block.vtx.begin() + 1, block.vtx.end(),
+                [](const Transaction& tx) { return tx.IsShielded(); });
+            // DNRS binds the post-block shielded state even for transparent-
+            // only blocks: anchor history advances on every active height.
+            // The epoch-reset height likewise mutates the pool with no bundle.
+            const bool needs_shielded_preflight = has_shielded ||
+                consensus::IsStateCommitmentActive(
+                    tip_to_connect->height,
+                    Params().state_commitment_activation_height) ||
+                consensus::shielded::IsShieldedEpochResetHeight(
+                    tip_to_connect->height,
+                    Params().shielded_epoch_reset_height,
+                    Params().shielded_spend_auth_epoch_reset_height);
+            if (needs_shielded_preflight) {
+                const auto marker = chain_db_->getShieldedTipMarker();
+                if (marker.status() != Status::Ok || marker.value().height < 0) {
+                    return fail("stateless-replay-shielded-scratch-marker-unavailable");
+                }
+                const uint32_t marker_height =
+                    static_cast<uint32_t>(marker.value().height);
+                const auto shielded_action = StatelessReplayShieldedDecision(
+                    marker_height, tip_to_connect->height);
+                if (shielded_action == StatelessReplayShieldedAction::Skip) {
+                    const auto state = CurrentShieldedStateSnapshot();
+                    const bool state_matches =
+                        marker.value().shielded_root == state.root &&
+                        marker.value().tree_size == state.tree_size &&
+                        marker.value().nullifier_count == state.nullifier_count &&
+                        !shielded_nullifiers_.SerializeContent().empty();
+                    if (!StatelessReplayShieldedSkipMatches(
+                            marker_height, tip_to_connect->height,
+                            marker.value().block_hash == tip_to_connect->hash,
+                            state_matches)) {
+                        return fail("stateless-replay-shielded-scratch-skip-unbound");
+                    }
+                    // The identical selected block has already advanced the
+                    // durable pool. Its authenticated transparent context was
+                    // checked above; live apply will deliberately skip it.
+                } else if (shielded_action != StatelessReplayShieldedAction::Apply) {
+                    return fail("stateless-replay-shielded-scratch-gap");
+                } else {
+                    auto scratch_tree = shielded_tree_;
+                    auto scratch_anchors = shielded_anchor_history_;
+                    consensus::shielded::NullifierSet scratch_nullifiers;
+                    const auto nullifier_content = shielded_nullifiers_.SerializeContent();
+                    if (nullifier_content.empty() ||
+                        scratch_nullifiers.Open(":memory:") !=
+                            consensus::shielded::NullifierSet::OpenResult::Ok ||
+                        !scratch_nullifiers.DeserializeContent(nullifier_content)) {
+                        return fail("stateless-replay-shielded-scratch-state-unavailable");
+                    }
+                    std::vector<int64_t> scratch_deltas;
+                    std::string scratch_error;
+                    if (!block_validator_->ComputeShieldedDeltasForStoredBlock(
+                            block, tip_to_connect->height, scratch_deltas,
+                            scratch_error, spent_outputs)) {
+                        return fail("stateless-replay-shielded-scratch-delta-invalid: " +
+                                    scratch_error);
+                    }
+                    consensus::BlockValidator scratch_validator(consensus_utxo_set_.get());
+                    scratch_validator.setShieldedState(
+                        &scratch_tree, &scratch_nullifiers, &scratch_anchors);
+                    consensus::BlockUndo scratch_undo;
+                    if (!scratch_validator.ApplyBlockShieldedSection(
+                            block, tip_to_connect->height, scratch_deltas,
+                            scratch_undo, scratch_error)) {
+                        return fail("stateless-replay-shielded-scratch-invalid: " +
+                                    scratch_error);
+                    }
                 }
             }
 
@@ -25630,7 +26554,7 @@ void ChainstateService::BackgroundValidationWorker() {
                     throw std::runtime_error("v6 archival replay owner unavailable");
             }
             const auto baseline=OrchardSnapshotStore::ReadBaseline(*db);
-            OrchardSnapshotStore::Authenticate(baseline,*headers,Params().state_commitment_burial_depth);
+            OrchardSnapshotStore::Authenticate(baseline,*headers,0);
             const auto activation=Params().orchard_activation_height;
             const auto parent_height=activation-1;
             const auto selected_header=[&](const uint256& hash,uint32_t height) {
@@ -25709,7 +26633,7 @@ void ChainstateService::BackgroundValidationWorker() {
             consensus::VerifyOrchardSnapshotCoins(baseline,branch.ProvenUtxos());
             {
                 std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
-                OrchardSnapshotStore::Authenticate(baseline,*headers,Params().state_commitment_burial_depth);
+                OrchardSnapshotStore::Authenticate(baseline,*headers,0);
                 if(bg_validation_should_stop_.load())throw std::runtime_error("Validation stopped by user");
                 // This acknowledges executed history only. The selected
                 // post-base coins, state, tip and reorg floor stay untouched.
@@ -27716,7 +28640,7 @@ void ChainstateService::TryDeferredSnapshotBootstrap() {
     const bool base_header_known = header_chain_selector_ &&
         header_chain_selector_->ContainsHeader(snapshot_bootstrap_base_hash_);
 
-    if(base_header_known&&snapshot_bootstrap_v6_) {
+    if(base_header_known&&snapshot_bootstrap_requires_burial_) {
         const auto best=header_chain_selector_->GetBestHeaderValue();consensus::HeaderIndexEntry base;
         if(best&&header_chain_selector_->GetHeaderAtHeightCopy(snapshot_bootstrap_base_height_,base)&&
             base.hash==snapshot_bootstrap_base_hash_&&

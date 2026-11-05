@@ -37,4 +37,14 @@ inline StatelessReplayShieldedAction StatelessReplayShieldedDecision(
     return StatelessReplayShieldedAction::GapFail;
 }
 
+// A marker at the same block proves the shielded pool was already applied
+// only when its identity and the loaded state agree. A marker beyond the
+// recovery block is not safe to roll back through bookkeeping one block at a
+// time: that would restamp an ahead pool at a lower height. Refuse it instead.
+inline bool StatelessReplayShieldedSkipMatches(
+    uint32_t marker_height, uint32_t block_height,
+    bool same_block_hash, bool state_matches) {
+    return marker_height == block_height && same_block_hash && state_matches;
+}
+
 }  // namespace dinero

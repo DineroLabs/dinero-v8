@@ -16,6 +16,11 @@
 #include <iterator>
 #endif
 #include <filesystem>
+#include <future>
+#include <thread>
+#include <atomic>
+#include <cstring>
+#include <rocksdb/write_batch.h>
 #include "daemon/daemon_context.h"
 #include "daemon/services/mempool_service.h"
 #include "mining/block_assembler.h"
@@ -111,6 +116,70 @@ protected:
         if(!TaprootKeys::SignSchnorrWithInternalKey(signature,hash,secret,internal))throw std::runtime_error("fixture signature refused");tx.vin[0].witness.emplace_back(signature.begin(),signature.end());return tx;
     }
 };
+
+
+TEST_F(MempoolAddressCapture, InventorySnapshotAllowsIngressWhileBalanceIsRunning) {
+    // A real inventory, real pending-input capture and the actual RPC handler.
+    // The pending capture barrier positions the writer before the inventory
+    // under the fixed code, and after it under the original RPC implementation.
+    constexpr uint32_t count = 1000000;
+    const auto token = ChainWriteToken::CreateForTesting();
+    std::string hex;
+    constexpr char digits[] = "0123456789abcdef";
+    for (auto byte : script) { hex += digits[byte >> 4]; hex += digits[byte & 15]; }
+    Coin coin; coin.amount = 1; coin.script_pubkey = hex; coin.height = 1; coin.coinbase = false;
+    rocksdb::WriteBatch batch;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint256 id; std::memcpy(id.data, &i, sizeof(i)); id.data[31] = 0x91;
+        ASSERT_EQ(db.putCoin(token, id, 7, coin, &batch), Status::Ok);
+    }
+    ASSERT_EQ(db.writeBatch(token, std::move(batch)), Status::Ok);
+    auto pending_entered = std::make_shared<std::promise<void>>();
+    auto signaled = std::make_shared<std::atomic<bool>>(false);
+    std::promise<void> proceed;
+    auto proceed_future = proceed.get_future().share();
+    service->mempool().setChainstateReadGuardFactory([pending_entered, signaled, proceed_future, selected = chainstate] {
+        auto guard = std::make_unique<SelectedGuard>(selected);
+        if (!signaled->exchange(true)) pending_entered->set_value();
+        proceed_future.wait();
+        return guard;
+    });
+    std::atomic<bool> rpc_finished{false};
+    auto query = std::async(std::launch::async, [&] {
+        auto answer = din::rpc_getaddressbalance(context, Params());
+        rpc_finished.store(true);
+        return answer;
+    });
+    const bool entered = pending_entered->get_future().wait_for(std::chrono::seconds(30)) == std::future_status::ready;
+    auto competing = std::async(std::launch::async, [&] {
+        return din::rpc_getaddressbalance(context, Params());
+    });
+    const bool refused_without_queuing = competing.wait_for(std::chrono::milliseconds(200)) == std::future_status::ready;
+    // Always release the worker, including a failed barrier assertion.
+    proceed.set_value();
+    EXPECT_TRUE(entered);
+    EXPECT_TRUE(refused_without_queuing);
+    auto writer = std::async(std::launch::async, [&] {
+        auto ingress = chainstate->AcquireBlockIngressActivationLock();
+        // The old handler has already finished its inventory here, so it
+        // completes the response while we wait. The fixed handler is still
+        // scanning its captured DB version, independent of this write lock.
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        const bool overlap = !rpc_finished.load();
+        uint256 added; added.data[31] = 0x92;
+        if (db.putCoin(token, added, 9, coin) != Status::Ok)
+            throw std::runtime_error("concurrent selected-view write failed");
+        return overlap;
+    });
+    EXPECT_EQ(writer.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+    EXPECT_TRUE(writer.get()) << "balance inventory must not hold ingress through the scan";
+    const auto answer = query.get();
+    EXPECT_FALSE(answer.isMember("error")) << answer.toStyledString();
+    EXPECT_EQ(answer["confirmed"].asUInt64(), count) << "scan must retain the captured pre-write version";
+    const auto busy = competing.get();
+    EXPECT_EQ(busy["error"]["code"].asInt(), -32005);
+    EXPECT_FALSE(busy.isMember("balance"));
+}
 
 TEST_F(MempoolAddressCapture, SignedParentChildAllAddressRpcs) {
     const auto funded = fund(1);

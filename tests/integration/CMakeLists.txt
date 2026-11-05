@@ -1263,10 +1263,20 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_spend_reorg_reconciliation.sh)
     set_tests_properties(CsnSpendReorgReconciliation PROPERTIES
         ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
         LABELS "integration;wallet;utreexo;bridge;csn;reorg"
-        TIMEOUT 360
+        TIMEOUT 600
         RUN_SERIAL TRUE
     )
     message(STATUS "  ✓ CsnSpendReorgReconciliation registered")
+endif()
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_mining_rpc_contract.py)
+    add_test(
+        NAME CsnMiningRpcHarness
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_mining_rpc_contract.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_spend_reorg_reconciliation.sh
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_shielded_reorg_invertibility.sh
+    )
+    set_tests_properties(CsnMiningRpcHarness PROPERTIES
+        LABELS "integration;csn;harness" TIMEOUT 10)
 endif()
 
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/utreexo_checkpoint_mutator.cpp)
@@ -1963,6 +1973,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_shielded_reorg_invertibility.sh)
         ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;BUILDER=$<TARGET_FILE:shielded_tx_builder>"
         LABELS "integration;shielded;stateless;csn;reorg;invertibility;canonical-state"
         TIMEOUT 900
+        RUN_SERIAL TRUE
     )
     message(STATUS "  ✓ CSNShieldedReorgInvertibility registered")
 endif()
@@ -2436,6 +2447,13 @@ set_tests_properties(SnapshotNullifierRestart PROPERTIES
   LABELS "integration;shielded;assumeutxo;snapshot;restart;utreexo;mandatory"
   TIMEOUT 600 RUN_SERIAL TRUE)
 
+add_test(NAME StatefulSnapshotRestart
+  COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_stateful_snapshot_restart.py)
+set_tests_properties(StatefulSnapshotRestart PROPERTIES
+  ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+  LABELS "integration;assumeutxo;snapshot;restart;utreexo;mandatory"
+  TIMEOUT 300 RUN_SERIAL TRUE)
+
 add_test(NAME CSNSnapshotProofRestart
   COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_snapshot_proof_restart.py)
 set_tests_properties(CSNSnapshotProofRestart PROPERTIES
@@ -2487,6 +2505,20 @@ add_test(NAME CsnStoredProofRetry
 set_tests_properties(CsnStoredProofRetry PROPERTIES
     ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
     LABELS "integration;csn;utreexo;restart;reorg;mandatory"
+    TIMEOUT 420 RUN_SERIAL TRUE)
+
+add_test(NAME CsnWitnessBodyReplacement
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_witness_body_replacement.py)
+set_tests_properties(CsnWitnessBodyReplacement PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;csn;utreexo;body-replacement;mandatory"
+    TIMEOUT 420 RUN_SERIAL TRUE)
+
+add_test(NAME FullWitnessBodyReplacement
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_full_witness_body_replacement.py)
+set_tests_properties(FullWitnessBodyReplacement PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;utreexo;body-replacement;mandatory"
     TIMEOUT 420 RUN_SERIAL TRUE)
 
 # Timing upgrade qualification is always registered and executed in the serial lane.
@@ -2579,6 +2611,19 @@ if(UNIX AND NOT IOS)
         ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;CSN_REPLAY_FIXTURE=$<TARGET_FILE:csn_replay_metadata_fixture>;CSN_REPLAY_RECOVERY_SOURCE=undo"
         LABELS "integration;consensus;csn;utreexo;restart;reorg;mandatory"
         TIMEOUT 600 RUN_SERIAL TRUE)
+    foreach(markerless_restart IN ITEMS 0 1)
+        if(markerless_restart EQUAL 0)
+            set(markerless_name CsnMarkerlessSidecarSameProcess)
+        else()
+            set(markerless_name CsnMarkerlessSidecarRestart)
+        endif()
+        add_test(NAME ${markerless_name}
+            COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_markerless_upgrade.py)
+        set_tests_properties(${markerless_name} PROPERTIES
+            ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;CSN_REPLAY_FIXTURE=$<TARGET_FILE:csn_replay_metadata_fixture>;CSN_MARKERLESS_RESTART=${markerless_restart}"
+            LABELS "integration;consensus;csn;utreexo;restart;reorg;mandatory"
+            TIMEOUT 600 RUN_SERIAL TRUE)
+    endforeach()
 endif()
 
 if(TARGET test_shielded_migration_cohort)

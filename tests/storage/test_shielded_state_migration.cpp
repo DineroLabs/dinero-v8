@@ -6,6 +6,7 @@
 #include <fstream>
 #include <atomic>
 #include <rocksdb/env.h>
+#include <rocksdb/write_batch.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 
@@ -66,6 +67,66 @@ struct FaultEnv : rocksdb::EnvWrapper {
         return status;
     }
 };
+
+// Count actual RocksDB SST reads, rather than using a machine-dependent
+// timeout. Full-store verification must stream the source/copy, not perform a
+// second point lookup for every unrelated record in an archival database.
+struct ReadCountingEnv : rocksdb::EnvWrapper {
+    std::atomic<uint64_t> bytes{0};
+    ReadCountingEnv() : EnvWrapper(rocksdb::Env::Default()) {}
+    struct File : rocksdb::RandomAccessFileWrapper {
+        std::unique_ptr<rocksdb::RandomAccessFile> file;
+        ReadCountingEnv& env;
+        File(std::unique_ptr<rocksdb::RandomAccessFile> raw, ReadCountingEnv& owner)
+            : RandomAccessFileWrapper(raw.get()), file(std::move(raw)), env(owner) {}
+        rocksdb::Status Read(uint64_t offset, size_t n, rocksdb::Slice* result,
+                             char* scratch) const override {
+            auto status = file->Read(offset, n, result, scratch);
+            if (status.ok()) env.bytes.fetch_add(result->size());
+            return status;
+        }
+    };
+    rocksdb::Status NewRandomAccessFile(const std::string& name,
+        std::unique_ptr<rocksdb::RandomAccessFile>* out, const rocksdb::EnvOptions& options) override {
+        auto status = target()->NewRandomAccessFile(name, out, options);
+        if (status.ok() && fs::path(name).extension() == ".sst")
+            *out = std::make_unique<File>(std::move(*out), *this);
+        return status;
+    }
+};
+void Equivalent(const Rows& source, const fs::path& candidate);
+void ArchivalReadBudget() {
+    CanonicalTemp temp; const auto source = temp.path / "original", copy = temp.path / "copy";
+    ValidSeed(source);
+    constexpr size_t records = 16384, record_size = 4096;
+    {
+        Raw raw(source, legacy); rocksdb::WriteBatch batch;
+        uint32_t random = 0x1758ac31;
+        for (size_t row = 0; row < records; ++row) {
+            std::string value(record_size, '\0');
+            for (auto& byte : value) {
+                random ^= random << 13; random ^= random >> 17; random ^= random << 5;
+                byte = static_cast<char>(random);
+            }
+            const auto key = "archival-" + std::to_string(1000000 + row);
+            batch.Put(raw.cf("blocks"), key, value);
+        }
+        Setup(raw.db->Write({}, &batch).ok(), "write archival payload");
+        rocksdb::FlushOptions flush; flush.wait = true;
+        Setup(raw.db->Flush(flush, raw.cf("blocks")).ok(), "flush archival payload");
+    }
+    fs::copy(source, copy, fs::copy_options::recursive);
+    ReadCountingEnv env;
+    auto budget = limits; budget.batch_bytes = 4ULL << 20; budget.batch_rows = 4096;
+    const auto result = storage::MigrateShieldedStateCopyForTesting(source, copy, budget, {}, env);
+    CHECK(result.ok && result.ready);
+    std::cout << "archival SST bytes read: " << env.bytes.load() << '\n';
+    // Inventory once, followed by two byte-for-byte comparisons of both stores:
+    // five payload traversals, with two extra traversals' headroom for framing,
+    // metadata and RocksDB prefetch. The old point-read walk exceeds this.
+    CHECK(env.bytes.load() < uint64_t(records) * record_size * 7 + (4ULL << 20));
+    Equivalent(Inspect(source), copy);
+}
 
 std::map<std::string, std::string> PersistentFiles(const fs::path& path) {
     std::map<std::string, std::string> files;
@@ -168,6 +229,31 @@ void BoundedOpenFiles() {
     fs::copy(source, hard_copy, fs::copy_options::recursive);
     CHECK(Child(source, hard_copy, "hard", "--low-nofile-child") == 0);
 }
+void UnrelatedComparison(const std::string& family, const std::string& fault) {
+    CanonicalTemp temp; const auto source = temp.path / "original", copy = temp.path / "copy";
+    ValidSeed(source);
+    {
+        Raw raw(source, legacy);
+        for (const auto* key : {"A1", "X1", "z1"})
+            raw.put(family, key, std::string("opaque\0record", 13));
+    }
+    Clone(source, copy); const auto before = Inspect(source);
+    {
+        Raw raw(copy, legacy);
+        if (fault == "before") raw.put(family, "A0", "extra");
+        else if (fault == "between") raw.put(family, "W1", "extra");
+        else if (fault == "after") raw.put(family, "zz", "extra");
+        else if (fault == "changed") raw.put(family, "X1", "changed");
+        else if (fault == "missing")
+            Setup(raw.db->Delete({}, raw.cf(family), "X1").ok(), "delete nonselected row");
+        else Setup(false, "unknown comparison fault");
+    }
+    const auto candidate_before = Inspect(copy);
+    const auto result = MigrateShieldedStateCopy(source, copy, limits, true);
+    CHECK(!result.ok && !result.ready);
+    CHECK(Inspect(source) == before && Inspect(copy) == candidate_before);
+}
+
 void NamedComparatorFence() {
     CanonicalTemp temp; const auto source = temp.path / "original", copy = temp.path / "copy";
     ValidSeed(source); Clone(source, copy);
@@ -433,7 +519,11 @@ int main(int argc, char** argv) {
     }
     std::map<std::string, std::function<void()>> cases;
     for (const std::string mode : {"inspect", "move", "empty", "optional_absent", "byte_batches"}) cases[mode] = [=] { Happy(mode); };
+    cases["archival_read_budget"] = ArchivalReadBudget;
     cases["bounded_open_files"] = BoundedOpenFiles;
+    for (const auto& family : legacy)
+        for (const std::string fault : {"before", "between", "after", "changed", "missing"})
+            cases["compare_" + family + "_" + fault] = [=] { UnrelatedComparison(family, fault); };
     cases["named_comparator_fence"] = NamedComparatorFence;
     cases["named_comparator_at_creation"] = NamedComparatorAtCreation;
     cases["reject_default_comparator_tenth"] = RejectDefaultComparatorTenth;
