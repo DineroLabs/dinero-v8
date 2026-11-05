@@ -454,35 +454,37 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'server NSIS rebuild failed' }
           } finally { Pop-Location }
 
-          $zipStage = "packaging\windows\dist\dinero-v$version-windows-x86_64-msvc"
-          if (Test-Path $zipStage) { Remove-Item $zipStage -Recurse -Force }
-          New-Item "$zipStage\bin" -ItemType Directory -Force | Out-Null
-          $operatorBinaries = @(
-            'dinerod.exe', 'dinero-cli.exe', 'dinero-miner.exe',
-            'dinero-stratum-worker.exe', 'dinero-gpu-miner.exe',
-            'dinero-wallet-cli.exe', 'dinero-seeder.exe',
-            'dinero-sv2-miner.exe', 'dinero-sv2-gpu-miner.exe'
-          )
-          foreach ($name in $operatorBinaries) {
-            $source = Join-Path 'packaging\windows\dist\installer-stage' $name
-            if (-not (Test-Path $source)) { throw "signed operator payload is missing $name" }
-            Copy-Item $source "$zipStage\bin"
-          }
-          Copy-Item LICENSE $zipStage
-          'Dinero signed Windows operator archive' | Out-File "$zipStage\README.txt" -Encoding ascii
-          Push-Location $zipStage
-          try {
-            Get-ChildItem -Recurse -File | Where-Object Name -ne 'SHA256SUMS.txt' | Sort-Object FullName | ForEach-Object {
-              $relative = Resolve-Path -Relative $_.FullName
-              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-              "$hash  $($relative.TrimStart('.\\') -replace '\\','/')"
-            } | Out-File SHA256SUMS.txt -Encoding ascii
-          } finally { Pop-Location }
-          Compress-Archive -Path "$zipStage\*" -DestinationPath "packaging\windows\dist\dinero-v$version-windows-x86_64-msvc.zip" -Force
+          # Keep packaging tooling separate from the immutable candidate checkout.
+          # The helper includes both signed NVRTC DLLs required by the GUI daemon.
+          $helper = Join-Path $env:RUNNER_TEMP 'package_signed_operator.py'
+          $env:OPERATOR_PACKAGING_HELPER = $helper
+          @'
+          import os,pathlib,re,subprocess
+          revision=os.environ['GITHUB_SHA']
+          if not re.fullmatch('[0-9a-f]{40}',revision):raise RuntimeError('invalid tooling revision')
+          subprocess.run(['git','fetch','--depth=1','origin',revision],check=True)
+          data=subprocess.check_output(['git','show',revision+':packaging/windows/package_signed_operator.py'])
+          pathlib.Path(os.environ['OPERATOR_PACKAGING_HELPER']).write_bytes(data)
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Reviewed operator packaging helper unavailable' }
+          $operatorZip = "packaging\windows\dist\dinero-v$version-windows-x86_64-msvc.zip"
+          if (Test-Path $operatorZip) { Remove-Item $operatorZip -Force }
+          python $helper --stage packaging\windows\dist\installer-stage --license LICENSE --output $operatorZip --version $version
+          if ($LASTEXITCODE -ne 0) { throw 'Signed operator archive assembly failed' }
           $orchardZipCheck = Join-Path $env:RUNNER_TEMP 'orchard-operator-zip'
           Expand-Archive -Path "packaging\windows\dist\dinero-v$version-windows-x86_64-msvc.zip" -DestinationPath $orchardZipCheck
           & python scripts/verify-orchard-package.py --daemon (Join-Path $orchardZipCheck 'bin\dinerod.exe')
           if ($LASTEXITCODE -ne 0) { throw 'Operator ZIP Orchard capability check failed' }
+          # The CUDA toolkit installed on the builder must not hide omitted DLLs.
+          $savedPath = $env:PATH
+          try {
+            $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+            $portableDaemon = Join-Path $orchardZipCheck 'bin\dinerod.exe'
+            $portableVersion = & $portableDaemon --version
+            if ($LASTEXITCODE -ne 0) { throw 'Portable daemon failed without the CUDA toolkit on PATH' }
+            Write-Host $portableVersion
+          } finally { $env:PATH = $savedPath }
+
 
       - name: Sign final installers
         if: ${{ vars.WINDOWS_SIGNING_READY == 'true' }}

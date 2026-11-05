@@ -1,0 +1,104 @@
+name: Windows portable runtime regression
+on:
+  push:
+    branches: [fix/v820-windows-portable-runtime]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  portable-runtime:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test signed package assembly contracts
+        run: python packaging/windows/test_package_signed_operator.py -v
+      - uses: actions/download-artifact@v4
+        with:
+          name: dinero-server-windows-x86_64-8.2.0
+          run-id: 42079360640
+          github-token: ${{ github.token }}
+          path: original-artifact
+      - name: Reproduce missing runtime, repair unchanged signed payload, test wallet recovery
+        shell: powershell
+        run: |
+          @'
+          import hashlib,importlib.util,json,os,pathlib,subprocess,sys,zipfile
+          source='249b5604def52ff6e1eb42ba265d60f98e7600e6'
+          root=pathlib.Path('original-artifact');output=pathlib.Path('repaired-artifact');output.mkdir()
+          originals={
+              'dinero-v8.2.0-windows-x86_64-msvc.zip':'e1636e21727d1ddda68569a3d026344212d83995f3abaec12b5e3c8afb9c94f8',
+              'Dinero-8.2.0-windows-x86_64-Setup.exe':'b058545b6f3f9106eade5df0feafbee317d861b03c7588a5cb9e70c41110d6c1',
+              'Dinero-Server-8.2.0-windows-x86_64-Setup.exe':'3afd42daf1b369bb890d9ff67af662891c830154a285d45864486bc4330e76cc'}
+          paths={}
+          for name,pin in originals.items():
+              matches=list(root.rglob(name))
+              if len(matches)!=1 or hashlib.sha256(matches[0].read_bytes()).hexdigest()!=pin:raise RuntimeError('original admitted artifact differs: '+name)
+              paths[name]=matches[0]
+          temp=pathlib.Path(os.environ['RUNNER_TEMP']);stage=temp/'portable-old';stage.mkdir()
+          with zipfile.ZipFile(paths['dinero-v8.2.0-windows-x86_64-msvc.zip']) as z:
+              if z.testzip() is not None:raise RuntimeError('ZIP CRC failure')
+              for info in z.infolist():
+                  name=pathlib.PurePosixPath(info.filename.replace('\\','/'))
+                  if name.is_absolute() or '..' in name.parts:raise RuntimeError('unsafe ZIP entry')
+              z.extractall(stage)
+          clean=dict(os.environ,PATH=os.environ['SystemRoot']+'\\System32;'+os.environ['SystemRoot'])
+          daemon=stage/'bin/dinerod.exe'
+          control=subprocess.run([str(daemon),'--version'],env=clean,capture_output=True)
+          if control.returncode & 0xffffffff != 0xc0000135:raise RuntimeError('old portable artifact did not reproduce missing DLL failure')
+          print('NEGATIVE_CONTROL_PASS missing-DLL status=0xc0000135')
+          unpack=temp/'signed-installer-extract';unpack.mkdir()
+          subprocess.run([r'C:\Program Files\7-Zip\7z.exe','x','-y','-o'+str(unpack),str(paths['Dinero-8.2.0-windows-x86_64-Setup.exe'])],check=True,stdout=subprocess.DEVNULL)
+          runtime_hashes={}
+          for pattern in ('nvrtc64_*.dll','nvrtc-builtins64_*.dll'):
+              matches=list(unpack.rglob(pattern))
+              if len(matches)!=1:raise RuntimeError('installer NVRTC inventory differs')
+              path=matches[0];data=path.read_bytes();(stage/'bin'/path.name).write_bytes(data)
+              runtime_hashes[path.name]=hashlib.sha256(data).hexdigest()
+          spec=importlib.util.spec_from_file_location('package_operator','packaging/windows/package_signed_operator.py')
+          module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+          repaired=output/'dinero-v8.2.0-windows-x86_64-msvc.zip'
+          module.assemble(stage/'bin',stage/'LICENSE',repaired,'8.2.0')
+          final=temp/'portable-final';final.mkdir()
+          with zipfile.ZipFile(repaired) as z:z.extractall(final)
+          tools=sorted((final/'bin').glob('*.exe'));dlls=sorted((final/'bin').glob('*.dll'))
+          if len(tools)!=9 or len(dlls)!=2:raise RuntimeError('repaired PE inventory differs')
+          for path in tools+dlls:
+              quoted=str(path).replace("'","''")
+              status=subprocess.check_output(['powershell','-NoProfile','-Command',"(Get-AuthenticodeSignature -LiteralPath '"+quoted+"').Status.ToString()"],text=True).strip()
+              if status!='Valid':raise RuntimeError('native signature check failed: '+path.name+': '+status)
+          fixed=final/'bin/dinerod.exe'
+          version=subprocess.check_output([str(fixed),'--version'],env=clean,text=True)
+          if source not in version:raise RuntimeError('fixed packaged source differs')
+          print('POSITIVE_CONTROL_PASS same signed daemon starts without CUDA on PATH')
+          qualification='77cd515ba72819bf4804e9e4231311ec6a5fc26b'
+          subprocess.run(['git','fetch','--depth=1','origin',qualification],check=True)
+          harnesses={
+              'owned':('.github/qualification/wallet_reorg_owned_replacement.py','91d84c9bed99e6afd9dee720810400706aff83f7100547432bfc3ef12fa77856'),
+              'mid':('.github/qualification/wallet_reorg_midtransition.py','0b61911713f95dee77104e5df3d70b05fa3c9fe116c5fcff90bfda82d320a697')}
+          for key,(path,pin) in list(harnesses.items()):
+              data=subprocess.check_output(['git','show',qualification+':'+path])
+              if hashlib.sha256(data).hexdigest()!=pin:raise RuntimeError('qualified wallet harness differs')
+              local=temp/pathlib.Path(path).name;local.write_bytes(data);harnesses[key]=str(local)
+          for label,key,args in [('normal','owned',[]),('pending-restart','owned',['--crash-pending-connect']),('midtransition','mid',[])]:
+              result=subprocess.run([sys.executable,harnesses[key],*args],env=dict(clean,DINEROD=str(fixed.resolve())),capture_output=True,timeout=360)
+              log=result.stdout+result.stderr;(output/('wallet-'+label+'.log')).write_bytes(log)
+              print(log.decode('utf-8',errors='replace'))
+              if result.returncode:raise RuntimeError('repaired package wallet regression failed: '+label)
+          files={}
+          for name,path in paths.items():
+              if path.suffix=='.exe':(output/name).write_bytes(path.read_bytes())
+          for path in sorted(output.iterdir()):
+              if path.suffix in ('.exe','.zip'):files[path.name]=hashlib.sha256(path.read_bytes()).hexdigest()
+          (output/'SHA256SUMS-windows-x86_64-8.2.0').write_text(''.join(digest+'  '+name+'\n' for name,digest in sorted(files.items())),encoding='ascii',newline='\n')
+          receipt={'status':'PASS','source_sha':source,'tooling_commit':os.environ['GITHUB_SHA'],'original_release_run':42079360640,'negative_control':'0xc0000135','clean_PATH_startup':'PASS','unchanged_signed_executables':9,'native_valid_signatures':11,'wallet_cases':3,'runtime_dll_hashes':runtime_hashes,'files':files}
+          (output/'windows-portable-repair-receipt.json').write_text(json.dumps(receipt,indent=2))
+          print(json.dumps(receipt))
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Windows portable runtime regression failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-portable-runtime-fixed-249b
+          path: repaired-artifact
