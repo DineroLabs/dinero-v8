@@ -33,6 +33,33 @@ jobs:
           test "$(git rev-parse HEAD)" = '249b5604def52ff6e1eb42ba265d60f98e7600e6'
           git diff --exit-code -- src include tests
 
+      - name: Load independent wallet qualification harnesses
+        shell: bash
+        env:
+          QUALIFICATION_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PYTEST'
+          import hashlib, json, os, pathlib, re, subprocess
+          revision = os.environ['QUALIFICATION_SHA']
+          if not re.fullmatch('[0-9a-f]{40}', revision):
+              raise SystemExit('invalid qualification revision')
+          subprocess.run(['git', 'fetch', '--depth=1', 'origin', revision], check=True)
+          harnesses = {}
+          for env_key, source_path in [
+              ('QUALIFIED_WALLET_HARNESS', '.github/qualification/wallet_reorg_owned_replacement.py'),
+              ('MIDTRANSITION_WALLET_HARNESS', '.github/qualification/wallet_reorg_midtransition.py')]:
+              data = subprocess.check_output(['git', 'show', revision + ':' + source_path])
+              path = pathlib.Path(os.environ['RUNNER_TEMP']) / pathlib.Path(source_path).name
+              path.write_bytes(data)
+              with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as environment:
+                  environment.write(f'{env_key}={path}\n')
+              harnesses[source_path] = hashlib.sha256(data).hexdigest()
+          provenance = {'product_source': '249b5604def52ff6e1eb42ba265d60f98e7600e6',
+              'qualification_revision': revision, 'harnesses_sha256': harnesses}
+          pathlib.Path('wallet-reorg-windows-provenance.json').write_text(json.dumps(provenance, indent=2))
+          print(json.dumps(provenance))
+          PYTEST
+
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
@@ -162,8 +189,11 @@ jobs:
           print(version)
           if '249b5604def52ff6e1eb42ba265d60f98e7600e6' not in version:
               raise SystemExit('fixed Windows binary source mismatch')
-          for label, args in [('delivery', []), ('pending-restart', ['--crash-pending-connect'])]:
-              result = subprocess.run([sys.executable, 'tests/integration/test_wallet_reorg_delivery.py', *args],
+          cases = [('delivery', 'QUALIFIED_WALLET_HARNESS', []),
+              ('pending-restart', 'QUALIFIED_WALLET_HARNESS', ['--crash-pending-connect']),
+              ('mid-transition', 'MIDTRANSITION_WALLET_HARNESS', [])]
+          for label, harness, args in cases:
+              result = subprocess.run([sys.executable, os.environ[harness], *args],
                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
               pathlib.Path(f'wallet-reorg-windows-{label}.log').write_bytes(result.stdout)
               print(result.stdout.decode('utf-8', errors='replace'))
@@ -178,7 +208,7 @@ jobs:
           DINEROD: ${{ github.workspace }}/build-msvc-server/Release/dinerod.exe
         run: |
           python - <<'PYTEST'
-          import pathlib, subprocess, sys
+          import os, pathlib, subprocess, sys
           source = pathlib.Path('src/daemon/services/chainstate_service.cpp')
           fixed = source.read_bytes()
           control = subprocess.check_output(['git', 'show',
@@ -187,7 +217,7 @@ jobs:
               source.write_bytes(control)
               subprocess.run(['cmake', '--build', 'build-msvc-server', '--config', 'Release',
                   '--target', 'dinerod', '--parallel', '4'], check=True)
-              result = subprocess.run([sys.executable, 'tests/integration/test_wallet_reorg_delivery.py'],
+              result = subprocess.run([sys.executable, os.environ['QUALIFIED_WALLET_HARNESS']],
                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
               pathlib.Path('wallet-reorg-windows-control.log').write_bytes(result.stdout)
               text = result.stdout.decode('utf-8', errors='replace')
@@ -205,5 +235,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wallet-reorg-windows-regression-logs
-          path: wallet-reorg-windows-*.log
+          path: |
+            wallet-reorg-windows-*.log
+            wallet-reorg-windows-provenance.json
           if-no-files-found: warn
