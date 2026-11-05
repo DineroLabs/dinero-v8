@@ -1,5 +1,7 @@
 name: Windows signed package qualification
 on:
+  push:
+    branches: [ci/v820-signed-windows-package-qualification]
   workflow_dispatch:
 permissions:
   contents: read
