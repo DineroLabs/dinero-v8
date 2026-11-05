@@ -541,6 +541,12 @@ set(PROJECT_VERSION "\"${PROJECT_VERSION}\"")
 set(GIT_HASH "\"${GIT_HASH}\"")
 set(BUILD_TIME "\"${BUILD_TIME}\"")
 
+# Logger: its own static library so every target that logs declares it
+# instead of compiling src/common/logger.cpp into itself.
+add_library(dinero_logging STATIC src/common/logger.cpp)
+target_include_directories(dinero_logging PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_compile_features(dinero_logging PUBLIC cxx_std_20)
+
 # Core crypto library (minimal, vendored crypto)
 add_library(dinero_crypto STATIC
   src/crypto/sha256.cpp
@@ -599,7 +605,7 @@ target_include_directories(dinero_crypto PUBLIC
 # Declare the dependency on the target so its configured headers and static
 # archive travel together; a source-tree header copy must never supply this
 # dependency implicitly.
-target_link_libraries(dinero_crypto PUBLIC OpenSSL::Crypto)
+target_link_libraries(dinero_crypto PUBLIC OpenSSL::Crypto dinero_logging)
 
 # macOS Security framework is required because dinero_crypto_minimal.cpp
 # calls SecRandomCopyBytes (Apple's CSPRNG). Declared INTERFACE so every
@@ -1163,7 +1169,6 @@ add_library(dinero_core STATIC
   src/network/embedded_tor_process.cpp
 
   # Common utilities
-  src/common/logger.cpp
   src/common/json_logger.cpp
   src/common/logger_router.cpp
   src/common/address_script_builder.cpp
@@ -1251,6 +1256,7 @@ set_property(SOURCE src/daemon/runtime_block_reader.cpp src/daemon/orchard_compa
 # pool accounting does not depend on core/daemon code; no reverse archive edge.
 
 target_link_libraries(dinero_core PUBLIC
+  dinero_logging
   dinero_address_encoding
   dinero_crypto
   dinero_chainstate

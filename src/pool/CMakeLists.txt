@@ -24,6 +24,7 @@ target_include_directories(dinero_pool PUBLIC
   ${CMAKE_SOURCE_DIR}/src
 )
 target_link_libraries(dinero_pool PUBLIC
+  dinero_logging
   dinero_consensus   # consensus/subsidy.h
   dinero_chainstate  # storage/chain_db.h
 )

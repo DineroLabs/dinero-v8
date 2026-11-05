@@ -22,6 +22,7 @@ target_include_directories(dinero_bridge PUBLIC
   ${CMAKE_SOURCE_DIR}/src
 )
 target_link_libraries(dinero_bridge PUBLIC
+  dinero_logging
   dinero_chainstate  # ChainDB + ArchivalBlockReader headers
   dinero_consensus   # consensus/outpoint.h, consensus/undo.h
   dinero_crypto      # crypto/sha256.h
