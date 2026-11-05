@@ -580,14 +580,27 @@ jobs:
                 Start-Sleep -Seconds 2
                 $service = Get-CimInstance Win32_Service -Filter "Name='Dinerod'"
                 if ($service.State -eq 'Running' -and $service.ProcessId -gt 0) {
-                  $chain = & (Join-Path $case.Dir 'dinero-cli.exe') "-datadir=$serverData" getblockchaininfo 2>$null
-                  if ($LASTEXITCODE -eq 0) {
+                  # Windows PowerShell promotes native stderr to a terminating
+                  # NativeCommandError under the workflow's Stop preference.
+                  # A warm-up refusal is expected until this bounded poll ends.
+                  $priorPreference = $ErrorActionPreference
+                  try {
+                    $ErrorActionPreference = 'Continue'
+                    $chain = & (Join-Path $case.Dir 'dinero-cli.exe') "-datadir=$serverData" getblockchaininfo 2> "$serverData\readiness-rpc.stderr.log"
+                    $cliExit = $LASTEXITCODE
+                  } finally {
+                    $ErrorActionPreference = $priorPreference
+                  }
+                  if ($cliExit -eq 0) {
                     $info = $chain | ConvertFrom-Json
                     if ($info.chain -eq 'mainnet') { $ready = $true; break }
                   }
                 }
               } while ((Get-Date) -lt $deadline)
-              if (-not $ready) { throw 'Fresh installed mainnet server never reached RPC readiness' }
+              if (-not $ready) {
+                Get-Content "$serverData\readiness-rpc.stderr.log" -ErrorAction SilentlyContinue
+                throw 'Fresh installed mainnet server never reached RPC readiness'
+              }
               $stablePid = $service.ProcessId
               Start-Sleep -Seconds 15
               $service = Get-CimInstance Win32_Service -Filter "Name='Dinerod'"
@@ -607,6 +620,7 @@ jobs:
             ${{ runner.temp }}/dinero-qt-startup-smoke/*.log
             ${{ runner.temp }}/dinero-qt-startup-smoke/window-text.txt
             packaging/windows/dist/Dinero-*-Setup.exe
+            packaging/windows/dist/dinero-v*-windows-x86_64-msvc.zip
           if-no-files-found: warn
           retention-days: 7
 
