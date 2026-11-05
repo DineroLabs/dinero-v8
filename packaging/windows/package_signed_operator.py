@@ -35,6 +35,7 @@ def assemble(stage, license_file, output, version):
     entries['README.txt'] = (
         'Dinero ' + version + ' signed Windows operator archive.\n'
         'Keep every file in bin together.\n'
+        'For mainnet, configure lightning.oracles.enable=0; this disables the optional legacy Lightning IPC oracles, not block relay.\n'
         'Requires the Microsoft Visual C++ 2015-2022 x64 Redistributable.\n'
         'The NVIDIA NVRTC compiler runtime is included; CUDA mining also '
         'requires a compatible NVIDIA GPU and display driver.\n').encode('ascii')

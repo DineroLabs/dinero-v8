@@ -162,6 +162,8 @@ Function MaybeConfigureSnapshot
   FileWrite $0 "listen=1$\r$\n"
   FileWrite $0 "rpcbind=127.0.0.1$\r$\n"
   FileWrite $0 "rpcallowip=127.0.0.1$\r$\n"
+  ; Scheduled Orchard has no adapter for optional legacy Lightning IPC.
+  FileWrite $0 "lightning.oracles.enable=0$\r$\n"
   FileWrite $0 "assumeutxo_snapshot=$AppDataDir\${SNAPSHOT_FILE}$\r$\n"
   FileClose $0
 
