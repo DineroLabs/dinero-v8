@@ -1,0 +1,135 @@
+name: Wallet candidate relay qualification
+
+# CI-only evidence lane: execute the previously built exact-source daemon,
+# correct only the network test's reconnect hold, then run the skipped TSan gate.
+on:
+  push:
+    branches: [ci/v820-wallet-relay-qualification]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: wallet-relay-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  relay-qualification:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 249b5604def52ff6e1eb42ba265d60f98e7600e6
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Install test and build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build pkg-config python3 perl libcurl4-openssl-dev libudev-dev libusb-1.0-0-dev iproute2 iptables curl jq tcpdump
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Download exact-source daemon from completed QUIC job
+        uses: actions/download-artifact@v4
+        with:
+          name: quic-lifetime-249b5604def52ff6e1eb42ba265d60f98e7600e6
+          run-id: 42053726547
+          github-token: ${{ github.token }}
+          path: prior-quic
+
+      - name: Verify binary and source identity
+        run: |
+          test "$(git rev-parse HEAD)" = 249b5604def52ff6e1eb42ba265d60f98e7600e6
+          git diff --exit-code -- src include tests
+          echo 'dbad7983393f85c54a9d3b5d9894ac38bbd9bfad44f5cf596962ff1b6909fd99  prior-quic/build-tests-quic/dinerod' | sha256sum --check
+          chmod +x prior-quic/build-tests-quic/dinerod
+          prior-quic/build-tests-quic/dinerod --version | tee daemon-version.txt
+          grep -F 'commit: 249b5604def52ff6e1eb42ba265d60f98e7600e6' daemon-version.txt
+
+      - name: Load isolated qualification revision
+        env:
+          QUALIFICATION_SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess
+          revision = os.environ['QUALIFICATION_SHA']
+          if not re.fullmatch('[0-9a-f]{40}', revision):
+              raise SystemExit('invalid qualification revision')
+          subprocess.run(['git', 'fetch', '--depth=1', 'origin', revision], check=True)
+          path = pathlib.Path('tests/integration/test_relay_nat_netns.sh')
+          original = path.read_bytes()
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'original-relay-harness.sh').write_bytes(original)
+          new = subprocess.check_output(['git', 'show', revision + ':' + str(path)])
+          old_rule = b'-s "${TARGET_IP}" -d "${RELAY_IP}" -p tcp --dport "${RELAY_P2P}" -j REJECT'
+          if original.count(old_rule) != 2:
+              raise SystemExit('unexpected original relay hold')
+          # Permit two rule changes and explanatory comments, nothing else.
+          expected = original.replace(old_rule, old_rule.replace(b'-p tcp ', b'-p tcp --syn '))
+          def code(data):
+              return [line for line in data.splitlines() if line.strip() and not line.lstrip().startswith(b'#')]
+          if code(new) != code(expected):
+              raise SystemExit('qualification changes more than reconnect hold')
+          path.write_bytes(new)
+          probe = subprocess.check_output(['git', 'show', revision + ':scripts/ci/test_relay_reconnect_filter.py'])
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'test_relay_reconnect_filter.py').write_bytes(probe)
+          pathlib.Path('qualification-provenance.json').write_text(json.dumps({
+              'product_source': '249b5604def52ff6e1eb42ba265d60f98e7600e6',
+              'qualification_revision': revision, 'original_harness_sha256': hashlib.sha256(original).hexdigest(),
+              'qualified_harness_sha256': hashlib.sha256(new).hexdigest(), 'filter_probe_sha256': hashlib.sha256(probe).hexdigest()}, indent=2))
+          PY
+
+      - name: Require packet-level old-rule failure and corrected-rule pass
+        run: |
+          set +e
+          sudo unshare --net python3 "$RUNNER_TEMP/test_relay_reconnect_filter.py" --harness "$RUNNER_TEMP/original-relay-harness.sh" 2>&1 | tee filter-control.log
+          status=${PIPESTATUS[0]}
+          set -e
+          test "$status" -ne 0
+          grep -F 'reconnect hold blocks established TCP teardown' filter-control.log
+          sudo unshare --net python3 "$RUNNER_TEMP/test_relay_reconnect_filter.py" --harness tests/integration/test_relay_nat_netns.sh | tee filter-fixed.log
+
+      - name: Require all eleven actual network scenarios
+        timeout-minutes: 60
+        run: |
+          python3 -B scripts/ci/test_collect_relay_netns_evidence.py
+          sudo bash scripts/ci/run_relay_reachability_netns.sh "$PWD/prior-quic/build-tests-quic/dinerod" "$PWD/relay-netns-evidence"
+
+      - name: Restore exact product checkout
+        if: always()
+        run: |
+          git restore -- tests/integration/test_relay_nat_netns.sh
+          git diff --exit-code -- src include tests
+          test "$(git rev-parse HEAD)" = 249b5604def52ff6e1eb42ba265d60f98e7600e6
+
+      - name: Require original QUIC session ThreadSanitizer gate
+        run: |
+          cmake -S . -B build-quic-tsan -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_TESTING=ON \
+            -DDINERO_BUILD_QT=OFF -DDINERO_ENABLE_QUIC=ON -DENABLE_GRPC=OFF \
+            -DCMAKE_C_FLAGS='-fsanitize=thread -fno-omit-frame-pointer' \
+            -DCMAKE_CXX_FLAGS='-fsanitize=thread -fno-omit-frame-pointer' \
+            -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=thread'
+          cmake --build build-quic-tsan --target test_quic_session test_quic_session_stress -j2
+          TSAN_OPTIONS=halt_on_error=1 setarch x86_64 -R \
+            ctest --test-dir build-quic-tsan --output-on-failure --no-tests=error -R '^(QuicSession|QuicSessionStress)$'
+
+      - name: Collect readable relay evidence
+        if: always()
+        run: |
+          sudo python3 -B scripts/ci/collect_relay_netns_evidence.py "$PWD/relay-netns-evidence" "$PWD/relay-upload-evidence" --uid "$(id -u)" --gid "$(id -g)"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wallet-relay-qualification-${{ github.sha }}
+          path: |
+            daemon-version.txt
+            qualification-provenance.json
+            filter-*.log
+            relay-upload-evidence/
+            build-quic-tsan/Testing/Temporary/
+          if-no-files-found: error
