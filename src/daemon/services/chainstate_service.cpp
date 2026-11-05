@@ -13383,12 +13383,9 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
 
     // Durable advisory marker for interrupted canonical transitions.
     //
-    // `reorg_in_progress` lives inside the wallet SQLite transaction below, so
-    // it is intentionally atomic with wallet-side reorg state and may vanish on
-    // crash-before-commit. That makes it the wrong durability layer for
-    // "process died mid-transition". Use the datadir recovery marker for that
-    // role instead: it survives abrupt termination and is only cleared after a
-    // later successful canonical transition or healthy startup reconciliation.
+    // Wallet delivery runs asynchronously and owns its own SQLite transactions.
+    // The index marker below is advisory; the datadir recovery marker tracks
+    // interrupted canonical transitions independently of wallet delivery.
     bool activation_recovery_marker_written = false;
     if ((!disconnect_path.empty() || !connect_path.empty()) && !datadir_.empty()) {
         std::string marker_error;
@@ -13421,29 +13418,19 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // Crash Safety: Mark reorg in progress (Priority 4 FIX - Transactional)
-    // ═══════════════════════════════════════════════════════════════════════════
-    // If the process crashes during reorg, this marker allows detection and
-    // recovery on next startup. The marker stores:
-    // - pre_reorg_height: Height before disconnect started
-    // - fork_height: Height of fork point
-    // - target_height: Height we're trying to reach
-    //
-    // Priority 4 FIX: Marker is now set within a transaction that spans the
-    // entire wallet reorg operation. This ensures marker and state are atomic.
-    // ═══════════════════════════════════════════════════════════════════════════
-    bool wallet_transaction_started = false;
+    // Record advisory intent in autocommit. An outer index transaction here
+    // spans notification handoff to WalletWorker, whose per-block ApplyAtomically
+    // and RevertBlock transactions then fail on the same SQLite connection.
+    // A chainstate transaction cannot make two asynchronous wallet stores atomic.
+    // Keep transaction ownership entirely with the worker.
     if (utxo_index_ && !disconnect_path.empty()) {
-        // Priority 4 FIX: Begin transaction for atomic marker + state changes
-        wallet_transaction_started = utxo_index_->BeginTransaction();
-        if (!wallet_transaction_started) {
-            if (logger_) logger_->warning("[ActivateBestChain] Failed to begin wallet transaction for reorg");
+        const std::string reorg_marker = std::to_string(active_tip_ ? active_tip_->height : 0) + ":" +
+                                        std::to_string(fork_point ? fork_point->height : 0) + ":" +
+                                        std::to_string(best_candidate->height);
+        if (!utxo_index_->SetMetadata("reorg_in_progress", reorg_marker)) {
+            if (logger_) logger_->error("[ActivateBestChain] Failed to persist advisory reorg marker");
+            return;
         }
-
-        std::string reorg_marker = std::to_string(active_tip_ ? active_tip_->height : 0) + ":" +
-                                   std::to_string(fork_point ? fork_point->height : 0) + ":" +
-                                   std::to_string(best_candidate->height);
-        utxo_index_->SetMetadata("reorg_in_progress", reorg_marker);
         if (logger_) logger_->info("[ActivateBestChain] Reorg marker set: " + reorg_marker);
     }
 
@@ -13459,11 +13446,6 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
         if (!DisconnectTip(block_index)) {
             if (logger_) logger_->error("[ActivateBestChain] Failed to disconnect block at height " +
                           std::to_string(block_index->height));
-            // Priority 4 FIX: Rollback wallet transaction on abort
-            if (wallet_transaction_started && utxo_index_) {
-                utxo_index_->RollbackTransaction();
-                if (logger_) logger_->info("[ActivateBestChain] Wallet transaction rolled back after disconnect failure");
-            }
 
             // Disconnect failures are operational/runtime faults, not consensus
             // invalidity. Preserve the best-work candidate and cool it down so a
@@ -13518,7 +13500,6 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
     if (!disconnect_path.empty() && (consensus_utxo_set_ || compact_transition) && fork_point) {
         if (!VerifyForkPointForestUnderLock(fork_point)) {
             if (logger_) logger_->error("[ActivateBestChain] Fork-point body/state verification failed; aborting reorg");
-            if (wallet_transaction_started && utxo_index_) utxo_index_->RollbackTransaction();
             return;
         }
         if (logger_) logger_->info("[ActivateBestChain] Post-disconnect forest root verified at fork height " +
@@ -13599,11 +13580,6 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
             std::cout << "❌ [ActivateBestChain] ConnectTip FAILED for height " << block_index->height << std::endl;
             if (missing_utxo) {
                 EnterSafeMode("connect-tip missing utxo at height " + std::to_string(block_index->height));
-            }
-            // Priority 4 FIX: Rollback wallet transaction on abort
-            if (wallet_transaction_started && utxo_index_) {
-                utxo_index_->RollbackTransaction();
-                if (logger_) logger_->info("[ActivateBestChain] Wallet transaction rolled back after connect failure");
             }
 
             // #309/I2: a consensus-rule violation (BlockValidator::ConnectBlock
@@ -13710,9 +13686,6 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
     if (best_candidate->height < 0) {
         if (logger_) logger_->error("INVARIANT D1 VIOLATION: Tip height is negative (" +
                       std::to_string(best_candidate->height) + ")");
-        if (wallet_transaction_started && utxo_index_) {
-            utxo_index_->RollbackTransaction();
-        }
         return;
     }
 
@@ -13722,9 +13695,6 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
         if (logger_) logger_->error("INVARIANT D6 VIOLATION: Tip height decreased without reorg (" +
                       std::to_string(active_tip_->height) + " -> " +
                       std::to_string(best_candidate->height) + ")");
-        if (wallet_transaction_started && utxo_index_) {
-            utxo_index_->RollbackTransaction();
-        }
         return;
     }
 
@@ -13798,21 +13768,11 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                                   dinero::Params().network_id == "regtest");
 
     if (utxo_index_) {
-        utxo_index_->DeleteMetadata("reorg_in_progress");
+        if (!utxo_index_->DeleteMetadata("reorg_in_progress") && logger_)
+            logger_->warning("[ActivateBestChain] Failed to clear advisory reorg marker");
         ClearActivationFailure(utxo_index_.get());
 
-        // Priority 4 FIX: Commit the wallet transaction
-        // This ensures marker deletion and all wallet state changes are atomic
-        if (wallet_transaction_started) {
-            if (utxo_index_->CommitTransaction()) {
-                if (logger_) logger_->debug("[ActivateBestChain] Reorg marker cleared + wallet transaction committed");
-            } else {
-                if (logger_) logger_->error("[ActivateBestChain] Failed to commit wallet transaction!");
-                // State may be inconsistent - ValidateAgainstConsensus will fix on restart
-            }
-        } else {
-            if (logger_) logger_->debug("[ActivateBestChain] Reorg marker cleared (no transaction)");
-        }
+        if (logger_) logger_->debug("[ActivateBestChain] Advisory reorg marker cleared");
     }
 
     if (activation_recovery_marker_written) {
