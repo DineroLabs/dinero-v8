@@ -11389,7 +11389,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_comprehensive.c
     src/wallet/bip39.cpp
     src/wallet/psbt.cpp
     src/wallet/coin_selection.cpp
-    src/crypto/pbkdf2.cpp
     src/consensus/coinbase_maturity.cpp
   )
   target_link_libraries(test_wallet_comprehensive PRIVATE
@@ -11590,7 +11589,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_psbt_comprehensive.cpp
     src/wallet/hd_wallet.cpp
     src/wallet/bip39.cpp
     src/wallet/psbt.cpp
-    src/crypto/pbkdf2.cpp
     src/consensus/coinbase_maturity.cpp
   )
   target_link_libraries(test_psbt_comprehensive PRIVATE

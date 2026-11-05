@@ -29,10 +29,12 @@ endfunction()
 
 dinero_sep_forced_link(sep_consensus_forced_link dinero_consensus consensus_forced_link.cpp)
 dinero_sep_forced_link(sep_wallet_forced_link dinero_wallet wallet_forced_link.cpp)
+dinero_sep_forced_link(sep_crypto_forced_link dinero_crypto crypto_forced_link.cpp)
 
 set(_sep_driver ${CMAKE_CURRENT_SOURCE_DIR}/run_forced_link.cmake)
 foreach(_pair "SepConsensusForcedLink;sep_consensus_forced_link"
-              "SepWalletForcedLink;sep_wallet_forced_link")
+              "SepWalletForcedLink;sep_wallet_forced_link"
+              "SepCryptoForcedLink;sep_crypto_forced_link")
   list(GET _pair 0 _test)
   list(GET _pair 1 _tgt)
   add_test(NAME ${_test} COMMAND ${CMAKE_COMMAND}

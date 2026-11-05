@@ -582,6 +582,7 @@ add_library(dinero_crypto STATIC
   src/crypto/sha256_arm_shani_wrapper.cpp
   src/crypto/encrypted_key.cpp  # Phase W.1.1: Encrypted key utilities (ParseBase64, SecureZero)
   src/crypto/decrypt_encrypted_key.cpp  # Phase W.1.1: Encrypted key decryption
+  src/crypto/pbkdf2.cpp
 )
 
 # Enable ARM Crypto Extensions on ARM64 platforms
@@ -605,7 +606,7 @@ target_include_directories(dinero_crypto PUBLIC
 # Declare the dependency on the target so its configured headers and static
 # archive travel together; a source-tree header copy must never supply this
 # dependency implicitly.
-target_link_libraries(dinero_crypto PUBLIC OpenSSL::Crypto dinero_logging)
+target_link_libraries(dinero_crypto PUBLIC OpenSSL::Crypto dinero_logging secp256k1)  # hd_keychain, extended_pubkey, dinero_crypto_minimal call secp256k1_*
 
 # macOS Security framework is required because dinero_crypto_minimal.cpp
 # calls SecRandomCopyBytes (Apple's CSPRNG). Declared INTERFACE so every
