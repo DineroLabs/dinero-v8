@@ -173,7 +173,10 @@ def main():
     wait(lambda:rows(orphan_txid)==[1,1,1],'original owned coinbase delivery')
     require(rows(foreign_txid)==[0,0,0],'foreign payout was watched')
     offset=LOG.stat().st_size
+    Path(str(PAUSE)+'.entered').unlink(missing_ok=True)
+    Path(str(PAUSE)+'.release').unlink(missing_ok=True)
     if CRASH:
+        Path(str(WALLET_PAUSE)+'.entered').unlink(missing_ok=True)
         Path(str(WALLET_PAUSE)+'.release').unlink()
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         pending=executor.submit(rpc,'reconsiderblock',[winning],60)
