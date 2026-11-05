@@ -94,8 +94,11 @@ jobs:
             V="0.0.0-dev"
             TAG=""
           fi
-          echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$V"
+            echo "release_tag=$TAG"
+            echo "source_sha=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
           echo "Building Windows release for version: $V"
 
       - name: Require Authenticode signing for a release cut
@@ -614,7 +617,8 @@ jobs:
           EXPECTED_CORE_SOURCE: ${{ steps.ver.outputs.source_sha }}
         run: |
           @'
-          import hashlib,json,os,pathlib,subprocess,sys
+          import hashlib,json,os,pathlib,re,subprocess,sys
+          if not re.fullmatch('[0-9a-f]{40}',os.environ['EXPECTED_CORE_SOURCE']):raise RuntimeError('full product source pin missing')
           revision='77cd515ba72819bf4804e9e4231311ec6a5fc26b'
           subprocess.run(['git','fetch','--depth=1','origin',revision],check=True)
           harnesses={
