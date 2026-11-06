@@ -6222,6 +6222,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                     if (peer_address.empty()) {
                         uint32_t local_tip_height = 0;
                         if (chainstate) {
+                            // Copy selected state before any peer/network work.
+                            auto selected = chainstate->AcquireBlockIngressActivationLock();
                             if (const auto* tip = chainstate->GetActiveTip()) {
                                 local_tip_height = static_cast<uint32_t>(tip->height);
                             }

@@ -10,6 +10,7 @@
 #include "util/ser.h"
 #include <cstring>
 #include <random>
+#include <mutex>
 #include <algorithm>
 #include <unordered_set>
 
@@ -282,6 +283,10 @@ uint64_t CompactBlockCodec::GenerateNonce() {
     static std::random_device rd;
     static std::mt19937_64 gen(rd());
     static std::uniform_int_distribution<uint64_t> dist;
+    // Ingress and proof-delivery announcements can run concurrently. Protect
+    // only the shared engine draw; no chain or transport work uses this mutex.
+    static std::mutex nonce_mutex;
+    std::lock_guard<std::mutex> lock(nonce_mutex);
     return dist(gen);
 }
 
