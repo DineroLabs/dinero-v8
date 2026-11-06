@@ -94,8 +94,11 @@ jobs:
             V="0.0.0-dev"
             TAG=""
           fi
-          echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$V"
+            echo "release_tag=$TAG"
+            echo "source_sha=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
           echo "Building Windows release for version: $V"
 
       - name: Require Authenticode signing for a release cut
@@ -445,6 +448,22 @@ jobs:
           if (Test-Path packaging\windows\dist\vc_redist.server.exe) {
             Move-Item packaging\windows\dist\vc_redist.server.exe packaging\windows\dist\server-installer-stage\vc_redist.x64.exe -Force
           }
+          # Keep packaging tooling separate from the immutable candidate checkout.
+          # The helper includes both signed NVRTC DLLs required by the GUI daemon.
+          $helper = Join-Path $env:RUNNER_TEMP 'package_signed_operator.py'
+          $env:OPERATOR_PACKAGING_HELPER = $helper
+          @'
+          import os,pathlib,re,subprocess
+          revision=os.environ['GITHUB_SHA']
+          if not re.fullmatch('[0-9a-f]{40}',revision):raise RuntimeError('invalid tooling revision')
+          subprocess.run(['git','fetch','--depth=1','origin',revision],check=True)
+          data=subprocess.check_output(['git','show',revision+':packaging/windows/package_signed_operator.py'])
+          pathlib.Path(os.environ['OPERATOR_PACKAGING_HELPER']).write_bytes(data)
+          server_nsis=subprocess.check_output(['git','show',revision+':packaging/windows/dinero-server-installer.nsi'])
+          pathlib.Path('packaging/windows/dinero-server-installer.nsi').write_bytes(server_nsis)
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Reviewed operator packaging helper unavailable' }
+
           $numericVersion = if ($version -match '^(\d+)\.(\d+)\.(\d+)') { "$($Matches[1]).$($Matches[2]).$($Matches[3]).0" } else { '0.0.0.0' }
           Push-Location packaging\windows
           try {
@@ -454,35 +473,24 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'server NSIS rebuild failed' }
           } finally { Pop-Location }
 
-          $zipStage = "packaging\windows\dist\dinero-v$version-windows-x86_64-msvc"
-          if (Test-Path $zipStage) { Remove-Item $zipStage -Recurse -Force }
-          New-Item "$zipStage\bin" -ItemType Directory -Force | Out-Null
-          $operatorBinaries = @(
-            'dinerod.exe', 'dinero-cli.exe', 'dinero-miner.exe',
-            'dinero-stratum-worker.exe', 'dinero-gpu-miner.exe',
-            'dinero-wallet-cli.exe', 'dinero-seeder.exe',
-            'dinero-sv2-miner.exe', 'dinero-sv2-gpu-miner.exe'
-          )
-          foreach ($name in $operatorBinaries) {
-            $source = Join-Path 'packaging\windows\dist\installer-stage' $name
-            if (-not (Test-Path $source)) { throw "signed operator payload is missing $name" }
-            Copy-Item $source "$zipStage\bin"
-          }
-          Copy-Item LICENSE $zipStage
-          'Dinero signed Windows operator archive' | Out-File "$zipStage\README.txt" -Encoding ascii
-          Push-Location $zipStage
-          try {
-            Get-ChildItem -Recurse -File | Where-Object Name -ne 'SHA256SUMS.txt' | Sort-Object FullName | ForEach-Object {
-              $relative = Resolve-Path -Relative $_.FullName
-              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-              "$hash  $($relative.TrimStart('.\\') -replace '\\','/')"
-            } | Out-File SHA256SUMS.txt -Encoding ascii
-          } finally { Pop-Location }
-          Compress-Archive -Path "$zipStage\*" -DestinationPath "packaging\windows\dist\dinero-v$version-windows-x86_64-msvc.zip" -Force
+          $operatorZip = "packaging\windows\dist\dinero-v$version-windows-x86_64-msvc.zip"
+          if (Test-Path $operatorZip) { Remove-Item $operatorZip -Force }
+          python $helper --stage packaging\windows\dist\installer-stage --license LICENSE --output $operatorZip --version $version
+          if ($LASTEXITCODE -ne 0) { throw 'Signed operator archive assembly failed' }
           $orchardZipCheck = Join-Path $env:RUNNER_TEMP 'orchard-operator-zip'
           Expand-Archive -Path "packaging\windows\dist\dinero-v$version-windows-x86_64-msvc.zip" -DestinationPath $orchardZipCheck
           & python scripts/verify-orchard-package.py --daemon (Join-Path $orchardZipCheck 'bin\dinerod.exe')
           if ($LASTEXITCODE -ne 0) { throw 'Operator ZIP Orchard capability check failed' }
+          # The CUDA toolkit installed on the builder must not hide omitted DLLs.
+          $savedPath = $env:PATH
+          try {
+            $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+            $portableDaemon = Join-Path $orchardZipCheck 'bin\dinerod.exe'
+            $portableVersion = & $portableDaemon --version
+            if ($LASTEXITCODE -ne 0) { throw 'Portable daemon failed without the CUDA toolkit on PATH' }
+            Write-Host $portableVersion
+          } finally { $env:PATH = $savedPath }
+
 
       - name: Sign final installers
         if: ${{ vars.WINDOWS_SIGNING_READY == 'true' }}
@@ -562,6 +570,43 @@ jobs:
                 if (-not $qt.HasExited) { Stop-Process -Id $qt.Id -Force }
               }
             }
+            if (-not $case.Gui) {
+              # Static build-info checks do not prove that a newly installed
+              # mainnet service survives its scheduled-Orchard consumer gate.
+              $serverData = Join-Path $env:ProgramData 'Dinero'
+              $deadline = (Get-Date).AddSeconds(180)
+              $ready = $false
+              do {
+                Start-Sleep -Seconds 2
+                $service = Get-CimInstance Win32_Service -Filter "Name='Dinerod'"
+                if ($service.State -eq 'Running' -and $service.ProcessId -gt 0) {
+                  # Windows PowerShell promotes native stderr to a terminating
+                  # NativeCommandError under the workflow's Stop preference.
+                  # A warm-up refusal is expected until this bounded poll ends.
+                  $priorPreference = $ErrorActionPreference
+                  try {
+                    $ErrorActionPreference = 'Continue'
+                    $chain = & (Join-Path $case.Dir 'dinero-cli.exe') "-datadir=$serverData" getblockchaininfo 2> "$serverData\readiness-rpc.stderr.log"
+                    $cliExit = $LASTEXITCODE
+                  } finally {
+                    $ErrorActionPreference = $priorPreference
+                  }
+                  if ($cliExit -eq 0) {
+                    $info = $chain | ConvertFrom-Json
+                    if ($info.chain -eq 'mainnet') { $ready = $true; break }
+                  }
+                }
+              } while ((Get-Date) -lt $deadline)
+              if (-not $ready) {
+                Get-Content "$serverData\readiness-rpc.stderr.log" -ErrorAction SilentlyContinue
+                throw 'Fresh installed mainnet server never reached RPC readiness'
+              }
+              $stablePid = $service.ProcessId
+              Start-Sleep -Seconds 15
+              $service = Get-CimInstance Win32_Service -Filter "Name='Dinerod'"
+              if ($service.State -ne 'Running' -or $service.ProcessId -ne $stablePid) { throw 'Fresh mainnet service restarted after readiness' }
+              Write-Host "Fresh mainnet server ready and stable at height $($info.blocks)"
+            }
             $uninstall = Start-Process -FilePath (Join-Path $case.Dir 'Uninstall.exe') -ArgumentList '/S' -Wait -PassThru
             if ($uninstall.ExitCode -ne 0) { throw "uninstall failed: $($case.Installer)" }
           }
@@ -575,8 +620,53 @@ jobs:
             ${{ runner.temp }}/dinero-qt-startup-smoke/*.log
             ${{ runner.temp }}/dinero-qt-startup-smoke/window-text.txt
             packaging/windows/dist/Dinero-*-Setup.exe
+            packaging/windows/dist/dinero-v*-windows-x86_64-msvc.zip
           if-no-files-found: warn
           retention-days: 7
+
+      - name: Qualify the shipped portable wallet recovery paths
+        shell: powershell
+        timeout-minutes: 15
+        env:
+          EXPECTED_CORE_SOURCE: ${{ steps.ver.outputs.source_sha }}
+        run: |
+          @'
+          import hashlib,json,os,pathlib,re,subprocess,sys
+          if not re.fullmatch('[0-9a-f]{40}',os.environ['EXPECTED_CORE_SOURCE']):raise RuntimeError('full product source pin missing')
+          revision='77cd515ba72819bf4804e9e4231311ec6a5fc26b'
+          subprocess.run(['git','fetch','--depth=1','origin',revision],check=True)
+          harnesses={
+              'owned':('.github/qualification/wallet_reorg_owned_replacement.py','91d84c9bed99e6afd9dee720810400706aff83f7100547432bfc3ef12fa77856'),
+              'mid':('.github/qualification/wallet_reorg_midtransition.py','0b61911713f95dee77104e5df3d70b05fa3c9fe116c5fcff90bfda82d320a697')}
+          for key,(name,pin) in list(harnesses.items()):
+              data=subprocess.check_output(['git','show',revision+':'+name])
+              if hashlib.sha256(data).hexdigest()!=pin:raise RuntimeError('qualified harness differs')
+              path=pathlib.Path(os.environ['RUNNER_TEMP'])/pathlib.Path(name).name
+              path.write_bytes(data);harnesses[key]=str(path)
+          daemon=pathlib.Path(os.environ['RUNNER_TEMP'])/'orchard-operator-zip/bin/dinerod.exe'
+          clean=dict(os.environ,PATH=os.environ['SystemRoot']+'\\System32;'+os.environ['SystemRoot'],DINEROD=str(daemon))
+          version=subprocess.check_output([str(daemon),'--version'],env=clean,text=True)
+          if os.environ['EXPECTED_CORE_SOURCE'] not in version:raise RuntimeError('shipped source differs')
+          for label,key,args in [('normal','owned',[]),('pending-restart','owned',['--crash-pending-connect']),('midtransition','mid',[])]:
+              result=subprocess.run([sys.executable,harnesses[key],*args],env=clean,capture_output=True,timeout=360)
+              log=result.stdout+result.stderr;pathlib.Path('shipped-wallet-'+label+'.log').write_bytes(log)
+              print(log.decode('utf-8',errors='replace'))
+              if result.returncode:raise RuntimeError('shipped wallet regression failed: '+label)
+          receipt={'status':'PASS','source_sha':os.environ['EXPECTED_CORE_SOURCE'],'tooling_commit':os.environ['GITHUB_SHA'],'cases':3,'clean_PATH':True}
+          pathlib.Path('shipped-wallet-result.json').write_text(json.dumps(receipt,indent=2))
+          print(json.dumps(receipt))
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Shipped wallet recovery qualification failed' }
+
+      - name: Upload shipped-wallet qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shipped-windows-wallet-qualification
+          path: |
+            shipped-wallet-*.log
+            shipped-wallet-result.json
+          if-no-files-found: warn
 
       - name: Checksum final Windows matrix
         id: sums
