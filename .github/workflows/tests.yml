@@ -917,6 +917,37 @@ jobs:
             libusb-1.0-0-dev \
             iproute2 iptables curl jq tcpdump
 
+      - name: Prove reconnect fence preserves established TCP teardown
+        run: |
+          sudo unshare --net python3 -B scripts/ci/test_relay_reconnect_filter.py \
+            --harness tests/integration/test_relay_nat_netns.sh
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          source = Path('tests/integration/test_relay_nat_netns.sh').read_text()
+          fixed = '-p tcp --syn --dport "${RELAY_P2P}" -j REJECT ||'
+          if source.count(fixed) != 2:
+              raise SystemExit('actual insert/delete reconnect rules differ')
+          old = Path(os.environ['RUNNER_TEMP']) / 'relay-reconnect-old-rule.sh'
+          old.write_text(source.replace(fixed, fixed.replace(' --syn', '')))
+          PY
+          # The parent shell intentionally owns this CI diagnostic log.
+          # shellcheck disable=SC2024
+          if sudo unshare --net python3 -B scripts/ci/test_relay_reconnect_filter.py \
+            --harness "$RUNNER_TEMP/relay-reconnect-old-rule.sh" \
+            > "$RUNNER_TEMP/relay-reconnect-old-rule.log" 2>&1; then
+            echo '::error::old reconnect rule unexpectedly allowed established teardown'
+            exit 1
+          fi
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          log = (Path(os.environ['RUNNER_TEMP']) / 'relay-reconnect-old-rule.log').read_text()
+          if 'reconnect hold blocks established TCP teardown' not in log:
+              raise SystemExit('old rule failed for an unrelated reason: ' + log)
+          print('PASS negative control: old rule blocks established teardown')
+          PY
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 

@@ -1348,10 +1348,12 @@ wait_log "${LOG_RELAY}" "[P2P] relay-hints: sent registry catch-up" \
 # Hold outbound target-to-relay TCP in this run's NAT namespace until grace
 # is observed; otherwise the automatic relay dial can win the race and make
 # this assertion depend on scheduler timing rather than directory behavior.
+# Reject only opening SYNs: dropping established traffic here can suppress the
+# old connection's FIN/RST and prevent the relay from observing the disconnect.
 target_registration_count_before="$(grep -Fc \
     "[P2P] relayreg: registered ${TARGET_NODE_ID} from " "${LOG_RELAY}" || true)"
 ip netns exec "${NS_NAT_TARGET}" iptables -I FORWARD 1 \
-    -s "${TARGET_IP}" -d "${RELAY_IP}" -p tcp --dport "${RELAY_P2P}" -j REJECT ||
+    -s "${TARGET_IP}" -d "${RELAY_IP}" -p tcp --syn --dport "${RELAY_P2P}" -j REJECT ||
     fail "could not hold target-to-relay TCP during grace check"
 rpc_call "${NS_TARGET}" "${TARGET_RPC}" "${DATA_TARGET}" \
     "disconnectnode" "[\"${RELAY_IP}:${RELAY_P2P}\"]" >/dev/null 2>&1 || true
@@ -1361,7 +1363,7 @@ wait_networkinfo_jq "${NS_RELAY}" "${RELAY_RPC}" "${DATA_RELAY}" \
     '(.result.relay.directory.grace_pending // 0) >= 1' \
     "relay marks disconnected registration grace-pending"
 ip netns exec "${NS_NAT_TARGET}" iptables -D FORWARD \
-    -s "${TARGET_IP}" -d "${RELAY_IP}" -p tcp --dport "${RELAY_P2P}" -j REJECT ||
+    -s "${TARGET_IP}" -d "${RELAY_IP}" -p tcp --syn --dport "${RELAY_P2P}" -j REJECT ||
     fail "could not restore target-to-relay TCP after grace check"
 wait_target_relay_recovery "${TARGET_NODE_ID}" "${target_registration_count_before}"
 
