@@ -161,9 +161,9 @@ elseif(NOT WIN32 AND TARGET nodecore_ffi AND TARGET dinero_wallet_ffi)
     "-DSEP_COMMAND=${_sep_python}|${CMAKE_CURRENT_SOURCE_DIR}/interface_freeze.py|check|--build|${CMAKE_BINARY_DIR}|--nodecore-ffi|$<TARGET_FILE:nodecore_ffi>|--wallet-ffi|$<TARGET_FILE:dinero_wallet_ffi>"
     -P ${_sep_script_driver})
 else()
-  # Registered anyway so the gate cannot silently vanish without BUILD_NODECORE.
-  # It fails: the FFI targets exist only with -DBUILD_NODECORE=ON (on POSIX
-  # both nodecore_ffi and dinero_wallet_ffi are required).
+  # Registered anyway so the gate cannot silently vanish when a required FFI
+  # target is absent. POSIX requires both libraries; Windows requires the
+  # wallet FFI only because NodeCore is not a Windows target.
   add_test(NAME SepInterfaceFreeze COMMAND ${CMAKE_COMMAND} -E false)
 endif()
 set_tests_properties(SepInterfaceFreeze PROPERTIES LABELS "separation" TIMEOUT 1800

@@ -289,7 +289,9 @@ jobs:
             '-DCMAKE_C_COMPILER=cl', '-DCMAKE_CXX_COMPILER=cl',
             '-DDINERO_USE_VENDORED_DEPS=ON',
             '-DENABLE_GRPC=OFF',
-            '-DBUILD_NODECORE=ON',
+            # NodeCore is for mobile embedding and native POSIX tests; Windows
+            # W5 checks the wallet FFI and RPC transcript only.
+            '-DBUILD_NODECORE=OFF',
             '-DDINERO_SEPARATION_GATES=ON',
             "-DDINERO_BUILD_ORCHARD_BACKEND=$orchard",
             # server-safe options, as windows-openssl-release-smoke.yml builds
