@@ -216,6 +216,7 @@ def legacy_relay_readiness(node):
         solved = miner.mine_block(job, max_nonce=10000)
     check("real proof of work solved", solved is not None)
     result = node.call("legacy_relay_readiness", block_hex=solved[0].hex())
+    check("real compact relay copied the stored block", "cmpctblock" in result["relay_commands"], result)
     check("real relay callback was blocked", result["relay_entered"] and result["acceptance_waits_for_relay"], result)
     check("balance completes while relay remains blocked", result["balance_finished_during_relay"], result)
     check("commitment completes while relay remains blocked", result["commitment_finished_during_relay"], result)

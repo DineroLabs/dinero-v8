@@ -6387,6 +6387,11 @@ bool DaemonApp::Init(int argc, char** argv) {
                         try {
                             std::cout << "[BlockRelay-Retrieve] Looking for block: " << block_hash.GetHex() << std::endl;
 
+                            // Relay runs outside block-ingress ownership. Pin the
+                            // selected database only while copying the body;
+                            // this guard ends before the external send callback.
+                            auto selected = chainstate->AcquireBlockIngressActivationLock();
+
                             // Retrieve block from ChainDB
                             ChainDB* chain_db = chainstate->GetChainDB();
                             if (!chain_db) {

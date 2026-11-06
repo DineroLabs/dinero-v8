@@ -122,12 +122,14 @@ Json::Value LegacyRelayReadiness(const Json::Value& request) {
         std::mutex mutex;
         std::condition_variable changed;
         bool entered = false, released = false, timed_out = false;
+        std::vector<std::string> commands;
     };
     auto gate = std::make_shared<Gate>();
     // Hold only the real relay's external transport, never a consensus/read
     // implementation. A bounded shared barrier remains safe until node stop.
-    relay->SetSendMessageCallback([gate](const auto&, const auto&, const auto&) {
+    relay->SetSendMessageCallback([gate](const auto&, const auto& command, const auto&) {
         std::unique_lock<std::mutex> lock(gate->mutex);
+        gate->commands.push_back(command);
         gate->entered = true;
         gate->changed.notify_all();
         if (!gate->changed.wait_for(lock, 10s, [&] { return gate->released; })) gate->timed_out = true;
@@ -160,6 +162,8 @@ Json::Value LegacyRelayReadiness(const Json::Value& request) {
     result["balance"] = balance.get();
     result["commitment"] = commitment.get();
     result["relay_timed_out"] = gate->timed_out;
+    result["relay_commands"] = Json::Value(Json::arrayValue);
+    for (const auto& command : gate->commands) result["relay_commands"].append(command);
     result["selected_height"] = chain->getBlockHeight();
     return result;
 }
