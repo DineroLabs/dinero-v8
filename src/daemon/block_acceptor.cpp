@@ -624,7 +624,7 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
         std::cout << "[ACCEPTOR-DEBUG] Block connected successfully!" << std::endl;
 
         // Phase 40: Trigger chain activation after successful block acceptance
-        // BEFORE NotifyBlockConnected so relay gating sees the real active tip.
+        // BEFORE preparing notifications so relay gating sees the real active tip.
         // This notifies services and (in Phase 41) will trigger reorg logic
         if (ctx_ && ctx_->chainstate) {
             auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx_->chainstate);
@@ -636,7 +636,7 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
         // 7. Notify subsystems after activation.
         // This ensures canonical blocks are announced once they are active tip.
         std::cout << "[ACCEPTOR-DEBUG] Step 7: Notifying subsystems..." << std::endl;
-        NotifyBlockConnected(block, newHeight);
+        const auto announce_hash = PrepareBlockConnectedNotifications(block, newHeight);
 
         // Accepted result should always report the incoming block hash.
         // Canonical height-index may legitimately lag until ActivateBestChain runs.
@@ -727,6 +727,22 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
         // ========== End IBD Detection ==========
 
         LOG_INFO("✅ Block accepted at height " + std::to_string(newHeight) + ", hash: " + block.blockHash.substr(0, 16) + "...");
+
+        // Validation, activation, relay eligibility and the shared sync history
+        // above require the ingress owner. Socket writes do not: a slow peer's
+        // send mutex must not hold the chainstate lock against wallet/proof RPCs.
+        // Keep synchronous relay (and its backpressure) after releasing the owner,
+        // as the Orchard path does, rather than using a dropping async outbox.
+        activation_guard.reset();
+        if (!announce_hash.empty() && activation_chainstate) {
+            try {
+                activation_chainstate->BroadcastNewBlock(announce_hash);
+                LOG_INFO("✅ Block announced via ChainstateService (active tip) hash=" +
+                         announce_hash.substr(0, 16) + "...");
+            } catch (const std::exception& e) {
+                LOG_ERROR("❌ Failed to broadcast block via ChainstateService: " + std::string(e.what()));
+            }
+        }
 
         return result;
 
@@ -2869,8 +2885,9 @@ std::string BlockAcceptor::ComputeBlockHash(const ParsedBlock& block) {
     return block.blockHash;
 }
 
-void BlockAcceptor::NotifyBlockConnected(const ParsedBlock& block, uint64_t height) {
-    LOG_INFO("📡 Block connected notifications sent for height " + std::to_string(height));
+std::string BlockAcceptor::PrepareBlockConnectedNotifications(const ParsedBlock& block, uint64_t height) {
+    std::string announce_hash;
+    LOG_INFO("📡 Preparing block connected notifications for height " + std::to_string(height));
     
     // Notify wallet of new block
     try {
@@ -3020,9 +3037,9 @@ void BlockAcceptor::NotifyBlockConnected(const ParsedBlock& block, uint64_t heig
                 if (historical) {
                     LOG_INFO("Block connected while catching up; not announced: height=" + std::to_string(height));
                 } else if (!active_tip_hash.empty() && active_tip_hash == active_hash_at_height) {
-                    chainstate_service->BroadcastNewBlock(active_tip_hash);
-                    LOG_INFO("✅ Block announced via ChainstateService (active tip) hash=" +
-                             active_tip_hash.substr(0, 16) + "...");
+                    // Copy while the ingress owner protects ChainDB identity
+                    // and canonical tip reads. The caller sends after unlock.
+                    announce_hash = active_tip_hash;
                 } else {
                     LOG_INFO("ℹ️ Block connected but not announced (not active tip): height=" +
                              std::to_string(height) + ", active_at_height=" +
@@ -3040,7 +3057,8 @@ void BlockAcceptor::NotifyBlockConnected(const ParsedBlock& block, uint64_t heig
         LOG_INFO("⚠️ Chainstate service not available, block not broadcast to P2P network");
     }
 
-    LOG_INFO("📡 Block connected notifications completed for height " + std::to_string(height));
+    LOG_INFO("📡 Block connected notifications prepared for height " + std::to_string(height));
+    return announce_hash;
 }
 
 // Wallet notification function moved back to main.cpp

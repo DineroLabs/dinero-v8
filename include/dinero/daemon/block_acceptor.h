@@ -124,7 +124,9 @@ private:
     static std::string ComputeMerkleRoot(const std::vector<std::string>& transactions);
 
     // Notification system
-    static void NotifyBlockConnected(const ParsedBlock& block, uint64_t height);
+    // Called under the ingress owner; returns the hash eligible for relay.
+    // The caller releases that owner before sending to any peer.
+    static std::string PrepareBlockConnectedNotifications(const ParsedBlock& block, uint64_t height);
 
     // Week 3: Context pointer (set by ChainstateService)
     static DaemonContext* ctx_;
