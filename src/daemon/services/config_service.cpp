@@ -124,6 +124,10 @@ bool ConfigService::Init(DaemonContext& ctx) {
     if (config_map_.find("storage.archival") == config_map_.end()) {
         config_map_["storage.archival"] = "true";
     }
+    // This optional legacy IPC integration has no Orchard adapter. An older
+    // config that never opted in must not enable it and fail Orchard startup.
+    // As with all defaults above, explicit file/CLI choices remain authoritative.
+    config_map_.try_emplace("lightning.oracles.enable", "false");
 
     return true;
 }

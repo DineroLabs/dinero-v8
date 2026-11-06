@@ -2923,9 +2923,10 @@ bool DaemonApp::Init(int argc, char** argv) {
             }
 
             // Explicitly disabled means no client construction or socket probe.
-            // Default true preserves the existing optional legacy integration.
+            // The optional legacy integration requires explicit opt-in. An
+            // older config with no setting must use the Orchard-safe default.
             const auto oracle_config=std::dynamic_pointer_cast<ConfigService>(ctx_.config);
-            const bool legacy_oracles_enabled=!oracle_config || oracle_config->GetBool("lightning.oracles.enable",true);
+            const bool legacy_oracles_enabled=!oracle_config || oracle_config->GetBool("lightning.oracles.enable",false);
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
             if (Params().orchard_activation_height!=UINT32_MAX && legacy_oracles_enabled) {
                 // A configured consumer remains configured even while disconnected.
@@ -7290,7 +7291,7 @@ bool DaemonApp::Start() {
                 const auto config=std::dynamic_pointer_cast<ConfigService>(ctx_.config);
                 if (!config || !ctx_.chainstate)
                     throw std::runtime_error("Runtime notification configuration unavailable");
-                if (config->GetBool("lightning.oracles.enable",true))
+                if (config->GetBool("lightning.oracles.enable",false))
                     throw std::runtime_error("Configured legacy oracles have no typed notification adapter");
             const bool expects_pool=config->GetBool("pool.accounting.enable",false) && GetConfig().allow_pool_mining;
                 if (expects_pool!=static_cast<bool>(pool_manager_runtime_))
