@@ -17787,7 +17787,110 @@ bool ChainstateService::RestoreStatefulSnapshotCoinCache(std::string& error) {
     }
     // Check the base even for an empty frozen set; never turn an unreadable or
     // foreign snapshot marker into an apparently successful empty restore.
-    const auto marker = chain_db_->getPreBaseCoinSetBase();
+    auto marker = chain_db_->getPreBaseCoinSetBase();
+    if (marker.status() == Status::NotFound && !assumeutxo_active_ &&
+        promoted_base_height_ > 0 && utxo_index_) {
+        // Older, already-promoted datadirs never enter the active-lifecycle
+        // backfill above. Promotion persisted the complete live ordinary coin
+        // set, so it can supply the missing frozen store without reopening a
+        // snapshot or changing consensus state. Absence alone is NOT sufficient:
+        // authenticate the selected forest and a bijection from all durable
+        // ordinary coins to every live leaf before making any durable write.
+        auto refuse = [&](const char* reason) {
+            error = std::string("Legacy promoted snapshot cache migration refused: ") + reason;
+            return false;
+        };
+        const auto canonical_base = chain_db_->getBlockHashByHeight(promoted_base_height_);
+        const auto lc_state = utxo_index_->GetMetadata(assumeutxo::kLifecycleStateKey);
+        const auto lc_height = utxo_index_->GetMetadata(assumeutxo::kLcBaseHeightKey);
+        const auto lc_hash = utxo_index_->GetMetadata(assumeutxo::kLcBaseBlockKey);
+        const auto done = utxo_index_->GetMetadata("prebase_coins_snapshot_backfill_v2");
+        if (!canonical_base.ok() || !lc_state || *lc_state != "fully_validated" ||
+            !lc_height || *lc_height != std::to_string(promoted_base_height_) ||
+            !lc_hash || lc_hash->size() != 64 ||
+            !std::all_of(lc_hash->begin(), lc_hash->end(), [](unsigned char c) {
+                return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+            }) || uint256::FromHexUnsafe(*lc_hash) != *canonical_base ||
+            (done && *done == "1"))
+            return refuse("unproved or conflicting promoted lifecycle");
+        if (!active_tip_ || active_tip_->height < int(promoted_base_height_) ||
+            uint32_t(active_tip_->height) >= Params().orchard_activation_height ||
+            consensus_utxo_set_->GetHeight() != uint32_t(active_tip_->height) ||
+            consensus_utxo_set_->GetBestBlock() != active_tip_->hash)
+            return refuse("selected full-node state unavailable");
+        const auto tip = chain_db_->getTip();
+        const auto canonical_tip = chain_db_->getBlockHashByHeight(active_tip_->height);
+        const auto header = chain_db_->getHeader(active_tip_->hash);
+        const auto forest_tip = chain_db_->getForestTipMarker();
+        if (!tip.ok() || tip->hash != active_tip_->hash || tip->height != active_tip_->height ||
+            !canonical_tip.ok() || *canonical_tip != active_tip_->hash || !header.ok() ||
+            !forest_tip.ok() || forest_tip->block_hash != active_tip_->hash ||
+            forest_tip->height != active_tip_->height || forest_tip->forest_root != header->utreexo_root)
+            return refuse("durable selected forest binding differs");
+        bool empty = true;
+        if (chain_db_->forEachPreBaseCoin([&](const uint256&, uint32_t, const Coin&) {
+                empty = false; return false;
+            }) != Status::Ok || !empty)
+            return refuse("unbound frozen rows are already present");
+        std::vector<ChainDB::PreBaseCoinRecord> records;
+        {
+            auto forest_lock = consensus_utxo_set_->LockForestShared();
+            const auto& forest = consensus_utxo_set_->GetForest();
+            const auto commitment = forest.getCommitment();
+            if (commitment.size() != 32 || !std::equal(commitment.begin(), commitment.end(),
+                                                      forest_tip->forest_root.begin()))
+                return refuse("restored forest commitment differs");
+            std::unordered_set<uint64_t> positions;
+            Transaction genesis;
+            if (!TransactionSerializer::Deserialize(genesis, Params().genesis.genesisCoinbaseHex))
+                return refuse("compiled genesis coins unavailable");
+            const auto genesis_txid = genesis.GetTxid().AsUint256();
+            size_t compiled_genesis = 0;
+            bool valid = true;
+            const auto status = chain_db_->forEachUTXO([&](const uint256& txid, uint32_t n, const Coin& coin) {
+                std::vector<uint8_t> script;
+                if (coin.height < 0 || coin.height > active_tip_->height ||
+                    !util::unhex(coin.script_pubkey, script)) {
+                    valid = false; return false;
+                }
+                const auto leaf = consensus::HashUTXOForCreationHeight(
+                    txid, n, coin.amount, script, uint32_t(coin.height), coin.coinbase);
+                const auto position = forest.findLeafPosition(leaf);
+                const bool is_genesis = txid == genesis_txid;
+                if (is_genesis) {
+                    if (n >= genesis.vout.size() || coin.height != 0 || !coin.coinbase ||
+                        coin.amount != genesis.vout[n].value.GetUna() || script != genesis.vout[n].scriptPubKey ||
+                        coin.is_confidential != genesis.vout[n].is_confidential ||
+                        coin.commitment != genesis.vout[n].commitment) {
+                        valid = false; return false;
+                    }
+                    ++compiled_genesis;
+                }
+                // The ordinary map includes compiled genesis outputs while
+                // historical forests may exclude them. Only those exact
+                // compiled records may lack a leaf; count a real leaf if present.
+                if ((!position && !is_genesis) || (position &&
+                    (forest.isDeleted(*position) || !positions.insert(*position).second))) {
+                    valid = false; return false;
+                }
+                if (uint32_t(coin.height) <= promoted_base_height_)
+                    records.push_back({txid, n, coin});
+                return true;
+            });
+            if (status != Status::Ok || !valid || positions.size() != forest.getActiveLeaves() ||
+                compiled_genesis != genesis.vout.size())
+                return refuse("ordinary coins do not cover the authenticated live forest");
+        }
+        // One synchronous batch publishes the complete set and its exact base.
+        // Never clear an existing recovery marker or alter the selected tip.
+        ChainWriteToken token;
+        if (chain_db_->replacePreBaseCoins(token, *canonical_base, promoted_base_height_, records) != Status::Ok ||
+            !utxo_index_->SetMetadata("prebase_coins_snapshot_backfill_v2", "1"))
+            return refuse("durable frozen-store publication failed");
+        marker = chain_db_->getPreBaseCoinSetBase();
+        if (logger_) logger_->info("[AssumeUTXO restore] Migrated " + std::to_string(records.size()) +
+                                  " authenticated promoted legacy pre-base coins");
+    }
     bool bound = marker.ok() && assumeutxo_active_ && !assumeutxo_base_block_.IsNull() &&
         marker->first == assumeutxo_base_block_ &&
         marker->second == assumeutxo_base_height_;
