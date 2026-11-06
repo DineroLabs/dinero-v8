@@ -184,7 +184,7 @@ jobs:
         run: |
           failed=0
           mkdir -p build-tests/Testing/nodecore-runtime
-          for t in NodeCoreBackendOffActivationRefusal NodeCoreRuntimeLifecycle NodeCoreSnapshotConsumers NodeCoreMaintenanceGate NodeCoreMaintenanceOwnership NodeCoreJournalFaults NodeCoreSdkPendingReopen NodeCoreDatadirLock NodeCoreReopenFences NodeCoreReopenRpcPause CoreOrderlyReopen CorePendingReopen CorePreparedReadmission; do
+          for t in NodeCoreBackendOffActivationRefusal NodeCoreRuntimeLifecycle LegacyRelayWalletReadiness NodeCoreSnapshotConsumers NodeCoreMaintenanceGate NodeCoreMaintenanceOwnership NodeCoreJournalFaults NodeCoreSdkPendingReopen NodeCoreDatadirLock NodeCoreReopenFences NodeCoreReopenRpcPause CoreOrderlyReopen CorePendingReopen CorePreparedReadmission; do
             ctest --test-dir build-tests --no-tests=error --output-on-failure \
               --output-log "build-tests/Testing/nodecore-runtime/${t}.ctest.log" \
               -R "^${t}$" || failed=1

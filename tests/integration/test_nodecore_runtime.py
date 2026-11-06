@@ -185,6 +185,51 @@ def status_during_start(node):
     check("status-during-start stop", node.call("stop") == 0)
 
 
+def legacy_relay_readiness(node):
+    # Only the transport callback is held. Admission, proof checks, activation,
+    # wallet delivery and both concurrent HTTP dispatches are real production code.
+    import contextlib
+    import io
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "mining"))
+    from dinero_cpu_miner import BlockTemplate, DineroCoinMiner
+
+    path = datadir("blocked-legacy-relay")
+    check("legacy fixture starts", node.start(path) == 0)
+    restored = node.rpc("wallet.restore", {
+        "name": "relay-owner", "mnemonic":
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        "rescan": False})
+    check("isolated wallet restored", restored.get("success") is True, restored)
+    address = node.rpc("wallet.listaddresses")[0]["address"]
+    raw = node.rpc("getblocktemplate", [{"rules": ["segwit"], "address": address}])
+    job = BlockTemplate(
+        version=raw["version"], height=raw["height"], previous_block_hash=raw["previousblockhash"],
+        bits="207fffff", curtime=node.rpc("getconsensusinfo")["genesis_time"] + 120,
+        mintime=raw.get("mintime", raw["curtime"]), maxtime=raw.get("maxtime", raw["curtime"] + 7200),
+        coinbase_value=raw["coinbasevalue"], transactions=raw["transactions"],
+        coinbase_tx_hex=raw["coinbasetxn"]["data"], coinbase_txid=raw["coinbasetxn"]["txid"],
+        utreexo_commitment=raw.get("utreexo", {}).get("commitment", raw.get("utreexocommitment", "")))
+    check("fixture targets first legacy block", job.height == 1, job.height)
+    miner = DineroCoinMiner("http://127.0.0.1:1", mining_address=address)
+    with contextlib.redirect_stdout(io.StringIO()):
+        solved = miner.mine_block(job, max_nonce=10000)
+    check("real proof of work solved", solved is not None)
+    result = node.call("legacy_relay_readiness", block_hex=solved[0].hex())
+    check("real compact relay copied the stored block", "cmpctblock" in result["relay_commands"], result)
+    check("real relay callback was blocked", result["relay_entered"] and result["acceptance_waits_for_relay"], result)
+    check("balance completes while relay remains blocked", result["balance_finished_during_relay"], result)
+    check("commitment completes while relay remains blocked", result["commitment_finished_during_relay"], result)
+    check("valid legacy block remains accepted", result["accepted"] and result["selected_height"] == 1
+          and not result["relay_timed_out"], result)
+    for name in ("balance", "commitment"):
+        reply = result[name]
+        check(name + " read has no error", not reply.get("error") and not reply["result"].get("error"), reply)
+    check("read sees the activated block", result["commitment"]["result"]["verified_height"] == 1, result)
+    check("read sees the real wallet reward", result["balance"]["result"]["total"] > 0, result)
+    check("legacy fixture stops cleanly", node.call("stop") == 0)
+
+
 def lifecycle(node):
     mainnet_schedule(node)
     status_during_start(node)
@@ -746,7 +791,7 @@ node = Embedded()
 success = False
 try:
     try:
-        {"lifecycle": lifecycle, "datadir_lock": datadir_lock, "storage_readiness": storage_readiness,
+        {"lifecycle": lifecycle, "legacy_relay_readiness":legacy_relay_readiness, "datadir_lock": datadir_lock, "storage_readiness": storage_readiness,
          "reopen_fences": reopen_fences,
          "reopen_rpc_pause": reopen_rpc_pause,
          "app_reopen": app_reopen,

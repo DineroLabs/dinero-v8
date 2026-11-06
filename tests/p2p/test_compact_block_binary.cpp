@@ -19,9 +19,36 @@
 #include "primitives/hash_domains.h"
 #include <cstring>
 #include <random>
+#include <array>
+#include <barrier>
+#include <thread>
+#include <unordered_set>
 
 namespace dinero {
 namespace test {
+
+TEST(CompactBlockBinary, ConcurrentNonceGeneration) {
+    // Announcements from ingress and proof delivery may overlap. Distinct
+    // 64-bit draws should not reproduce shared-engine state under contention
+    // (a genuine random collision in this sample has probability < 1e-11).
+    constexpr size_t threads = 8, draws = 2000;
+    const Block block{};
+    (void)CompactBlockCodec::CreateCompactBlock(block); // Initialization is not the race.
+    std::barrier start(static_cast<std::ptrdiff_t>(threads));
+    std::array<std::vector<uint64_t>, threads> samples;
+    std::array<std::thread, threads> workers;
+    for (size_t t = 0; t < threads; ++t) {
+        workers[t] = std::thread([&, t] {
+            samples[t].resize(draws);
+            start.arrive_and_wait();
+            for (auto& nonce : samples[t]) nonce = CompactBlockCodec::CreateCompactBlock(block).nonce;
+        });
+    }
+    for (auto& worker : workers) worker.join();
+    std::unordered_set<uint64_t> distinct;
+    for (const auto& sample : samples) distinct.insert(sample.begin(), sample.end());
+    EXPECT_EQ(distinct.size(), threads * draws);
+}
 
 // Helper: Create a test block header
 BlockHeader createTestBlockHeader() {

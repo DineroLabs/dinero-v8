@@ -6222,6 +6222,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                     if (peer_address.empty()) {
                         uint32_t local_tip_height = 0;
                         if (chainstate) {
+                            // Copy selected state before any peer/network work.
+                            auto selected = chainstate->AcquireBlockIngressActivationLock();
                             if (const auto* tip = chainstate->GetActiveTip()) {
                                 local_tip_height = static_cast<uint32_t>(tip->height);
                             }
@@ -6386,6 +6388,11 @@ bool DaemonApp::Init(int argc, char** argv) {
                     ) -> bool {
                         try {
                             std::cout << "[BlockRelay-Retrieve] Looking for block: " << block_hash.GetHex() << std::endl;
+
+                            // Relay runs outside block-ingress ownership. Pin the
+                            // selected database only while copying the body;
+                            // this guard ends before the external send callback.
+                            auto selected = chainstate->AcquireBlockIngressActivationLock();
 
                             // Retrieve block from ChainDB
                             ChainDB* chain_db = chainstate->GetChainDB();

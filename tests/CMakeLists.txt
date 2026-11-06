@@ -10057,6 +10057,14 @@ if(TARGET nodecore_ffi)
       NODECORE_SCENARIO=lifecycle
       NODECORE_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/Testing/nodecore-runtime
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
+  add_test(NAME LegacyRelayWalletReadiness
+    COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_runtime_driver>
+      NODECORE_SCENARIO=legacy_relay_readiness
+      NODECORE_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/Testing/nodecore-runtime/legacy-relay-readiness
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
+  set_tests_properties(LegacyRelayWalletReadiness PROPERTIES
+    LABELS "integration;daemon;wallet;p2p;mandatory" TIMEOUT 180 RUN_SERIAL TRUE)
   if(UNIX AND NOT CMAKE_CROSSCOMPILING AND TARGET test_assumeutxo_replay AND DINERO_BUILD_ORCHARD_BACKEND)
     # Actual SDK source; sole selection redirect is confined to this executable.
     # Keep the same real archive closure, including the Linux backward refs.

@@ -13,6 +13,8 @@
 #include "daemon/http_rpc_server.h"
 #include "consensus/chainparams.h"
 #include "daemon/services/chainstate_service.h"
+#include "daemon/block_acceptor.h"
+#include "daemon/block_relay_manager.h"
 #if DINERO_NODECORE_ORCHARD_RUNTIME
 #include "daemon/runtime_block_reader.h"
 #endif
@@ -107,6 +109,64 @@ struct ShutdownBarrier {
         }
     }
 };
+
+Json::Value LegacyRelayReadiness(const Json::Value& request) {
+    auto* context = DaemonContext::instance();
+    const auto rpc = context ? std::dynamic_pointer_cast<dinero::RPCService>(context->rpc) : nullptr;
+    const auto chain = context ? std::dynamic_pointer_cast<dinero::ChainstateService>(context->chainstate) : nullptr;
+    const auto relay = context ? context->block_relay : nullptr;
+    if (!rpc || !rpc->GetHttpServer() || !chain || !relay || dinero::Params().orchard_activation_height <= 1) {
+        throw std::runtime_error("legacy relay fixture requires actual pre-Orchard services");
+    }
+    struct Gate {
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool entered = false, released = false, timed_out = false;
+        std::vector<std::string> commands;
+    };
+    auto gate = std::make_shared<Gate>();
+    // Hold only the real relay's external transport, never a consensus/read
+    // implementation. A bounded shared barrier remains safe until node stop.
+    relay->SetSendMessageCallback([gate](const auto&, const auto& command, const auto&) {
+        std::unique_lock<std::mutex> lock(gate->mutex);
+        gate->commands.push_back(command);
+        gate->entered = true;
+        gate->changed.notify_all();
+        if (!gate->changed.wait_for(lock, 10s, [&] { return gate->released; })) gate->timed_out = true;
+    });
+    auto accepted = std::async(std::launch::async, [hex = request["block_hex"].asString()] {
+        return dinero::BlockAcceptor::AcceptBlockFromRPC(hex, "isolated-blocked-legacy-relay");
+    });
+    Json::Value result;
+    {
+        std::unique_lock<std::mutex> lock(gate->mutex);
+        result["relay_entered"] = gate->changed.wait_for(lock, 10s, [&] { return gate->entered; });
+    }
+    auto balance = std::async(std::launch::async, [&] {
+        return HttpRpcRequestTestAccess::Dispatch(*rpc->GetHttpServer(), "getbalance", Json::Value(Json::arrayValue));
+    });
+    auto commitment = std::async(std::launch::async, [&] {
+        return HttpRpcRequestTestAccess::Dispatch(*rpc->GetHttpServer(), "getutreexocommitment", Json::Value(Json::arrayValue));
+    });
+    result["balance_finished_during_relay"] = balance.wait_for(2s) == std::future_status::ready;
+    result["commitment_finished_during_relay"] = commitment.wait_for(2s) == std::future_status::ready;
+    result["acceptance_waits_for_relay"] = accepted.wait_for(0ms) == std::future_status::timeout;
+    {
+        std::lock_guard<std::mutex> lock(gate->mutex);
+        gate->released = true;
+        gate->changed.notify_all();
+    }
+    const auto disposition = accepted.get();
+    result["accepted"] = disposition.accepted();
+    result["accept_reason"] = disposition.reason;
+    result["balance"] = balance.get();
+    result["commitment"] = commitment.get();
+    result["relay_timed_out"] = gate->timed_out;
+    result["relay_commands"] = Json::Value(Json::arrayValue);
+    for (const auto& command : gate->commands) result["relay_commands"].append(command);
+    result["selected_height"] = chain->getBlockHeight();
+    return result;
+}
 
 Json::Value StopAtCallback(const Json::Value& request) {
     ShutdownBarrier gate;
@@ -458,7 +518,9 @@ int main(int argc, char** argv) {
             if(operation=="sdk_activation_state")result=SdkActivationTestState();else
             if(operation=="sdk_activation_set_proof")result=SdkActivationSetProof(request);else
 #endif
-            if (operation == "reopen_fences") {
+            if (operation == "legacy_relay_readiness") {
+                result=LegacyRelayReadiness(request);
+            } else if (operation == "reopen_fences") {
                 result = ReopenFences();
             } else if(operation=="completed_activation_cold") {
                 result=CompletedActivationCold(request);
