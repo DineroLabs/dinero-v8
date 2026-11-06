@@ -405,9 +405,11 @@ SpartanProof r1cs_spartan_prove(
     proof.circuit_hash = spartan_hash_r1cs_structure(cs);
 
     // Bind commitments, relaxation scalar, and circuit hash to transcript.
-    // The caller (ring_covenant.cpp) should append any Nova committed instance
-    // data (commit_W, commit_E from Nova) to the transcript BEFORE calling this,
-    // so those external commitments are also included in the Fiat-Shamir hash.
+    // An earlier design expected a caller (ring_covenant.cpp) to append external
+    // Nova commitments to the transcript before this point. Neither that caller
+    // nor Nova exists in the tree any more, so there is no external commitment
+    // to bind here and no caller obligation. If external commitments are ever
+    // reintroduced, they must be appended before this call.
     transcript.append_scalar("spartan_u", u);
     for (const Point& p : proof.comm_W.C)
         transcript.append_point("hW", p, ctx);
