@@ -29,6 +29,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <stdexcept>
 
 #ifdef _WIN32
 #include <process.h>
@@ -318,6 +319,17 @@ void test15_DefaultConfigPath() {
 
 }  // namespace
 
+void test16_LegacyOraclesRequireExplicitOptIn() {
+    DaemonContext ctx;
+    ConfigService defaults;
+    if (!defaults.Init(ctx) || defaults.GetBool("lightning.oracles.enable", true))
+        throw std::runtime_error("an existing config without a Lightning setting must start with legacy oracles disabled");
+    ConfigService explicit_enable;
+    explicit_enable.Set("lightning.oracles.enable", "1");
+    if (!explicit_enable.Init(ctx) || !explicit_enable.GetBool("lightning.oracles.enable", false))
+        throw std::runtime_error("explicit legacy oracle configuration must remain authoritative");
+}
+
 int main() {
     std::cout << "========================================" << std::endl;
     std::cout << "Config File Loader Test (Phase B)" << std::endl;
@@ -368,6 +380,8 @@ int main() {
     test15_DefaultConfigPath();
     std::cout << "  [✓] #15 default config path = <datadir>/dinero.conf" << std::endl;
 
-    std::cout << "\n✅ Config file loader: 15/15 properties hold" << std::endl;
+    test16_LegacyOraclesRequireExplicitOptIn();
+    std::cout << "  [✓] #16 legacy oracles default off; explicit opt-in preserved" << std::endl;
+    std::cout << "\n✅ Config file loader: 16/16 properties hold" << std::endl;
     return 0;
 }
