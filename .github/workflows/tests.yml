@@ -170,6 +170,11 @@ jobs:
           python3 scripts/ci/test_execution_exclusions.py
           python3 scripts/ci/test_workflow_setarch_selection.py
 
+      # Pinned vectors (BIP119 corpus sha256) must check out byte-for-byte on
+      # Windows (core.autocrlf=true); .gitattributes keeps tests/vectors LF.
+      - name: Vector checkout bytes self-test
+        run: python3 -B scripts/ci/test_vector_checkout_bytes.py
+
       # The release lanes trust check_reachability_stack.py to refuse a binary
       # without UPnP/NAT-PMP/QUIC; this pins that it cannot pass one by accident.
       - name: Reachability checker self-test
