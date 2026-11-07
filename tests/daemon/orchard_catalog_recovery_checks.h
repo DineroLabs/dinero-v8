@@ -1,5 +1,6 @@
 #pragma once
 #include "wallet/runtime_wallet_recovery.h"
+#include "daemon/services/chainstate_recovery_source.h"
 #include <tuple>
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
 namespace dinero {
@@ -23,7 +24,8 @@ struct OrchardCatalogRecoveryFixture : OrchardCreationFixture {
         return wallet::OrchardAccountDelivery::ReadCatalogForReplay(use->Wallet(),Session(),**view);
     }
     auto Recover(){auto use=WalletService::AcquireWalletUse(wallet);auto index=ChainstateService::AcquireWalletIndexUse(f.service);
-        return RuntimeWalletRecovery::ResumeCatalogWalletStores(*f.service,use->Wallet(),index->Index(),Session());
+        const dinero::ChainstateRuntimeRecoverySource source(*f.service);
+        return RuntimeWalletRecovery::ResumeCatalogWalletStores(source,use->Wallet(),index->Index(),Session());
     }
     int StorageTables(){auto use=WalletService::AcquireWalletUse(wallet);auto lease=use->Wallet().AcquireDatabaseLease();
         struct Statement{sqlite3_stmt* p=nullptr;~Statement(){sqlite3_finalize(p);}} q;

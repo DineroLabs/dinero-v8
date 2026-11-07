@@ -99,6 +99,9 @@ private:
     friend class ChainstateService;
     friend class RuntimeOrdinaryDelivery;
     friend class RuntimeIndexDelivery;
+    // Test construction only (Task 6.3 R4): the standalone recovery test
+    // fakes a coverage source without a node.
+    friend struct RuntimeCoverageProjectionTestAccess;
     RuntimeWalletCoverageProjection() = default;
     static std::shared_ptr<const RuntimeWalletCoverageProjection> Build(
         std::shared_ptr<const RuntimeWalletOriginProjection>,

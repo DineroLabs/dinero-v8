@@ -341,18 +341,23 @@ if(TARGET dinero_chainstate)
     target_link_libraries(dinero_core PUBLIC dinero_orchard_snapshot_store)
   endif()
   add_library(dinero_orchard_account_replay STATIC "${ORCHARD_HOST_ROOT}/src/wallet/runtime_account_replay.cpp")
-  target_link_libraries(dinero_orchard_account_replay PUBLIC dinero_orchard_chainstate_write dinero_orchard_wallet_account)
+  # Task 6.3: account_replay needs only SelectedOrchardBlockContext from the
+  # header library (nm audit); the chainstate_write edge is gone. The
+  # header->staging->chainstate reach that remains is the queued owner
+  # decision (task-6.3-owner-decision-orchard-header.md).
+  target_link_libraries(dinero_orchard_account_replay PUBLIC dinero_orchard_header dinero_orchard_wallet_account)
   target_link_libraries(dinero_orchard_runtime_reader PUBLIC dinero_orchard_chainstate_write)
   add_library(dinero_orchard_index_delivery STATIC
     "${ORCHARD_HOST_ROOT}/src/wallet/runtime_index_delivery.cpp"
     "${ORCHARD_HOST_ROOT}/src/wallet/runtime_wallet_index_delivery.cpp"
     "${ORCHARD_HOST_ROOT}/src/wallet/runtime_wallet_recovery.cpp"
-    "${ORCHARD_HOST_ROOT}/src/wallet/runtime_wallet_recovery_service.cpp"
     "${ORCHARD_HOST_ROOT}/src/wallet/orchard_account_delivery.cpp")
   target_include_directories(dinero_orchard_index_delivery PRIVATE "${ORCHARD_HOST_ROOT}/src")
   # WalletManager references ChainDB/BlockStorage even in the account-only
   # executable. Keep its archive before the chainstate provider for GNU ld.
-  target_link_libraries(dinero_orchard_index_delivery PUBLIC dinero_wallet dinero_orchard_account_replay dinero_orchard_chainstate_write dinero_orchard_operation_archive dinero_orchard_wallet_account sqlite3 dinero_orchard_proof_jobs dinero_orchard_ownership_inventory)
+  # Task 6.3: the wallet delivery library is node-free — no chainstate_write
+  # (its objects need zero symbols from it; nm audit 2026-11-07).
+  target_link_libraries(dinero_orchard_index_delivery PUBLIC dinero_wallet dinero_orchard_account_replay dinero_orchard_operation_archive dinero_orchard_wallet_account sqlite3 dinero_orchard_proof_jobs dinero_orchard_ownership_inventory)
   if(TARGET test_assumeutxo_replay)
     # The service's reader definition is source-local. Bind the projection
     # tests to the actual optional implementation rather than inheriting it.
@@ -426,6 +431,15 @@ if(TARGET dinero_chainstate)
   endif()
   if(TARGET dinero_core)
     target_link_libraries(dinero_core PUBLIC dinero_orchard_index_delivery)
+    # Task 6.3: the R1 recovery adapter is node code; dinero_core links it.
+    add_library(dinero_orchard_recovery_adapter STATIC
+      "${ORCHARD_HOST_ROOT}/src/wallet/runtime_wallet_recovery_service.cpp")
+    target_include_directories(dinero_orchard_recovery_adapter PRIVATE
+      "${ORCHARD_HOST_ROOT}/src" "${ORCHARD_HOST_ROOT}/src/daemon")
+    target_include_directories(dinero_orchard_recovery_adapter BEFORE PRIVATE
+      "${ORCHARD_HOST_ROOT}/third_party/rocksdb/include")
+    target_link_libraries(dinero_orchard_recovery_adapter PUBLIC dinero_orchard_index_delivery)
+    target_link_libraries(dinero_core PUBLIC dinero_orchard_recovery_adapter)
   endif()
 
   if(TARGET dinero_core)
@@ -741,4 +755,22 @@ target_link_libraries(test_orchard_header PRIVATE dinero_orchard_header)
       "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS=-C target-feature=-crt-static")
   endif()
 
+endif()
+
+# Task 6.3 R4: standalone wallet recovery without any node code. Links the
+# wallet and the Orchard wallet-delivery libraries ONLY — adding dinero_core,
+# dinero_chainstate or a src/daemon source here defeats the test's purpose.
+if(TARGET dinero_orchard_index_delivery)
+  add_executable(test_wallet_recovery_without_node
+    "${ORCHARD_HOST_ROOT}/tests/wallet/test_wallet_recovery_without_node.cpp")
+  target_include_directories(test_wallet_recovery_without_node PRIVATE
+    "${ORCHARD_HOST_ROOT}/include" "${ORCHARD_HOST_ROOT}")
+  target_link_libraries(test_wallet_recovery_without_node PRIVATE
+    dinero_orchard_index_delivery
+    dinero_orchard_account_replay
+    dinero_wallet
+    sqlite3)
+  add_test(NAME WalletRecoveryWithoutNode COMMAND test_wallet_recovery_without_node)
+  set_tests_properties(WalletRecoveryWithoutNode PROPERTIES TIMEOUT 120
+    LABELS "orchard;wallet;separation")
 endif()

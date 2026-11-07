@@ -1,4 +1,7 @@
 #include "storage/validated_tip_transition.h"
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+#include "daemon/services/chainstate_recovery_source.h"  // R1 adapter (Task 6.3)
+#endif
 #include "storage/orchard_storage_mode.h"
 #include "daemon/services/prepared_orchard_parent.h"
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
@@ -7162,9 +7165,10 @@ ChainstateService::resumeRuntimeWalletRecoveryIfNeeded(WalletManager& wallet, UT
         }
         // Account/source capture and proof verification run after every outer
         // selected lock and the short session lease above have been released.
+        const ChainstateRuntimeRecoverySource recovery_source(*this);
         return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
             RuntimeWalletRecovery::ResumeCatalogWalletStores(
-                *this,wallet,index,session));
+                recovery_source,wallet,index,session));
 #else
         return Status::Internal;
 #endif
@@ -21488,10 +21492,9 @@ ChainstateService::resumeRuntimeImportedOrchardRecovery(WalletManager& wallet,UT
             };
             write(fence);
         };
-        auto result=RuntimeWalletRecovery::ResumePreparedOrchardCatalog(replay,[&](RuntimeOutboxCursor cursor,size_t count){
-            const auto page=getRuntimeDeliveryPage(cursor,count);
-            if(!page.ok())throw std::runtime_error("Imported Orchard delivery page unavailable");return **page;
-        },wallet,session,bind);
+        const ChainstateRuntimeRecoverySource recovery_source(*this);
+        auto result=RuntimeWalletRecovery::ResumePreparedOrchardCatalogStores(
+            replay,recovery_source,wallet,session,bind);
         return std::make_shared<const RuntimeOrchardCatalogRecoveryResult>(std::move(result));
     }catch(...){return Status::Internal;}
 #else
