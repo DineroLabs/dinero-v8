@@ -17,7 +17,6 @@
 #include "consensus/chainparams.h"       // For GetActiveChain
 #include "wallet/descriptor_store.h"  // Phase 3C: For descriptor-based address generation
 // #include "lightning/lightning_service.h"  // DISABLED: Lightning is standalone
-#include "storage/archival_block_reader.h"
 #include "sqlite_open.h"
 #include "sqlite_txn.h"
 #include "common/logger.h"
@@ -90,7 +89,7 @@ namespace dinero {
 #include <cctype>
 #include <chrono>
 #include <set>                    // For rescanBlockchain watch_scripts matching
-#include "storage/chain_db.h"     // For rescanBlockchain ChainDB access
+#include "wallet/node_interfaces.h"  // Rescan reads the chain through IWalletChainView
 #include "crypto/dinero_crypto_minimal.h"
 
 namespace dinero {
@@ -7478,9 +7477,8 @@ WalletManager::WalletScanStatus WalletManager::GetScanStatus(uint32_t chain_heig
 
 bool WalletManager::rescanBlockchain(int start_height,
                                      int gap_limit,
-                                     dinero::ChainDB* chain_db,
-                                     dinero::BlockStorage* block_storage) {
-    return RescanBlockchainImpl(start_height, gap_limit, chain_db, block_storage, nullptr, 0);
+                                     const wallet::IWalletChainView* view) {
+    return RescanBlockchainImpl(start_height, gap_limit, view, nullptr, 0);
 }
 
 bool WalletManager::snapshotRecoveryAlreadyApplied(uint32_t height,const std::string& hash) {
@@ -7502,9 +7500,9 @@ bool WalletManager::snapshotRecoveryAlreadyApplied(uint32_t height,const std::st
 }
 
 bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
-                                        ChainDB* chain_db, BlockStorage* block_storage,
+                                        const wallet::IWalletChainView* view,
                                         const SelectedWalletHistory* prepared, uint64_t expected_session) {
-    if (!chain_db && !prepared) return false;
+    if (!view && !prepared) return false;
     std::unique_ptr<DatabaseLease> database_lease;
     try { database_lease = AcquireDatabaseLease(); }
     catch (...) { return false; }
@@ -7554,8 +7552,8 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
             if(prepared->snapshot_&&(prepared->snapshot_->height+1!=prepared->first_height_ ||
                 (!utxo_index_) || wallet_locked_))return false;
         } else {
-            const auto tip = chain_db->getTip();
-            if (!tip.ok() || tip->height < 0) return false;
+            const auto tip = view->GetTip();
+            if (!tip || tip->height < 0) return false;
             tip_height = static_cast<uint32_t>(tip->height);
         }
         start_height = std::max(start_height, 0);
@@ -7635,11 +7633,11 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
             const auto height = static_cast<uint32_t>(cursor);
             std::optional<Block> legacy_body;
             if (!prepared) {
-                const auto hash = chain_db->getBlockHashByHeight(height);
-                if (!hash.ok()) throw std::runtime_error("Block rescan source height unavailable");
-                const auto source = dinero::storage::ReadArchivalBlock(*chain_db, block_storage, *hash);
-                if (!source.ok()) throw std::runtime_error("Block rescan source body unavailable");
-                legacy_body = *source;
+                const auto hash = view->GetBlockHashAtHeight(static_cast<int32_t>(height));
+                if (!hash) throw std::runtime_error("Block rescan source height unavailable");
+                auto source = view->ReadBlock(*hash);
+                if (!source) throw std::runtime_error("Block rescan source body unavailable");
+                legacy_body = std::move(*source);
             }
             const auto& block = prepared ? prepared->blocks_[height-prepared->first_height_] : *legacy_body;
             for (size_t tx_index = 0; tx_index < block.vtx.size(); ++tx_index) {

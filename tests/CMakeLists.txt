@@ -5016,6 +5016,25 @@ target_include_directories(test_node_interfaces PRIVATE
 add_test(NAME WalletNodeInterfaces COMMAND test_node_interfaces)
 set_tests_properties(WalletNodeInterfaces PROPERTIES LABELS "wallet;separation" TIMEOUT 60)
 
+# Task 5.2: rescan through IWalletChainView (adapter + wallet integration).
+add_executable(test_wallet_chain_view
+  tests/wallet/test_wallet_chain_view.cpp
+  src/daemon/lightning_stubs.cpp
+  tests/stubs/mempool_test_stubs.cpp
+)
+target_include_directories(test_wallet_chain_view PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR})
+target_link_libraries(test_wallet_chain_view PRIVATE
+  dinero_wallet
+  dinero_chainstate
+  dinero_consensus
+  dinero_crypto
+  sqlite3
+  Threads::Threads
+)
+add_test(NAME WalletChainView COMMAND test_wallet_chain_view)
+set_tests_properties(WalletChainView PROPERTIES LABELS "wallet;separation" TIMEOUT 120)
+
 # Priority 3: UTXO Index Correctness Tests
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/utxo/test_utxo_index_correctness.cpp)
   add_executable(test_utxo_index_correctness tests/utxo/test_utxo_index_correctness.cpp)

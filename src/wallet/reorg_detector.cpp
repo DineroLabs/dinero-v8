@@ -1,6 +1,5 @@
 #include "wallet/reorg_detector.h"
-#include "storage/chain_db.h"
-#include "storage/tip_info.h"  // TipInfo for getTip() result
+#include "wallet/node_interfaces.h"  // Chain observations via IWalletChainView (Task 5.2)
 #include "common/logger.h"
 #include <sstream>
 #include <iomanip>
@@ -55,15 +54,15 @@ ReorgDetector::ReorgDetector(size_t max_history)
 // ============================================================================
 
 std::optional<ReorgEvent> ReorgDetector::CheckForReorg(
-    const ChainDB* chain_db,
+    const wallet::IWalletChainView* chain_view,
     uint64_t current_time_ms
 ) {
-    if (!chain_db) {
+    if (!chain_view) {
         return std::nullopt;
     }
 
     // Detect reorg depth
-    int depth = DetectReorgDepth(chain_db, current_time_ms);
+    int depth = DetectReorgDepth(chain_view, current_time_ms);
 
     if (depth == 0) {
         // No reorg detected
@@ -95,13 +94,13 @@ std::optional<ReorgEvent> ReorgDetector::CheckForReorg(
     return event;
 }
 
-int ReorgDetector::DetectReorgDepth(const ChainDB* chain_db, uint64_t current_time_ms) {
+int ReorgDetector::DetectReorgDepth(const wallet::IWalletChainView* chain_view, uint64_t current_time_ms) {
     // Get current chain tip
     uint64_t current_height = 0;
     std::string current_tip_hash = "";
 
-    if (chain_db) {
-        auto tip_opt = chain_db->getTip();
+    if (chain_view) {
+        auto tip_opt = chain_view->GetTip();
         if (tip_opt) {
             current_height = static_cast<uint64_t>(tip_opt->height);
             current_tip_hash = tip_opt->hash.ToString();

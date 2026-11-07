@@ -11,6 +11,7 @@
 //   - All public functions use mutex for thread safety
 
 #include "nodecore/nodecore_ffi.h"
+#include "storage/chain_db_wallet_view.h"
 #include "daemon/daemon_app.h"
 #include "daemon/datadir_guard.h"
 #include "daemon/config.h"
@@ -1345,11 +1346,12 @@ int32_t nodecore_rescan(uint64_t from_height) {
                     chain_db = cs->GetChainDB();
                 }
             }
+            std::optional<dinero::storage::ChainDbWalletView> chain_view;
+            if (chain_db) chain_view.emplace(*chain_db, ctx.block_storage.get());
             ws->get().rescanBlockchain(
                 static_cast<int>(from_height),
                 20,
-                chain_db,
-                ctx.block_storage.get()
+                chain_view ? &*chain_view : nullptr
             );
         }
     }

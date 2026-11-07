@@ -15099,7 +15099,7 @@ std::optional<uint32_t> ChainstateService::RescanWalletFromSelectedHistory(
         // Const ownership is local and no source callback reaches the wallet.
         // A later chain change still needs ordinary catch-up/reorg processing.
         const auto immutable = std::unique_ptr<const SelectedWalletHistory>(owned.release());
-        if (!wallet.RescanBlockchainImpl(start_height, gap_limit, nullptr, nullptr, immutable.get(), session))
+        if (!wallet.RescanBlockchainImpl(start_height, gap_limit, nullptr, immutable.get(), session))
             return fail("selected-history-wallet-apply-failed");
         return height;
     } catch (...) {
@@ -15228,7 +15228,7 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
             return fail("selected wallet recovery source changed; retry");
         auto lifetime=assumeutxo_lifecycle_->AcquireSnapshotUse(base_header.GetHash(),base_height);
         if(!lifetime)return fail("snapshot lifecycle changed before wallet recovery");
-        if(!wallet.RescanBlockchainImpl(int(base_height+1),0,nullptr,nullptr,prepared.get(),session))
+        if(!wallet.RescanBlockchainImpl(int(base_height+1),0,nullptr,prepared.get(),session))
             return fail("authenticated snapshot wallet application failed");
         return target;
     }catch(const std::exception& e){return fail(e.what());}

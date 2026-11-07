@@ -20,6 +20,7 @@
  */
 
 #include <iostream>
+#include "storage/chain_db_wallet_view.h"
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -278,6 +279,7 @@ static void atomicBlockRescan() {
             return result;
         };
         ChainDB chain;check(chain.init(dir/"chain")==Status::Ok,"block rescan fixture opens chain store");
+        storage::ChainDbWalletView chain_view(chain,nullptr);
         const auto token=ChainWriteToken::CreateForTesting();
         Transaction receive;receive.version=2;
         TxInput coinbase;coinbase.prevout.vout=UINT32_MAX;coinbase.scriptSig={1,1};receive.vin.push_back(coinbase);
@@ -310,7 +312,7 @@ static void atomicBlockRescan() {
             check(scalar("SELECT COUNT(*) FROM transactions")==0,"failed block rescan does not publish partial history");
             check(sqlite3_get_autocommit(wallet.getCurrentDatabase()),"failed block rescan releases owned transaction");
         };
-        check(!wallet.rescanBlockchain(3,0,&chain),"scan beginning above available source tip refuses instead of claiming completion");
+        check(!wallet.rescanBlockchain(3,0,&chain_view),"scan beginning above available source tip refuses instead of claiming completion");
         unchanged();
         for(const auto& [stage,event,condition]:std::vector<std::tuple<std::string,std::string,std::string>>{
                 {"utxos","DELETE",""},{"utxos","UPDATE",""},{"utxos","INSERT",""},
@@ -323,30 +325,30 @@ static void atomicBlockRescan() {
                 sql("DROP TRIGGER reject_block");
                 sql("UPDATE utxos SET is_spent=1,spent_height=2,height=0");
                 sql("CREATE TEMP TRIGGER reject_block BEFORE UPDATE ON utxos BEGIN SELECT RAISE(ABORT,'restore stage'); END");
-                check(!wallet.rescanBlockchain(1,0,&chain),"checked block rescan restore failure refuses completion");
+                check(!wallet.rescanBlockchain(1,0,&chain_view),"checked block rescan restore failure refuses completion");
                 check(scalar("SELECT COUNT(*) FROM utxos WHERE amount=7000 AND is_spent=1 AND spent_height=2")==1,
                       "restore failure preserves preceding spent state");
                 sql("DROP TRIGGER reject_block");sql("UPDATE utxos SET is_spent=0,spent_height=NULL,height=2");unchanged();continue;
             }
-            check(!wallet.rescanBlockchain(1,0,&chain),"checked block rescan "+stage+" "+event+" refuses completion");
+            check(!wallet.rescanBlockchain(1,0,&chain_view),"checked block rescan "+stage+" "+event+" refuses completion");
             unchanged();sql("DROP TRIGGER reject_block");
         }
         sql("PRAGMA foreign_keys=ON");sql("CREATE TABLE block_parent(id INTEGER PRIMARY KEY)");
         sql("CREATE TABLE block_child(id INTEGER REFERENCES block_parent(id) DEFERRABLE INITIALLY DEFERRED)");
         sql("CREATE TEMP TRIGGER reject_block AFTER INSERT ON utxos BEGIN INSERT INTO block_child VALUES(1); END");
-        check(!wallet.rescanBlockchain(1,0,&chain),"checked block rescan deferred COMMIT failure refuses completion");
+        check(!wallet.rescanBlockchain(1,0,&chain_view),"checked block rescan deferred COMMIT failure refuses completion");
         unchanged();check(scalar("SELECT COUNT(*) FROM block_child")==0,"block COMMIT failure rolls back trigger writes");
         sql("DROP TRIGGER reject_block");
         { auto lease=wallet.AcquireDatabaseLease();sql("BEGIN IMMEDIATE");sql("INSERT INTO block_parent VALUES(99)");
-          check(!wallet.rescanBlockchain(1,0,&chain),"block rescan refuses borrowed transaction");
+          check(!wallet.rescanBlockchain(1,0,&chain_view),"block rescan refuses borrowed transaction");
           check(!sqlite3_get_autocommit(wallet.getCurrentDatabase()) && scalar("SELECT COUNT(*) FROM block_parent")==1,
                 "block rescan leaves caller transaction intact");sql("ROLLBACK"); }
         sqlite3_set_authorizer(wallet.getCurrentDatabase(),[](void*,int op,const char* table,const char*,const char*,const char*) {
             return op==SQLITE_READ && table && std::string_view(table)=="watch_scripts"?SQLITE_DENY:SQLITE_OK;
         },nullptr);
-        check(!wallet.rescanBlockchain(1,0,&chain),"block rescan ownership read failure refuses completion");
+        check(!wallet.rescanBlockchain(1,0,&chain_view),"block rescan ownership read failure refuses completion");
         sqlite3_set_authorizer(wallet.getCurrentDatabase(),nullptr,nullptr);unchanged();
-        check(wallet.rescanBlockchain(1,0,&chain),"block rescan complete source commits outputs and spends");
+        check(wallet.rescanBlockchain(1,0,&chain_view),"block rescan complete source commits outputs and spends");
         check(scalar("SELECT COUNT(*) FROM utxos WHERE amount=5000 AND height=1 AND is_spent=1 AND spent_height=2")==1 &&
               scalar("SELECT COUNT(*) FROM utxos")==2,"block rescan stores confirmed spend plus owned change and removes stale output");
         check(scalar("SELECT last_scanned_height FROM sync_meta WHERE id=1")==2 &&
@@ -362,7 +364,7 @@ static void atomicBlockRescan() {
         wallet.open("block");
         check(wallet.getCurrentBlockchainHeight()==2 && scalar("SELECT COUNT(*) FROM utxos WHERE is_spent=1")==1,
               "block rescan reopen restores durable height and spend");
-        check(wallet.rescanBlockchain(1,0,&chain) && scalar("SELECT COUNT(*) FROM utxos")==2,
+        check(wallet.rescanBlockchain(1,0,&chain_view) && scalar("SELECT COUNT(*) FROM utxos")==2,
               "block rescan retry is idempotent");
         check(scalar("SELECT COUNT(*) FROM transactions")==2 &&
               scalar("SELECT COUNT(*) FROM transactions WHERE label='keep my label'")==1,
@@ -371,7 +373,7 @@ static void atomicBlockRescan() {
               scalar("SELECT COUNT(*) FROM transactions WHERE category='receive'")==0,
               "rescan keeps originating send metadata and does not count owned change as received");
         sql("CREATE TEMP TRIGGER reject_history BEFORE UPDATE ON transactions BEGIN SELECT RAISE(ABORT,'history unavailable'); END");
-        check(!wallet.rescanBlockchain(1,0,&chain) && scalar("SELECT COUNT(*) FROM transactions")==2 &&
+        check(!wallet.rescanBlockchain(1,0,&chain_view) && scalar("SELECT COUNT(*) FROM transactions")==2 &&
               scalar("SELECT COUNT(*) FROM transactions WHERE label='keep my label'")==1 &&
               scalar("SELECT COUNT(*) FROM utxos WHERE is_spent=1")==1,
               "history write failure rolls back coins and preserves existing labeled history");
@@ -567,7 +569,8 @@ int main() {
                   dinero::Status::Ok,
               "seeded a tip without block-height data to force replay failure");
 
-        check(!wallet.rescanBlockchain(5, 0, &chain_db, nullptr),
+        dinero::storage::ChainDbWalletView sparse_view(chain_db, nullptr);
+        check(!wallet.rescanBlockchain(5, 0, &sparse_view),
               "replay reports its missing-block failure");
         const auto after = wallet.getBalance();
         check(after.utxo_count == before.utxo_count,

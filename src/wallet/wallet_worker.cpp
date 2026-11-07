@@ -1,5 +1,6 @@
 // Wallet Worker Implementation - Off-thread wallet processing with atomic reorg handling
 #include "wallet/wallet_worker.h"
+#include "storage/chain_db_wallet_view.h"
 #include "wallet/utxo_index.h"
 #include "wallet/transaction.h"
 #include "wallet/wallet_manager.h"  // For database persistence
@@ -214,7 +215,8 @@ bool WalletWorker::RescanSynchronously(ChainDB* chain_db, int start_height, std:
     try {
         constexpr int kDefaultGapLimit = 20;
         const auto database_lease = wallet_manager_->AcquireDatabaseLease();
-        const bool ok = wallet_manager_->rescanBlockchain(start_height, kDefaultGapLimit, chain_db);
+        const dinero::storage::ChainDbWalletView chain_view(*chain_db, /*block_storage=*/nullptr);
+        const bool ok = wallet_manager_->rescanBlockchain(start_height, kDefaultGapLimit, &chain_view);
         if (!ok && error) {
             *error = "WalletManager::rescanBlockchain returned false";
         }
