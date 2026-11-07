@@ -1,6 +1,6 @@
 #pragma once
 
-#include "p2p/block_download_scheduler.h"  // For SyncPhase
+#include "common/sync_phase.h"  // SyncPhase (Task 6.1: no p2p header in a wallet header)
 #include <optional>
 #include <chrono>
 #include <cstdint>

@@ -1178,6 +1178,11 @@ add_library(dinero_core STATIC
   src/network/tor_runtime_controller.cpp
   src/network/embedded_tor_process.cpp
 
+  # Node-side sync/fee diagnostics (moved from the wallet, Task 6.1)
+  src/wallet/wallet_sync_status.cpp
+  src/wallet/slow_reason_analyzer.cpp
+  src/wallet/wallet_fee_bump_hooks.cpp
+
   # Common utilities
   src/consensus/global_utxo_set_impl.cpp  # GlobalUTXOSet implementation (moved from consensus, Task 2.3)
   src/common/json_logger.cpp

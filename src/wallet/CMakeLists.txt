@@ -74,16 +74,13 @@ add_library(dinero_wallet STATIC
   # Hardware wallet files added conditionally below (not available on iOS)
   # Trezor files conditionally added below (ENABLE_TREZOR)
   ${CMAKE_CURRENT_SOURCE_DIR}/recipient_descriptor.cpp  # DecodePaymentTarget — structured address resolution
-  ${CMAKE_CURRENT_SOURCE_DIR}/wallet_sync_status.cpp  # Phase W.2.1: Truthful wallet sync UX
   ${CMAKE_CURRENT_SOURCE_DIR}/shielded_wallet_runtime.cpp  # v5 shielded note runtime + block sync (wallet-side only)
   ${CMAKE_CURRENT_SOURCE_DIR}/shielded_hardware_wallet.cpp # hardware-wallet outgoing-view trust boundary
   ${CMAKE_CURRENT_SOURCE_DIR}/sync_eta_estimator.cpp  # Phase W.2.2: Honest ETA estimation
   ${CMAKE_CURRENT_SOURCE_DIR}/sync_progress_tracker.cpp  # Phase W.2.2: Phase-aware progress tracking
   ${CMAKE_CURRENT_SOURCE_DIR}/reorg_detector.cpp  # Phase W.2.4: Reorg detection and visibility
-  ${CMAKE_CURRENT_SOURCE_DIR}/slow_reason_analyzer.cpp  # Phase W.2.5: Slow reason analyzer
   ${CMAKE_CURRENT_SOURCE_DIR}/rbf_cpfp_detector.cpp  # Phase W.4.2: RBF & CPFP capability detection
   ${CMAKE_CURRENT_SOURCE_DIR}/fee_bump_engine.cpp  # Phase W.4.3: Fee bump recommendation engine
-  ${CMAKE_CURRENT_SOURCE_DIR}/wallet_fee_bump_hooks.cpp  # Phase W.4.5: Wallet fee bump UX hooks
   # Phase 33: Full Wallet Activation
   ${CMAKE_CURRENT_SOURCE_DIR}/wallet_features.cpp     # Wallet feature flags (all features enabled)
   # Milestone 12.2: Formal UTXO State Model (v0.12.0)
