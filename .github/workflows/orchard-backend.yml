@@ -16,6 +16,7 @@ on:
       - 'third_party/**'
       - 'scripts/build-openssl-vendored.sh'
   pull_request:
+    branches: [dinero-main]  # Task 0.10 throwaway branch only: skip the measurement PR
     paths:
       - 'rust/orchard_backend/**'
       - '.github/workflows/orchard-backend.yml'

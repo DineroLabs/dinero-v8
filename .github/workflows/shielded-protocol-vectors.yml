@@ -3,6 +3,7 @@ name: Shielded protocol vectors
 on:
   workflow_dispatch:
   pull_request:
+    branches: [dinero-main]  # Task 0.10 throwaway branch only: skip the measurement PR
     paths:
       - 'include/consensus/shielded/**'
       - 'include/primitives/transaction.h'

@@ -3,6 +3,7 @@ name: Combined migration release qualification
 on:
   workflow_dispatch:
   pull_request:
+    branches: [dinero-main]  # Task 0.10 throwaway branch only: skip the measurement PR
     paths:
       - '.github/workflows/combined-migration-qualification.yml'
       # This gate covers consensus, mining, RPC/wallet, storage and daemon

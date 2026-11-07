@@ -20,6 +20,9 @@ add_library(dinero_chainstate STATIC
   ${CMAKE_SOURCE_DIR}/src/sqlite_open.cpp                  # Minimal SQLite stub (compatibility)
   ${CMAKE_SOURCE_DIR}/src/consensus/pow_consensus_engine.cpp   # PoW engine (needs ChainDB)
   ${CMAKE_SOURCE_DIR}/src/chainstate/mtp_lookup.cpp        # BIP68 MTP lookup factory
+  ${CMAKE_SOURCE_DIR}/src/consensus/coins_db.cpp           # Phase M.1: CoinsDB (UTXO database backend)
+  ${CMAKE_SOURCE_DIR}/src/consensus/coins_view_cache.cpp   # Phase M.1: CoinsViewCache (L1 UTXO cache)
+  ${CMAKE_SOURCE_DIR}/src/indexing/utxo_position_index.cpp    # Phase 11a: Global UTXO → Utreexo position index
 )
 
 target_include_directories(dinero_chainstate BEFORE PUBLIC
@@ -32,6 +35,7 @@ target_include_directories(dinero_chainstate PUBLIC
 )
 
 target_link_libraries(dinero_chainstate PUBLIC
+  dinero_logging
   dinero_consensus
   dinero_crypto
   jsoncpp_static

@@ -82,6 +82,7 @@ target_include_directories(dinero_consensus_core PUBLIC
 )
 
 target_link_libraries(dinero_consensus_core PUBLIC
+  dinero_logging
   dinero_crypto
   dinero_pq        # Phase 6: P2MR spend validator (VerifyP2MRSpend) in script_validation.cpp
   dinero_shielded  # v7 Shielded pool: commitment tree + nullifier set + validation
@@ -145,10 +146,6 @@ add_library(dinero_consensus STATIC
   src/consensus/block_filter.cpp      # BIP158 GCS block filters for compact filter commitment
   src/consensus/filter_commitment.cpp # DNRF coinbase filter commitment (SegWit-style OP_RETURN)
   src/consensus/merkle_proof.cpp      # Merkle inclusion proof for coinbase verification
-  src/consensus/coins_db.cpp           # Phase M.1: CoinsDB (UTXO database backend)
-  src/consensus/global_utxo_set_impl.cpp  # Phase 11a: GlobalUTXOSet implementation
-  src/indexing/utxo_position_index.cpp    # Phase 11a: Global UTXO → Utreexo position index
-  src/consensus/coins_view_cache.cpp   # Phase M.1: CoinsViewCache (L1 UTXO cache)
   src/consensus/utxo_publication.cpp
   src/consensus/consensus_utxo_set.cpp # Phase 2: Pure in-memory UTXO set (no DB, no mutex)
   src/consensus/stateless_verification.cpp # Phase 2.2: Stateless block verification (pure, no DB)
@@ -180,7 +177,6 @@ add_library(dinero_consensus STATIC
   src/consensus/csn_replay_data.cpp      # Historical CSN targets and spent metadata
   src/consensus/cpu_budget_monitor.cpp   # Phase E.2.d: CPU budget monitoring and validation timeouts
   src/consensus/undo.cpp                 # UndoRecord serialization for ChainDB
-  src/address/addr_codec.cpp           # Address encoding/decoding (Taproot support)
   src/address/addr_types.cpp           # Address type definitions
   src/crypto/ripemd160.cpp             # Crypto primitives
   src/common/serialization.cpp         # Serialization utilities
@@ -190,46 +186,46 @@ add_library(dinero_consensus STATIC
   src/primitives/transaction_serializer.cpp  # TransactionSerializer helpers (ToHex, FromHex, Deserialize)
   src/primitives/hash_domains.cpp      # Phase M.3: Semantic hash domains (TxId, BlockHash, etc.)
   src/common/sha256d.cpp               # SHA256d hashing
+  # Task 2.5 Step 3: pq kernel folded in (its primitive deps, uint256::IsNull
+  # and Transaction::GetBaseSize, are defined only in the consensus tier, so
+  # declaring them from dinero_pq would close a cycle).
+  src/consensus/pq/scheme_registry.cpp
+  src/consensus/pq/ml_dsa_65.cpp
+  src/consensus/pq/ml_dsa_65_keygen.c
+  src/consensus/pq/p2mr_consensus.cpp
 )
 
-target_include_directories(dinero_consensus BEFORE PUBLIC
-  ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include  # Must come BEFORE system paths to override Homebrew headers
+# Folded ml_dsa_65_keygen.c needs PQClean's internal headers and archive,
+# exactly as dinero_pq declares them (src/consensus/pq/CMakeLists.txt).
+target_include_directories(dinero_consensus PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/pqclean/common
+  ${CMAKE_SOURCE_DIR}/third_party/pqclean/crypto_sign/ml-dsa-65/clean
 )
+target_link_libraries(dinero_consensus PRIVATE pqclean_ml_dsa_65)
+
 target_include_directories(dinero_consensus PUBLIC
   ${CMAKE_SOURCE_DIR}/include
   ${CMAKE_SOURCE_DIR}/src
-  ${CMAKE_SOURCE_DIR}/src/daemon
 )
 
 if(APPLE)
   target_link_libraries(dinero_consensus PUBLIC
+    dinero_logging
     dinero_crypto
-    dinero_pq       # Phase 6: P2MR spend validator (pq::VerifyP2MRSpend +
-                    # IsSchemeAcceptedAtHeight) is called from
-                    # script_validation.obj inside this library, and
-                    # transaction_validator.obj in dinero_chainstate. Carrying
-                    # it as a PUBLIC dep means every downstream target that
-                    # links dinero_consensus gets the PQ symbols transitively
-                    # rather than each test having to know to add it.
     dinero_zk       # Shielded proof system support
     jsoncpp_static  # Bundled (no Homebrew dependency)
     secp256k1
     OpenSSL::Crypto # script_crypto.cpp uses SHA256/RIPEMD160 directly
     zstd            # For Utreexo proof compression
-    RocksDB::rocksdb  # Phase M.1: CoinsDB requires RocksDB (CMake target)
-    sqlite3         # Transitive header dependency (wallet headers include sqlite3.h)
   )
 else()
   target_link_libraries(dinero_consensus PUBLIC
+    dinero_logging
     dinero_crypto
-    dinero_pq       # See APPLE branch above for the rationale; mirror the
-                    # PUBLIC dep here so non-Apple consumers get pq::* too.
     dinero_zk       # Shielded proof system support
     jsoncpp_static  # Bundled (same as Mac)
     secp256k1
     OpenSSL::Crypto # script_crypto.cpp uses SHA256/RIPEMD160 directly
     zstd            # For Utreexo proof compression
-    RocksDB::rocksdb  # Phase M.1: CoinsDB requires RocksDB (CMake target)
-    sqlite3         # Transitive header dependency (wallet headers include sqlite3.h)
   )
 endif()

@@ -14,6 +14,7 @@
  */
 
 #include "rpc/v7_pq_handlers.h"
+#include "wallet/p2mr_signing.h"
 
 #include <exception>
 
@@ -194,32 +195,6 @@ ListP2MRAddressesResult ListP2MRAddresses(const wlt::V7P2MRStore&  store,
         return out;
     }
     out.status  = HandlerStatus::Ok;
-    return out;
-}
-
-// ---------------------------------------------------------------------------
-// wallet.signp2mr
-// ---------------------------------------------------------------------------
-SignP2MRResult SignP2MR(const wlt::V7P2MRStore& store, SignP2MRParams params) {
-    SignP2MRResult out;
-    ScopedMasterKey master_guard{params.master_key};
-    wlt::SecureSeed seed;
-    std::optional<wlt::SecureKeypair> key;
-    try {
-        out.status = OpenBoundKey(store, params.wallet_id, params.address,
-                                  params.master_key, seed, key);
-        if (out.status != HandlerStatus::Ok) {
-            out.error_message = "P2MR signing key or stored address binding unavailable";
-            return out;
-        }
-        auto signature = mldsa::Sign(params.sighash.data(), params.sighash.size(), key->secret());
-        out.scheme_id = pq::SCHEME_ID_ML_DSA_65;
-        out.pubkey = key->pubkey();
-        out.signature = signature;
-    } catch (const std::exception&) {
-        out.status = HandlerStatus::InternalError;
-        out.error_message = "P2MR signing failed";
-    }
     return out;
 }
 

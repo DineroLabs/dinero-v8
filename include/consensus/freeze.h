@@ -133,7 +133,7 @@ struct ConsensusFileChecksum {
 constexpr std::array<ConsensusFileChecksum, 4> CONSENSUS_MANIFEST = {{
     // Phase D.1 files
     {"include/consensus/limits.h",          "70b37036ab23f7c83ebf5e756bb6303aa90fdf3cdcb91dba4a2111fa276cd7d2"},
-    {"include/consensus/tx_validation.h",   "b8ef985b850e1133901208da70c1c770e4dcb9ce97a4c62d941542ca6f03c865"},
+    {"include/consensus/tx_validation.h",   "ece4c35dfca222c219c13aad9e2f20f9d848f36732cfdddeff81afd1c370a46f"},
     {"include/consensus/subsidy.h",         "3463567f22140b6cd58d23e39ebb75c21b4b4d3d92d67feadf04f149e37f1f90"},
 
     // Phase D.4 file (self-reference - cannot contain own hash)

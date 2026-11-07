@@ -23,24 +23,6 @@ add_library(dinero_pq STATIC
     # codec, Merkle verifier, end-to-end spend verifier. No block/mempool
     # integration yet; this is the pure library a future v7 daemon calls.
     p2mr_consensus.cpp
-    # Wallet-side HKDF-SHA256 → KeygenFromSeed pipeline (Phase 4c.1).
-    # Pure; no storage, no RPC. Links OpenSSL for HMAC and SHA-256.
-    ${CMAKE_SOURCE_DIR}/src/wallet/pq_derivation.cpp
-    # RAII wrapper that OPENSSL_cleanse's the 4032-byte ML-DSA secret on
-    # every path out of scope (Phase 4c.1.5).
-    ${CMAKE_SOURCE_DIR}/src/wallet/secure_keypair.cpp
-    # Phase 4c.2.a: AES-256-GCM seed encryption helpers (OpenSSL EVP).
-    ${CMAKE_SOURCE_DIR}/src/wallet/aead_seed.cpp
-    # Phase 4c.2.b: SQLite-backed v7 P2MR address store.
-    ${CMAKE_SOURCE_DIR}/src/wallet/v7_p2mr_store.cpp
-    # Phase 4c.3: pure-C++ RPC handlers (no JSON layer yet). Thin wrappers
-    # over the store + derivation + AEAD primitives above.
-    ${CMAKE_SOURCE_DIR}/src/rpc/v7_pq_handlers.cpp
-    # Phase 10 Commit 2: hybrid KeyProvider that handles both legacy ECDSA
-    # inputs and v7 P2MR inputs through the normal wallet send path.
-    # Uses SignP2MR + SerializeP2MRWitness; implements the KeyProvider
-    # interface declared in wallet/transaction_signer.h.
-    ${CMAKE_SOURCE_DIR}/src/wallet/wallet_key_provider.cpp
 )
 
 target_include_directories(dinero_pq PUBLIC
@@ -61,8 +43,6 @@ target_link_libraries(dinero_pq PRIVATE
     # HMAC-SHA256 used by pq_derivation.cpp. OpenSSL::Crypto is imported
     # in the root CMakeLists.txt before this subdir is added.
     OpenSSL::Crypto
-    # AES-GCM (aead_seed.cpp) + SQLite (v7_p2mr_store.cpp).
-    sqlite3
 )
 
 set_target_properties(dinero_pq PROPERTIES

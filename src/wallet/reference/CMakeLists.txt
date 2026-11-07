@@ -11,7 +11,6 @@ set(DINERO_REFERENCE_WALLET_SOURCES
   src/wallet/reference/transaction_builder.cpp
   src/wallet/reference/blockchain_sync.cpp
   src/wallet/bip39.cpp
-  src/crypto/pbkdf2.cpp
   src/common/rpc_client.cpp
   external/bech32/bech32.cpp
 )

@@ -541,6 +541,10 @@ set(PROJECT_VERSION "\"${PROJECT_VERSION}\"")
 set(GIT_HASH "\"${GIT_HASH}\"")
 set(BUILD_TIME "\"${BUILD_TIME}\"")
 
+# Declared logger library (wallet/node separation Task 1.1)
+add_library(dinero_logging STATIC src/common/logger.cpp)
+target_include_directories(dinero_logging PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
 # Core crypto library (minimal, vendored crypto)
 add_library(dinero_crypto STATIC
   src/crypto/sha256.cpp
@@ -576,6 +580,7 @@ add_library(dinero_crypto STATIC
   src/crypto/sha256_arm_shani_wrapper.cpp
   src/crypto/encrypted_key.cpp  # Phase W.1.1: Encrypted key utilities (ParseBase64, SecureZero)
   src/crypto/decrypt_encrypted_key.cpp  # Phase W.1.1: Encrypted key decryption
+  src/crypto/pbkdf2.cpp
 )
 
 # Enable ARM Crypto Extensions on ARM64 platforms
@@ -599,7 +604,7 @@ target_include_directories(dinero_crypto PUBLIC
 # Declare the dependency on the target so its configured headers and static
 # archive travel together; a source-tree header copy must never supply this
 # dependency implicitly.
-target_link_libraries(dinero_crypto PUBLIC OpenSSL::Crypto)
+target_link_libraries(dinero_crypto PUBLIC OpenSSL::Crypto dinero_logging)
 
 # macOS Security framework is required because dinero_crypto_minimal.cpp
 # calls SecRandomCopyBytes (Apple's CSPRNG). Declared INTERFACE so every
@@ -846,7 +851,7 @@ add_library(dinero_rpc_handlers STATIC
   src/rpc/logs_rpc_handlers_context.cpp  # logs.recent, logs.services, logs.tail (Unified log aggregator)
   src/rpc/v7_pq_rpc_json.cpp             # Phase 4c.3.1: V7 post-quantum wallet RPC JSON adapters (getnewp2mraddress, listp2mraddresses, signp2mr)
   src/rpc/shielded_rpc_json.cpp          # V7 shielded pool RPCs: wallet.shield, wallet.unshield, wallet.shieldedbalance
-  # NOTE: src/rpc/v7_pq_handlers.cpp is part of dinero_pq (src/consensus/pq/CMakeLists.txt) — linked via target_link_libraries(... dinero_pq)
+  src/rpc/v7_pq_handlers.cpp             # Task 2.5: moved from dinero_pq
   src/dpi/dpi_protocol.cpp               # DPI Phase 1: Payment Intent protocol (serialize, verify, tagged hash)
   src/rpc/dpi_rpc_handlers.cpp           # DPI Phase 1: RPC handlers (createinvoice, payinvoice, verifypackage, checkconflicts)
   # DISABLED: Payroll feature (experimental Lightning-based payroll with ZK privacy)
@@ -1153,6 +1158,7 @@ add_library(dinero_core STATIC
   src/consensus/orphan_manager.cpp
   src/consensus/genesis_canonical.cpp  # Phase 3: Genesis hash self-test
   src/consensus/adapters/wallet_utxo_adapter.cpp  # UTXO adapter for wallet integration
+  src/consensus/global_utxo_set_impl.cpp  # Phase 11a: GlobalUTXOSet implementation
 
   # Mempool
   ${DINERO_CORE_MEMPOOL_SUPPORT_SOURCES}
@@ -1163,7 +1169,6 @@ add_library(dinero_core STATIC
   src/network/embedded_tor_process.cpp
 
   # Common utilities
-  src/common/logger.cpp
   src/common/json_logger.cpp
   src/common/logger_router.cpp
   src/common/address_script_builder.cpp
@@ -1251,6 +1256,7 @@ set_property(SOURCE src/daemon/runtime_block_reader.cpp src/daemon/orchard_compa
 # pool accounting does not depend on core/daemon code; no reverse archive edge.
 
 target_link_libraries(dinero_core PUBLIC
+  dinero_logging
   dinero_address_encoding
   dinero_crypto
   dinero_chainstate

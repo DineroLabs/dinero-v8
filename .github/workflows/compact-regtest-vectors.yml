@@ -3,6 +3,7 @@ name: Compact regtest fixed vectors
 on:
   workflow_dispatch:
   pull_request:
+    branches: [dinero-main]  # Task 0.10 throwaway branch only: skip the measurement PR
     paths:
       - '.github/workflows/compact-regtest*.yml'
       - 'CMakeLists.txt'

@@ -15,7 +15,7 @@
 
 #include "consensus/pq/p2mr_consensus.h"   // SerializeP2MRWitness, DeserializeP2MRWitness, P2MRWitness, IsP2MRScript
 #include "consensus/pq/scheme_registry.h"  // GetSchemeParams, SCHEME_ID_ML_DSA_65
-#include "rpc/v7_pq_handlers.h"            // SignP2MRParams / SignP2MR
+#include "wallet/p2mr_signing.h"           // SignP2MRParams / SignP2MR
 #include "wallet/v7_p2mr_store.h"
 
 #include <openssl/crypto.h>
