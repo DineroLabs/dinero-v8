@@ -1179,7 +1179,6 @@ add_library(dinero_core STATIC
   # Common utilities
   src/common/json_logger.cpp
   src/common/logger_router.cpp
-  src/common/address_script_builder.cpp
   src/common/config_manager.cpp
   src/util/ser.cpp  # Compact size varint serialization
 
