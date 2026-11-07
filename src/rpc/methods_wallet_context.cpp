@@ -1,4 +1,5 @@
 #include "rpc/wallet_request_dispatch.h"
+#include "daemon/mempool_wallet_view.h"
 #include "storage/chain_db_wallet_view.h"
 /**
  * Wallet RPC Methods - Context-Aware (Week 2 Migration)
@@ -1975,9 +1976,12 @@ din::Json rpc_context_wallet_listunspent(const ExecutionContext& ctx, const din:
             throw std::runtime_error("Wallet request selection changed");
         if (mgr.getUTXOIndex() && (!index_use || mgr.getUTXOIndex() != &index_use->Index()))
             throw std::runtime_error("Wallet index owner does not match selected wallet");
+        std::optional<dinero::MempoolWalletView> mempool_view;
+        if (pool_use) mempool_view.emplace(pool_use->Pool());
         const dinero::Mempool* mempool = pool_use ? &pool_use->Pool() : nullptr;
 
-        auto utxos = mgr.listUnspentUTXOs(min_conf, max_conf, mempool);
+        auto utxos = mgr.listUnspentUTXOs(min_conf, max_conf,
+                                          mempool_view ? &*mempool_view : nullptr);
         if(funding){
             utxos.erase(std::remove_if(utxos.begin(),utxos.end(),[&](const auto& coin){
                 return funding->unavailable.contains(dinero::OutPoint(dinero::TxId(dinero::uint256::FromHexUnsafe(coin.txid)),coin.vout));

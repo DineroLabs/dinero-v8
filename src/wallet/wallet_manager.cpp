@@ -49,7 +49,6 @@
 #include "wallet/key_identity.h"  // Week 1 Day 2: KeyID for descriptor wallet
 #include "wallet/key_origin.h"    // Week 1 Day 2: KeyOriginInfo for descriptor wallet
 #include "address/addr_codec.h"
-#include "daemon/mempool.h"
 #include "dinero/core/common/AddressCodec.h"  // For P2TR address encoding
 #include "external/bech32/bech32.hpp"  // For Bech32/Bech32m encoding
 #include "primitives/block.h"    // Phase 3D: For Block structure in wallet notifications
@@ -6187,7 +6186,7 @@ void WalletManager::checkUnlockTimeout() {
 
 // UTXO management for PSBT creation
 std::vector<WalletManager::WalletUTXO> WalletManager::listUnspentUTXOs(
-    int min_confirmations, int max_confirmations, const Mempool* mempool) const {
+    int min_confirmations, int max_confirmations, const wallet::IWalletMempoolView* mempool) const {
     auto lease = const_cast<WalletManager&>(*this).AcquireDatabaseLease();
     if (!db_ || current_wallet_id_ <= 0)
         throw std::runtime_error("Wallet UTXO inventory unavailable");
@@ -6313,7 +6312,7 @@ std::vector<WalletManager::WalletUTXO> WalletManager::listUnspentUTXOs(
                 utxo.is_confidential = coin->is_confidential;
             }
         }
-        if (mempool && mempool->isOutputSpentInMempool(
+        if (mempool && mempool->IsOutputSpent(
                 OutPoint(TxId(uint256::FromHexUnsafe(utxo.txid)), utxo.vout))) continue;
         if (utxo.amount_una > 0) utxos.push_back(std::move(utxo));
     }
@@ -6338,7 +6337,7 @@ std::vector<WalletManager::WalletUTXO> WalletManager::listUnspentUTXOs(
             continue; // Also preserve an ordinary spent row; never resurrect it.
         }
         checked(found,SQLITE_DONE);
-        if(mempool&&mempool->isOutputSpentInMempool(OutPoint(TxId(uint256::FromHexUnsafe(candidate.txid)),candidate.vout)))continue;
+        if(mempool&&mempool->IsOutputSpent(OutPoint(TxId(uint256::FromHexUnsafe(candidate.txid)),candidate.vout)))continue;
         utxos.push_back(std::move(candidate));
     }
     return utxos;

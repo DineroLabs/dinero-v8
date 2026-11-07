@@ -5035,6 +5035,24 @@ target_link_libraries(test_wallet_chain_view PRIVATE
 add_test(NAME WalletChainView COMMAND test_wallet_chain_view)
 set_tests_properties(WalletChainView PROPERTIES LABELS "wallet;separation" TIMEOUT 120)
 
+# Task 5.3: mempool observations through IWalletMempoolView.
+add_executable(test_wallet_mempool_view
+  tests/wallet/test_wallet_mempool_view.cpp
+  src/daemon/lightning_stubs.cpp
+  tests/stubs/mempool_test_stubs.cpp
+)
+target_include_directories(test_wallet_mempool_view PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR})
+target_link_libraries(test_wallet_mempool_view PRIVATE
+  dinero_wallet
+  dinero_consensus
+  dinero_crypto
+  sqlite3
+  Threads::Threads
+)
+add_test(NAME WalletMempoolView COMMAND test_wallet_mempool_view)
+set_tests_properties(WalletMempoolView PROPERTIES LABELS "wallet;separation" TIMEOUT 120)
+
 # Priority 3: UTXO Index Correctness Tests
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/utxo/test_utxo_index_correctness.cpp)
   add_executable(test_utxo_index_correctness tests/utxo/test_utxo_index_correctness.cpp)

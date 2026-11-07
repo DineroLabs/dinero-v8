@@ -4,7 +4,7 @@
 #include "wallet/fee_bump_engine.h"
 #include "wallet/rbf_cpfp_detector.h"
 #include "mining/tx_inclusion_analyzer.h"
-#include "daemon/mempool.h"  // For getMempoolEntry, MempoolEntry
+#include "wallet/node_interfaces.h"  // Mempool observations via IWalletMempoolView (Task 5.3)
 #include "wallet/wallet_manager.h"
 #include "common/logger.h"
 #include <chrono>
@@ -106,7 +106,7 @@ FeeBumpRecommendation FeeBumpEngine::GenerateRecommendation(
     const uint256& txid,
     const TxInclusionStatus& inclusion_status,
     const RescueStrategy& rescue_strategy,
-    const Mempool* mempool,
+    const wallet::IWalletMempoolView* mempool,
     const WalletManager* wallet,
     uint32_t target_blocks
 ) const {
@@ -171,7 +171,7 @@ RbfRecommendation FeeBumpEngine::GenerateRbfRecommendation(
     const uint256& txid,
     const RescueStrategy& rescue_strategy,
     uint64_t target_feerate,
-    const Mempool* mempool
+    const wallet::IWalletMempoolView* mempool
 ) const {
     RbfRecommendation rbf;
 
@@ -187,7 +187,7 @@ RbfRecommendation FeeBumpEngine::GenerateRbfRecommendation(
     uint64_t tx_size = 250;        // Fallback if lookup fails
     rbf.original_fee = 1000;       // Fallback if lookup fails
     if (mempool) {
-        auto entry_opt = mempool->getMempoolEntry(txid);
+        auto entry_opt = mempool->GetEntry(txid);
         if (entry_opt) {
             const auto& entry = *entry_opt;
             tx_size = entry.tx_size > 0 ? entry.tx_size : 250;
@@ -228,7 +228,7 @@ CpfpRecommendation FeeBumpEngine::GenerateCpfpRecommendation(
     const uint256& txid,
     const RescueStrategy& rescue_strategy,
     uint64_t target_feerate,
-    const Mempool* mempool,
+    const wallet::IWalletMempoolView* mempool,
     const WalletManager* wallet
 ) const {
     CpfpRecommendation cpfp;
@@ -257,7 +257,7 @@ CpfpRecommendation FeeBumpEngine::GenerateCpfpRecommendation(
     uint64_t parent_size = 250;  // Fallback if lookup fails
     cpfp.parent_fee = 1000;      // Fallback if lookup fails
     if (mempool) {
-        auto entry_opt = mempool->getMempoolEntry(txid);
+        auto entry_opt = mempool->GetEntry(txid);
         if (entry_opt) {
             const auto& entry = *entry_opt;
             parent_size = entry.tx_size > 0 ? entry.tx_size : 250;
@@ -312,7 +312,7 @@ CpfpRecommendation FeeBumpEngine::GenerateCpfpRecommendation(
 
 uint64_t FeeBumpEngine::EstimateFeeRate(
     uint32_t target_blocks,
-    const Mempool* mempool
+    const wallet::IWalletMempoolView* mempool
 ) const {
     // TODO: Query mempool for actual fee estimates
     // For now, use simple heuristic
@@ -341,7 +341,7 @@ uint64_t FeeBumpEngine::EstimateFeeRate(
 
 uint32_t FeeBumpEngine::EstimateConfirmationBlocks(
     uint64_t feerate,
-    const Mempool* mempool
+    const wallet::IWalletMempoolView* mempool
 ) const {
     // TODO: Query mempool for actual estimates based on current conditions
     // For now, use simple heuristic
@@ -368,7 +368,7 @@ uint32_t FeeBumpEngine::EstimateConfirmationBlocks(
     }
 }
 
-uint64_t FeeBumpEngine::GetMempoolMinFeeRate(const Mempool* mempool) const {
+uint64_t FeeBumpEngine::GetMempoolMinFeeRate(const wallet::IWalletMempoolView* mempool) const {
     if (!mempool) {
         return MIN_RELAY_FEE;  // Default to minimum relay fee
     }

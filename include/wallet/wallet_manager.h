@@ -55,7 +55,7 @@ class BlockStorage;
 class SelectedWalletHistory;
 class WalletTransactionOwner;
 class ChainstateService;
-namespace wallet { class OrchardAccountDelivery; class IWalletChainView; }
+namespace wallet { class OrchardAccountDelivery; class IWalletChainView; class IWalletMempoolView; }
 
 namespace lightning {
     class LightningService;  // Forward declaration for Lightning integration
@@ -601,7 +601,7 @@ public:
     };
     std::vector<WalletUTXO> listUnspentUTXOs(int min_confirmations = 1,
                                              int max_confirmations = 9999999,
-                                             const Mempool* mempool = nullptr) const;
+                                             const wallet::IWalletMempoolView* mempool = nullptr) const;
     std::vector<WalletUTXO> getUTXOsForAddress(const std::string& address, int min_confirmations = 1) const;
 
     // Phase 35: UTXO Locking (wallet.lockunspent)

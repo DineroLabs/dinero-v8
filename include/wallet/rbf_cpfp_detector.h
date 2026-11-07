@@ -11,7 +11,7 @@
 
 // Forward declarations
 namespace dinero {
-    class Mempool;
+    namespace wallet { class IWalletMempoolView; }
     class WalletManager;
     struct Transaction;
 }
@@ -136,7 +136,7 @@ public:
      */
     RbfCapability CheckRbfCapability(
         const uint256& txid,
-        const Mempool* mempool = nullptr
+        const wallet::IWalletMempoolView* mempool = nullptr
     ) const;
 
     /**
@@ -153,7 +153,7 @@ public:
      */
     bool CanBeReplaced(
         const uint256& txid,
-        const Mempool* mempool = nullptr
+        const wallet::IWalletMempoolView* mempool = nullptr
     ) const;
 
     /**
@@ -169,7 +169,7 @@ public:
      */
     uint64_t CalculateMinReplacementFee(
         const uint256& txid,
-        const Mempool* mempool = nullptr
+        const wallet::IWalletMempoolView* mempool = nullptr
     ) const;
 
     // ========================================================================
@@ -192,7 +192,7 @@ public:
     CpfpCapability CheckCpfpCapability(
         const uint256& txid,
         const WalletManager* wallet = nullptr,
-        const Mempool* mempool = nullptr
+        const wallet::IWalletMempoolView* mempool = nullptr
     ) const;
 
     /**
@@ -220,7 +220,7 @@ public:
      */
     bool IsWithinPackageLimits(
         const uint256& txid,
-        const Mempool* mempool = nullptr
+        const wallet::IWalletMempoolView* mempool = nullptr
     ) const;
 
     // ========================================================================
@@ -243,7 +243,7 @@ public:
     RescueStrategy DetermineRescueStrategy(
         const uint256& txid,
         const WalletManager* wallet = nullptr,
-        const Mempool* mempool = nullptr
+        const wallet::IWalletMempoolView* mempool = nullptr
     ) const;
 
     // ========================================================================
