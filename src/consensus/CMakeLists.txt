@@ -209,7 +209,6 @@ target_include_directories(dinero_consensus BEFORE PUBLIC
 target_include_directories(dinero_consensus PUBLIC
   ${CMAKE_SOURCE_DIR}/include
   ${CMAKE_SOURCE_DIR}/src
-  ${CMAKE_SOURCE_DIR}/src/daemon
 )
 
 if(APPLE)
@@ -221,8 +220,7 @@ if(APPLE)
     secp256k1
     OpenSSL::Crypto # script_crypto.cpp uses SHA256/RIPEMD160 directly
     zstd            # For Utreexo proof compression
-    RocksDB::rocksdb  # Phase M.1: CoinsDB requires RocksDB (CMake target)
-    sqlite3         # Transitive header dependency (wallet headers include sqlite3.h)
+    RocksDB::rocksdb  # Phase M.1: CoinsDB requires RocksDB (CMake target); export drops at Task 6.1a
   )
 else()
   target_link_libraries(dinero_consensus PUBLIC
@@ -233,7 +231,6 @@ else()
     secp256k1
     OpenSSL::Crypto # script_crypto.cpp uses SHA256/RIPEMD160 directly
     zstd            # For Utreexo proof compression
-    RocksDB::rocksdb  # Phase M.1: CoinsDB requires RocksDB (CMake target)
-    sqlite3         # Transitive header dependency (wallet headers include sqlite3.h)
+    RocksDB::rocksdb  # Phase M.1: CoinsDB requires RocksDB (CMake target); export drops at Task 6.1a
   )
 endif()
