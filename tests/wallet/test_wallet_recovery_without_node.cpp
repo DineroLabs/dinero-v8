@@ -1,7 +1,9 @@
 // Task 6.3 R4: standalone Orchard wallet recovery drives every reachable
-// public entry point through a fake IRuntimeRecoverySource — no
-// ChainstateService, no dinero_core, no dinero_chainstate, no src/daemon
-// source anywhere in this target. Exit-nonzero checks only — no assert().
+// public entry point through a fake IRuntimeRecoverySource; the test
+// constructs no node object and DECLARES only wallet + delivery libraries.
+// (Until the queued orchard_header owner decision, the link closure still
+// reaches dinero_core through account_replay->orchard_header — measured,
+// documented, not relied upon.) Exit-nonzero checks only — no assert().
 
 #include "wallet/runtime_recovery_source.h"
 #include "wallet/runtime_wallet_recovery.h"
