@@ -209,8 +209,11 @@ target_include_directories(dinero_consensus PRIVATE
 )
 target_link_libraries(dinero_consensus PRIVATE pqclean_ml_dsa_65)
 
-target_include_directories(dinero_consensus BEFORE PUBLIC
-  ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include  # Must come BEFORE system paths to override Homebrew headers
+# Task 6.1a: the RocksDB include-dir is no longer EXPORTED. Consensus's own
+# sources still see rocksdb headers (coins_db.h/chain-facing declarations)
+# PRIVATE-ly; consumers declare their own.
+target_include_directories(dinero_consensus BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
 )
 target_include_directories(dinero_consensus PUBLIC
   ${CMAKE_SOURCE_DIR}/include
@@ -226,7 +229,6 @@ if(APPLE)
     secp256k1
     OpenSSL::Crypto # script_crypto.cpp uses SHA256/RIPEMD160 directly
     zstd            # For Utreexo proof compression
-    RocksDB::rocksdb  # Phase M.1: CoinsDB requires RocksDB (CMake target); export drops at Task 6.1a
   )
 else()
   target_link_libraries(dinero_consensus PUBLIC
@@ -237,6 +239,5 @@ else()
     secp256k1
     OpenSSL::Crypto # script_crypto.cpp uses SHA256/RIPEMD160 directly
     zstd            # For Utreexo proof compression
-    RocksDB::rocksdb  # Phase M.1: CoinsDB requires RocksDB (CMake target); export drops at Task 6.1a
   )
 endif()

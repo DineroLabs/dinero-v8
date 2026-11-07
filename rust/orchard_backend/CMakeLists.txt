@@ -609,7 +609,10 @@ if(DINERO_ORCHARD_BUILD_TESTS)
       "${ORCHARD_HOST_ROOT}/src/consensus/header_store.cpp"
       "${ORCHARD_HOST_ROOT}/src/consensus/genesis_canonical.cpp"
       "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
-    target_link_libraries(test_orchard_header PRIVATE dinero_orchard_header)
+        # Task 6.1a: declares RocksDB itself (consensus no longer exports it).
+    target_include_directories(test_orchard_header BEFORE PRIVATE "${ORCHARD_HOST_ROOT}/third_party/rocksdb/include")
+    target_link_libraries(test_orchard_header PRIVATE RocksDB::rocksdb)
+target_link_libraries(test_orchard_header PRIVATE dinero_orchard_header)
     target_include_directories(test_orchard_header PRIVATE "${ORCHARD_HOST_ROOT}/src")
     add_test(NAME OrchardHeader COMMAND test_orchard_header)
     set_tests_properties(OrchardHeader PROPERTIES TIMEOUT 120 LABELS "orchard;integration-staging")

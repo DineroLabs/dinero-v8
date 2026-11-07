@@ -12608,7 +12608,11 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_fork_choice.cpp)
     src/consensus/header_store.cpp
     src/common/logger.cpp
   )
-  target_link_libraries(test_header_fork_choice PRIVATE
+    # Task 6.1a: dinero_consensus no longer exports RocksDB; this target
+  # compiles header_store.cpp directly and declares RocksDB itself.
+  target_include_directories(test_header_fork_choice BEFORE PRIVATE ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include)
+  target_link_libraries(test_header_fork_choice PRIVATE RocksDB::rocksdb)
+target_link_libraries(test_header_fork_choice PRIVATE
     dinero_consensus
     dinero_wallet
     dinero_crypto
@@ -12637,7 +12641,11 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_pow_verification.cpp)
     src/consensus/genesis_canonical.cpp
     src/common/logger.cpp
   )
-  target_link_libraries(test_header_pow_verification PRIVATE
+    # Task 6.1a: dinero_consensus no longer exports RocksDB; this target
+  # compiles header_store.cpp directly and declares RocksDB itself.
+  target_include_directories(test_header_pow_verification BEFORE PRIVATE ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include)
+  target_link_libraries(test_header_pow_verification PRIVATE RocksDB::rocksdb)
+target_link_libraries(test_header_pow_verification PRIVATE
     dinero_consensus
     dinero_wallet
     dinero_crypto
@@ -12665,7 +12673,11 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_real_mainnet_replay.cp
     src/consensus/header_store.cpp
     src/common/logger.cpp
   )
-  target_link_libraries(test_header_real_mainnet_replay PRIVATE
+    # Task 6.1a: dinero_consensus no longer exports RocksDB; this target
+  # compiles header_store.cpp directly and declares RocksDB itself.
+  target_include_directories(test_header_real_mainnet_replay BEFORE PRIVATE ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include)
+  target_link_libraries(test_header_real_mainnet_replay PRIVATE RocksDB::rocksdb)
+target_link_libraries(test_header_real_mainnet_replay PRIVATE
     dinero_consensus
     dinero_wallet
     dinero_crypto
@@ -15649,7 +15661,11 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_sync_restart.cpp)
     src/common/sha256d.cpp
     src/consensus/chainwork.cpp
   )
-  target_link_libraries(test_header_sync_restart PRIVATE
+    # Task 6.1a: dinero_consensus no longer exports RocksDB; this target
+  # compiles header_store.cpp directly and declares RocksDB itself.
+  target_include_directories(test_header_sync_restart BEFORE PRIVATE ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include)
+  target_link_libraries(test_header_sync_restart PRIVATE RocksDB::rocksdb)
+target_link_libraries(test_header_sync_restart PRIVATE
     dinero_consensus   # Required for BlockUtreexoData serialization
     dinero_crypto      # Required for SHA256 and crypto operations
     RocksDB::rocksdb
