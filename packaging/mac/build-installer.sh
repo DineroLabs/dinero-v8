@@ -224,6 +224,12 @@ else
     echo "Bundling AssumeUTXO snapshot: $(basename "$SNAPSHOT_DAT") ($(stat -f%z "$SNAPSHOT_DAT") bytes)"
     [[ -f "$SNAPSHOT_MANIFEST" ]] || { echo "ERROR: primary snapshot manifest missing at $SNAPSHOT_MANIFEST" >&2; exit 1; }
     verify_snapshot_pair "$SNAPSHOT_DAT" "$SNAPSHOT_MANIFEST" "dinero-assumeutxo-99677-v4.dat"
+    FRESHNESS_ARGS=(--age-only)
+    if [[ -n "${DINERO_SNAPSHOT_TIP_HEIGHT:-}" ]]; then
+        FRESHNESS_ARGS=(--tip-height "$DINERO_SNAPSHOT_TIP_HEIGHT")
+    fi
+    python3 "$PROJECT_ROOT/scripts/ci/check_snapshot_freshness.py" \
+        --manifest "$SNAPSHOT_MANIFEST" "${FRESHNESS_ARGS[@]}"
     cp "$SNAPSHOT_DAT" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-99677-v4.dat"
     cp "$SNAPSHOT_MANIFEST" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-99677-v4.dat.manifest.json"
     echo "Bundling AssumeUTXO lifecycle fallback: $(basename "$SNAPSHOT_FALLBACK_DAT")"

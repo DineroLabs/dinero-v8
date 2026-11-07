@@ -2,6 +2,37 @@
 
 ## Overview
 
+### Desktop bootstrap snapshot admission
+
+Fresh-install snapshots are release inputs. The primary must be generated
+within seven days and be between 288 and 1,000 blocks behind an independently
+observed, fully synced chain tip at release admission. A successful build or
+an unchanged snapshot checksum does not establish freshness.
+
+The Windows desktop/server, macOS Qt and Linux desktop staging scripts reject
+an old or undated primary automatically. Set `DINERO_SNAPSHOT_TIP_HEIGHT` to
+the independently observed current height to additionally enforce burial and
+distance to tip. Without that value, the packaging check is explicitly
+age-only and is insufficient for final release admission. Run the full check
+again immediately before publishing, retaining the observed tip and output:
+
+```sh
+python3 scripts/ci/check_snapshot_freshness.py \
+  --manifest /path/to/primary.manifest.json --tip-height CURRENT_VERIFIED_HEIGHT
+```
+
+Qualify the exact payload/manifest with the native selected-chain loader, then
+test a clean Windows installation through foreground catch-up and a restart.
+Record its base, target, peer count, progress and elapsed time. Background
+historical validation remains required; a recent snapshot does not remove it.
+Preserve exact older snapshot payloads and manifests needed by interrupted
+existing lifecycles. The freshness limit applies only to the fresh-install
+primary, not those recovery fallbacks. The permanent H149999 v5 capture and
+the distinct Orchard full/compact publication profiles remain separate gates.
+
+Ship changed primary snapshot inputs in a new qualified release. Do not
+silently replace existing signed v8.2.1 installers or their checksums.
+
 Dinero supports two build modes:
 
 | Mode | Purpose | Dependencies | gRPC | Binary Type |

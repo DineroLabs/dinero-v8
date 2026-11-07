@@ -62,6 +62,12 @@ PY
     cp "$manifest_path" "$DEST_DIR/$installed_name.manifest.json"
 }
 
+FRESHNESS_ARGS=(--age-only)
+if [[ -n "${DINERO_SNAPSHOT_TIP_HEIGHT:-}" ]]; then
+    FRESHNESS_ARGS=(--tip-height "$DINERO_SNAPSHOT_TIP_HEIGHT")
+fi
+python3 "$PROJECT_ROOT/scripts/ci/check_snapshot_freshness.py" \
+    --manifest "$PRIMARY_MANIFEST" "${FRESHNESS_ARGS[@]}"
 verify_and_stage "$PRIMARY_DATA" "$PRIMARY_MANIFEST" "$PRIMARY_NAME"
 verify_and_stage "$FALLBACK_DATA" "$FALLBACK_MANIFEST" "$FALLBACK_NAME"
 

@@ -203,6 +203,14 @@ function Assert-SnapshotManifest {
         throw "$Role snapshot length '$actualBytes' does not match manifest '$($manifest.bytes)'"
     }
     Write-Host "Verified $Role snapshot manifest: $actualBytes bytes, sha256 $actualHash"
+    if ($Role -eq 'primary') {
+        $freshnessArgs = @('--age-only')
+        if ($env:DINERO_SNAPSHOT_TIP_HEIGHT) {
+            $freshnessArgs = @('--tip-height', $env:DINERO_SNAPSHOT_TIP_HEIGHT)
+        }
+        & python (Join-Path $ProjectRoot 'scripts\ci\check_snapshot_freshness.py') --manifest $ManifestPath @freshnessArgs
+        if ($LASTEXITCODE -ne 0) { throw 'Primary desktop snapshot failed freshness admission' }
+    }
 }
 
 Write-Host '----------------------------------------------------------'

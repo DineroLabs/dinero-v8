@@ -278,6 +278,12 @@ function Assert-SnapshotManifest([string]$DataPath, [string]$ManifestPath) {
         throw "Snapshot length '$actualBytes' does not match manifest '$($manifest.bytes)'"
     }
     Write-Host "Verified AssumeUTXO manifest: $actualBytes bytes, sha256 $actualHash"
+    $freshnessArgs = @('--age-only')
+    if ($env:DINERO_SNAPSHOT_TIP_HEIGHT) {
+        $freshnessArgs = @('--tip-height', $env:DINERO_SNAPSHOT_TIP_HEIGHT)
+    }
+    & python (Join-Path $ProjectRoot 'scripts\ci\check_snapshot_freshness.py') --manifest $ManifestPath @freshnessArgs
+    if ($LASTEXITCODE -ne 0) { throw 'Primary server snapshot failed freshness admission' }
 }
 
 function Resolve-DaemonBinaryPath([string]$BinaryName) {
