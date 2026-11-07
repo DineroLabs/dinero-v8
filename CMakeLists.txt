@@ -280,6 +280,8 @@ target_include_directories(dinero_address_encoding PUBLIC
   ${CMAKE_SOURCE_DIR}
   ${CMAKE_SOURCE_DIR}/src
 )
+# Task 2.7: declare the consensus dependency its sources already use.
+target_link_libraries(dinero_address_encoding PUBLIC dinero_consensus)
 
 # Hardware wallet mock signing guard.
 include(cmake/HardwareWalletMock.cmake)
