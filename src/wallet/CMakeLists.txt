@@ -108,6 +108,13 @@ add_library(dinero_wallet STATIC
   # Wallet UX Abstractions (Phase CT.2 - Unified API layer)
   ${CMAKE_CURRENT_SOURCE_DIR}/unified_balance_service.cpp # UnifiedBalanceService: combined transparent + CT balance
   ${CMAKE_CURRENT_SOURCE_DIR}/address_factory.cpp         # AddressFactory: generate any address type
+  # Task 2.5: wallet-side PQ sources moved out of dinero_pq
+  ${CMAKE_CURRENT_SOURCE_DIR}/pq_derivation.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/secure_keypair.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/aead_seed.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/v7_p2mr_store.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/wallet_key_provider.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/p2mr_signing.cpp
 )
 
 target_include_directories(dinero_wallet PUBLIC

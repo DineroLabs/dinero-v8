@@ -8673,6 +8673,7 @@ if(NOT WIN32)
   )
   add_dependencies(test_wallet_database_lease gtest gtest_main)
   target_link_libraries(test_wallet_database_lease PRIVATE
+    dinero_rpc_handlers # Task 2.5: rpc::v7 P2MR handlers left dinero_pq
     dinero_wallet
     dinero_chainstate
     dinero_consensus
