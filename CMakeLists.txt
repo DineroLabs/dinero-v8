@@ -1177,6 +1177,7 @@ add_library(dinero_core STATIC
   src/network/embedded_tor_process.cpp
 
   # Common utilities
+  src/consensus/global_utxo_set_impl.cpp  # GlobalUTXOSet implementation (moved from consensus, Task 2.3)
   src/common/json_logger.cpp
   src/common/logger_router.cpp
   src/common/config_manager.cpp

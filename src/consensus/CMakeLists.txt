@@ -146,7 +146,6 @@ add_library(dinero_consensus STATIC
   src/consensus/block_filter.cpp      # BIP158 GCS block filters for compact filter commitment
   src/consensus/filter_commitment.cpp # DNRF coinbase filter commitment (SegWit-style OP_RETURN)
   src/consensus/merkle_proof.cpp      # Merkle inclusion proof for coinbase verification
-  src/consensus/global_utxo_set_impl.cpp  # Phase 11a: GlobalUTXOSet implementation
   src/consensus/utxo_publication.cpp
   src/consensus/consensus_utxo_set.cpp # Phase 2: Pure in-memory UTXO set (no DB, no mutex)
   src/consensus/stateless_verification.cpp # Phase 2.2: Stateless block verification (pure, no DB)
