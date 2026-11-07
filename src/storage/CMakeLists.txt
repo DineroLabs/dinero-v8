@@ -8,6 +8,7 @@ add_library(dinero_chainstate STATIC
   ${CMAKE_SOURCE_DIR}/src/storage/chain_db.cpp             # ChainDB (RocksDB backend)
   ${CMAKE_SOURCE_DIR}/src/consensus/coins_db.cpp           # CoinsDB (UTXO database backend; moved from consensus, Task 2.1)
   ${CMAKE_SOURCE_DIR}/src/consensus/coins_view_cache.cpp   # CoinsViewCache (L1 UTXO cache; moved from consensus, Task 2.1)
+  ${CMAKE_SOURCE_DIR}/src/indexing/utxo_position_index.cpp # Global UTXO -> Utreexo position index (moved from consensus, Task 2.2)
   ${CMAKE_SOURCE_DIR}/src/storage/orchard_state.cpp         # Staged Orchard block state/undo
   ${CMAKE_SOURCE_DIR}/src/storage/legacy_retirement.cpp     # Staged frozen legacy receipt/undo
   ${CMAKE_SOURCE_DIR}/src/storage/persistent_utxo_adapter.cpp  # Bridges consensus to persistence
