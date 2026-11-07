@@ -175,6 +175,40 @@ void TestAccountSourceUnavailable() {
     check(src.replay_calls == 1, "the account replay was asked exactly once");
 }
 
+void TestEnrolledResumeLegs() {
+    // Review I3: ResumeEnrolledWalletStores was never exercised. Both of its
+    // precondition legs are reachable without node fixtures.
+    {
+        Fixture f("enrolled_lease");
+        FakeRecoverySource src;
+        const auto held = f.wallet->AcquireDatabaseLease();
+        const auto what = ThrownWhat([&] {
+            (void)dinero::RuntimeWalletRecovery::ResumeEnrolledWalletStores(
+                src, *f.wallet, *f.index, f.session);
+        });
+        check(what == "Wallet recovery requires released caller lease",
+              "enrolled resume refuses a held lease (got: " + what + ")");
+    }
+    {
+        Fixture f("enrolled_replay");
+        FakeRecoverySource src;
+        src.replay_ok = false;
+        const auto what = ThrownWhat([&] {
+            (void)dinero::RuntimeWalletRecovery::ResumeEnrolledWalletStores(
+                src, *f.wallet, *f.index, f.session);
+        });
+        check(what == "Wallet recovery checked account source unavailable",
+              "enrolled resume surfaces the exact replay message (got: " + what + ")");
+        check(src.replay_calls == 1 && src.page_calls == 0,
+              "replay is consulted once; no page before a replay refusal");
+    }
+    // Still fixture-gated (documented in the stage-6 report): an enrolled
+    // store resuming through fake pages, the "Wallet recovery checked source
+    // unavailable" mapping (a baseline refusal precedes any page read on a
+    // fresh wallet), and ResumePreparedOrchardCatalogStores (needs a real
+    // RuntimeAccountReplay, buildable only from node capture internals).
+}
+
 void TestTransparentResumeRefusesWithoutBaseline() {
     Fixture f("fresh");
     FakeRecoverySource src;
@@ -201,6 +235,7 @@ int main() {
     TestCoverageSourceUnavailable();
     TestCoverageReconcileRefused();
     TestAccountSourceUnavailable();
+    TestEnrolledResumeLegs();
     TestTransparentResumeRefusesWithoutBaseline();
     if (g_failures != 0) {
         std::fprintf(stderr, "%d failure(s)\n", g_failures);

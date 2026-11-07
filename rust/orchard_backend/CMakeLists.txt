@@ -625,8 +625,9 @@ if(DINERO_ORCHARD_BUILD_TESTS)
       "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
         # Task 6.1a: declares RocksDB itself (consensus no longer exports it).
     target_include_directories(test_orchard_header BEFORE PRIVATE "${ORCHARD_HOST_ROOT}/third_party/rocksdb/include")
-    target_link_libraries(test_orchard_header PRIVATE RocksDB::rocksdb)
 target_link_libraries(test_orchard_header PRIVATE dinero_orchard_header)
+    # After the main block: GNU ld needs RocksDB to follow consensus (I1).
+    target_link_libraries(test_orchard_header PRIVATE RocksDB::rocksdb)
     target_include_directories(test_orchard_header PRIVATE "${ORCHARD_HOST_ROOT}/src")
     add_test(NAME OrchardHeader COMMAND test_orchard_header)
     set_tests_properties(OrchardHeader PROPERTIES TIMEOUT 120 LABELS "orchard;integration-staging")
@@ -757,9 +758,13 @@ target_link_libraries(test_orchard_header PRIVATE dinero_orchard_header)
 
 endif()
 
-# Task 6.3 R4: standalone wallet recovery without any node code. Links the
-# wallet and the Orchard wallet-delivery libraries ONLY — adding dinero_core,
-# dinero_chainstate or a src/daemon source here defeats the test's purpose.
+# Task 6.3 R4: standalone wallet recovery through the fake R1 source. This
+# target DECLARES only the wallet and the Orchard wallet-delivery libraries;
+# until the queued SelectedOrchardBlockContext owner decision lands, the
+# closure still reaches dinero_core through account_replay->orchard_header
+# (rust CMake :311) — measured and documented, not silently accepted
+# (task-6.3-owner-decision-orchard-header.md). The test constructs no node
+# object either way.
 if(TARGET dinero_orchard_index_delivery)
   add_executable(test_wallet_recovery_without_node
     "${ORCHARD_HOST_ROOT}/tests/wallet/test_wallet_recovery_without_node.cpp")
