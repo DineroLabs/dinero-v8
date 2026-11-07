@@ -26,12 +26,20 @@ public:
     std::optional<wallet::WalletMempoolEntry> GetEntry(const uint256& txid) const override {
         auto entry = mempool_.getMempoolEntry(txid);
         if (!entry) return std::nullopt;
+        return MapEntry(*entry, entry->tx.IsOrchard());
+    }
+
+    // The whole conversion, separable so tests can drive it with real
+    // MempoolEntry values for both branch directions (an actual Orchard
+    // envelope needs the backend; is_orchard carries that fact instead).
+    static wallet::WalletMempoolEntry MapEntry(const MempoolEntry& entry,
+                                               bool is_orchard) {
         wallet::WalletMempoolEntry out;
-        out.fee = entry->fee;
-        out.tx_size = entry->tx_size;
-        out.depends = entry->depends;
-        if (!entry->tx.IsOrchard())
-            out.SetHistoricalVin(entry->tx.Historical().vin);
+        out.fee = entry.fee;
+        out.tx_size = entry.tx_size;
+        out.depends = entry.depends;
+        if (!is_orchard)
+            out.SetHistoricalVin(entry.tx.Historical().vin);
         return out;
     }
 

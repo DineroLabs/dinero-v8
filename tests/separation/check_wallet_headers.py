@@ -18,7 +18,11 @@ import tempfile
 
 FORBIDDEN = (os.path.join("include", "daemon") + os.sep,
              os.path.join("src", "daemon") + os.sep,
+             os.path.join("include", "storage") + os.sep,
              "third_party" + os.sep + "rocksdb" + os.sep)
+
+# The gate must never silently shrink: stage-5 inventory is 96 headers.
+MIN_HEADERS = 80
 
 
 def wallet_sources(repo):
@@ -66,8 +70,10 @@ def main():
         print("input error: no dinero_wallet sources found", file=sys.stderr)
         return 2
     headers = wallet_headers(repo, sources)
-    if not headers:
-        print("input error: no wallet public headers found", file=sys.stderr)
+    if len(headers) < MIN_HEADERS:
+        print(f"input error: only {len(headers)} wallet public headers found "
+              f"(floor {MIN_HEADERS}); the enumeration itself regressed",
+              file=sys.stderr)
         return 2
 
     base_flags = ["-std=c++20", "-x", "c++",
@@ -87,8 +93,9 @@ def main():
             if dep.returncode != 0:
                 failures.append((header, "COMPILE", dep.stderr.strip().splitlines()[:3]))
                 continue
-            bad = sorted({tok for tok in dep.stdout.replace("\\\n", " ").split()
-                          for f_ in FORBIDDEN if f_ in tok})
+            deps = [os.path.normpath(tok) for tok in
+                    dep.stdout.replace("\\\n", " ").split()]
+            bad = sorted({tok for tok in deps for f_ in FORBIDDEN if f_ in tok})
             if bad:
                 failures.append((header, "FORBIDDEN_REACH", bad[:5]))
                 continue

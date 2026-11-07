@@ -1,7 +1,9 @@
 // Task 5.3: mempool observations through IWalletMempoolView
 // (ctest WalletMempoolView). Exit-nonzero checks only — no assert().
 
+#include "daemon/mempool.h"
 #include "daemon/mempool_wallet_view.h"
+#include "primitives/transaction.h"
 #include "wallet/node_interfaces.h"
 #include "wallet/rbf_cpfp_detector.h"
 #include "wallet/wallet_manager.h"
@@ -88,11 +90,52 @@ void TestRbfDetectorOrchardEntryThrowsSameError() {
     check(threw, "detector throws for an Orchard-shaped entry without vin");
 }
 
+void TestMapEntryOnRealMempoolTypes() {
+    using namespace dinero;
+    // Stage-5 review I4: drive the REAL conversion with real MempoolEntry /
+    // MempoolTransaction values. A true Orchard envelope needs the backend;
+    // is_orchard carries that fact into MapEntry for the true branch.
+    Transaction tx;
+    tx.version = 2;
+    TxInput in;
+    in.sequence = 42;
+    tx.vin.push_back(in);
+    TxOutput out_;
+    out_.value = AmountUna::Una(1234);
+    tx.vout.push_back(out_);
+
+    MempoolEntry entry;
+    entry.tx = MempoolTransaction(tx);
+    entry.fee = 777;
+    entry.tx_size = 321;
+    uint256 dep;
+    dep.data[0] = 0x44;
+    entry.depends.push_back(dep);
+
+    const auto historical = MempoolWalletView::MapEntry(entry, /*is_orchard=*/false);
+    check(historical.fee == 777 && historical.tx_size == 321 &&
+          historical.depends.size() == 1 && historical.depends[0] == dep,
+          "MapEntry copies fee/tx_size/depends from the real entry");
+    bool ok = false;
+    try { ok = historical.vin().size() == 1 && historical.vin()[0].sequence == 42; }
+    catch (...) { ok = false; }
+    check(ok, "historical MapEntry carries the real transaction's vin");
+
+    const auto orchard = MempoolWalletView::MapEntry(entry, /*is_orchard=*/true);
+    bool threw = false;
+    try { (void)orchard.vin(); }
+    catch (const std::logic_error& e) {
+        threw = std::string(e.what()) == "Orchard transaction has no historical body";
+    }
+    check(threw, "orchard MapEntry withholds vin with the exact message");
+}
+
 } // namespace
 
 int main() {
     TestListUnspentWithAndWithoutView();
     TestRbfDetectorOrchardEntryThrowsSameError();
+    TestMapEntryOnRealMempoolTypes();
     if (g_failures != 0) {
         std::fprintf(stderr, "%d failure(s)\n", g_failures);
         return 1;

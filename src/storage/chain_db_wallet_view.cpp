@@ -9,6 +9,21 @@
 #include "storage/chain_db.h"
 
 namespace dinero::storage {
+namespace {
+// Compact-bits -> difficulty, relative to the DIFFICULTY_1 reference.
+double BitsToDifficulty(uint32_t bits) {
+    arith_uint256 max_target;
+    max_target.SetCompact(ASERTConsensus::DIFFICULTY_1_BITS);
+    arith_uint256 current_target;
+    current_target.SetCompact(bits);
+    if (current_target == arith_uint256(0)) return 1.0;
+    arith_uint256 quotient = max_target / current_target;
+    double difficulty = static_cast<double>(quotient.GetWord(0));
+    if (quotient.GetWord(1) > 0)
+        difficulty += static_cast<double>(quotient.GetWord(1)) * 18446744073709551616.0;  // 2^64
+    return difficulty > 0.0 ? difficulty : 1.0;
+}
+} // namespace
 
 std::optional<wallet::WalletChainTip> ChainDbWalletView::GetTip() const {
     auto tip = db_.getTip();
@@ -49,18 +64,7 @@ double ChainDbWalletView::GetDifficulty() const {
     if (!hash.ok()) return 1.0;
     auto header = db_.getHeader(hash.value());
     if (!header.ok()) return 1.0;
-
-    arith_uint256 max_target;
-    max_target.SetCompact(ASERTConsensus::DIFFICULTY_1_BITS);
-    arith_uint256 current_target;
-    current_target.SetCompact(header.value().difficulty);
-    if (current_target == arith_uint256(0)) return 1.0;
-
-    arith_uint256 quotient = max_target / current_target;
-    double difficulty = static_cast<double>(quotient.GetWord(0));
-    if (quotient.GetWord(1) > 0)
-        difficulty += static_cast<double>(quotient.GetWord(1)) * 18446744073709551616.0;  // 2^64
-    return difficulty > 0.0 ? difficulty : 1.0;
+    return BitsToDifficulty(header.value().difficulty);
 }
 
 ::Json::Value ChainDbWalletView::GetBlockHeader(const std::string& hash_hex) const {
@@ -80,7 +84,9 @@ double ChainDbWalletView::GetDifficulty() const {
     result["bits"] = h.difficulty;
     result["nonce"] = static_cast<::Json::UInt>(h.nonce);
     result["height"] = height.ok() ? height.value() : -1;
-    result["difficulty"] = GetDifficulty();
+    // Stage-5 review fix: the dead ChainDBHeightProvider reported the TIP's
+    // difficulty for every block; report this block's own.
+    result["difficulty"] = BitsToDifficulty(h.difficulty);
     return result;
 }
 

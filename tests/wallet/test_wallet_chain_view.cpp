@@ -8,6 +8,7 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "storage/chain_db.h"
+#include "din_json.h"
 #include "storage/chain_write_token.h"
 
 #include "tests/wallet/fake_node_views.h"
@@ -43,14 +44,6 @@ std::vector<uint8_t> p2tr(uint8_t seed) {
     return spk;
 }
 
-// A BlockStorage stand-in that counts every call. It is NEVER passed to the
-// view below; the counter staying at zero is the test's whole point: a
-// ChainDbWalletView built with a null BlockStorage must satisfy ReadBlock
-// from ChainDB alone.
-struct CountingBlockStorageDouble {
-    mutable int calls = 0;
-};
-
 void TestNoBlockStorageReadsChainDbOnly() {
     using namespace dinero;
     const auto dir = fs::temp_directory_path() /
@@ -74,6 +67,7 @@ void TestNoBlockStorageReadsChainDbOnly() {
     receive.vout.push_back(owned);
     Block first;
     first.header.timestamp = 1;
+    first.header.difficulty = 0x1d31ffce;  // DIFFICULTY_1 reference bits
     first.vtx.push_back(receive);
     first.header.merkle_root = receive.GetTxid().AsUint256();
 
@@ -84,8 +78,12 @@ void TestNoBlockStorageReadsChainDbOnly() {
     check(chain.setTip(token, first.GetHash(), 1, arith_uint256(1)) == Status::Ok,
           "chain view fixture sets tip");
 
-    CountingBlockStorageDouble storage_double;  // never passed anywhere
-
+    // Review fix (stage-5 I2): the earlier "counting double" could never
+    // fire, because it was never passed anywhere; the honest statement of
+    // the invariant is the construction itself — a null BlockStorage means
+    // ReadBlock can only be satisfied by ChainDB's stored body, through
+    // ReadArchivalBlock's AllowLegacyFallback default (exercised here: the
+    // body exists ONLY via chain.putBlock, no flatfile storage exists).
     storage::ChainDbWalletView view(chain, /*block_storage=*/nullptr);
 
     const auto tip = view.GetTip();
@@ -96,9 +94,39 @@ void TestNoBlockStorageReadsChainDbOnly() {
     const auto block = view.ReadBlock(first.GetHash());
     check(block.has_value() && block->GetHash() == first.GetHash(),
           "ReadBlock with null BlockStorage reads the ChainDB-stored body");
-    check(storage_double.calls == 0,
-          "no BlockStorage method was called (double was never touched)");
     check(!view.ReadBlock(uint256{}).has_value(), "unknown hash is nullopt");
+
+    // ChainHeightProvider half (stage-5 review I3: first live provider needs
+    // coverage). Add a second block with DIFFERENT compact bits and move the
+    // tip there: GetBlockHeader must report each block's OWN difficulty.
+    Block second;
+    second.header.timestamp = 2;
+    second.header.prev_block_hash = first.GetHash();
+    second.header.difficulty = 0x1c31ffce;  // smaller target: measurably harder
+    Transaction filler = receive;
+    filler.vin[0].scriptSig = {9, 9};
+    second.vtx.push_back(filler);
+    second.header.merkle_root = filler.GetTxid().AsUint256();
+    check(chain.putBlock(token, second.GetHash(), second) == Status::Ok &&
+          chain.putHeightIndex(token, 2, second.GetHash()) == Status::Ok &&
+          chain.putHeader(token, first.GetHash(), first.header, 1, arith_uint256(1)) == Status::Ok &&
+          chain.putHeader(token, second.GetHash(), second.header, 2, arith_uint256(2)) == Status::Ok &&
+          chain.setTip(token, second.GetHash(), 2, arith_uint256(2)) == Status::Ok,
+          "second fixture block + both headers stored, tip moved");
+    check(view.GetBestHeight() == 2, "provider best height tracks the tip");
+    check(view.GetBestHash() == second.GetHash().GetHex(), "provider best hash tracks the tip");
+    check(view.IsAvailable(), "provider is available over a live ChainDB");
+    const auto hdr1 = view.GetBlockHeader(first.GetHash().GetHex());
+    const auto hdr2 = view.GetBlockHeader(second.GetHash().GetHex());
+    check(hdr1["height"].asInt() == 1 && hdr2["height"].asInt() == 2,
+          "provider headers carry their own heights");
+    check(hdr1["bits"].asUInt() != hdr2["bits"].asUInt(),
+          "fixture blocks carry different compact bits");
+    check(hdr1["difficulty"].asDouble() != hdr2["difficulty"].asDouble(),
+          "each header reports its OWN difficulty (tip-difficulty bug stays dead)");
+    check(view.GetBlockHeader(std::string(64, 'f')).isNull() ||
+          view.GetBlockHeader(std::string(64, 'f')).empty(),
+          "unknown header hash yields an empty object");
 
     fs::remove_all(dir);
 }
