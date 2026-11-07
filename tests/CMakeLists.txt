@@ -1051,7 +1051,6 @@ set_tests_properties(HashWrapperVectors PROPERTIES
 
 # Minimal wallet stubs shared by wallet-focused tests.
 add_library(wallet_test_deps STATIC
-  src/sqlite_open.cpp
   src/daemon/lightning_stubs.cpp
 )
 
@@ -3195,14 +3194,12 @@ endif()
 if(TARGET dinero_wallet AND TARGET gtest)
   add_executable(test_shielded_note_store_rollback
     tests/wallet/test_shielded_note_store_rollback.cpp
-    tests/stubs/mempool_test_stubs.cpp
   )
   add_dependencies(test_shielded_note_store_rollback gtest dinero_wallet)
   target_link_libraries(test_shielded_note_store_rollback PRIVATE
     GTest::gtest
     GTest::gtest_main
     dinero_wallet
-    wallet_test_deps
     dinero_shielded
     sqlite3
   )
@@ -3252,14 +3249,12 @@ if(TARGET dinero_wallet AND TARGET gtest)
 
   add_executable(test_shielded_outgoing_view
     tests/wallet/test_shielded_outgoing_view.cpp
-    tests/stubs/mempool_test_stubs.cpp
   )
   add_dependencies(test_shielded_outgoing_view gtest dinero_wallet)
   target_link_libraries(test_shielded_outgoing_view PRIVATE
     GTest::gtest
     GTest::gtest_main
     dinero_wallet
-    wallet_test_deps
     dinero_shielded
     dinero_zk
     jsoncpp_static
@@ -5038,8 +5033,6 @@ set_tests_properties(WalletChainView PROPERTIES LABELS "wallet;separation" TIMEO
 # Task 5.3: mempool observations through IWalletMempoolView.
 add_executable(test_wallet_mempool_view
   tests/wallet/test_wallet_mempool_view.cpp
-  src/daemon/lightning_stubs.cpp
-  tests/stubs/mempool_test_stubs.cpp
 )
 target_include_directories(test_wallet_mempool_view PRIVATE
   ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR})
@@ -17833,14 +17826,12 @@ if(TARGET dinero_wallet AND TARGET gtest)
   add_executable(test_escrow_builders_fail_safe
     tests/wallet/test_escrow_builders_fail_safe.cpp
     src/contracts/escrow_contract.cpp
-    tests/stubs/mempool_test_stubs.cpp
   )
   add_dependencies(test_escrow_builders_fail_safe gtest dinero_wallet)
   target_link_libraries(test_escrow_builders_fail_safe PRIVATE
     GTest::gtest
     GTest::gtest_main
     dinero_wallet
-    wallet_test_deps
     sqlite3
   )
   target_include_directories(test_escrow_builders_fail_safe BEFORE PRIVATE
