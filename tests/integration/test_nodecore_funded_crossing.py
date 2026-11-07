@@ -281,14 +281,19 @@ try:
         # with recovery_required and no wallet effects. The genuine imported
         # selected parent is101 while the independent/durable tip is0; a scan
         # of genesis must never be reported as a102-block history scan.
-        active_before=call('rpc',method='wallet.getwalletinfo',params=[]).get('walletname')
+        # A missing walletname (no active wallet) must stay missing: record
+        # the full shape, not .get() defaults that let two absences pass.
+        info_before=call('rpc',method='wallet.getwalletinfo',params=[])
+        active_before=('walletname' in info_before,info_before.get('walletname'))
         refused=call('rpc',method='wallet.restore',params=dict(name='wire-named-owner',mnemonic=mnemonic,rescan=True))
         assert refused.get('recovery_required') is True,refused
         assert 'Snapshot-aware wallet recovery is required' in refused.get('error',''),refused
         assert 'rescan' not in refused and 'rescan_success' not in refused,'refused restore published a scan result'
         assert original_lifecycle()==original,'restore refusal changed original assumed lifecycle'
         assert not list(datadir.rglob('wallet_wire-named-owner.db')),'refused restore created the wallet'
-        assert call('rpc',method='wallet.getwalletinfo',params=[]).get('walletname')==active_before,'restore refusal changed the active wallet'
+        info_after=call('rpc',method='wallet.getwalletinfo',params=[])
+        assert ('walletname' in info_after,info_after.get('walletname'))==active_before,(info_before,info_after)
+        assert active_before[1]!='wire-named-owner','refused restore activated the requested wallet'
         (root/'restore-refusal.json').write_text(json.dumps(refused,indent=2)+'\n')
     restored=rpc('wallet.restore',dict(name='wire-named-owner',mnemonic=mnemonic,rescan=False))
     assert restored['success'] is True
