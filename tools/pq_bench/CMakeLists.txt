@@ -22,7 +22,7 @@ set_target_properties(pq_roundtrip_test PROPERTIES
 
 # V7 wallet PQ derivation library tests (Phase 4c.1 coverage).
 add_executable(pq_derivation_test pq_derivation_test.cpp)
-target_link_libraries(pq_derivation_test PRIVATE dinero_pq OpenSSL::Crypto)
+target_link_libraries(pq_derivation_test PRIVATE dinero_wallet dinero_pq OpenSSL::Crypto) # Task 2.5: pq wallet sources moved to dinero_wallet
 set_target_properties(pq_derivation_test PROPERTIES
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
@@ -41,7 +41,7 @@ target_include_directories(v7_pq_rpc_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/daemon
 )
-target_link_libraries(v7_pq_rpc_test PRIVATE dinero_pq OpenSSL::Crypto sqlite3)
+target_link_libraries(v7_pq_rpc_test PRIVATE dinero_rpc_handlers dinero_wallet dinero_pq OpenSSL::Crypto sqlite3) # Task 2.5: handlers left dinero_pq
 set_target_properties(v7_pq_rpc_test PROPERTIES
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
@@ -89,7 +89,7 @@ target_include_directories(v7_p2mr_store_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/daemon
 )
-target_link_libraries(v7_p2mr_store_test PRIVATE dinero_pq OpenSSL::Crypto sqlite3)
+target_link_libraries(v7_p2mr_store_test PRIVATE dinero_wallet dinero_pq OpenSSL::Crypto sqlite3) # Task 2.5: pq wallet sources moved to dinero_wallet
 set_target_properties(v7_p2mr_store_test PROPERTIES
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
