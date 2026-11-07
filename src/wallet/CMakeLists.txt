@@ -115,6 +115,7 @@ target_include_directories(dinero_wallet PUBLIC
 
 target_link_libraries(dinero_wallet PUBLIC
   dinero_logging
+  dinero_sqlite
   dinero_wallet_catalog
   dinero_address_encoding
   dinero_bip32

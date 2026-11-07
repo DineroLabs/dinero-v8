@@ -547,6 +547,13 @@ add_library(dinero_logging STATIC src/common/logger.cpp)
 target_include_directories(dinero_logging PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_compile_features(dinero_logging PUBLIC cxx_std_20)
 
+# SQLite open helper: one shared static library, so wallet and chainstate
+# link it instead of compiling src/sqlite_open.cpp into themselves.
+add_library(dinero_sqlite STATIC src/sqlite_open.cpp)
+target_include_directories(dinero_sqlite PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_compile_features(dinero_sqlite PUBLIC cxx_std_20)
+target_link_libraries(dinero_sqlite PUBLIC sqlite3)
+
 # Core crypto library (minimal, vendored crypto)
 add_library(dinero_crypto STATIC
   src/crypto/sha256.cpp

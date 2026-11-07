@@ -17,7 +17,6 @@ add_library(dinero_chainstate STATIC
   # All usage migrated to ChainstateService / ChainDB / BlockStorage.
   # startup_validator.cpp temporarily disabled - needs API fixes.
   ${CMAKE_SOURCE_DIR}/src/wallet/utxo_index.cpp            # UTXO index (uses RocksDB)
-  ${CMAKE_SOURCE_DIR}/src/sqlite_open.cpp                  # Minimal SQLite stub (compatibility)
   ${CMAKE_SOURCE_DIR}/src/consensus/pow_consensus_engine.cpp   # PoW engine (needs ChainDB)
   ${CMAKE_SOURCE_DIR}/src/chainstate/mtp_lookup.cpp        # BIP68 MTP lookup factory
 )
@@ -33,6 +32,7 @@ target_include_directories(dinero_chainstate PUBLIC
 
 target_link_libraries(dinero_chainstate PUBLIC
   dinero_logging
+  dinero_sqlite
   dinero_consensus
   dinero_crypto
   jsoncpp_static
