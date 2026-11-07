@@ -46,12 +46,9 @@ struct Block;
 struct Transaction;
 struct UnsignedTransaction;
 class WalletManager;
-class Mempool;
 class ILogger;  // Dependency injection for logging
 class UTXOIndex;  // UTXO indexing for address registration
-class ChainDB;  // Chain database for UTXO discovery during rescan
 class uint256;
-class BlockStorage;
 class SelectedWalletHistory;
 class WalletTransactionOwner;
 class ChainstateService;

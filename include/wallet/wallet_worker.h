@@ -15,7 +15,8 @@
 namespace dinero {
 
 // Forward declarations
-class ChainDB;  // Phase W.1.1: For blockchain rescan
+namespace wallet { class IWalletChainView; }  // Task 5.4: rescan goes through the view
+class ChainDB;  // name only — still used by the WalletNotify entry points until Task 6.1
 
 // ═══════════════════════════════════════════════════════════════════════════
 // BLOCKCHAIN → WALLET NOTIFICATION TYPES
@@ -166,7 +167,7 @@ public:
     bool IsRunning() const { return running_.load(); }
 
     // Run a deterministic synchronous rescan through WalletManager.
-    bool RescanSynchronously(class ChainDB* chain_db, int start_height, std::string* error = nullptr);
+    bool RescanSynchronously(const wallet::IWalletChainView* view, int start_height, std::string* error = nullptr);
 
 private:
     friend struct WalletWorkerTestAccess;
@@ -211,13 +212,16 @@ namespace WalletNotify {
 
     // Phase W.1.1: Rescan blockchain from start_height to current tip
     // This is a synchronous operation that replays blocks through the wallet
-    bool RescanBlockchain(ChainDB* chain_db, int start_height);
+    // NOTE (Task 5.4): these two node-notification entry points still take
+    // ChainDB*; they move to core with D1-D3 in Task 6.1. The forward
+    // declaration below is a name only — no storage header is reached.
+    bool RescanBlockchain(::dinero::ChainDB* chain_db, int start_height);
 
     // Priority 3 FIX: Validate wallet UTXOs against consensus
     // Removes phantom UTXOs (wallet thinks unspent, but consensus doesn't have them)
     // Should be called after reorg completes or at startup
     // Returns count of phantom UTXOs removed
-    size_t ValidateUTXOs(ChainDB* chain_db);
+    size_t ValidateUTXOs(::dinero::ChainDB* chain_db);
 }
 
 } // namespace dinero

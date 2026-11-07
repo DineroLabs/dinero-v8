@@ -202,21 +202,20 @@ void WalletWorker::QueueBlockDisconnected(uint32_t height, const Block& block) {
               << "txs=" << block.vtx.size() << std::endl;
 }
 
-bool WalletWorker::RescanSynchronously(ChainDB* chain_db, int start_height, std::string* error) {
+bool WalletWorker::RescanSynchronously(const wallet::IWalletChainView* view, int start_height, std::string* error) {
     if (!wallet_manager_) {
         if (error) *error = "WalletManager not available";
         return false;
     }
-    if (!chain_db) {
-        if (error) *error = "ChainDB is null";
+    if (!view) {
+        if (error) *error = "Chain view is null";
         return false;
     }
 
     try {
         constexpr int kDefaultGapLimit = 20;
         const auto database_lease = wallet_manager_->AcquireDatabaseLease();
-        const dinero::storage::ChainDbWalletView chain_view(*chain_db, /*block_storage=*/nullptr);
-        const bool ok = wallet_manager_->rescanBlockchain(start_height, kDefaultGapLimit, &chain_view);
+        const bool ok = wallet_manager_->rescanBlockchain(start_height, kDefaultGapLimit, view);
         if (!ok && error) {
             *error = "WalletManager::rescanBlockchain returned false";
         }
@@ -763,7 +762,8 @@ bool RescanBlockchain(ChainDB* chain_db, int start_height) {
 
     std::cerr << "[WalletNotify] Starting deterministic wallet rescan from height " << start_height << std::endl;
     std::string error;
-    const bool ok = worker->RescanSynchronously(chain_db, start_height, &error);
+    const dinero::storage::ChainDbWalletView chain_view(*chain_db, /*block_storage=*/nullptr);
+    const bool ok = worker->RescanSynchronously(&chain_view, start_height, &error);
     if (!ok) {
         std::cerr << "[WalletNotify] ❌ Rescan failed: " << error << std::endl;
         return false;

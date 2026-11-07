@@ -179,3 +179,23 @@ add_test(NAME SepRpcTranscript COMMAND ${CMAKE_COMMAND}
   -P ${_sep_script_driver})
 set_tests_properties(SepRpcTranscript PROPERTIES LABELS "separation" TIMEOUT 1800
   RESOURCE_LOCK sep_build_dir)
+
+# T1 (Task 5.4): wallet public headers are self-contained. Each
+# include/wallet/*.h that a dinero_wallet source includes must neither reach
+# include/daemon, src/daemon or the RocksDB headers in its include closure,
+# nor fail to compile standalone against the public include root plus the
+# wallet's legitimate vendored deps (OpenSSL, jsoncpp, sqlite3; protobuf for
+# the optional Trezor transport).
+set(_sep_wallet_hdr_args
+  --repo ${CMAKE_SOURCE_DIR}
+  --cxx ${CMAKE_CXX_COMPILER}
+  --extra-include ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+  --extra-include ${CMAKE_SOURCE_DIR}/third_party/sqlite-amalgamation-3480000
+  --extra-include "$<TARGET_PROPERTY:OpenSSL::Crypto,INTERFACE_INCLUDE_DIRECTORIES>")
+if(APPLE AND EXISTS /opt/homebrew/include/google/protobuf/message.h)
+  list(APPEND _sep_wallet_hdr_args --extra-include /opt/homebrew/include)
+endif()
+add_test(NAME SepWalletHeadersSelfContained
+  COMMAND ${_sep_python} ${CMAKE_CURRENT_SOURCE_DIR}/check_wallet_headers.py
+          ${_sep_wallet_hdr_args})
+set_tests_properties(SepWalletHeadersSelfContained PROPERTIES LABELS "separation" TIMEOUT 600)
