@@ -40,3 +40,24 @@ third_party/openssl-*/prebuilt/**/include/** text eol=lf
 third_party/openssl-*/prebuilt/**/*.a binary
 third_party/openssl-*/prebuilt/**/*.lib binary
 third_party/openssl-*/prebuilt/**/.dinero-build-meta text eol=lf
+
+# Separation-gate baselines (spec section 8). The gates compare these
+# byte-for-byte (or line-by-line) against text they generate with "\n", so a
+# CRLF checkout (core.autocrlf=true, the Windows default) reads as a diff on
+# every line. They stay `text` (reviewable diffs) with eol=lf, rather than
+# -text, because they are hand-reviewed text baselines; the SQLite fixture
+# files are binary. The two frozen FFI headers are compared byte-for-byte
+# with their baseline copies by W5, so they are pinned LF as well.
+tests/separation/fixtures/**/*.json      text eol=lf
+tests/separation/fixtures/**/*.txt       text eol=lf
+tests/separation/fixtures/**/*.md        text eol=lf
+tests/separation/fixtures/**/*.db        binary
+tests/separation/fixtures/**/blockchain/utxo binary
+tests/separation/interface_baseline/**   text eol=lf
+tests/separation/transcripts/**          text eol=lf
+scripts/ci/separation/*.json             text eol=lf
+scripts/ci/separation/*.txt              text eol=lf
+scripts/ci/separation/*.sha256           text eol=lf
+scripts/ci/separation/*.tsv              text eol=lf
+include/nodecore/nodecore_ffi.h          text eol=lf
+wallet-core/ffi/wallet_ffi.h             text eol=lf
