@@ -4816,7 +4816,6 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_wallet_ffi_concurrency.cpp)
   add_executable(test_wallet_ffi_concurrency
     tests/test_wallet_ffi_concurrency.cpp
-    src/wallet/taproot_control_block.cpp
     src/wallet/p2mr_address.cpp
     src/daemon/bech32_encoder.cpp
     tests/stubs/mempool_test_stubs.cpp
@@ -17770,7 +17769,6 @@ if(TARGET dinero_wallet AND TARGET gtest)
   add_executable(test_escrow_builders_fail_safe
     tests/wallet/test_escrow_builders_fail_safe.cpp
     src/contracts/escrow_contract.cpp
-    src/wallet/taproot_control_block.cpp
     tests/stubs/mempool_test_stubs.cpp
   )
   add_dependencies(test_escrow_builders_fail_safe gtest dinero_wallet)

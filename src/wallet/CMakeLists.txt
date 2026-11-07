@@ -49,6 +49,7 @@ add_library(dinero_wallet STATIC
   ${CMAKE_CURRENT_SOURCE_DIR}/intent_descriptor.cpp  # B3: Intent descriptor for SigHash v1 ext_commitment
   ${CMAKE_CURRENT_SOURCE_DIR}/policy_descriptor.cpp  # B2: PolicyDescriptor + policy_id computation
   ${CMAKE_CURRENT_SOURCE_DIR}/taproot_template_builder.cpp  # B2: Taproot template tree builder (PROTECTED/ESCROW)
+  ${CMAKE_CURRENT_SOURCE_DIR}/taproot_control_block.cpp     # TaprootControlBlock + buildScriptPathWitness (moved from test-only compiles, Task 4.4)
   ${CMAKE_CURRENT_SOURCE_DIR}/swap/htlc.cpp  # DIN<->BTC swap HTLC builders (docs/design/din-btc-atomic-swaps.md)
   ${CMAKE_CURRENT_SOURCE_DIR}/swap/offer.cpp  # DIN<->BTC swap offer/accept messages
   ${CMAKE_CURRENT_SOURCE_DIR}/swap/fee_ladder.cpp  # pre-signed swap fee ladders
