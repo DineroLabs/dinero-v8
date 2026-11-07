@@ -196,7 +196,13 @@ add_library(dinero_consensus STATIC
 )
 
 # Folded ml_dsa_65_keygen.c needs PQClean's internal headers and archive,
-# exactly as dinero_pq declares them (src/consensus/pq/CMakeLists.txt).
+# exactly as dinero_pq declares them (src/consensus/pq/CMakeLists.txt),
+# and the same C-standard/PIC settings dinero_pq sets for it.
+set_target_properties(dinero_consensus PROPERTIES
+  C_STANDARD 99
+  C_STANDARD_REQUIRED ON
+  POSITION_INDEPENDENT_CODE ON
+)
 target_include_directories(dinero_consensus PRIVATE
   ${CMAKE_SOURCE_DIR}/third_party/pqclean/common
   ${CMAKE_SOURCE_DIR}/third_party/pqclean/crypto_sign/ml-dsa-65/clean
