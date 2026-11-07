@@ -668,7 +668,6 @@ if(DINERO_ORCHARD_BUILD_TESTS)
       "${ORCHARD_HOST_ROOT}/src/daemon/lightning_stubs.cpp"
       "${ORCHARD_HOST_ROOT}/tests/stubs/mempool_test_stubs.cpp"
       "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_wallet_account.cpp"
-      "${ORCHARD_HOST_ROOT}/src/wallet/utxo_index.cpp"
       "${ORCHARD_HOST_ROOT}/src/sqlite_open.cpp"
       "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
     target_compile_definitions(test_orchard_account_delivery PRIVATE DINERO_TEST_BOUND_ACCOUNT=1)
@@ -680,7 +679,6 @@ if(DINERO_ORCHARD_BUILD_TESTS)
       "${ORCHARD_HOST_ROOT}/src/daemon/lightning_stubs.cpp"
       "${ORCHARD_HOST_ROOT}/tests/stubs/mempool_test_stubs.cpp"
       "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_block_staging.cpp"
-      "${ORCHARD_HOST_ROOT}/src/wallet/utxo_index.cpp"
       "${ORCHARD_HOST_ROOT}/src/sqlite_open.cpp"
       "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
     target_compile_definitions(test_orchard_index_delivery PRIVATE DINERO_TEST_ORCHARD_INDEX_DELIVERY=1)

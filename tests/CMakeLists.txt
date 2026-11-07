@@ -1051,7 +1051,6 @@ set_tests_properties(HashWrapperVectors PROPERTIES
 
 # Minimal wallet stubs shared by wallet-focused tests.
 add_library(wallet_test_deps STATIC
-  src/wallet/utxo_index.cpp
   src/sqlite_open.cpp
   src/daemon/lightning_stubs.cpp
 )
@@ -4998,14 +4997,13 @@ endif()
 # Real SQLite wallet rollback, independent of the mock correctness suite below.
 add_executable(test_wallet_revert_atomic
   tests/utxo/test_wallet_revert_atomic.cpp
-  src/wallet/utxo_index.cpp
   src/sqlite_open.cpp
   src/primitives/uint256.cpp
   src/common/logger.cpp
 )
 target_include_directories(test_wallet_revert_atomic PRIVATE
   ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(test_wallet_revert_atomic PRIVATE sqlite3 Threads::Threads)
+target_link_libraries(test_wallet_revert_atomic PRIVATE dinero_wallet sqlite3 Threads::Threads)
 add_test(NAME WalletRevertAtomic COMMAND test_wallet_revert_atomic)
 set_tests_properties(WalletRevertAtomic PROPERTIES LABELS "wallet;utxo;storage" TIMEOUT 60)
 
@@ -11158,7 +11156,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_block_assembler_smoke.
     src/consensus/tx_parser.cpp
     src/consensus/script_verify.cpp
     src/storage/chain_db.cpp
-    src/wallet/utxo_index.cpp
     src/wallet/wallet_worker.cpp
     src/wallet/wallet_manager.cpp  # Modern HD wallet with BIP84 (Nov 2025)
     src/wallet/address.cpp
@@ -11235,7 +11232,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_consensus_integrati
     src/consensus/tx_parser.cpp
     src/consensus/script_verify.cpp
     src/storage/chain_db.cpp
-    src/wallet/utxo_index.cpp
     src/wallet/wallet_worker.cpp
     src/wallet/wallet_manager.cpp  # Modern HD wallet with BIP84 (Nov 2025)
     src/wallet/address.cpp
@@ -11308,7 +11304,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/integration/test_codebase_verifica
     src/consensus/tx_parser.cpp
     src/consensus/script_verify.cpp
     src/storage/chain_db.cpp
-    src/wallet/utxo_index.cpp
     src/wallet/wallet_worker.cpp
     src/wallet/wallet_manager.cpp  # Modern HD wallet with BIP84 (Nov 2025)
     src/wallet/address.cpp
@@ -11419,7 +11414,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/test_taproot_mining.cpp)
     src/wallet/bip39.cpp
     src/wallet/psbt.cpp
     src/wallet/coin_selection.cpp
-    src/wallet/utxo_index.cpp
     src/wallet/bip143_signer.cpp
     src/wallet/taproot_tx_signer.cpp
     src/crypto/pbkdf2.cpp
@@ -11858,7 +11852,6 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_smoke.cpp)
     src/consensus/tx_parser.cpp
     src/consensus/script_verify.cpp
     src/storage/chain_db.cpp
-    src/wallet/utxo_index.cpp
     src/wallet/wallet_worker.cpp
     src/wallet/wallet_manager.cpp  # Modern HD wallet with BIP84 (Nov 2025)
     src/wallet/address.cpp
@@ -12957,7 +12950,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_utreexo_enforcement
     src/consensus/utreexo_accumulator.cpp
     src/consensus/tx_parser.cpp
     src/consensus/script_verify.cpp
-    src/wallet/utxo_index.cpp
     src/database/sqlite_manager.cpp
     src/sqlite_open.cpp
     src/common/logger.cpp
@@ -13007,7 +12999,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_block_stateless_equ
     src/consensus/utreexo_accumulator.cpp
     src/consensus/tx_parser.cpp
     src/consensus/script_verify.cpp
-    src/wallet/utxo_index.cpp
     src/database/sqlite_manager.cpp
     src/sqlite_open.cpp
     src/common/logger.cpp
@@ -13084,7 +13075,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_utreexo_stateless_v
     src/consensus/tx_parser.cpp
     src/consensus/script_verify.cpp
     src/consensus/script_validation.cpp
-    src/wallet/utxo_index.cpp
     src/database/sqlite_manager.cpp
     src/sqlite_open.cpp
     src/common/logger.cpp
@@ -13339,7 +13329,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_utreexo_consensus_r
     src/consensus/script_verify.cpp
     src/consensus/chainparams_impl.cpp
     src/consensus/adapters/wallet_utxo_adapter.cpp
-    src/wallet/utxo_index.cpp
     src/database/sqlite_manager.cpp
     src/sqlite_open.cpp
     src/common/logger.cpp
@@ -15558,7 +15547,6 @@ endif()
 if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_mining_maturity.cpp)
   add_executable(test_mining_maturity
     tests/consensus/test_mining_maturity.cpp
-    src/wallet/utxo_index.cpp
     src/consensus/block_validation.cpp
     src/consensus/coinbase_maturity.cpp
     src/primitives/block.cpp
