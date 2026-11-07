@@ -5006,6 +5006,16 @@ target_link_libraries(test_wallet_revert_atomic PRIVATE dinero_wallet sqlite3 Th
 add_test(NAME WalletRevertAtomic COMMAND test_wallet_revert_atomic)
 set_tests_properties(WalletRevertAtomic PROPERTIES LABELS "wallet;utxo;storage" TIMEOUT 60)
 
+# Task 5.1: wallet node-facing interfaces (header-only contract + test fakes).
+add_executable(test_node_interfaces
+  tests/wallet/test_node_interfaces.cpp
+  src/primitives/uint256.cpp
+)
+target_include_directories(test_node_interfaces PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR})
+add_test(NAME WalletNodeInterfaces COMMAND test_node_interfaces)
+set_tests_properties(WalletNodeInterfaces PROPERTIES LABELS "wallet;separation" TIMEOUT 60)
+
 # Priority 3: UTXO Index Correctness Tests
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/utxo/test_utxo_index_correctness.cpp)
   add_executable(test_utxo_index_correctness tests/utxo/test_utxo_index_correctness.cpp)
