@@ -209,12 +209,9 @@ target_include_directories(dinero_consensus PRIVATE
 )
 target_link_libraries(dinero_consensus PRIVATE pqclean_ml_dsa_65)
 
-# Task 6.1a: the RocksDB include-dir is no longer EXPORTED. Consensus's own
-# sources still see rocksdb headers (coins_db.h/chain-facing declarations)
-# PRIVATE-ly; consumers declare their own.
-target_include_directories(dinero_consensus BEFORE PRIVATE
-  ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include
-)
+# Task 2.6 completed what Task 6.1a started: tx_validation.cpp now includes
+# chain_state_view.h, so NO consensus source reaches a rocksdb header and no
+# rocksdb include dir remains on this target at all.
 target_include_directories(dinero_consensus PUBLIC
   ${CMAKE_SOURCE_DIR}/include
   ${CMAKE_SOURCE_DIR}/src

@@ -1,5 +1,5 @@
 #include "consensus/tx_validation.h"
-#include "consensus/coins_db.h"
+#include "consensus/chain_state_view.h"
 #include "consensus/covenant_activation.h"
 #include "consensus/covenants.h"
 #include "consensus/script_interpreter.h"
@@ -71,7 +71,7 @@ TxValidationResult validateOutputs(const Transaction& tx, AmountUna& total_out) 
 
 TxValidationResult validateInputs(
     const Transaction& tx,
-    CoinsViewCache& view,
+    const ChainStateView& view,
     const TxValidationContext& ctx,
     AmountUna& total_in
 ) {
@@ -186,7 +186,7 @@ constexpr uint32_t SEQUENCE_LOCKTIME_GRANULARITY  = 512;         // Time units i
 
 bool checkSequenceLocks(
     const Transaction& tx,
-    CoinsViewCache& view,
+    const ChainStateView& view,
     const TxValidationContext& ctx
 ) {
     // Phase 23.3: BIP 68 relative locktime validation
@@ -448,7 +448,7 @@ TxValidationOutput validateCoinbase(
 
 TxValidationOutput validateTransaction(
     const Transaction& tx,
-    CoinsViewCache& view,
+    const ChainStateView& view,
     const TxValidationContext& ctx,
     bool is_coinbase
 ) {

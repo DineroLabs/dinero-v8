@@ -199,3 +199,22 @@ add_test(NAME SepWalletHeadersSelfContained
   COMMAND ${_sep_python} ${CMAKE_CURRENT_SOURCE_DIR}/check_wallet_headers.py
           ${_sep_wallet_hdr_args})
 set_tests_properties(SepWalletHeadersSelfContained PROPERTIES LABELS "separation" TIMEOUT 600)
+
+# K-gate companion (Task 2.6): the tx_validation entry points bind both view
+# types, and a plain ChainStateView suffices for real validation. RED before
+# the 2.6 parameter change (the ChainStateView static_asserts cannot compile).
+add_executable(sep_tx_validation_binds EXCLUDE_FROM_ALL tx_validation_binds.cpp)
+target_compile_features(sep_tx_validation_binds PRIVATE cxx_std_20)
+target_link_libraries(sep_tx_validation_binds PRIVATE dinero_consensus)
+# The gate binary itself includes coins_db.h for the CoinsViewCache-side
+# assertions; dinero_consensus deliberately no longer exports this dir.
+target_include_directories(sep_tx_validation_binds BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include)
+add_test(NAME SepTxValidationBinds COMMAND ${CMAKE_COMMAND}
+  -DSEP_BUILD_DIR=${CMAKE_BINARY_DIR}
+  -DSEP_TARGET=sep_tx_validation_binds
+  -DSEP_CONFIG=$<CONFIG>
+  -DSEP_EXE=$<TARGET_FILE:sep_tx_validation_binds>
+  -P ${_sep_driver})
+set_tests_properties(SepTxValidationBinds PROPERTIES LABELS "separation" TIMEOUT 1800
+  RESOURCE_LOCK sep_build_dir)
