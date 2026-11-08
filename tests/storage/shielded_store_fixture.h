@@ -14,7 +14,11 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#ifdef _WIN32
+#include <random>
+#else
 #include <unistd.h>
+#endif
 
 namespace shielded_store_fixture {
 using dinero::ChainDB;
@@ -38,9 +42,22 @@ inline void Setup(bool ok, const char* message) { if (!ok) throw std::runtime_er
 struct TempDir {
     std::filesystem::path path;
     TempDir() {
+#ifdef _WIN32
+        // mkdtemp is POSIX-only; create_directory fails on an existing name,
+        // so retrying random names gives the same no-reuse guarantee.
+        std::random_device rd;
+        for (int attempt = 0; attempt < 100 && path.empty(); ++attempt) {
+            auto candidate = std::filesystem::temp_directory_path() /
+                ("dinero_shielded_store_" + std::to_string(rd()));
+            std::error_code ec;
+            if (std::filesystem::create_directory(candidate, ec)) path = candidate;
+        }
+        Setup(!path.empty(), "create temp dir");
+#else
         auto pattern = (std::filesystem::temp_directory_path() / "dinero_shielded_store_XXXXXX").string();
         const char* created = mkdtemp(pattern.data());
         Setup(created, "mkdtemp"); path = created;
+#endif
     }
     ~TempDir() { std::error_code ec; std::filesystem::remove_all(path, ec); }
 };
