@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Stage the v8.1.11 desktop snapshot primary and exact prior-lifecycle fallback.
+# Stage the recent desktop primary and both exact prior-lifecycle fallbacks.
 #
 # Usage: stage-snapshot-pair.sh DESTINATION_DIRECTORY
 # Set DINERO_SKIP_SNAPSHOTS=1 only for an explicitly snapshot-free developer
-# package. Official desktop packages must carry both data/manifest pairs.
+# package. Official desktop packages must carry all three data/manifest pairs.
 
 set -euo pipefail
 
@@ -16,12 +16,15 @@ if [[ "${DINERO_SKIP_SNAPSHOTS:-0}" == "1" ]]; then
     exit 0
 fi
 
-PRIMARY_NAME="dinero-assumeutxo-99677-v4.dat"
-FALLBACK_NAME="utxo-snapshot-65300.dat"
+PRIMARY_NAME="dinero-assumeutxo-148375-v5.dat"
+FALLBACK_NAME="dinero-assumeutxo-99677-v4.dat"
+LEGACY_FALLBACK_NAME="utxo-snapshot-65300.dat"
 PRIMARY_DATA="${DINERO_SNAPSHOT_DAT:-${PROJECT_ROOT}/packaging/linux/snapshot/${PRIMARY_NAME}}"
-PRIMARY_MANIFEST="${DINERO_SNAPSHOT_MANIFEST:-${PRIMARY_DATA%.dat}.manifest.json}"
+PRIMARY_MANIFEST="${DINERO_SNAPSHOT_MANIFEST:-${PRIMARY_DATA}.manifest.json}"
 FALLBACK_DATA="${DINERO_SNAPSHOT_FALLBACK_DAT:-${PROJECT_ROOT}/packaging/linux/snapshot/${FALLBACK_NAME}}"
 FALLBACK_MANIFEST="${DINERO_SNAPSHOT_FALLBACK_MANIFEST:-${FALLBACK_DATA}.manifest.json}"
+LEGACY_FALLBACK_DATA="${DINERO_SNAPSHOT_LEGACY_FALLBACK_DAT:-${PROJECT_ROOT}/packaging/linux/snapshot/${LEGACY_FALLBACK_NAME}}"
+LEGACY_FALLBACK_MANIFEST="${DINERO_SNAPSHOT_LEGACY_FALLBACK_MANIFEST:-${LEGACY_FALLBACK_DATA}.manifest.json}"
 
 verify_and_stage() {
     local data_path="$1"
@@ -70,10 +73,12 @@ python3 "$PROJECT_ROOT/scripts/ci/check_snapshot_freshness.py" \
     --manifest "$PRIMARY_MANIFEST" "${FRESHNESS_ARGS[@]}"
 verify_and_stage "$PRIMARY_DATA" "$PRIMARY_MANIFEST" "$PRIMARY_NAME"
 verify_and_stage "$FALLBACK_DATA" "$FALLBACK_MANIFEST" "$FALLBACK_NAME"
+verify_and_stage "$LEGACY_FALLBACK_DATA" "$LEGACY_FALLBACK_MANIFEST" "$LEGACY_FALLBACK_NAME"
 
 for name in \
     "$PRIMARY_NAME" "$PRIMARY_NAME.manifest.json" \
-    "$FALLBACK_NAME" "$FALLBACK_NAME.manifest.json"; do
+    "$FALLBACK_NAME" "$FALLBACK_NAME.manifest.json" \
+    "$LEGACY_FALLBACK_NAME" "$LEGACY_FALLBACK_NAME.manifest.json"; do
     [[ -f "$DEST_DIR/$name" ]] || { echo "ERROR: staged snapshot artifact missing: $name" >&2; exit 1; }
 done
-echo "Staged verified AssumeUTXO primary and lifecycle fallback in $DEST_DIR"
+echo "Staged verified AssumeUTXO primary and both lifecycle fallbacks in $DEST_DIR"

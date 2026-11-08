@@ -64,11 +64,15 @@ param(
     [string]$SnapshotFileName   = '',
     [string]$SnapshotPath       = '',
     [string]$SnapshotManifestPath = '',
-    [string]$SnapshotReleaseTag = 'v8.1.2',
+    [string]$SnapshotReleaseTag = 'v8.2.2',
     [string]$SnapshotFallbackFileName   = '',
     [string]$SnapshotFallbackPath       = '',
     [string]$SnapshotFallbackManifestPath = '',
-    [string]$SnapshotFallbackReleaseTag = 'v8.0.17',
+    [string]$SnapshotFallbackReleaseTag = 'v8.1.11',
+    [string]$SnapshotLegacyFallbackFileName = '',
+    [string]$SnapshotLegacyFallbackPath = '',
+    [string]$SnapshotLegacyFallbackManifestPath = '',
+    [string]$SnapshotLegacyFallbackReleaseTag = 'v8.0.17',
     [switch]$NoSnapshot
 )
 
@@ -93,8 +97,8 @@ if (-not $QtRepoDir) {
 $Stage   = Join-Path $ScriptDir 'dist\installer-stage'
 $DistDir = Join-Path $ScriptDir 'dist'
 
-# Derive both installed filenames from the GUI's compiled-in constants.
-if ((-not $SnapshotFileName -or -not $SnapshotFallbackFileName) -and -not $NoSnapshot) {
+# Derive all installed filenames from the GUI's compiled-in constants.
+if ((-not $SnapshotFileName -or -not $SnapshotFallbackFileName -or -not $SnapshotLegacyFallbackFileName) -and -not $NoSnapshot) {
     $qtMain = Join-Path $ProjectRoot 'qt\src\main.cpp'
     if (Test-Path $qtMain) {
         if (-not $SnapshotFileName) {
@@ -105,7 +109,11 @@ if ((-not $SnapshotFileName -or -not $SnapshotFallbackFileName) -and -not $NoSna
             $m = Select-String -Path $qtMain -Pattern 'kBundledSnapshotFallback\[\]\s*=\s*"([^"]+)"' | Select-Object -First 1
             if ($m) { $SnapshotFallbackFileName = $m.Matches[0].Groups[1].Value }
         }
-        Write-Host "Bundled snapshot names (from qt/src/main.cpp): primary=$SnapshotFileName fallback=$SnapshotFallbackFileName"
+        if (-not $SnapshotLegacyFallbackFileName) {
+            $m = Select-String -Path $qtMain -Pattern 'kBundledSnapshotLegacyFallback\[\]\s*=\s*"([^"]+)"' | Select-Object -First 1
+            if ($m) { $SnapshotLegacyFallbackFileName = $m.Matches[0].Groups[1].Value }
+        }
+        Write-Host "Bundled snapshot names: primary=$SnapshotFileName fallback=$SnapshotFallbackFileName older=$SnapshotLegacyFallbackFileName"
     }
 }
 
@@ -386,8 +394,8 @@ if ($snap) {
     } else {
         throw 'Primary snapshot has no adjacent manifest; refusing to produce the installer.'
     }
-} else {
-    Write-Host "No AssumeUTXO snapshot bundled - fresh GUI users will sync from genesis." -ForegroundColor Yellow
+} elseif (-not $NoSnapshot) {
+    throw 'Required primary snapshot missing; refusing to produce an installer that silently syncs from genesis.'
 }
 $fallbackSnap = Resolve-BundledSnapshot $SnapshotFallbackFileName $SnapshotFallbackPath $SnapshotFallbackReleaseTag 'fallback'
 if ($fallbackSnap) {
@@ -402,7 +410,17 @@ if ($fallbackSnap) {
         throw 'Fallback snapshot has no adjacent manifest; refusing to produce the installer.'
     }
 } elseif (-not $NoSnapshot) {
-    Write-Host "WARN: no exact-lifecycle fallback bundled - interrupted older desktop syncs cannot rehydrate after upgrade." -ForegroundColor Yellow
+    throw 'Required exact-lifecycle snapshot fallback missing.'
+}
+$legacySnap = Resolve-BundledSnapshot $SnapshotLegacyFallbackFileName $SnapshotLegacyFallbackPath $SnapshotLegacyFallbackReleaseTag 'older fallback'
+if ($legacySnap) {
+    $legacyManifest = Resolve-BundledSnapshotManifest $SnapshotLegacyFallbackFileName $legacySnap $SnapshotLegacyFallbackManifestPath $SnapshotLegacyFallbackReleaseTag 'older fallback'
+    if (-not $legacyManifest) { throw 'Required older snapshot fallback manifest missing.' }
+    Assert-SnapshotManifest $legacySnap $legacyManifest $SnapshotLegacyFallbackFileName 'older fallback'
+    Copy-Item $legacySnap (Join-Path $Stage $SnapshotLegacyFallbackFileName)
+    Copy-Item $legacyManifest (Join-Path $Stage "$SnapshotLegacyFallbackFileName.manifest.json")
+} elseif (-not $NoSnapshot) {
+    throw 'Required older exact-lifecycle snapshot fallback missing.'
 }
 
 $totalSize = (Get-ChildItem $Stage -Recurse | Measure-Object Length -Sum).Sum

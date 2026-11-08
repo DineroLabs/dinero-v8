@@ -122,23 +122,23 @@ jobs:
         run: |
           mkdir -p packaging/windows/dist
           gh release download "${{ steps.ver.outputs.release_tag }}" \
-            --pattern 'dinero-assumeutxo-99677-v4.dat' \
-            --pattern 'dinero-assumeutxo-99677-v4.manifest.json' \
+            --pattern 'dinero-assumeutxo-148375-v5.dat' \
+            --pattern 'dinero-assumeutxo-148375-v5.dat.manifest.json' \
             --dir packaging/windows/dist \
             --clobber
 
-      - name: Fetch pinned previous snapshot for artifact-only candidate
+      - name: Fetch recent snapshot for artifact-only candidate
         if: inputs.candidate_source != ''
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           mkdir -p packaging/windows/dist
-          gh release download v8.1.11 --repo DineroLabs/dinero-v8 \
-            --pattern 'dinero-assumeutxo-99677-v4.dat' \
-            --pattern 'dinero-assumeutxo-99677-v4.manifest.json' \
+          gh release download v8.2.2 --repo DineroLabs/dinero-v8 \
+            --pattern 'dinero-assumeutxo-148375-v5.dat' \
+            --pattern 'dinero-assumeutxo-148375-v5.dat.manifest.json' \
             --dir packaging/windows/dist --clobber
-          echo 'd4b8d88c2fe765aa627ed0bc12205b2cfba6e4fa50aeb72fd9924990e83c29fd  packaging/windows/dist/dinero-assumeutxo-99677-v4.dat' | sha256sum --check
+          echo '41b4bb8ee5b1b4a354b0d3bdd03b7dee4372cfecd1a8ef1bf5c01bff0ed991e7  packaging/windows/dist/dinero-assumeutxo-148375-v5.dat' | sha256sum --check
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -357,8 +357,8 @@ jobs:
             -QtBin "$env:QT_ROOT_DIR\bin" `
             -CudaBin "$env:CUDA_PATH\bin" `
             -Sv2BuildDir 'dinero-sv2\target\release' `
-            -SnapshotPath 'packaging\windows\dist\dinero-assumeutxo-99677-v4.dat' `
-            -SnapshotManifestPath 'packaging\windows\dist\dinero-assumeutxo-99677-v4.manifest.json'
+            -SnapshotPath 'packaging\windows\dist\dinero-assumeutxo-148375-v5.dat' `
+            -SnapshotManifestPath 'packaging\windows\dist\dinero-assumeutxo-148375-v5.dat.manifest.json'
 
       # Policy pin. A release that silently linked a different OpenSSL than the
       # one the Linux/macOS lanes assert would be a supply-chain divergence.
@@ -469,7 +469,7 @@ jobs:
           try {
             & 'C:\Program Files (x86)\NSIS\makensis.exe' "/DVERSION=$version" "/DVERSION_NUMERIC=$numericVersion" dinero-installer.nsi
             if ($LASTEXITCODE -ne 0) { throw 'GUI NSIS rebuild failed' }
-            & 'C:\Program Files (x86)\NSIS\makensis.exe' "/DVERSION=$version" "/DVERSION_NUMERIC=$numericVersion" "/DSNAPSHOT_FILE=dinero-assumeutxo-99677-v4.dat" dinero-server-installer.nsi
+            & 'C:\Program Files (x86)\NSIS\makensis.exe' "/DVERSION=$version" "/DVERSION_NUMERIC=$numericVersion" "/DSNAPSHOT_FILE=dinero-assumeutxo-148375-v5.dat" dinero-server-installer.nsi
             if ($LASTEXITCODE -ne 0) { throw 'server NSIS rebuild failed' }
           } finally { Pop-Location }
 

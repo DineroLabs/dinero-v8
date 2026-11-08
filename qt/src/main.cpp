@@ -13,6 +13,7 @@
 #include <QLockFile>
 #include <iostream>
 #include <string>
+#include "bundledsnapshotpolicy.h"
 #include <QMessageBox>
 #include <QPushButton>
 #include <QCheckBox>
@@ -105,13 +106,14 @@ QStringList currentBootstrapAddnodes() {
 }
 
 // Height-specific snapshots shipped in the app's Resources. The newest is the
-// fresh-install primary; the older file is retained only to restart an exact
+// fresh-install primary; older files are retained only to restart an exact
 // persisted AssumeUTXO lifecycle created by the previous desktop release.
-// Both remain armed on every start. The daemon treats them as inert on an
+// All remain armed on every start. The daemon treats them as inert on an
 // ordinary synced datadir, but an interrupted first sync needs the exact old
 // artifact even after the app bundle has been upgraded.
-constexpr char kBundledSnapshotPrimary[] = "dinero-assumeutxo-99677-v4.dat";
-constexpr char kBundledSnapshotFallback[] = "utxo-snapshot-65300.dat";
+constexpr char kBundledSnapshotPrimary[] = "dinero-assumeutxo-148375-v5.dat";
+constexpr char kBundledSnapshotFallback[] = "dinero-assumeutxo-99677-v4.dat";
+constexpr char kBundledSnapshotLegacyFallback[] = "utxo-snapshot-65300.dat";
 
 QString findBundledSnapshot(const char* filename) {
     // Locate a bundled snapshot across platform install layouts:
@@ -137,11 +139,11 @@ void appendAssumeUtxoSnapshotArgs(QStringList& args, const QString& datadir) {
         return;
     }
 
-    QString primary = findBundledSnapshot(kBundledSnapshotPrimary);
-    const QString fallback = findBundledSnapshot(kBundledSnapshotFallback);
-    if (primary.isEmpty()) {
-        primary = fallback;
-    }
+    const auto selected = dinero::qt::SelectBundledSnapshots({
+        findBundledSnapshot(kBundledSnapshotPrimary).toStdString(),
+        findBundledSnapshot(kBundledSnapshotFallback).toStdString(),
+        findBundledSnapshot(kBundledSnapshotLegacyFallback).toStdString()});
+    const QString primary = QString::fromStdString(selected.primary);
     if (primary.isEmpty()) {
         qWarning() << "No bundled AssumeUTXO snapshot found — a fresh datadir will sync from genesis";
         return;
@@ -149,21 +151,22 @@ void appendAssumeUtxoSnapshotArgs(QStringList& args, const QString& datadir) {
 
     qInfo() << "Arming bundled AssumeUTXO primary" << primary;
     args << QString("--assumeutxo_snapshot=%1").arg(primary);
-    if (!fallback.isEmpty() && fallback != primary) {
-        if (fallback.contains(';')) {
-            qWarning() << "AssumeUTXO fallback path contains unsupported ';' delimiter; skipping";
-        } else {
-            qInfo() << "Arming exact-lifecycle AssumeUTXO fallback" << fallback;
-            args << QString("--assumeutxo_snapshot_fallbacks=%1").arg(fallback);
-        }
+    QStringList fallbacks;
+    for (const auto& path : selected.fallbacks) {
+        const auto fallback = QString::fromStdString(path);
+        qInfo() << "Arming exact-lifecycle AssumeUTXO fallback" << fallback;
+        fallbacks << fallback;
+    }
+    if (!fallbacks.isEmpty()) {
+        args << QString("--assumeutxo_snapshot_fallbacks=%1").arg(fallbacks.join(';'));
     }
     // Wallet-usable-at-tip during background validation: without this the
     // desktop default profile (mac_fullblock) holds the active tip at the
     // snapshot base until the genesis->base replay completes, so a payment
     // received above the base shows 0 confirmations (and never reaches the
     // wallet index) for the whole first-run validation window — hours of
-    // "where's my money?" on every fresh install. The snapshot is verified
-    // against the compiled trust anchor before it loads, and validation
+    // "where's my money?" on every fresh install. The v5 snapshot is verified
+    // against its selected header-chain commitment and burial before loading; validation
     // still runs to completion in the background (#361 forward-connect;
     // the posture the iOS profile has always shipped).
     args << QStringLiteral("--assumeutxo_forward_connect=1");

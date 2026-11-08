@@ -25,8 +25,8 @@ param(
     [string]$SnapshotPath       = '',
     [string]$SnapshotManifestPath = '',
     [string]$SnapshotAssetName  = '',
-    [string]$SnapshotFileName   = 'dinero-assumeutxo-99677-v4.dat',
-    [string]$SnapshotReleaseTag = 'v8.1.2',
+    [string]$SnapshotFileName   = 'dinero-assumeutxo-148375-v5.dat',
+    [string]$SnapshotReleaseTag = 'v8.2.2',
     [switch]$SkipBuild,
     [switch]$CiOrchardQualification
 )
@@ -197,8 +197,8 @@ function Resolve-Snapshot {
     #   2. Cached copy at $DistDir\$SnapshotAssetName
     #   3. Download $SnapshotAssetName from the v8 release tagged by -SnapshotReleaseTag.
     #
-    # Default is the height-99677 v4 anchor published with v8.1.11. The daemon
-    # verifies the exact file sha256 and base hash against its compiled registry.
+    # Default is the recent height-148375 v5 snapshot. The daemon
+    # verifies its checksum, selected header-chain commitment and burial.
     # Existing installs keep their prior dinero.conf and datadir snapshot, so an
     # in-progress older lifecycle is not rewritten by an installer upgrade. When
     # a future cut publishes a new snapshot height, bump
