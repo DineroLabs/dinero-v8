@@ -61,3 +61,9 @@ scripts/ci/separation/*.sha256           text eol=lf
 scripts/ci/separation/*.tsv              text eol=lf
 include/nodecore/nodecore_ffi.h          text eol=lf
 wallet-core/ffi/wallet_ffi.h             text eol=lf
+
+# Digest-pinned test corpora: the vector tests (e.g. BIP119CTVVectors)
+# SHA256 the raw file bytes against a pinned upstream digest. CRLF
+# checkout (Windows runners set core.autocrlf=true globally) changes the
+# bytes and fails the pin.
+tests/vectors/**                         text eol=lf
