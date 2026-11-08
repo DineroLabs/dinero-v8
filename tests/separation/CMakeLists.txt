@@ -135,7 +135,8 @@ set_tests_properties(SepWalletStandalone PROPERTIES LABELS "separation;recorded"
 
 # W5 external interface freeze and regtest RPC transcript (spec section 8).
 # Baselines: interface_baseline/ (headers, JNI export list, per-platform/config
-# C-linkage symbols) and transcripts/<off|on>.json, recorded at the baseline.
+# C-linkage symbols) and transcripts/<off|on>.json (POSIX) or
+# transcripts/windows_<off|on>.json (Windows), recorded at the baseline.
 # Both tests build what they inspect first, so a stale artifact cannot pass.
 if(Python3_EXECUTABLE)
   set(_sep_python ${Python3_EXECUTABLE})
@@ -171,11 +172,20 @@ endif()
 set_tests_properties(SepInterfaceFreeze PROPERTIES LABELS "separation" TIMEOUT 1800
   RESOURCE_LOCK sep_build_dir)
 
+if(WIN32)
+  # Windows transcripts differ by design: snapshot wallet file recovery is
+  # POSIX-only (rpc_transcript.py phase_snapshot freezes the platform
+  # refusal), so Windows checks a per-platform reference, recorded on
+  # Windows and committed after review. A missing file fails closed (rc 2).
+  set(_sep_transcript_ref windows_${_sep_fixture_cfg})
+else()
+  set(_sep_transcript_ref ${_sep_fixture_cfg})
+endif()
 add_test(NAME SepRpcTranscript COMMAND ${CMAKE_COMMAND}
   -DSEP_BUILD_DIR=${CMAKE_BINARY_DIR}
   -DSEP_TARGETS=dinerod
   -DSEP_CONFIG=$<CONFIG>
-  "-DSEP_COMMAND=${_sep_python}|${CMAKE_CURRENT_SOURCE_DIR}/rpc_transcript.py|check|--dinerod|$<TARGET_FILE:dinerod>|--config|${_sep_fixture_cfg}|--out|${CMAKE_CURRENT_SOURCE_DIR}/transcripts/${_sep_fixture_cfg}.json"
+  "-DSEP_COMMAND=${_sep_python}|${CMAKE_CURRENT_SOURCE_DIR}/rpc_transcript.py|check|--dinerod|$<TARGET_FILE:dinerod>|--config|${_sep_fixture_cfg}|--out|${CMAKE_CURRENT_SOURCE_DIR}/transcripts/${_sep_transcript_ref}.json"
   -P ${_sep_script_driver})
 set_tests_properties(SepRpcTranscript PROPERTIES LABELS "separation" TIMEOUT 1800
   RESOURCE_LOCK sep_build_dir)

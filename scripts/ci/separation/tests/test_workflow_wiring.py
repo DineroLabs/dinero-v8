@@ -146,6 +146,31 @@ def test_windows_expectation_keeps_w5_missing_reference_after_b1():
     assert "'" not in exp[:-1]      # single-quoted pwsh string: no stray quote inside
 
 
+def test_windows_w5_uses_a_per_platform_transcript_reference():
+    # Snapshot wallet file recovery is POSIX-only (src/daemon/services/
+    # snapshot_wallet_source.cpp), so the shared transcripts/<cfg>.json can
+    # never match on Windows: the driver freezes the platform refusal, CMake
+    # points the check at transcripts/windows_<cfg>.json (fail closed when
+    # missing), the W5 step treats a missing transcript as a missing
+    # reference, and the record step produces the candidate for review.
+    driver = (ROOT / "tests/separation/rpc_transcript.py").read_text()
+    assert 'if os.name == "nt":' in driver
+    assert "snapshot_recovery.unavailable_on_platform" in driver
+    assert "set(_sep_transcript_ref windows_${_sep_fixture_cfg})" in CMAKE
+    assert "transcripts/${_sep_transcript_ref}.json" in CMAKE
+    assert "transcripts/${_sep_fixture_cfg}.json" not in CMAKE
+    w5 = steps(WINDOWS)["w5"]
+    assert r"transcripts\windows_$env:SEP_CFG.json" in w5
+    assert "no committed Windows transcript" in w5
+    record = WINDOWS.split("- name: Record baselines for review", 1)[1].split("\n      - name: ")[0]
+    assert r"rpc_transcript.py record" in record
+    assert r"transcripts\windows_$env:SEP_CFG.json" in record
+    assert "$trc -ne 0" in record
+    summary = WINDOWS.split("- name: Gate summary", 1)[1]
+    exp = summary.split("Stage-0 expectation:", 1)[1].split("\n")[0]
+    assert "transcripts/windows_<cfg>.json" in exp
+
+
 def test_no_step_saves_a_cache():
     # Owner rule: cache saves are uploads. Restoring existing caches is allowed.
     for name, text in (("posix", POSIX), ("windows", WINDOWS)):

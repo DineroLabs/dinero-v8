@@ -468,6 +468,21 @@ def phase_snapshot(t, work, dinerod, taken, logs, pids, nodes, foreign):
     t.call(con, "snapshot_recovery.refused_without_history",
            "wallet.recovertransparentfromsnapshot", params, sync=False)
     con.stop()
+    if os.name == "nt":
+        # ReadSnapshotWalletSourceFile (src/daemon/services/
+        # snapshot_wallet_source.cpp) is POSIX-only -- open(O_NOFOLLOW) and
+        # the fstat regular-file bounds -- so on Windows dinerod answers
+        # every recovery request "Snapshot wallet file recovery unavailable
+        # on this platform" and success can never happen. Freeze that
+        # refusal as one deterministic entry instead of polling for a
+        # recovery; the Windows reference (transcripts/windows_<cfg>.json)
+        # is recorded on Windows and reviewed like the other Windows
+        # baselines (tests/separation/CMakeLists.txt, W5).
+        con.start(*snap_args)
+        t.call(con, "snapshot_recovery.unavailable_on_platform",
+               "wallet.recovertransparentfromsnapshot", params, sync=False)
+        con.stop()
+        return
     src.start(*SNAPSHOT_ARGS, offline=False)
     con.start(*snap_args, "--connect=127.0.0.1:%d" % src.p2pport, offline=False)
 

@@ -500,6 +500,10 @@ jobs:
           if ($env:SEP_LLVM_NM) { $env:PATH = (Split-Path -Parent $env:SEP_LLVM_NM) + [IO.Path]::PathSeparator + $env:PATH }
           $present = 1
           if (-not (Test-Path $base)) { $present = 0; Write-Host "W5: no committed symbol baseline $base" }
+          # Windows checks a per-platform transcript (snapshot recovery is
+          # POSIX-only): tests/separation/CMakeLists.txt, rpc_transcript.py.
+          $tref = "tests\separation\transcripts\windows_$env:SEP_CFG.json"
+          if (-not (Test-Path $tref)) { $present = 0; Write-Host "W5: no committed Windows transcript $tref" }
           $crc = [int](Invoke-SepCtest -Names 'SepInterfaceFreeze', 'SepRpcTranscript')
           # "missing reference" only if both checks ran and nothing else
           # failed; a build break or run error is a real FAIL. See gate_label.py.
@@ -538,7 +542,8 @@ jobs:
           $d = 'scripts\ci\separation'
           $kref = "$d\consensus_vectors_ref_windows_$env:SEP_CFG.json"
           $sym = "tests\separation\interface_baseline\symbols_windows_$env:SEP_CFG.txt"
-          if ($env:RECORD_INPUT -ne 'true' -and (Test-Path $kref) -and (Test-Path $sym)) {
+          $tref = "tests\separation\transcripts\windows_$env:SEP_CFG.json"
+          if ($env:RECORD_INPUT -ne 'true' -and (Test-Path $kref) -and (Test-Path $sym) -and (Test-Path $tref)) {
             Write-Host "record: skipped (baselines committed for windows/$env:SEP_CFG; record_baselines not set)"; exit 0
           }
           $out = Join-Path $env:RUNNER_TEMP 'recorded'
@@ -561,15 +566,30 @@ jobs:
             Write-Host 'W5 record: dinero_wallet_ffi.lib not built'
           }
           Write-Host "W5 symbol record exited $wrc"
+          # Windows RPC transcript reference (snapshot recovery is POSIX-only,
+          # so the shared transcripts/<cfg>.json can never match on Windows):
+          # record transcripts/windows_<cfg>.json here, review, commit by hand.
+          $dd = Get-ChildItem -Path $env:SEP_BUILD -Recurse -Filter 'dinerod.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          $trc = 2
+          if ($dd) {
+            New-Item -ItemType Directory -Force -Path (Join-Path $out 'transcripts') | Out-Null
+            python tests\separation\rpc_transcript.py record --dinerod $dd.FullName --config $env:SEP_CFG `
+              --out (Join-Path $out "transcripts\windows_$env:SEP_CFG.json")
+            $trc = $LASTEXITCODE
+          } else {
+            Write-Host 'W5 transcript record: dinerod.exe not built'
+          }
+          Write-Host "W5 transcript record exited $trc"
           $files = @(Get-ChildItem -Path $out -Filter 'consensus_vectors_ref_*.json' -ErrorAction SilentlyContinue) +
-                   @(Get-ChildItem -Path (Join-Path $out 'interface_baseline') -Filter 'symbols_*.txt' -ErrorAction SilentlyContinue)
+                   @(Get-ChildItem -Path (Join-Path $out 'interface_baseline') -Filter 'symbols_*.txt' -ErrorAction SilentlyContinue) +
+                   @(Get-ChildItem -Path (Join-Path $out 'transcripts') -Filter 'windows_*.json' -ErrorAction SilentlyContinue)
           foreach ($f in $files) {
             $hash = (Get-FileHash -Algorithm SHA256 $f.FullName).Hash.ToLowerInvariant()
             Write-Host "===== RECORDED $($f.Name) (sha256 $hash) ====="
             Get-Content -Raw $f.FullName | Out-Host
             Write-Host "===== END $($f.Name) ====="
           }
-          if ($rc -ne 0 -or $wrc -ne 0) { exit 1 }
+          if ($rc -ne 0 -or $wrc -ne 0 -or $trc -ne 0) { exit 1 }
           exit 0
 
       - name: Gate summary
@@ -650,6 +670,6 @@ jobs:
           $lines += '| K6 | SKIP stage<2 |'
           foreach ($g in 'W1','W2','W3','W4','W5','W6') { $lines += (Row $g) }
           $lines += ''
-          $lines += 'Stage-0 expectation: K1, K2, W1, W2 FAIL; K3 and W3 FAIL when measured, else UNMEASURED until the COFF scan is verified; K4 FAIL rc 2 (missing reference) until reviewed Windows baselines are committed; W4 PASS; W6 recorded (RED). W5 on Windows is PARTIAL (wallet FFI + RPC only; NodeCore is not a Windows target, so NodeCore interface evidence comes only from Linux/macOS). Its RPC transcript is UNMEASURED (blocked by B1: dinerod --consensus-state-commitment-height=4294967295 std::stol overflow on LLP64) only when the startup log shows the exact B1 error; any other startup failure is FAIL (check did not run). After B1 is fixed through its own review, W5 stays FAIL rc 2 (missing reference) until a reviewed Windows symbol baseline (symbols_windows_<cfg>.txt) is committed. If the prerequisite build fails (LANE UNMEASURED), every gate that depends on a failed target is UNMEASURED.'
+          $lines += 'Stage-0 expectation: K1, K2, W1, W2 FAIL; K3 and W3 FAIL when measured, else UNMEASURED until the COFF scan is verified; K4 FAIL rc 2 (missing reference) until reviewed Windows baselines are committed; W4 PASS; W6 recorded (RED). W5 on Windows is PARTIAL (wallet FFI + RPC only; NodeCore is not a Windows target, so NodeCore interface evidence comes only from Linux/macOS). Its RPC transcript is UNMEASURED (blocked by B1: dinerod --consensus-state-commitment-height=4294967295 std::stol overflow on LLP64) only when the startup log shows the exact B1 error; any other startup failure is FAIL (check did not run). After B1 is fixed through its own review, W5 stays FAIL rc 2 (missing reference) until a reviewed Windows symbol baseline (symbols_windows_<cfg>.txt) and a reviewed Windows RPC transcript (transcripts/windows_<cfg>.json; snapshot wallet file recovery is POSIX-only, so the shared transcript can never match on Windows) are committed. If the prerequisite build fails (LANE UNMEASURED), every gate that depends on a failed target is UNMEASURED.'
           $lines | Out-Host
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
