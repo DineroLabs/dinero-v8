@@ -8,7 +8,8 @@
 # Windows MSVC runs the same gates in separation-gates-windows.yml.
 #
 # Stage 0 rules:
-#   * not a required check; every gate step is continue-on-error and echoes
+#   * REQUIRED since Task 7.1 (2026-11-08): a gate failure or UNMEASURED fails
+#     the check; each step still echoes
 #     `GATE <id> <PASS|FAIL>`; the last step prints the table.
 #   * evidence goes to the job log (and the run's step summary) only:
 #     nothing is uploaded, nothing is committed or pushed from CI.
@@ -303,7 +304,6 @@ jobs:
 
       - name: Build gate prerequisites
         id: build
-        continue-on-error: true
         run: |
           # rc 3 = a registered K4 test's target is unresolved: still build the
           # rest (the K4 step fails on $RUNNER_TEMP/k4_unresolved.txt).
@@ -329,7 +329,6 @@ jobs:
       - name: Prerequisite build status
         id: prereq
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         env:
           O_BUILD: ${{ steps.build.outcome }}
         run: |
@@ -340,7 +339,6 @@ jobs:
       - name: K1 consensus forced link
         id: k1
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
           sep_prereq K1 || exit $?
@@ -350,7 +348,6 @@ jobs:
       - name: K2 consensus closure
         id: k2
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
           rc=0
@@ -363,7 +360,6 @@ jobs:
       - name: nm demangling self-check (before K3/W3)
         id: nm_demangle
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         run: |
           NM="$(command -v nm)"
           bin="$SEP_BUILD/dinerod"
@@ -383,7 +379,6 @@ jobs:
       - name: K3 consensus symbols
         id: k3
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         env:
           NM_CHECK: ${{ steps.nm_demangle.outcome }}
         run: |
@@ -407,7 +402,6 @@ jobs:
       - name: K4 consensus vectors
         id: k4
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
           sep_prereq K4 || exit $?
@@ -437,7 +431,6 @@ jobs:
       - name: K5 consensus source freeze
         id: k5
         if: ${{ !cancelled() }}
-        continue-on-error: true
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
           rc=0
@@ -454,7 +447,6 @@ jobs:
       - name: W1 wallet forced link
         id: w1
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
           sep_prereq W1 || exit $?
@@ -464,7 +456,6 @@ jobs:
       - name: W2 wallet closure
         id: w2
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
           rc=0
@@ -475,7 +466,6 @@ jobs:
       - name: W3 wallet symbols
         id: w3
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         env:
           NM_CHECK: ${{ steps.nm_demangle.outcome }}
         run: |
@@ -499,7 +489,6 @@ jobs:
       - name: W4 wallet-file compatibility
         id: w4
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
           sep_prereq W4 || exit $?
@@ -509,7 +498,6 @@ jobs:
       - name: W5 external interface freeze and RPC transcript
         id: w5
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
           sep_prereq W5 || exit $?
@@ -542,7 +530,6 @@ jobs:
       - name: W6 standalone wallet (recorded)
         id: w6
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         run: |
           . "$RUNNER_TEMP/sep_gate.sh"
           sep_prereq W6 || exit $?
@@ -567,7 +554,6 @@ jobs:
       # read) and prints the files for review; it never changes a gate result.
       - name: Record baselines for review
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         env:
           RECORD_INPUT: ${{ inputs.record_baselines }}
         run: |
@@ -722,7 +708,6 @@ jobs:
 
       - name: Build fixed-proof consumers
         id: build
-        continue-on-error: true
         run: >-
           cmake --build build-compact-regtest --parallel "$(nproc)"
           --target test_compact_regtest_vectors test_shielded_resource_limits test_shielded_validation
@@ -730,7 +715,6 @@ jobs:
       - name: K4 saved proofs, independent literals and resource boundaries
         id: k4c
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         run: |
           # The one name list: the floor check, the -R regex and the ran-proof
           # all derive from it (same tests as compact-regtest-vectors.yml).

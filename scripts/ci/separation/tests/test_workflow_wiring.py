@@ -63,7 +63,8 @@ def test_prerequisite_scan_runs_after_build_before_gates():
         block = steps(text)["prereq"]
         assert "O_BUILD: ${{ steps.build.outcome }}" in block
         assert "prereq_status.py scan" in block and "--platform " + plat in block
-        assert "continue-on-error: true" in block
+        # Task 7.1: the gates are REQUIRED — no step may swallow its failure.
+        assert "continue-on-error" not in block
 
 
 def test_summary_carries_every_unmeasured_state_and_the_lane_line():

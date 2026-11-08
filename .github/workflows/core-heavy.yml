@@ -46,7 +46,15 @@ jobs:
     # BlockStorage/open_sqlite and dinero::Mempool without declaring them, and
     # which tests pull wallet_manager.cpp.o depends on archive-member order.
     # Unpin once the wallet/node separation removes those dependencies.
-    runs-on: ubuntu-24.04
+    # Task 7.1 trial matrix: the pinned leg stays the required original; the
+    # ubuntu-latest (GCC 15) leg is a trial that may not fail the check until
+    # Task 8.1 removes the pin on its green evidence.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-latest]
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.runner == 'ubuntu-latest' }}
     timeout-minutes: 90
 
     steps:

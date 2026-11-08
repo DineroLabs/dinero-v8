@@ -21,7 +21,7 @@
 #     testing-only opt-in; it does not qualify a Windows build.
 #
 # Stage 0 rules (as in separation-gates.yml): every gate step is
-# continue-on-error and echoes `GATE <id> <PASS|FAIL>`; exact ^(...)$ Sep*
+# REQUIRED since Task 7.1 (2026-11-08); echoes `GATE <id> <PASS|FAIL>`; exact ^(...)$ Sep*
 # ctest names checked against the never-run floor, or run_consensus_vectors.py
 # (which enforces the floor); no label selection; no committed Windows
 # baselines yet, so K4 and W5 fail closed (rc 2) until recorded and reviewed.
@@ -307,7 +307,6 @@ jobs:
 
       - name: Build gate prerequisites
         id: build
-        continue-on-error: true
         run: |
           . "$env:RUNNER_TEMP\sep_gate.ps1"
           # rc 3 = a registered K4 test's target is unresolved: still build the
@@ -333,7 +332,6 @@ jobs:
       - name: Prerequisite build status
         id: prereq
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         env:
           O_BUILD: ${{ steps.build.outcome }}
         run: |
@@ -345,7 +343,6 @@ jobs:
       - name: K1 consensus forced link
         id: k1
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         run: |
           . "$env:RUNNER_TEMP\sep_gate.ps1"
           $p = [int](Test-SepPrereq 'K1'); if ($p -ne 0) { exit $p }
@@ -355,7 +352,6 @@ jobs:
       - name: K2 consensus closure
         id: k2
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         run: |
           . "$env:RUNNER_TEMP\sep_gate.ps1"
           python scripts\ci\separation\check_link_closure.py --build $env:SEP_BUILD `
@@ -372,7 +368,6 @@ jobs:
       - name: Resolve and verify llvm-nm (before K3/W3)
         id: nm_demangle
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         run: |
           $cands = @()
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
@@ -395,7 +390,6 @@ jobs:
       - name: K3 consensus symbols (COFF archive scan)
         id: k3
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         run: |
           . "$env:RUNNER_TEMP\sep_gate.ps1"
           $p = [int](Test-SepPrereq 'K3'); if ($p -ne 0) { exit $p }
@@ -415,7 +409,6 @@ jobs:
       - name: K4 consensus vectors
         id: k4
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         run: |
           . "$env:RUNNER_TEMP\sep_gate.ps1"
           $p = [int](Test-SepPrereq 'K4'); if ($p -ne 0) { exit $p }
@@ -452,7 +445,6 @@ jobs:
       - name: W1 wallet forced link
         id: w1
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         run: |
           . "$env:RUNNER_TEMP\sep_gate.ps1"
           $p = [int](Test-SepPrereq 'W1'); if ($p -ne 0) { exit $p }
@@ -462,7 +454,6 @@ jobs:
       - name: W2 wallet closure
         id: w2
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         run: |
           . "$env:RUNNER_TEMP\sep_gate.ps1"
           python scripts\ci\separation\check_link_closure.py --build $env:SEP_BUILD `
@@ -473,7 +464,6 @@ jobs:
       - name: W3 wallet symbols (COFF archive scan)
         id: w3
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         run: |
           . "$env:RUNNER_TEMP\sep_gate.ps1"
           $p = [int](Test-SepPrereq 'W3'); if ($p -ne 0) { exit $p }
@@ -492,7 +482,6 @@ jobs:
       - name: W4 wallet-file compatibility
         id: w4
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         run: |
           . "$env:RUNNER_TEMP\sep_gate.ps1"
           $p = [int](Test-SepPrereq 'W4'); if ($p -ne 0) { exit $p }
@@ -502,7 +491,6 @@ jobs:
       - name: W5 external interface freeze and RPC transcript
         id: w5
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         run: |
           . "$env:RUNNER_TEMP\sep_gate.ps1"
           $p = [int](Test-SepPrereq 'W5'); if ($p -ne 0) { exit $p }
@@ -522,7 +510,6 @@ jobs:
       - name: W6 standalone wallet (recorded)
         id: w6
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         run: |
           . "$env:RUNNER_TEMP\sep_gate.ps1"
           $p = [int](Test-SepPrereq 'W6'); if ($p -ne 0) { exit $p }
@@ -544,7 +531,6 @@ jobs:
       # read) and prints the files for review; it never changes a gate result.
       - name: Record baselines for review
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
-        continue-on-error: true
         env:
           RECORD_INPUT: ${{ inputs.record_baselines }}
         run: |
