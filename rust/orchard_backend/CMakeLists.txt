@@ -630,6 +630,7 @@ if(DINERO_ORCHARD_BUILD_TESTS)
       "${ORCHARD_HOST_ROOT}/src/consensus/header_chain.cpp"
       "${ORCHARD_HOST_ROOT}/src/consensus/header_store.cpp"
       "${ORCHARD_HOST_ROOT}/src/consensus/genesis_canonical.cpp"
+      "${ORCHARD_HOST_ROOT}/src/daemon/config.cpp"  # GetConfig() for core members GNU ld pulls (Linux qualification fix)
       "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
         # Task 6.1a: declares RocksDB itself (consensus no longer exports it).
     target_include_directories(test_orchard_header BEFORE PRIVATE "${ORCHARD_HOST_ROOT}/third_party/rocksdb/include")
