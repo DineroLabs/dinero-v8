@@ -401,3 +401,15 @@ def test_invalid_tag_records_no_selection(tmp_path, monkeypatch):
     monkeypatch.setenv("SEP_REF_TAG", "../x")
     assert run_main(monkeypatch, repo, build, tmp_path / "base", "check", {("T", "_nodecore_stop")}) == 2
     assert not (build / "sep_w5_selected_reference.txt").exists()
+
+
+def test_build_config_reads_a_crlf_cmake_cache(tmp_path):
+    # CMake writes CMakeCache.txt with CRLF on Windows; the regex must not
+    # silently fall back to "off" there (it did: every Windows lane recorded
+    # and checked symbols_windows_off.txt, ON config included).
+    mod = load("interface_freeze")
+    for raw, want in ((b"DINERO_BUILD_ORCHARD_BACKEND:BOOL=ON\r\n", "on"),
+                      (b"DINERO_BUILD_ORCHARD_BACKEND:BOOL=OFF\r\n", "off"),
+                      (b"DINERO_BUILD_ORCHARD_BACKEND:BOOL=ON\n", "on")):
+        (tmp_path / "CMakeCache.txt").write_bytes(b"# junk\r\n" + raw)
+        assert mod.build_config(str(tmp_path)) == want, raw

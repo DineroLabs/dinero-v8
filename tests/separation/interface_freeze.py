@@ -98,7 +98,9 @@ def jni_exports(repo):
 
 def build_config(build):
     cache = os.path.join(build, "CMakeCache.txt")
-    m = re.search(r"^DINERO_BUILD_ORCHARD_BACKEND:\w+=(\S*)$", read(cache).decode(), re.M)
+    # \r?: CMake writes CMakeCache.txt with CRLF on Windows; without it the
+    # match fails and every Windows build silently records/checks as "off".
+    m = re.search(r"^DINERO_BUILD_ORCHARD_BACKEND:\w+=(\S*?)\r?$", read(cache).decode(), re.M)
     if not m:
         return "off"
     return "on" if m.group(1).upper() in ("ON", "1", "TRUE", "YES") else "off"
