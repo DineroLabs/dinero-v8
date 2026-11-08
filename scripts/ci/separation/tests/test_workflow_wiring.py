@@ -320,15 +320,15 @@ def _run_w6(cfg, ctest_rc, closure_rc):
     return r.returncode, r.stdout
 
 
-def test_w6_orchard_on_closure_is_reported_but_never_changes_the_exit_code():
+def test_w6_orchard_on_closure_is_part_of_the_verdict_since_task_6_3():
     rc, out = _run_w6("on", 0, 1)
-    assert rc == 0, out
-    assert "closure-ran" in out and "W6 closure (Orchard ON, recorded)" in out, out
-    assert "GATE_RESULT W6 rc=0" in out, out
-    rc, out = _run_w6("on", 1, 1)               # the ctest alone is the verdict
     assert rc == 1 and "GATE_RESULT W6 rc=1" in out, out
-    rc, out = _run_w6("on", 0, 2)               # even an input error is only recorded
-    assert rc == 0, out
+    rc, out = _run_w6("on", 1, 0)
+    assert rc == 1, out
+    rc, out = _run_w6("on", 0, 0)
+    assert rc == 0 and "GATE_RESULT W6 rc=0" in out, out
+    rc, out = _run_w6("on", 0, 2)               # an input error fails the step too
+    assert rc == 2, out
 
 
 def test_w6_orchard_off_fails_if_either_the_ctest_or_the_closure_fails():
@@ -339,17 +339,13 @@ def test_w6_orchard_off_fails_if_either_the_ctest_or_the_closure_fails():
     assert "W6 closure (Orchard ON" not in out, out
 
 
-def test_w6_windows_orchard_on_closure_cannot_change_the_exit_code():
+def test_w6_windows_closure_joins_the_verdict_in_both_configs():
     w6 = steps(WINDOWS)["w6"]
-    assert "W6 closure (Orchard ON, recorded)" in w6
-    on = w6.split("W6 closure (Orchard ON, recorded)", 1)[0].rsplit("if (", 1)[1]
-    assert "SEP_CFG" in on.split("\n")[0]
-    after = w6.split("W6 closure (Orchard ON, recorded)", 1)[1].split("} else", 1)[0]
-    assert "$rc" not in after.replace("$crc", "")
+    assert "W6 closure (Orchard ON, recorded)" not in w6
+    assert "$crc -ne 0 -and $rc -eq 0" in w6
 
 
-def test_w6_windows_orchard_off_closure_failure_fails_the_step():
+def test_w6_windows_closure_failure_fails_the_step():
     w6 = steps(WINDOWS)["w6"]
-    off = w6.split("W6 closure (Orchard ON, recorded)", 1)[1].split("} else", 1)[1]
-    assert re.search(r"if \(\$crc -ne 0 -and \$rc -eq 0\) \{ \$rc = \$crc \}", off), off
-    assert off.index("$rc = $crc") < off.index("Write-GateResult 'W6' $rc")
+    assert re.search(r"if \(\$crc -ne 0 -and \$rc -eq 0\) \{ \$rc = \$crc \}", w6), w6
+    assert w6.index("$rc = $crc") < w6.index("Write-GateResult 'W6' $rc")

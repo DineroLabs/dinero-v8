@@ -23,8 +23,8 @@ runs it on `fixtures/<off|on>`. Two checks make the gate:
    rules in `closure_rules.json` equal `W2`'s; a test pins them equal).
 
 Orchard OFF: both must pass. Orchard ON: the verdict is the ctest alone; the
-closure is printed as `W6 closure (Orchard ON, recorded)` and never fails the
-step, because `dinero_orchard_index_delivery` still links `dinero_core` via
+closure joins the verdict in BOTH configurations since Task 6.3
+(2026-11-07): the Orchard delivery libraries no longer link node code.
 `dinero_orchard_chainstate_write` and `dinero_chainstate` (spec section 8; plan
 Task 6.3 removes the exception).
 

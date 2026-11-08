@@ -551,12 +551,10 @@ jobs:
           crc=0
           python scripts/ci/separation/check_link_closure.py --build "$SEP_BUILD" \
             --target sep_wallet_standalone --rules scripts/ci/separation/closure_rules.json --gate W6 || crc=$?
-          if [ "$SEP_CFG" = on ]; then
-            # Orchard exception (spec section 8): the delivery libraries link
-            # dinero_core until Task 6.3, so the closure is reported only; the
-            # verdict is the ctest alone.
-            echo "W6 closure (Orchard ON, recorded): rc=$crc"
-          elif [ "$crc" -ne 0 ]; then
+          # Task 6.3 complete (2026-11-07): the Orchard delivery libraries no
+          # longer link node code, so the closure check is part of the verdict
+          # in BOTH configs (the former ON-recorded exception is retired).
+          if [ "$crc" -ne 0 ]; then
             [ "$rc" -ne 0 ] || rc=$crc
           fi
           gate_result W6 "$rc" "recorded" "SepWalletStandalone or its link closure did not pass"; exit "$rc"
