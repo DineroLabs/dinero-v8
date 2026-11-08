@@ -1,0 +1,30 @@
+{
+  "schema": "dinero.desktop-snapshot-inputs.v1",
+  "purpose": "Candidate preparation only; native qualification and release admission remain required",
+  "primary": {
+    "filename": "dinero-assumeutxo-148375-v5.dat",
+    "height": 148375,
+    "format_version": 5,
+    "block_hash": "00000000af62aa1b504f2829c8c17c6b57c372267252677cf5f7d168b8437679",
+    "bytes": 68086356,
+    "sha256": "41b4bb8ee5b1b4a354b0d3bdd03b7dee4372cfecd1a8ef1bf5c01bff0ed991e7"
+  },
+  "fallbacks": [
+    {
+      "filename": "dinero-assumeutxo-99677-v4.dat",
+      "height": 99677,
+      "format_version": 4,
+      "block_hash": "0000003863308eb65aff8a1915ef50febc74d834e444e56b26d89d987999268b",
+      "bytes": 38165744,
+      "sha256": "d4b8d88c2fe765aa627ed0bc12205b2cfba6e4fa50aeb72fd9924990e83c29fd"
+    },
+    {
+      "filename": "utxo-snapshot-65300.dat",
+      "height": 65300,
+      "format_version": 4,
+      "block_hash": "00000098ccb1c3a0204ea9fb077be4975146be5a95ec2865ebde9cd0644462ed",
+      "bytes": 23935983,
+      "sha256": "d7f6c0a53a5429ed293200e5d30e19cf23352ea2fd3ef44c35eda9ae23c6e7c6"
+    }
+  ]
+}
