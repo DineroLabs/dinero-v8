@@ -436,7 +436,7 @@ jobs:
           rc=0
           python scripts/ci/separation/consensus_freeze.py check --repo . \
             --baseline scripts/ci/separation/consensus_baseline.sha256 \
-            --allowed scripts/ci/separation/consensus_allowed_changes.txt --stage 0 || rc=$?
+            --allowed scripts/ci/separation/consensus_allowed_changes.txt --stage 6 || rc=$?
           gate_result K5 "$rc" "" "consensus_freeze: frozen consensus sources changed or input error"; exit "$rc"
 
       - name: K6 frozen-header change
