@@ -243,6 +243,21 @@ jobs:
       - name: Exercise real Orchard-enabled SDK runtime
         run: |
           ctest --test-dir build-orchard-root -R '^(NodeCoreRuntimeLifecycle|NodeCoreStorageReadiness|OrchardActivationRuntime|OrchardMigrationDatadirAlias)$' --verbose --no-tests=error --output-log orchard-sdk-runtime-execution.log
+      - name: Exercise assumed-mobile SDK wallet restore and recovery cohort
+        run: |
+          # This whole label runs here because no other lane can see it: the
+          # registrations exist only with the Orchard backend enabled, so the
+          # OFF-build execution accounting never models them. 23 of these 25
+          # tests sat red from 0ef3cd011's restore-preflight contract change
+          # until 2026-11-07 with no lane running them.
+          cmake --build build-orchard-root --target nodecore_activation_driver test_assumeutxo_replay --parallel 2
+          ctest --test-dir build-orchard-root -L '^assumedmobile$' -j1 --output-on-failure --no-tests=error --output-log assumedmobile-cohort-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('assumedmobile-cohort-execution.log').read()
+          passed=re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log)
+          assert len(passed)>=25,('assumedmobile cohort shrank below its 2026-11 inventory',sorted(passed))
+          PYTEST
       - name: Input-proof wire codec and exact-session download
         run: |
           # Catch compiler-dependent wire reads before the long consumer suite.

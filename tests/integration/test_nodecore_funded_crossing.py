@@ -273,21 +273,49 @@ try:
         assert original['assumeutxo_active']=='true' and original['assumeutxo_base_height']=='101',original
         assert original['assumeutxo_base_block']==fixture['parent'] and original.get('assumeutxo_fully_validated')!='true',original
     assert rpc('getblockcount',[])==101
-    restored=rpc('wallet.restore',dict(name='wire-named-owner',mnemonic='abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',rescan=assumed))
+    mnemonic='abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
+    refused=None
+    if assumed:
+        # A requested legacy restore/rescan checks source availability BEFORE
+        # changing the active wallet or seed: a snapshot-backed source refuses
+        # with recovery_required and no wallet effects. The genuine imported
+        # selected parent is101 while the independent/durable tip is0; a scan
+        # of genesis must never be reported as a102-block history scan.
+        # A missing walletname (no active wallet) must stay missing: record
+        # the full shape, not .get() defaults that let two absences pass.
+        info_before=call('rpc',method='wallet.getwalletinfo',params=[])
+        active_before=('walletname' in info_before,info_before.get('walletname'))
+        refused=call('rpc',method='wallet.restore',params=dict(name='wire-named-owner',mnemonic=mnemonic,rescan=True))
+        assert refused.get('recovery_required') is True,refused
+        assert 'Snapshot-aware wallet recovery is required' in refused.get('error',''),refused
+        assert 'rescan' not in refused and 'rescan_success' not in refused,'refused restore published a scan result'
+        assert original_lifecycle()==original,'restore refusal changed original assumed lifecycle'
+        assert not list(datadir.rglob('wallet_wire-named-owner.db')),'refused restore created the wallet'
+        info_after=call('rpc',method='wallet.getwalletinfo',params=[])
+        assert ('walletname' in info_after,info_after.get('walletname'))==active_before,(info_before,info_after)
+        assert active_before[1]!='wire-named-owner','refused restore activated the requested wallet'
+        (root/'restore-refusal.json').write_text(json.dumps(refused,indent=2)+'\n')
+    restored=rpc('wallet.restore',dict(name='wire-named-owner',mnemonic=mnemonic,rescan=False))
     assert restored['success'] is True
     (root/'restored.json').write_text(json.dumps(restored,indent=2)+'\n')
     if os.environ.get('DINERO_SDK_ASSUMED_RESCAN_FENCE'):
-        # A separate fail-closed gate, NOT the funded crossing. The genuine
-        # imported selected parent is101 while independent/durable tip is0.
-        # A scan of genesis must never be reported as a102-block history scan.
-        assert assumed and restored.get('rescan_success') is False,restored
-        assert 'Historical rescan source is not the selected active tip' in restored.get('rescan_error',''),restored
-        assert 'rescan' not in restored,'refused scan published a completion result'
-        assert original_lifecycle()==original,'rescan refusal changed original assumed lifecycle'
+        # A separate fail-closed gate, NOT the funded crossing. The refusal
+        # above IS the fence: it now fires before any wallet effect. The
+        # explicit rescan=false key import stays available but publishes no
+        # scan result and discovers no funding.
+        assert assumed
+        assert 'rescan' not in restored and 'rescan_success' not in restored,'key import published a scan result'
+        # The explicit scanner keeps its own fence: a direct historical rescan
+        # against the durable genesis tip refuses before cleanup or wallet
+        # progress writes instead of reporting a 102-block history scan.
+        scan=call('rpc',method='wallet.rescanblockchain',params=[0,101])
+        assert 'Historical rescan source is not the selected active tip' in scan.get('error',''),scan
+        assert 'scanned_blocks' not in scan,'refused scan published a completion result'
+        assert original_lifecycle()==original,'key import changed original assumed lifecycle'
         assert rpc('wallet.listunspent',[])==[],'refused scan invented funding'
         (root/'receipt.json').write_text(json.dumps(dict(original_assumed_mobile=True,
-            original_lifecycle=original,restore=restored,false_completion_refused=True,
-            funded_crossing=False,scope='Actual normal imported SDK named restore refuses historical scan beyond its durable source. No funding discovery, queue, handoff, app/device or release acceptance.'),indent=2)+'\n')
+            original_lifecycle=original,restore_refusal=refused,key_import=restored,false_completion_refused=True,
+            funded_crossing=False,scope='Actual normal imported SDK named restore refuses the whole legacy restore/rescan before wallet effects; explicit key import publishes no scan completion. No funding discovery, queue, handoff, app/device or release acceptance.'),indent=2)+'\n')
         assert call('stop')==0;success=True
         print('PASS actual imported SDK refuses false historical rescan completion without assumed lifecycle changes',flush=True)
         sys.exit(0)
