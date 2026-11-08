@@ -316,7 +316,16 @@ if(TARGET dinero_chainstate)
     # linkers, even for small fixtures that first enter through genesis/storage.
     target_link_libraries(dinero_orchard_chainstate_write PRIVATE dinero_core)
     target_link_libraries(dinero_orchard_reindex PRIVATE dinero_core)
-    target_link_libraries(dinero_orchard_header PRIVATE dinero_core)
+    # The removed core edge had also been supplying the RocksDB include dirs
+    # transitively; the lib's headers (pow_context -> archival_block_reader ->
+    # chain_db.h) still need the DECLARATIONS, so declare the include dir
+    # directly (6.1a pattern), with no link.
+    target_include_directories(dinero_orchard_header BEFORE PRIVATE
+      "${ORCHARD_HOST_ROOT}/third_party/rocksdb/include")
+    # dinero_orchard_header's PRIVATE dinero_core edge removed 2026-11-08:
+    # after the SelectedOrchardBlockContext extraction its objects need zero
+    # core symbols (nm audit), and the edge dragged dinero_core into every
+    # header-test closure on GNU ld.
   endif()
   add_library(dinero_orchard_snapshot STATIC
     "${ORCHARD_HOST_ROOT}/src/consensus/orchard_snapshot_catalog.cpp"
@@ -630,7 +639,6 @@ if(DINERO_ORCHARD_BUILD_TESTS)
       "${ORCHARD_HOST_ROOT}/src/consensus/header_chain.cpp"
       "${ORCHARD_HOST_ROOT}/src/consensus/header_store.cpp"
       "${ORCHARD_HOST_ROOT}/src/consensus/genesis_canonical.cpp"
-      "${ORCHARD_HOST_ROOT}/src/daemon/config.cpp"  # GetConfig() for core members GNU ld pulls (Linux qualification fix)
       "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
         # Task 6.1a: declares RocksDB itself (consensus no longer exports it).
     target_include_directories(test_orchard_header BEFORE PRIVATE "${ORCHARD_HOST_ROOT}/third_party/rocksdb/include")
