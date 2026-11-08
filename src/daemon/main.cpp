@@ -480,8 +480,10 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
     int64_t contextual_locks_height_override = -1;
     int64_t sixty_second_height_override = -1;
     int64_t joint_release_height_override = -1;
-    long state_commitment_height_override = -1;   // <0 = unset; REGTEST only (UINT32_MAX = dormant)
-    long state_commitment_burial_override = -1;   // <0 = unset; REGTEST only
+    // long long: `long` is 32-bit on LLP64 Windows, where the documented
+    // UINT32_MAX (= dormant) value must still parse exactly as on LP64.
+    long long state_commitment_height_override = -1;   // <0 = unset; REGTEST only (UINT32_MAX = dormant)
+    long long state_commitment_burial_override = -1;   // <0 = unset; REGTEST only
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -562,7 +564,7 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
             const std::string val =
                 arg.substr(std::string("--consensus-state-commitment-height=").size());
             try {
-                state_commitment_height_override = std::stol(val);
+                state_commitment_height_override = std::stoll(val);
             } catch (const std::exception&) {
                 std::cerr << "Error: invalid --consensus-state-commitment-height value: "
                           << val << "\n";
@@ -572,7 +574,7 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
             const std::string val = arg.substr(
                 std::string("--consensus-state-commitment-burial-depth=").size());
             try {
-                state_commitment_burial_override = std::stol(val);
+                state_commitment_burial_override = std::stoll(val);
             } catch (const std::exception&) {
                 std::cerr << "Error: invalid --consensus-state-commitment-burial-depth value: "
                           << val << "\n";
