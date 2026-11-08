@@ -5863,6 +5863,11 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     tests/stubs/daemon_test_stubs.cpp   # Mempool extras + vault
   )
   add_dependencies(test_assumeutxo_replay gtest)
+  if(MSVC)
+    # The TU aggregates ~150 *_checks.h suites and exceeds the default
+    # COFF section limit (fatal error C1128).
+    target_compile_options(test_assumeutxo_replay PRIVATE /bigobj)
+  endif()
   option(DINERO_TEST_ORCHARD_QT_CONTRACT "Build in-process node/Qt Orchard contract tests" OFF)
   if(DINERO_TEST_ORCHARD_QT_CONTRACT)
     find_package(Qt6 REQUIRED COMPONENTS Core)
