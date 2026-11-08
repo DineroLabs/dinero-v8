@@ -41,20 +41,7 @@ permissions:
 jobs:
   linux-core-heavy:
     name: Linux x86_64 — core-heavy smoke
-    # Pinned to Ubuntu 24.04 (GCC 13): on ubuntu-latest (26.04, GCC 15) test
-    # executables can fail to link because dinero_wallet uses ChainDB/UTXOIndex/
-    # BlockStorage/open_sqlite and dinero::Mempool without declaring them, and
-    # which tests pull wallet_manager.cpp.o depends on archive-member order.
-    # Unpin once the wallet/node separation removes those dependencies.
-    # Task 7.1 trial matrix: the pinned leg stays the required original; the
-    # ubuntu-latest (GCC 15) leg is a trial that may not fail the check until
-    # Task 8.1 removes the pin on its green evidence.
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [ubuntu-24.04, ubuntu-latest]
-    runs-on: ${{ matrix.runner }}
-    continue-on-error: ${{ matrix.runner == 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 90
 
     steps:
