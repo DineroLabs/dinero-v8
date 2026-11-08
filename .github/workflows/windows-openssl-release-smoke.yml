@@ -16,11 +16,40 @@ on:
       - 'scripts/ci/test_orchard_msvc_bridge.py'
       - 'scripts/ci/test_windows_ci_qualification.ps1'
 
+permissions:
+  contents: read
+
 jobs:
+  snapshot-inputs:
+    name: Fetch qualified snapshot inputs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Draft release downloads need push-level visibility. Isolate that token
+    # from the job that checks out and compiles pull-request code.
+    permissions:
+      contents: write
+    steps:
+      - name: Fetch pinned snapshot inputs without executing repository code
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p snapshot-inputs
+          gh release download v8.2.2 --repo DineroLabs/dinero-v8 \
+            --pattern 'dinero-assumeutxo-148375-v5.dat' \
+            --pattern 'dinero-assumeutxo-148375-v5.dat.manifest.json' \
+            --dir snapshot-inputs --clobber
+          echo '41b4bb8ee5b1b4a354b0d3bdd03b7dee4372cfecd1a8ef1bf5c01bff0ed991e7  snapshot-inputs/dinero-assumeutxo-148375-v5.dat' | sha256sum --check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-smoke-snapshot-inputs
+          path: snapshot-inputs/*
+          if-no-files-found: error
+
   windows-openssl-release-smoke:
     name: Windows MSVC — OpenSSL 3.5.7 build, daemon, installer
     runs-on: windows-2022
     timeout-minutes: 90
+    needs: snapshot-inputs
 
     steps:
       - name: Checkout
@@ -107,16 +136,11 @@ jobs:
               -Pattern '^DINERO_DEPENDS_PREFIX=(.*)$').Matches[0].Groups[1].Value
           "DINERO_DEPENDS_PREFIX=$prefix" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
 
-      - name: Fetch snapshot candidate through authenticated release access
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          mkdir -p packaging/windows/dist
-          gh release download v8.2.2 --repo DineroLabs/dinero-v8 \
-            --pattern 'dinero-assumeutxo-148375-v5.dat' \
-            --pattern 'dinero-assumeutxo-148375-v5.dat.manifest.json' \
-            --dir packaging/windows/dist --clobber
+      - name: Read the verified snapshot input artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-smoke-snapshot-inputs
+          path: packaging/windows/dist
 
       - name: Build Windows server release and installer
         shell: powershell
@@ -154,13 +178,13 @@ jobs:
       - name: Silent installer and uninstall smoke
         shell: powershell
         run: |
-          $installer = Resolve-Path 'packaging\windows\dist\Dinero-Server-8.0.18-openssl357-ci-windows-x86_64-Setup.exe'
+          $installer = Resolve-Path 'packaging\windows\dist\Dinero-Server-8.2.2-openssl357-ci-windows-x86_64-Setup.exe'
           $installDir = Join-Path $env:ProgramFiles 'Dinero-Server'
 
           $info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($installer)
           $numericVersion = "$($info.FileMajorPart).$($info.FileMinorPart).$($info.FileBuildPart).$($info.FilePrivatePart)"
-          if ($numericVersion -ne '8.0.18.0') {
-            throw "installer numeric file version is $numericVersion, expected 8.0.18.0"
+          if ($numericVersion -ne '8.2.2.0') {
+            throw "installer numeric file version is $numericVersion, expected 8.2.2.0"
           }
 
           $install = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
@@ -197,5 +221,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-server-openssl-3.5.7-smoke
-          path: packaging/windows/dist/Dinero-Server-8.0.18-openssl357-ci-windows-x86_64-Setup.exe
+          path: packaging/windows/dist/Dinero-Server-8.2.2-openssl357-ci-windows-x86_64-Setup.exe
           if-no-files-found: warn

@@ -52,6 +52,13 @@ class SnapshotWiring(unittest.TestCase):
                     self.assertIn('DINERO_SNAPSHOT_LEGACY_FALLBACK_DAT=', source)
                     self.assertIn('DINERO_SNAPSHOT_LEGACY_FALLBACK_MANIFEST=', source)
 
+        smoke = (ROOT / '.github/workflows/windows-openssl-release-smoke.yml').read_text()
+        version = re.search(r"-Version '([^']+)'", smoke)[1]
+        filename = 'Dinero-Server-' + version + '-windows-x86_64-Setup.exe'
+        self.assertEqual(smoke.count(filename), 2, 'Install and artifact paths must match the built version')
+        numeric_version = version.split('-')[0] + '.0'
+        self.assertIn("$numericVersion -ne '" + numeric_version + "'", smoke)
+
 
 if __name__ == '__main__':
     unittest.main()
