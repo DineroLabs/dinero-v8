@@ -18,9 +18,9 @@
 #
 #   docker run -d --name dinero --stop-timeout 60 \
 #     --log-opt max-size=50m --log-opt max-file=3 \
-#     -v dinero-data:/data -p 20999:20999 ghcr.io/dinerolabs/dinero-v8:8.2.1
+#     -v dinero-data:/data -p 20999:20999 ghcr.io/dinerolabs/dinero-v8:8.2.2
 
-ARG DINERO_VERSION=8.2.1
+ARG DINERO_VERSION=8.2.2
 # The snapshot release is explicit rather than inferred from the daemon version.
 # Bump it only when that release actually publishes the named snapshot artifacts.
 # v8.1.11 retains backward-compatible snapshot upgrades: fresh volumes choose 99677,

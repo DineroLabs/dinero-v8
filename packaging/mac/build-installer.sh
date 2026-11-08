@@ -171,13 +171,13 @@ mkdir -p "$STAGE_DIR/dinero-qt.app/Contents/Resources"
 cp "$BUILD_DIR/seeder/dinero-seeder" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-seeder"
 chmod +x "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-seeder"
 
-# Bundle the new primary plus the previous desktop release's exact-base fallback.
-# The fallback prevents an app upgrade during first-run validation from stranding
-# the persisted 65300 lifecycle after the old app bundle has been replaced.
-SNAPSHOT_DAT="${DINERO_SNAPSHOT_DAT:-$PROJECT_ROOT/packaging/mac/snapshot/dinero-assumeutxo-99677-v4.dat}"
-SNAPSHOT_FALLBACK_DAT="${DINERO_SNAPSHOT_FALLBACK_DAT:-$PROJECT_ROOT/packaging/mac/snapshot/utxo-snapshot-65300.dat}"
-SNAPSHOT_MANIFEST="${DINERO_SNAPSHOT_MANIFEST:-${SNAPSHOT_DAT%.dat}.manifest.json}"
+# Keep both old exact bases available after upgrading the app bundle.
+SNAPSHOT_DAT="${DINERO_SNAPSHOT_DAT:-$PROJECT_ROOT/packaging/mac/snapshot/dinero-assumeutxo-148375-v5.dat}"
+SNAPSHOT_FALLBACK_DAT="${DINERO_SNAPSHOT_FALLBACK_DAT:-$PROJECT_ROOT/packaging/mac/snapshot/dinero-assumeutxo-99677-v4.dat}"
+SNAPSHOT_LEGACY_FALLBACK_DAT="${DINERO_SNAPSHOT_LEGACY_FALLBACK_DAT:-$PROJECT_ROOT/packaging/mac/snapshot/utxo-snapshot-65300.dat}"
+SNAPSHOT_MANIFEST="${DINERO_SNAPSHOT_MANIFEST:-${SNAPSHOT_DAT}.manifest.json}"
 SNAPSHOT_FALLBACK_MANIFEST="${DINERO_SNAPSHOT_FALLBACK_MANIFEST:-${SNAPSHOT_FALLBACK_DAT}.manifest.json}"
+SNAPSHOT_LEGACY_FALLBACK_MANIFEST="${DINERO_SNAPSHOT_LEGACY_FALLBACK_MANIFEST:-${SNAPSHOT_LEGACY_FALLBACK_DAT}.manifest.json}"
 
 verify_snapshot_pair() {
     local data_path="$1"
@@ -220,17 +220,30 @@ elif [[ ! -f "$SNAPSHOT_DAT" ]]; then
 elif [[ ! -f "$SNAPSHOT_FALLBACK_DAT" ]]; then
     echo "ERROR: required AssumeUTXO lifecycle fallback missing at $SNAPSHOT_FALLBACK_DAT" >&2
     exit 1
+elif [[ ! -f "$SNAPSHOT_LEGACY_FALLBACK_DAT" ]]; then
+    echo "ERROR: required older AssumeUTXO lifecycle fallback missing at $SNAPSHOT_LEGACY_FALLBACK_DAT" >&2
+    exit 1
 else
     echo "Bundling AssumeUTXO snapshot: $(basename "$SNAPSHOT_DAT") ($(stat -f%z "$SNAPSHOT_DAT") bytes)"
     [[ -f "$SNAPSHOT_MANIFEST" ]] || { echo "ERROR: primary snapshot manifest missing at $SNAPSHOT_MANIFEST" >&2; exit 1; }
-    verify_snapshot_pair "$SNAPSHOT_DAT" "$SNAPSHOT_MANIFEST" "dinero-assumeutxo-99677-v4.dat"
-    cp "$SNAPSHOT_DAT" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-99677-v4.dat"
-    cp "$SNAPSHOT_MANIFEST" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-99677-v4.dat.manifest.json"
+    verify_snapshot_pair "$SNAPSHOT_DAT" "$SNAPSHOT_MANIFEST" "dinero-assumeutxo-148375-v5.dat"
+    FRESHNESS_ARGS=(--age-only)
+    if [[ -n "${DINERO_SNAPSHOT_TIP_HEIGHT:-}" ]]; then
+        FRESHNESS_ARGS=(--tip-height "$DINERO_SNAPSHOT_TIP_HEIGHT")
+    fi
+    python3 "$PROJECT_ROOT/scripts/ci/check_snapshot_freshness.py" \
+        --manifest "$SNAPSHOT_MANIFEST" "${FRESHNESS_ARGS[@]}"
+    cp "$SNAPSHOT_DAT" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-148375-v5.dat"
+    cp "$SNAPSHOT_MANIFEST" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-148375-v5.dat.manifest.json"
     echo "Bundling AssumeUTXO lifecycle fallback: $(basename "$SNAPSHOT_FALLBACK_DAT")"
     [[ -f "$SNAPSHOT_FALLBACK_MANIFEST" ]] || { echo "ERROR: fallback snapshot manifest missing at $SNAPSHOT_FALLBACK_MANIFEST" >&2; exit 1; }
-    verify_snapshot_pair "$SNAPSHOT_FALLBACK_DAT" "$SNAPSHOT_FALLBACK_MANIFEST" "utxo-snapshot-65300.dat"
-    cp "$SNAPSHOT_FALLBACK_DAT" "$STAGE_DIR/dinero-qt.app/Contents/Resources/utxo-snapshot-65300.dat"
-    cp "$SNAPSHOT_FALLBACK_MANIFEST" "$STAGE_DIR/dinero-qt.app/Contents/Resources/utxo-snapshot-65300.dat.manifest.json"
+    verify_snapshot_pair "$SNAPSHOT_FALLBACK_DAT" "$SNAPSHOT_FALLBACK_MANIFEST" "dinero-assumeutxo-99677-v4.dat"
+    cp "$SNAPSHOT_FALLBACK_DAT" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-99677-v4.dat"
+    cp "$SNAPSHOT_FALLBACK_MANIFEST" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-99677-v4.dat.manifest.json"
+    [[ -f "$SNAPSHOT_LEGACY_FALLBACK_MANIFEST" ]] || { echo "ERROR: older fallback manifest missing" >&2; exit 1; }
+    verify_snapshot_pair "$SNAPSHOT_LEGACY_FALLBACK_DAT" "$SNAPSHOT_LEGACY_FALLBACK_MANIFEST" "utxo-snapshot-65300.dat"
+    cp "$SNAPSHOT_LEGACY_FALLBACK_DAT" "$STAGE_DIR/dinero-qt.app/Contents/Resources/utxo-snapshot-65300.dat"
+    cp "$SNAPSHOT_LEGACY_FALLBACK_MANIFEST" "$STAGE_DIR/dinero-qt.app/Contents/Resources/utxo-snapshot-65300.dat.manifest.json"
 fi
 
 # Embed the standalone daemon stack alongside the .app for users who
