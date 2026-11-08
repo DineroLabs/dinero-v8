@@ -141,11 +141,14 @@ jobs:
           ctest --test-dir build-tests -R '^AssumeUtxoReplay$' --verbose --no-tests=error \
             | tee build-tests/Testing/orchard-backend-off-replay.log
           python3 - <<'PYCODE'
+          import re
           from pathlib import Path
           log = Path('build-tests/Testing/orchard-backend-off-replay.log').read_text()
           assert log.count('[ RUN      ] RuntimeOriginProjection.UnavailableWithoutBackend') == 1
           assert log.count('[       OK ] RuntimeOriginProjection.UnavailableWithoutBackend') == 1
-          assert '100% tests passed, 0 tests failed out of 1' in log
+          # CMake < 4 prints "100% tests passed, 0 tests failed out of 1";
+          # CMake >= 4 drops the ", 0 tests failed" clause.
+          assert re.search(r'100% tests passed(, 0 tests failed)? out of 1\b', log)
           PYCODE
 
       # CI integrity gate: every test registered with CTest in THIS build
