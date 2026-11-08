@@ -234,7 +234,15 @@ if(TARGET dinero_chainstate)
   add_library(dinero_orchard_wallet_account STATIC "${ORCHARD_HOST_ROOT}/src/wallet/orchard_account_state.cpp")
   target_link_libraries(dinero_orchard_wallet_account PUBLIC dinero_orchard_wallet_scan dinero_orchard_account_metadata)
   add_library(dinero_orchard_header STATIC "${ORCHARD_HOST_ROOT}/src/consensus/orchard_header.cpp")
-  target_link_libraries(dinero_orchard_header PUBLIC dinero_orchard_transparent dinero_consensus)
+  # Task 6.3 follow-up (owner 2026-11-07): the pure block-context function is
+  # its own small consensus-side library, so wallet delivery code can name it
+  # without the node-coupled header-validation library.
+  add_library(dinero_orchard_block_context STATIC
+    "${ORCHARD_HOST_ROOT}/src/consensus/orchard_block_context.cpp")
+  target_include_directories(dinero_orchard_block_context PRIVATE "${ORCHARD_HOST_ROOT}/src")
+  # orchard_header.h's include closure needs the backend/transparent headers.
+  target_link_libraries(dinero_orchard_block_context PUBLIC dinero_orchard_transparent dinero_consensus)
+  target_link_libraries(dinero_orchard_header PUBLIC dinero_orchard_transparent dinero_consensus dinero_orchard_block_context)
   add_library(dinero_orchard_runtime_reader STATIC
     "${ORCHARD_HOST_ROOT}/src/daemon/runtime_reorg_store.cpp")
   if(TARGET dinero_core)
@@ -345,7 +353,7 @@ if(TARGET dinero_chainstate)
   # header library (nm audit); the chainstate_write edge is gone. The
   # header->staging->chainstate reach that remains is the queued owner
   # decision (task-6.3-owner-decision-orchard-header.md).
-  target_link_libraries(dinero_orchard_account_replay PUBLIC dinero_orchard_header dinero_orchard_wallet_account)
+  target_link_libraries(dinero_orchard_account_replay PUBLIC dinero_orchard_block_context dinero_orchard_wallet_account)
   target_link_libraries(dinero_orchard_runtime_reader PUBLIC dinero_orchard_chainstate_write)
   add_library(dinero_orchard_index_delivery STATIC
     "${ORCHARD_HOST_ROOT}/src/wallet/runtime_index_delivery.cpp"
@@ -758,13 +766,10 @@ target_link_libraries(test_orchard_header PRIVATE dinero_orchard_header)
 
 endif()
 
-# Task 6.3 R4: standalone wallet recovery through the fake R1 source. This
-# target DECLARES only the wallet and the Orchard wallet-delivery libraries;
-# until the queued SelectedOrchardBlockContext owner decision lands, the
-# closure still reaches dinero_core through account_replay->orchard_header
-# (rust CMake :311) — measured and documented, not silently accepted
-# (task-6.3-owner-decision-orchard-header.md). The test constructs no node
-# object either way.
+# Task 6.3 R4: standalone wallet recovery through the fake R1 source. With
+# the SelectedOrchardBlockContext extraction (owner decision 2026-11-07),
+# this target's whole link closure is node-free — verified by
+# check_link_closure --gate W6: 0 violations (task-6.3b-r4closure_on.log).
 if(TARGET dinero_orchard_index_delivery)
   add_executable(test_wallet_recovery_without_node
     "${ORCHARD_HOST_ROOT}/tests/wallet/test_wallet_recovery_without_node.cpp")

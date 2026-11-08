@@ -11,29 +11,9 @@ namespace {
 using Error = OrchardHeaderErrorCode;
 [[noreturn]] void Reject(Error code) { throw OrchardHeaderError(code); }
 }
-std::optional<OrchardBlockContext> SelectedOrchardBlockContext(
-    const BlockHeader& header, uint32_t height) {
-    const auto& params = Params();
-    if (!OrchardProfileConfigurationValid(params))
-        throw OrchardHeaderLookupError("invalid selected Orchard activation configuration");
-    if (!OrchardActiveForHeight(params, height)) return std::nullopt;
-    if (height > uint32_t(INT32_MAX))
-        throw OrchardHeaderLookupError("unsupported selected Orchard height");
-    const uint8_t network = params.name == "mainnet" ? 0 :
-        params.name == "testnet" ? 1 : params.name == "regtest" ? 2 : 0xff;
-    uint256 genesis;
-    if (network == 0xff || !uint256::FromHex(params.genesis_hash, genesis) || genesis.IsNull())
-        throw OrchardHeaderLookupError("invalid selected Orchard network identity");
-    OrchardBlockContext context;
-    context.height = height;
-    context.block_hash = header.GetHash();
-    context.parent_hash = header.prev_block_hash;
-    context.activation_height = params.orchard_activation_height;
-    context.domain.network_code = network;
-    context.domain.branch_id = params.orchard_branch_id;
-    std::copy(genesis.begin(), genesis.end(), context.domain.genesis_wire.begin());
-    return context;
-}
+// SelectedOrchardBlockContext moved VERBATIM to orchard_block_context.cpp
+// (Task 6.3 follow-up, owner decision 2026-11-07); declaration unchanged in
+// consensus/orchard_header.h.
 namespace {
 class SelectorAncestry final : public OrchardHeaderAncestry {
 public:

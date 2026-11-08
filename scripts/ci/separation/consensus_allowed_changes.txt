@@ -33,3 +33,9 @@
 
 # Stage 3: CMake only.
 3 modify src/consensus/CMakeLists.txt
+
+# Stage 6 (owner approval 2026-11-07, relayed review option (a)): extract ONLY
+# SelectedOrchardBlockContext's definition into a small consensus library;
+# declaration and all other orchard_header content unchanged.
+6 modify src/consensus/orchard_header.cpp
+6 add src/consensus/orchard_block_context.cpp
