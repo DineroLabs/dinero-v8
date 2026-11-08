@@ -747,6 +747,18 @@ if(ENABLE_LIGHTNING)
 endif() # ENABLE_LIGHTNING
 
 # RPC handlers library (includes GUI-compatible handlers)
+# V7 post-quantum wallet RPC handlers as their own small library (Task 2.5
+# follow-up, Linux qualification fix 2026-11-07): consumers that need ONLY
+# these handlers (wallet tests, pq tools) link this instead of the full RPC
+# monolith, whose other members pull dinero_core objects that GNU ld cannot
+# resolve outside the daemon executable.
+add_library(dinero_pq_wallet_handlers STATIC src/rpc/v7_pq_handlers.cpp)
+target_include_directories(dinero_pq_wallet_handlers PUBLIC
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+target_compile_features(dinero_pq_wallet_handlers PUBLIC cxx_std_20)
+target_link_libraries(dinero_pq_wallet_handlers PUBLIC
+  dinero_wallet dinero_pq OpenSSL::Crypto)
+
 add_library(dinero_rpc_handlers STATIC
   src/daemon/rpc/wallet_gui_handlers.cpp
   src/daemon/rpc/wallet_import_handlers.cpp  # Phase W.1.1: Wallet import/rescan (importmnemonic RPC)
@@ -862,7 +874,6 @@ add_library(dinero_rpc_handlers STATIC
   src/rpc/logs_rpc_handlers_context.cpp  # logs.recent, logs.services, logs.tail (Unified log aggregator)
   src/rpc/v7_pq_rpc_json.cpp             # Phase 4c.3.1: V7 post-quantum wallet RPC JSON adapters (getnewp2mraddress, listp2mraddresses, signp2mr)
   src/rpc/shielded_rpc_json.cpp          # V7 shielded pool RPCs: wallet.shield, wallet.unshield, wallet.shieldedbalance
-  src/rpc/v7_pq_handlers.cpp             # Task 2.5: moved from dinero_pq
   src/dpi/dpi_protocol.cpp               # DPI Phase 1: Payment Intent protocol (serialize, verify, tagged hash)
   src/rpc/dpi_rpc_handlers.cpp           # DPI Phase 1: RPC handlers (createinvoice, payinvoice, verifypackage, checkconflicts)
   # DISABLED: Payroll feature (experimental Lightning-based payroll with ZK privacy)
@@ -915,6 +926,7 @@ target_include_directories(dinero_rpc_handlers PUBLIC
 )
 target_link_libraries(dinero_rpc_handlers PRIVATE
   dinero_core      # Needed for address_validator.cpp (IsValidDineroAddress)
+  dinero_pq_wallet_handlers  # v7_pq_handlers.cpp lives there (Task 2.5 follow-up)
   dinero_wallet
   dinero_crypto
   dinero_pq        # Phase 4c.3.1: V7 post-quantum wallet RPC handlers (v7_pq_handlers.cpp, v7_pq_rpc_json.cpp)

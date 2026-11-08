@@ -41,7 +41,7 @@ target_include_directories(v7_pq_rpc_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/daemon
 )
-target_link_libraries(v7_pq_rpc_test PRIVATE dinero_rpc_handlers dinero_wallet dinero_pq OpenSSL::Crypto sqlite3) # Task 2.5: handlers left dinero_pq
+target_link_libraries(v7_pq_rpc_test PRIVATE dinero_pq_wallet_handlers dinero_pq OpenSSL::Crypto sqlite3) # Task 2.5: handlers left dinero_pq
 set_target_properties(v7_pq_rpc_test PROPERTIES
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
@@ -56,7 +56,7 @@ if(NOT WIN32)
   )
   target_include_directories(v7_p2mr_key_read_test PRIVATE
       ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/daemon)
-  target_link_libraries(v7_p2mr_key_read_test PRIVATE dinero_rpc_handlers dinero_wallet dinero_pq OpenSSL::Crypto sqlite3) # Task 2.5: handlers left dinero_pq
+  target_link_libraries(v7_p2mr_key_read_test PRIVATE dinero_pq_wallet_handlers dinero_pq OpenSSL::Crypto sqlite3) # Task 2.5: handlers left dinero_pq
   set_target_properties(v7_p2mr_key_read_test PROPERTIES
       CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON EXCLUDE_FROM_ALL FALSE)
 endif()
@@ -70,7 +70,7 @@ if(NOT WIN32)
   )
   target_include_directories(v7_p2mr_inventory_test PRIVATE
       ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/daemon)
-  target_link_libraries(v7_p2mr_inventory_test PRIVATE dinero_rpc_handlers dinero_wallet dinero_pq OpenSSL::Crypto sqlite3) # Task 2.5: handlers left dinero_pq
+  target_link_libraries(v7_p2mr_inventory_test PRIVATE dinero_pq_wallet_handlers dinero_pq OpenSSL::Crypto sqlite3) # Task 2.5: handlers left dinero_pq
   set_target_properties(v7_p2mr_inventory_test PROPERTIES
       CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON EXCLUDE_FROM_ALL FALSE)
 endif()

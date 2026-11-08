@@ -5015,6 +5015,7 @@ set_tests_properties(WalletNodeInterfaces PROPERTIES LABELS "wallet;separation" 
 add_executable(test_wallet_chain_view
   tests/wallet/test_wallet_chain_view.cpp
   src/daemon/lightning_stubs.cpp
+  src/daemon/config.cpp  # GetConfig() for chainstate members GNU ld pulls (Linux qualification fix)
   tests/stubs/mempool_test_stubs.cpp
 )
 target_include_directories(test_wallet_chain_view PRIVATE
@@ -8707,13 +8708,14 @@ if(NOT WIN32)
   add_executable(test_wallet_database_lease
     tests/wallet/test_wallet_database_lease.cpp
     src/wallet/wallet_worker.cpp
+    src/daemon/config.cpp  # GetConfig() for chainstate members GNU ld pulls (Linux qualification fix)
     src/daemon/lightning_stubs.cpp
     tests/stubs/mempool_test_stubs.cpp
     tests/stubs/vault_test_stubs.cpp
   )
   add_dependencies(test_wallet_database_lease gtest gtest_main)
   target_link_libraries(test_wallet_database_lease PRIVATE
-    dinero_rpc_handlers # Task 2.5: rpc::v7 P2MR handlers left dinero_pq
+    dinero_pq_wallet_handlers # Task 2.5: rpc::v7 P2MR handlers (small lib; Linux fix)
     dinero_wallet
     dinero_chainstate
     dinero_consensus
