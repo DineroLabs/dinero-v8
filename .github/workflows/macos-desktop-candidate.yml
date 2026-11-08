@@ -202,6 +202,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p release-inputs
+          gh release download v8.2.2 \
+            --repo DineroLabs/dinero-v8 \
+            --pattern dinero-assumeutxo-148375-v5.dat \
+            --pattern dinero-assumeutxo-148375-v5.dat.manifest.json \
+            --dir release-inputs
           gh release download v8.1.11 \
             --repo DineroLabs/dinero-v8 \
             --pattern dinero-assumeutxo-99677-v4.dat \
@@ -213,10 +218,12 @@ jobs:
             --pattern utxo-snapshot-65300.dat.manifest.json \
             --dir release-inputs
           {
-            echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-99677-v4.dat"
-            echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-99677-v4.manifest.json"
-            echo "DINERO_SNAPSHOT_FALLBACK_DAT=$PWD/release-inputs/utxo-snapshot-65300.dat"
-            echo "DINERO_SNAPSHOT_FALLBACK_MANIFEST=$PWD/release-inputs/utxo-snapshot-65300.dat.manifest.json"
+            echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat"
+            echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat.manifest.json"
+            echo "DINERO_SNAPSHOT_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-99677-v4.dat"
+            echo "DINERO_SNAPSHOT_LEGACY_FALLBACK_DAT=$PWD/release-inputs/utxo-snapshot-65300.dat"
+            echo "DINERO_SNAPSHOT_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-99677-v4.manifest.json"
+            echo "DINERO_SNAPSHOT_LEGACY_FALLBACK_MANIFEST=$PWD/release-inputs/utxo-snapshot-65300.dat.manifest.json"
           } >> "$GITHUB_ENV"
 
       - name: Configure exact ${{ matrix.variant }} release

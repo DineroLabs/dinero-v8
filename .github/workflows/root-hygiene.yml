@@ -18,3 +18,13 @@ jobs:
         run: bash scripts/ci/check_root_hygiene.sh
       - name: Enforce strict C++20 for first-party builds
         run: bash tools/check_first_party_cxx20.sh
+      - name: Check desktop snapshot freshness policy
+        run: |
+          python3 -m unittest discover -s scripts/ci -p test_snapshot_freshness.py
+          python3 -m unittest discover -s scripts/ci -p test_desktop_inputs.py
+          python3 -m unittest discover -s scripts/ci -p test_snapshot_wiring.py
+      - name: Exercise desktop snapshot selection
+        run: |
+          cmake -S tests/packaging/snapshot_selection -B build-snapshot-selection -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-snapshot-selection --parallel 2
+          ctest --test-dir build-snapshot-selection --no-tests=error --output-on-failure
