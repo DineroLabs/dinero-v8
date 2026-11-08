@@ -62,24 +62,7 @@
 #include <direct.h>
 #endif
 
-// Forward declare coinbase maturity functions to avoid namespace conflicts
-namespace dinero {
-    class CoinbaseMaturity {
-    public:
-        static constexpr uint32_t COINBASE_MATURITY = 100;
-        static bool isCoinbaseMature(uint32_t coinbase_height, uint32_t current_height) {
-            if (current_height < coinbase_height) return false;
-            uint32_t confirmations = current_height - coinbase_height + 1;
-            return confirmations >= COINBASE_MATURITY;
-        }
-        static uint32_t getBlocksUntilMature(uint32_t coinbase_height, uint32_t current_height) {
-            if (isCoinbaseMature(coinbase_height, current_height)) return 0;
-            if (current_height < coinbase_height) return COINBASE_MATURITY;
-            uint32_t confirmations = current_height - coinbase_height + 1;
-            return COINBASE_MATURITY - confirmations;
-        }
-    };
-}
+#include "consensus/coinbase_maturity.h"
 #include <sqlite3.h>
 #include <stdexcept>
 #include <sstream>
