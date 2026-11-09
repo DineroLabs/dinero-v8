@@ -55,6 +55,9 @@ ANCHORS = {
     # K4: dinero_consensus plus the resolved K4 test executables (--k4-targets);
     # some of them also link dinero_wallet.
     "K4": ("dinero_consensus",),
+    # K6's probe (sep_tx_validation_binds) is built by its own ctest driver,
+    # but it links dinero_consensus: without that the gate measures nothing.
+    "K6": ("dinero_consensus",),
     "W1": ("sep_wallet_forced_link",),
     "W3": ("sep_wallet_forced_link",),
     "W4": ("sep_wallet_fixture_compat",),

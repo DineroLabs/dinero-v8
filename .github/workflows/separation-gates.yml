@@ -43,23 +43,12 @@
 name: Separation gates
 
 on:
+  # No on.paths filter: the gates contexts are required on dinero-main, and a
+  # required check whose workflow never triggers stays "Expected" forever,
+  # blocking every PR outside the filter (docs-only, packaging-only, ...).
+  # The `changes` job reproduces the old filter instead; jobs it skips report
+  # conclusion "skipped", which satisfies a required status check.
   pull_request:
-    paths:
-      - '.github/workflows/separation-gates.yml'
-      - 'scripts/ci/separation/**'
-      - 'tests/separation/**'
-      - 'CMakeLists.txt'
-      - '**/CMakeLists.txt'
-      - 'cmake/**'
-      - 'src/**'
-      - 'include/**'
-      - 'wallet-core/**'
-      - 'resources/schema/**'
-      - 'rust/orchard_backend/**'
-      - 'mobile-tauri/src-tauri/build.rs'
-      - 'scripts/check_compact_regtest_vectors.py'
-      - 'tests/vectors/compact_regtest_v1/**'
-      - 'tests/vectors/compact_v6_v1/**'
   workflow_dispatch:
     inputs:
       record_baselines:
@@ -85,8 +74,48 @@ env:
   SEP_PYTEST_VERSION: '9.2.0'
 
 jobs:
+  # Replaces the old on.pull_request.paths filter (see the `on:` comment).
+  # Fail open twice over: changed_paths.py answers true on any error, and the
+  # dependent jobs use `!cancelled() && != 'false'` so even a failed filter
+  # job runs the gates rather than silently skipping them.
+  changes:
+    name: gate-relevant changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2   # the PR merge commit and its parents: HEAD^1..HEAD
+          persist-credentials: false
+      - name: Match changed files against the gate paths
+        id: filter
+        run: |
+          python3 scripts/ci/separation/changed_paths.py \
+            --github-output "$GITHUB_OUTPUT" --key gates \
+            --event "$GITHUB_EVENT_NAME" -- \
+            '.github/workflows/separation-gates.yml' \
+            'scripts/ci/separation/**' \
+            'tests/separation/**' \
+            'CMakeLists.txt' \
+            '**/CMakeLists.txt' \
+            'cmake/**' \
+            'src/**' \
+            'include/**' \
+            'wallet-core/**' \
+            'resources/schema/**' \
+            'rust/orchard_backend/**' \
+            'mobile-tauri/src-tauri/build.rs' \
+            'scripts/check_compact_regtest_vectors.py' \
+            'tests/vectors/compact_regtest_v1/**' \
+            'tests/vectors/compact_v6_v1/**'
+    outputs:
+      gates: ${{ steps.filter.outputs.gates }}
+
   gates:
     name: gates ${{ matrix.toolchain }} orchard=${{ matrix.orchard }}
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.gates != 'false' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 240
     strategy:
@@ -439,10 +468,22 @@ jobs:
             --allowed scripts/ci/separation/consensus_allowed_changes.txt --stage 6 || rc=$?
           gate_result K5 "$rc" "" "consensus_freeze: frozen consensus sources changed or input error"; exit "$rc"
 
+      # K6 (spec 6.5, Task 2.6): the CONSENSUS_MANIFEST entry for the frozen
+      # tx_validation.h names the live file, and SepTxValidationBinds proves
+      # both CoinsViewCache& and const ChainStateView& bind to the three
+      # tx_validation entry points (the ctest driver builds the
+      # EXCLUDE_FROM_ALL probe itself). K5 separately polices that the diff
+      # against the frozen baseline stays inside the allowed 6.5 lines.
       - name: K6 frozen-header change
         id: k6
-        if: always()
-        run: echo 'GATE K6 SKIP stage<2'
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        run: |
+          . "$RUNNER_TEMP/sep_gate.sh"
+          sep_prereq K6 || exit $?
+          rc=0
+          python scripts/ci/separation/check_frozen_header_manifest.py --repo . || rc=$?
+          [ "$rc" -ne 0 ] || sep_ctest SepTxValidationBinds || rc=$?
+          gate_result K6 "$rc" "" "tx_validation.h manifest hash or SepTxValidationBinds (ChainStateView/CoinsViewCache binding) did not pass"; exit "$rc"
 
       - name: W1 wallet forced link
         id: w1
@@ -546,6 +587,20 @@ jobs:
           fi
           gate_result W6 "$rc" "recorded" "SepWalletStandalone or its link closure did not pass"; exit "$rc"
 
+      # T1 (spec, Task 5.4): every public include/wallet/*.h a dinero_wallet
+      # source includes is self-contained — its include closure reaches
+      # neither include/daemon, src/daemon nor RocksDB, and it compiles
+      # standalone. Needs only the configured compiler (check_wallet_headers.py
+      # drives it with -fsyntax-only), no built target: no sep_prereq.
+      # POSIX lanes only; the Windows workflow records it as SKIP.
+      - name: T1 wallet public headers self-contained
+        id: t1
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        run: |
+          . "$RUNNER_TEMP/sep_gate.sh"
+          rc=0; sep_ctest SepWalletHeadersSelfContained || rc=$?
+          gate_result T1 "$rc" "" "SepWalletHeadersSelfContained did not pass (a public wallet header reaches daemon/storage or does not compile standalone)"; exit "$rc"
+
       # Records when record_baselines=true, or automatically when this
       # lane (ref_tag)/config has no committed K4 ref or W5 symbol list (so the
       # first pull_request run already yields candidates: workflow_dispatch
@@ -592,15 +647,18 @@ jobs:
           O_K3: ${{ steps.k3.outcome }}
           O_K4: ${{ steps.k4.outcome }}
           O_K5: ${{ steps.k5.outcome }}
+          O_K6: ${{ steps.k6.outcome }}
           O_W1: ${{ steps.w1.outcome }}
           O_W2: ${{ steps.w2.outcome }}
           O_W3: ${{ steps.w3.outcome }}
           O_W4: ${{ steps.w4.outcome }}
           O_W5: ${{ steps.w5.outcome }}
           O_W6: ${{ steps.w6.outcome }}
+          O_T1: ${{ steps.t1.outcome }}
           S_K1: ${{ steps.k1.outputs.state }}
           S_K3: ${{ steps.k3.outputs.state }}
           S_K4: ${{ steps.k4.outputs.state }}
+          S_K6: ${{ steps.k6.outputs.state }}
           S_W1: ${{ steps.w1.outputs.state }}
           S_W3: ${{ steps.w3.outputs.state }}
           S_W4: ${{ steps.w4.outputs.state }}
@@ -611,12 +669,14 @@ jobs:
           Y_K3: ${{ steps.k3.outputs.why }}
           Y_K4: ${{ steps.k4.outputs.why }}
           Y_K5: ${{ steps.k5.outputs.why }}
+          Y_K6: ${{ steps.k6.outputs.why }}
           Y_W1: ${{ steps.w1.outputs.why }}
           Y_W2: ${{ steps.w2.outputs.why }}
           Y_W3: ${{ steps.w3.outputs.why }}
           Y_W4: ${{ steps.w4.outputs.why }}
           Y_W5: ${{ steps.w5.outputs.why }}
           Y_W6: ${{ steps.w6.outputs.why }}
+          Y_T1: ${{ steps.t1.outputs.why }}
           I_K4: ${{ steps.k4.outputs.info }}
           I_W5: ${{ steps.w5.outputs.info }}
           R_W5: ${{ steps.w5.outputs.ref }}
@@ -646,11 +706,10 @@ jobs:
                     i="I_$1"; [ -z "${!i:-}" ] || r="$r; info: ${!i}"
                     rf="R_$1"; [ -z "${!rf:-}" ] || r="$r; ref: ${!rf}"
                     echo "| $1 | $r |"; }
-            for g in K1 K2 K3 K4 K5; do row "$g"; done
-            echo "| K6 | SKIP stage<2 |"
-            for g in W1 W2 W3 W4 W5 W6; do row "$g"; done
+            for g in K1 K2 K3 K4 K5 K6; do row "$g"; done
+            for g in W1 W2 W3 W4 W5 W6 T1; do row "$g"; done
             echo
-            echo "Stage-0 expectation: K1, K2, W1, W2 FAIL; K3, W3 UNMEASURED while the K1/W1 probes do not link (FAIL/PASS once measured); K5, W4 PASS; K4, W5 PASS on Linux (ref_tag linux, GCC 13 and GCC 15) and on macOS (macos-15) against the committed references; W6 recorded (RED). A missing reference is missing evidence, not a pass. If the prerequisite build fails (LANE UNMEASURED), every gate that depends on a failed target is UNMEASURED, not a pass and not a measured fail; K2, W2, K5 still report their result."
+            echo "Stage-0 expectation: K1, K2, W1, W2 FAIL; K3, W3 UNMEASURED while the K1/W1 probes do not link (FAIL/PASS once measured); K5, W4 PASS; K4, W5 PASS on Linux (ref_tag linux, GCC 13 and GCC 15) and on macOS (macos-15) against the committed references; K6 (tx_validation.h manifest hash + SepTxValidationBinds, live since Task 2.6) and T1 (SepWalletHeadersSelfContained, live since Task 5.4) PASS; W6 recorded (RED). A missing reference is missing evidence, not a pass. If the prerequisite build fails (LANE UNMEASURED), every gate that depends on a failed target is UNMEASURED, not a pass and not a measured fail; K2, W2, K5 still report their result."
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
   # K4, second half (ruling R13): the existing compact-regtest fixed-vector
@@ -662,6 +721,8 @@ jobs:
   # Windows are not covered, as in the original workflow.
   k4-compact-regtest:
     name: K4 compact-regtest vectors linux-gcc13
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.gates != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -773,6 +834,8 @@ jobs:
   # its wiring changed without its tests, not a gate result.
   separation-script-tests:
     name: separation script tests
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.gates != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

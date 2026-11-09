@@ -41,20 +41,12 @@
 name: Separation gates (Windows)
 
 on:
+  # No on.paths filter: the two Windows gates contexts are required on
+  # dinero-main, and a required check whose workflow never triggers stays
+  # "Expected" forever, blocking every PR outside the filter. The `changes`
+  # job reproduces the old filter instead; jobs it skips report conclusion
+  # "skipped", which satisfies a required status check.
   pull_request:
-    paths:
-      - '.github/workflows/separation-gates-windows.yml'
-      - 'scripts/ci/separation/**'
-      - 'tests/separation/**'
-      - 'CMakeLists.txt'
-      - '**/CMakeLists.txt'
-      - 'cmake/**'
-      - 'src/**'
-      - 'include/**'
-      - 'wallet-core/**'
-      - 'resources/schema/**'
-      - 'rust/orchard_backend/**'
-      - 'mobile-tauri/src-tauri/build.rs'
   workflow_dispatch:
     inputs:
       record_baselines:
@@ -79,8 +71,49 @@ env:
   SEP_NINJA_VERSION: '1.13.2'
 
 jobs:
+  # Replaces the old on.pull_request.paths filter (see the `on:` comment).
+  # Fail open twice over: changed_paths.py answers true on any error, and the
+  # gates job uses `!cancelled() && != 'false'` so even a failed filter job
+  # runs the gates rather than silently skipping them. Runs on a Linux
+  # runner: it only diffs file names.
+  changes:
+    name: gate-relevant changed paths (windows)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2   # the PR merge commit and its parents: HEAD^1..HEAD
+          persist-credentials: false
+      - name: Match changed files against the gate paths
+        id: filter
+        run: |
+          python3 scripts/ci/separation/changed_paths.py \
+            --github-output "$GITHUB_OUTPUT" --key gates \
+            --event "$GITHUB_EVENT_NAME" -- \
+            '.github/workflows/separation-gates-windows.yml' \
+            'scripts/ci/separation/**' \
+            'tests/separation/**' \
+            'CMakeLists.txt' \
+            '**/CMakeLists.txt' \
+            'cmake/**' \
+            'src/**' \
+            'include/**' \
+            'wallet-core/**' \
+            'resources/schema/**' \
+            'rust/orchard_backend/**' \
+            'mobile-tauri/src-tauri/build.rs'
+    outputs:
+      gates: ${{ steps.filter.outputs.gates }}
+
   gates:
     name: gates windows-msvc orchard=${{ matrix.orchard }}
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.gates != 'false' }}
     runs-on: windows-2022
     timeout-minutes: 240
     strategy:
@@ -437,10 +470,21 @@ jobs:
         if: always()
         run: Write-Host 'GATE K5 SKIP (POSIX runners only; see separation-gates.yml)'
 
+      # K6 (spec 6.5, Task 2.6), same as separation-gates.yml: the
+      # CONSENSUS_MANIFEST entry for the frozen tx_validation.h names the
+      # live file (check_frozen_header_manifest.py normalizes the CRLF
+      # checkout before hashing) and SepTxValidationBinds proves both view
+      # types bind to the three tx_validation entry points.
       - name: K6 frozen-header change
         id: k6
-        if: always()
-        run: Write-Host 'GATE K6 SKIP stage<2'
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
+        run: |
+          . "$env:RUNNER_TEMP\sep_gate.ps1"
+          $p = [int](Test-SepPrereq 'K6'); if ($p -ne 0) { exit $p }
+          & python scripts\ci\separation\check_frozen_header_manifest.py --repo . | Out-Host
+          $rc = $LASTEXITCODE
+          if ($rc -eq 0) { $rc = [int](Invoke-SepCtest -Names 'SepTxValidationBinds') }
+          Write-GateResult 'K6' $rc '' 'tx_validation.h manifest hash or SepTxValidationBinds (ChainStateView/CoinsViewCache binding) did not pass'; exit $rc
 
       - name: W1 wallet forced link
         id: w1
@@ -601,6 +645,7 @@ jobs:
           O_K2: ${{ steps.k2.outcome }}
           O_K3: ${{ steps.k3.outcome }}
           O_K4: ${{ steps.k4.outcome }}
+          O_K6: ${{ steps.k6.outcome }}
           O_W1: ${{ steps.w1.outcome }}
           O_W2: ${{ steps.w2.outcome }}
           O_W3: ${{ steps.w3.outcome }}
@@ -610,6 +655,7 @@ jobs:
           S_K1: ${{ steps.k1.outputs.state }}
           S_K3: ${{ steps.k3.outputs.state }}
           S_K4: ${{ steps.k4.outputs.state }}
+          S_K6: ${{ steps.k6.outputs.state }}
           S_W1: ${{ steps.w1.outputs.state }}
           S_W3: ${{ steps.w3.outputs.state }}
           S_W4: ${{ steps.w4.outputs.state }}
@@ -619,6 +665,7 @@ jobs:
           Y_K2: ${{ steps.k2.outputs.why }}
           Y_K3: ${{ steps.k3.outputs.why }}
           Y_K4: ${{ steps.k4.outputs.why }}
+          Y_K6: ${{ steps.k6.outputs.why }}
           Y_W1: ${{ steps.w1.outputs.why }}
           Y_W2: ${{ steps.w2.outputs.why }}
           Y_W3: ${{ steps.w3.outputs.why }}
@@ -667,9 +714,11 @@ jobs:
           )
           foreach ($g in 'K1','K2','K3','K4') { $lines += (Row $g) }
           $lines += '| K5 | SKIP (POSIX only) |'
-          $lines += '| K6 | SKIP stage<2 |'
+          $lines += (Row 'K6')
           foreach ($g in 'W1','W2','W3','W4','W5','W6') { $lines += (Row $g) }
+          $lines += '| T1 | SKIP (POSIX only: check_wallet_headers.py drives the compiler with -fsyntax-only) |'
           $lines += ''
+          $lines += 'K6 (tx_validation.h manifest hash + SepTxValidationBinds) is live since Task 2.6 and expected PASS. T1 is POSIX-only (Linux/macOS lanes in separation-gates.yml).'
           $lines += 'Stage-0 expectation: K1, K2, W1, W2 FAIL; K3 and W3 FAIL when measured, else UNMEASURED until the COFF scan is verified; K4 FAIL rc 2 (missing reference) until reviewed Windows baselines are committed; W4 PASS; W6 recorded (RED). W5 on Windows is PARTIAL (wallet FFI + RPC only; NodeCore is not a Windows target, so NodeCore interface evidence comes only from Linux/macOS). Its RPC transcript is UNMEASURED (blocked by B1: dinerod --consensus-state-commitment-height=4294967295 std::stol overflow on LLP64) only when the startup log shows the exact B1 error; any other startup failure is FAIL (check did not run). After B1 is fixed through its own review, W5 stays FAIL rc 2 (missing reference) until a reviewed Windows symbol baseline (symbols_windows_<cfg>.txt) and a reviewed Windows RPC transcript (transcripts/windows_<cfg>.json; snapshot wallet file recovery is POSIX-only, so the shared transcript can never match on Windows) are committed. If the prerequisite build fails (LANE UNMEASURED), every gate that depends on a failed target is UNMEASURED.'
           $lines | Out-Host
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8

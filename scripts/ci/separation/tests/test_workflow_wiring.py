@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[4]
 POSIX = (ROOT / ".github/workflows/separation-gates.yml").read_text()
 WINDOWS = (ROOT / ".github/workflows/separation-gates-windows.yml").read_text()
 CMAKE = (ROOT / "tests/separation/CMakeLists.txt").read_text()
-PREREQ_GATES = ("K1", "K3", "K4", "W1", "W3", "W4", "W5", "W6")
+PREREQ_GATES = ("K1", "K3", "K4", "K6", "W1", "W3", "W4", "W5", "W6")
 NO_BUILD_GATES = ("K2", "W2", "K5")
 
 
@@ -97,8 +97,8 @@ def test_cmake_selects_windows_w5_scope_by_platform():
 
 # Fix round: decision 3 (why= in every row) and minors 3/5
 def test_summary_rows_always_carry_a_reason():
-    for text, gates in ((POSIX, ("K1", "K2", "K3", "K4", "K5", "W1", "W2", "W3", "W4", "W5", "W6")),
-                        (WINDOWS, ("K1", "K2", "K3", "K4", "W1", "W2", "W3", "W4", "W5", "W6"))):
+    for text, gates in ((POSIX, ("K1", "K2", "K3", "K4", "K5", "K6", "W1", "W2", "W3", "W4", "W5", "W6", "T1")),
+                        (WINDOWS, ("K1", "K2", "K3", "K4", "K6", "W1", "W2", "W3", "W4", "W5", "W6"))):
         summary = text.split("- name: Gate summary", 1)[1].split("\n  k4-compact-regtest:")[0]
         for g in gates:
             assert "Y_%s: ${{ steps.%s.outputs.why }}" % (g, g.lower()) in summary
@@ -375,3 +375,45 @@ def test_w6_windows_closure_failure_fails_the_step():
     w6 = steps(WINDOWS)["w6"]
     assert re.search(r"if \(\$crc -ne 0 -and \$rc -eq 0\) \{ \$rc = \$crc \}", w6), w6
     assert w6.index("$rc = $crc") < w6.index("Write-GateResult 'W6' $rc")
+
+
+# Review 2026-11-09: three wiring gaps (K6 stub, T1 never invoked, required
+# contexts behind an on.paths filter) closed; these pin the closures.
+
+def test_k6_runs_the_binding_test_and_manifest_check_on_every_platform():
+    for text in (POSIX, WINDOWS):
+        assert "SKIP stage<2" not in text
+        k6 = steps(text)["k6"]
+        assert "check_frozen_header_manifest.py" in k6
+        assert "SepTxValidationBinds" in k6
+    # the manifest check gates the ctest, not the other way round
+    k6 = steps(POSIX)["k6"]
+    assert k6.index("check_frozen_header_manifest.py") < k6.index("SepTxValidationBinds")
+
+
+def test_t1_wallet_headers_run_on_posix_and_are_declared_skip_on_windows():
+    t1 = steps(POSIX)["t1"]
+    assert "sep_ctest SepWalletHeadersSelfContained" in t1
+    assert "sep_prereq" not in t1            # needs only the configured compiler
+    assert "for g in W1 W2 W3 W4 W5 W6 T1; do row" in POSIX
+    assert "'| T1 | SKIP (POSIX only" in WINDOWS
+    assert "SepWalletHeadersSelfContained" not in WINDOWS
+
+
+def test_required_contexts_always_report_no_on_paths_filter():
+    # on.pull_request.paths would leave the required gates contexts
+    # "Expected" forever on a PR outside the filter; the changes job +
+    # skipped-job conclusion replaces it.
+    for text, wf, own in ((POSIX, "separation-gates.yml", "tests/vectors/compact_regtest_v1/**"),
+                          (WINDOWS, "separation-gates-windows.yml", "mobile-tauri/src-tauri/build.rs")):
+        on = text.split("\non:", 1)[1].split("\npermissions:", 1)[0]
+        assert "paths:" not in on, wf
+        assert "\n  changes:" in text and "changed_paths.py" in text
+        filter_step = steps(text)["filter"]
+        assert ".github/workflows/%s" % wf in filter_step
+        assert own in filter_step
+        assert "'src/**'" in filter_step and "'**/CMakeLists.txt'" in filter_step
+        # fail open: a failed/erroring filter job must still run the gates
+        assert "if: ${{ !cancelled() && needs.changes.outputs.gates != 'false' }}" in text
+        gates_job = text.split("\n  gates:", 1)[1]
+        assert gates_job.splitlines()[2].strip() == "needs: changes"
