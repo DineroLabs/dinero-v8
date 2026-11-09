@@ -141,6 +141,20 @@ promote the exact qualified generation and verify the signatures and digests
 served by all three mirrors. Existing app wallets and chain owners are not
 qualification datadirs.
 
+`native_phone_probe.c` supplies an isolated C ABI host for that device work.
+On Android compile with `-DPHONE_PROBE_DYNAMIC -ldl` and pass the exact
+`libnodecore_ffi.so` extracted from the updated APK as its first argument.
+On Apple link the exact NodeCore archive distributed with the updated app and
+install the host under a separate development bundle identifier. `version`
+records native identity; `home` finds that host's current sandbox (an app
+reinstall can relocate it). `run <private-datadir> <config.json> <seconds>`
+records bootstrap/base and accumulator RPCs, then calls the orderly native
+stop. A second invocation with the same private datadir and no snapshot in
+its config exercises cold reopen. Keep the `NCPROBE` records and daemon
+output from both runs. Successful START/STOP or a zero launcher exit is not
+snapshot qualification: require the exact base and selected-tip accumulator
+checks above, with the compact validator role and zero full-forest memory.
+
 The job remains an external scheduled/systemd operation. Updating repository
 source does not deploy it, change a fleet timer, rotate keys, publish a snapshot,
 or replace a phone's existing chain database. A fresh snapshot is for fresh
