@@ -7,12 +7,19 @@ on:
       - 'cmake/Mempool*.cmake'
       - 'include/daemon/mempool*.h'
       - 'include/daemon/scanner_mempool_sink.h'
+      - 'include/daemon/relay_transaction_reader.h'
       - 'include/storage/chain_db_mempool_view.h'
+      - 'include/mempool/**'
+      - 'include/policy/**'
+      - 'include/mining/ct_selection_policy.h'
+      - 'include/mining/address_validator.h'
       - 'src/daemon/mempool.cpp'
+      - 'src/daemon/relay_transaction_reader.cpp'
       - 'src/daemon/CMakeLists.txt'
       - 'src/daemon/services/mempool_service.cpp'
       - 'include/daemon/services/mempool_service.h'
       - 'src/nodecore/CMakeLists.txt'
+      - 'build_nodecore_xcframework.sh'
       - 'rust/orchard_backend/CMakeLists.txt'
       - 'src/mempool/**'
       - 'src/policy/**'
@@ -144,15 +151,17 @@ jobs:
           cmake -S . -B build-mempool -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DDINERO_USE_VENDORED_DEPS=ON -DENABLE_GRPC=OFF \
-            -DBUILD_NODECORE=OFF -DENABLE_TESTS=ON \
+            -DBUILD_NODECORE=ON -DENABLE_TESTS=ON \
             -DDINERO_BUILD_ORCHARD_BACKEND="$MP_ORCHARD" \
             -DDINERO_MEMPOOL_SEPARATION_GATES=ON
-      - name: Build standalone and adapter consumers
+      - name: Build daemon, NodeCore, standalone and adapter consumers
         shell: bash
         env:
           MP_ORCHARD: ${{ matrix.orchard }}
         run: |
-          targets=(sep_mempool_forced_link sep_mempool_standalone test_chain_db_mempool_view)
+          targets=(dinerod nodecore_ffi sep_mempool_forced_link sep_mempool_standalone
+            test_chain_db_mempool_view test_mempool_retained_load test_mempool_transaction_body
+            test_tx_relay_g3 test_relay_refresh_owner test_csn_proof_refresh)
           if [ "$MP_ORCHARD" = ON ]; then targets+=(test_mempool_orchard_scan_sink); fi
           cmake --build build-mempool --target "${targets[@]}" --parallel 4
       - name: Enforce the owned boundary and report inherited shielded debt
@@ -168,7 +177,9 @@ jobs:
           import pathlib
           import re
           import subprocess
-          names = ['SepMempoolForcedLink', 'SepMempoolStandalone', 'ChainDbMempoolView']
+          names = ['SepMempoolForcedLink', 'SepMempoolStandalone', 'ChainDbMempoolView',
+                   'MempoolRetainedLoad', 'MempoolTransactionBody',
+                   'TxRelayG3Verification', 'RelayRefreshOwner', 'CsnProofRefresh']
           if os.environ['MP_ORCHARD'] == 'ON':
               names.append('MempoolScanSinkOrchardAdmission')
           floor = pathlib.Path('scripts/ci/separation/never_run_floor.txt')
@@ -178,3 +189,19 @@ jobs:
                           '-R', '^(' + '|'.join(map(re.escape, names)) + ')$',
                           '--verbose', '--output-on-failure'], check=True)
           PY
+      - name: Compare regtest mempool RPC, restart and reorg transcript
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          MP_ORCHARD: ${{ matrix.orchard }}
+        run: |
+          config="$(echo "$MP_ORCHARD" | tr '[:upper:]' '[:lower:]')"
+          python tests/mempool_separation/mempool_transcript.py check \
+            --dinerod "$(pwd)/build-mempool/dinerod" --config "$config" \
+            --out "tests/mempool_separation/transcripts/$config.json"
+      - name: Record Windows transcript status
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo 'UNMEASURED: the reviewed pre-extraction Windows MP4 reference is pending.'
+          echo 'This Windows job qualifies build/link and focused contracts only.'

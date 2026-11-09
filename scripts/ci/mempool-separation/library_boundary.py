@@ -62,9 +62,17 @@ def check(build, skip_source_owners=False):
     violations = ["UNRESOLVED %s from=%s" % (tid, model.name(parent))
                   for tid, parent in unresolved]
     debt = []
-    inherited = set()
-    if any(model.name(t) == "dinero_shielded" for t in closure):
-        inherited = set(walk(model, model.find("dinero_shielded"))[0])
+    # A target is inherited debt only if every path from the mempool crosses
+    # dinero_shielded. Membership in shielded's closure alone is insufficient:
+    # a new direct mempool -> sqlite3 edge must fail the owned boundary.
+    owned = {root}
+    queue = [root]
+    for current in queue:
+        for child in edges.get(current, []):
+            if model.name(child) != "dinero_shielded" and child not in owned:
+                owned.add(child)
+                queue.append(child)
+    inherited = set(closure) - owned
     for tid in closure:
         name = model.name(tid)
         target = model.tjson(tid)

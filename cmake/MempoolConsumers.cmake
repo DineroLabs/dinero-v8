@@ -82,7 +82,7 @@ endforeach()
 # These fixtures now reach the real pool through dinero_core. Remove the
 # obsolete provider so static-link order cannot silently select a no-op pool.
 # The standalone wallet target and wallet-owned gate files are unchanged.
-foreach(_consumer sep_wallet_fixture_compat test_block_relay_g2
+foreach(_consumer sep_wallet_fixture_compat sep_make_wallet_fixture test_block_relay_g2
     test_compact_block_binary test_headers_wire_v1)
   if(TARGET ${_consumer})
     get_target_property(_sources ${_consumer} SOURCES)

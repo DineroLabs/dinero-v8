@@ -88,6 +88,29 @@ def test_inherited_sqlite_is_visible_not_full_pass(tmp_path):
     assert any("sqlite3" in item for item in report["inherited_debt"])
 
 
+def test_direct_sqlite_edge_is_not_hidden_by_inherited_shielded_edge(tmp_path):
+    _, build = project(tmp_path, "add_library(sqlite3 INTERFACE)\n"
+                      "add_library(dinero_shielded STATIC node.cpp)\n"
+                      "target_link_libraries(dinero_shielded PRIVATE sqlite3)\n"
+                      "target_link_libraries(dinero_mempool PUBLIC dinero_shielded sqlite3)\n")
+    result = run(build)
+    assert result.returncode == 1
+    report = json.loads(result.stdout)
+    assert report["owned_boundary"] == "FAIL"
+    assert "STORAGE_TARGET sqlite3" in report["violations"]
+
+
+def test_direct_sqlite_fragment_is_not_hidden_by_inherited_shielded_edge(tmp_path):
+    _, build = project(tmp_path, "add_library(dinero_shielded STATIC node.cpp)\n"
+                      "target_link_libraries(dinero_shielded PRIVATE sqlite3)\n"
+                      "target_link_libraries(dinero_mempool PUBLIC dinero_shielded sqlite3)\n")
+    result = run(build)
+    assert result.returncode == 1
+    report = json.loads(result.stdout)
+    assert report["owned_boundary"] == "FAIL"
+    assert "STORAGE_LIBRARY sqlite3 from=dinero_mempool" in report["violations"]
+
+
 def test_missing_model_is_error_not_pass(tmp_path):
     result = run(tmp_path)
     assert result.returncode == 2

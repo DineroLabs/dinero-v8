@@ -3,6 +3,8 @@
 #include "daemon/mempool.h"
 #include "consensus/chainparams.h"
 #include "orchard_transaction.h"
+#include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -72,6 +74,24 @@ int main(int argc, char** argv) {
             "successful selected validation/publication/notification ordering");
         Require(pool.getMempoolEntry(body.GetTxid().AsUint256())->tx.Serialize() == bytes,
             "retain exact canonical Orchard body");
+        const auto scratch = std::filesystem::temp_directory_path() /
+            ("mempool_orchard_reopen_" + std::to_string(
+                std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::create_directories(scratch);
+        struct RemoveScratch {
+            std::filesystem::path path;
+            ~RemoveScratch() { std::error_code ignored; std::filesystem::remove_all(path, ignored); }
+        } cleanup{scratch};
+        const auto file_path = (scratch / "mempool.dat").string();
+        Require(pool.saveToDisk(file_path), "save accepted Orchard body");
+        pool.clear();
+        Require(pool.size() == 0, "clear pool before reload");
+        Require(pool.loadFromDisk(file_path), "reload accepted Orchard body");
+        Require(pool.size() == 1 &&
+            pool.getMempoolEntry(body.GetTxid().AsUint256())->tx.Serialize() == bytes,
+            "reload exact canonical Orchard body");
+        Require(state.validations == 2 && state.notices == 2 && !state.held,
+            "reload must repeat selected validation and notify after guard release");
         std::cout << "Orchard scanner sink: refusal and retained-guard lifecycle passed\n";
         return 0;
     } catch (const std::exception& e) {
