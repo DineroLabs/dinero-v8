@@ -407,8 +407,10 @@ def test_t1_wallet_headers_run_on_posix_and_are_declared_skip_on_windows():
 
 def test_required_contexts_always_report_no_on_paths_filter():
     # on.pull_request.paths would leave the required gates contexts
-    # "Expected" forever on a PR outside the filter; the changes job +
-    # skipped-job conclusion replaces it.
+    # "Expected" forever on a PR outside the filter; the changes job
+    # replaces it (per-leg reporting is covered by the stand-in test below:
+    # a skipped matrix job's check run keeps the UNexpanded name template,
+    # so the skip itself cannot satisfy the per-leg required contexts).
     for text, wf, own in ((POSIX, "separation-gates.yml", "tests/vectors/compact_regtest_v1/**"),
                           (WINDOWS, "separation-gates-windows.yml", "mobile-tauri/src-tauri/build.rs")):
         on = text.split("\non:", 1)[1].split("\npermissions:", 1)[0]
@@ -422,3 +424,28 @@ def test_required_contexts_always_report_no_on_paths_filter():
         assert "if: ${{ !cancelled() && needs.changes.outputs.gates != 'false' }}" in text
         gates_job = text.split("\n  gates:", 1)[1]
         assert gates_job.splitlines()[2].strip() == "needs: changes"
+
+
+def test_skipped_prs_satisfy_required_contexts_via_stand_in_jobs():
+    # GitHub keeps the literal "${{ matrix.* }}" template as the check-run
+    # name of a job skipped at job level (live-verified: PR #890 stayed
+    # BLOCKED), so the required per-leg contexts need stand-in jobs that RUN
+    # when the filter says no gate-relevant path changed and report success
+    # under the exact same names the real gates jobs use.
+    for text, legs in ((POSIX, ("toolchain: [linux-gcc15, linux-gcc13, macos15-arm64]",
+                                "orchard: [off, on]")),
+                       (WINDOWS, ("orchard: [off, on]",))):
+        assert "\n  gates-skip-confirm:" in text
+        stand_in = text.split("\n  gates-skip-confirm:", 1)[1].split("\n  gates:", 1)[0]
+        real = text.split("\n  gates:", 1)[1]
+        name = stand_in.splitlines()[1].strip()
+        assert name.startswith("name: gates ") and name == real.splitlines()[1].strip()
+        assert stand_in.splitlines()[2].strip() == "needs: changes"
+        # Strict complement of the real gates' fail-open condition: a failed
+        # filter job runs the real gates and auto-skips the stand-ins, so the
+        # two jobs can never both report an expanded context name.
+        assert "if: ${{ needs.changes.outputs.gates == 'false' }}" in stand_in
+        assert "!cancelled()" not in stand_in
+        assert "runs-on: ubuntu-latest" in stand_in
+        for leg in legs:
+            assert leg in stand_in, leg

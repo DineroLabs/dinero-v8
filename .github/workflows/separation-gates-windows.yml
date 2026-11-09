@@ -110,6 +110,31 @@ jobs:
     outputs:
       gates: ${{ steps.filter.outputs.gates }}
 
+  # GitHub does not expand ${{ matrix.* }} in the check-run name of a job that
+  # is skipped at job level, so skipping the gates job can never satisfy the
+  # per-leg required contexts by itself (verified live: PR #890 stayed BLOCKED).
+  # When the filter proves no gate-relevant path changed, these cheap stand-ins
+  # report success under the exact required context names instead (the runner
+  # OS is irrelevant: only the check-run name must match). Strict == 'false'
+  # (and no !cancelled()): if the filter job fails, the real gates run
+  # fail-open and these stay skipped.
+  gates-skip-confirm:
+    name: gates windows-msvc orchard=${{ matrix.orchard }}
+    needs: changes
+    if: ${{ needs.changes.outputs.gates == 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        orchard: [off, on]
+    steps:
+      - name: Report skip
+        run: echo "No gate-relevant paths changed; context 'gates windows-msvc orchard=${{ matrix.orchard }}' is satisfied without a build."
+
   gates:
     name: gates windows-msvc orchard=${{ matrix.orchard }}
     needs: changes
