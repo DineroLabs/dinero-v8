@@ -7128,7 +7128,7 @@ ChainstateService::resumeRuntimeWalletRecoveryIfNeeded(WalletManager& wallet, UT
         uint64_t session=0;
         {
             const auto lease=wallet.AcquireDatabaseLease();
-            if (wallet.database_leases_!=1 || !lease->Database() ||
+            if (!wallet.SoleDatabaseLeaseHeld() || !lease->Database() ||
                 wallet.getUTXOIndex()!=&index) return Status::Invalid;
             session=lease->Session();
             if (expected_session && session!=expected_session) return Status::Invalid;
@@ -7195,7 +7195,7 @@ StatusOr<ChainstateService::OrchardPreactivationEnrollment> ChainstateService::e
          if(!wallet_index_uses_by_thread_.count(std::this_thread::get_id())||!utxo_index_)return Status::Invalid;
          index=utxo_index_.get();}
         {auto lease=wallet.AcquireDatabaseLease();
-         if(wallet.database_leases_!=1||!lease->Database()||lease->Session()!=expected_session||
+         if(!wallet.SoleDatabaseLeaseHeld()||!lease->Database()||lease->Session()!=expected_session||
             wallet.getUTXOIndex()!=index||!sqlite3_get_autocommit(lease->Database()))return Status::Invalid;}
         // Same lock order as snapshot load and ordinary/Orchard reservation.
         // Hold selected ownership through FULL wallet commit: activation, an
@@ -7234,7 +7234,7 @@ StatusOr<ChainstateService::OrchardPreactivationEnrollment> ChainstateService::e
             std::copy(capture->block_hash.begin(),capture->block_hash.end(),proof.block.begin());
         }
         auto lease=wallet.AcquireDatabaseLease();
-        if(wallet.database_leases_!=1||lease->Session()!=expected_session||wallet.getUTXOIndex()!=index)
+        if(!wallet.SoleDatabaseLeaseHeld()||lease->Session()!=expected_session||wallet.getUTXOIndex()!=index)
             return Status::Invalid;
         auto* db=lease->Database();
         if(!db||!sqlite3_get_autocommit(db))return Status::Invalid;
@@ -7253,7 +7253,7 @@ StatusOr<ChainstateService::OrchardPreactivationEnrollment> ChainstateService::e
         // Recovered provenance or minting an unrelated PQ master key.
         std::vector<uint8_t> seed_bytes(seed->Bytes().begin(),seed->Bytes().end());
         struct Clear {std::vector<uint8_t>& bytes;~Clear(){OPENSSL_cleanse(bytes.data(),bytes.size());}} clear{seed_bytes};
-        if(wallet.loadInitialPqMaster(seed_bytes))return Status::Invalid;
+        if(wallet.InitialPqMasterPresentInTransaction(seed_bytes))return Status::Invalid;
         const auto result=wallet::OrchardAccountCatalog::StagePreactivation(db,seed->Bytes(),proof);
         if(imported&&index->ReadAssumedStartupMetadata()!=imported->metadata)return Status::Corruption;
         if(sqlite3_exec(db,"COMMIT",nullptr,nullptr,nullptr)!=SQLITE_OK)return Status::Invalid;
@@ -7283,7 +7283,7 @@ StatusOr<wallet::OrchardAccount0RecoveryProgress> ChainstateService::recoverOrch
              index=utxo_index_.get();}
             {
                 auto lease=wallet.AcquireDatabaseLease();
-                if(wallet.database_leases_!=1||lease->Session()!=expected_session||!lease->Database()||
+                if(!wallet.SoleDatabaseLeaseHeld()||lease->Session()!=expected_session||!lease->Database()||
                     wallet.getUTXOIndex()!=index||!sqlite3_get_autocommit(lease->Database()))return Status::Invalid;
                 auto* db=lease->Database();
                 if(sqlite3_exec(db,"PRAGMA synchronous=FULL",nullptr,nullptr,nullptr)!=SQLITE_OK||
@@ -7298,7 +7298,7 @@ StatusOr<wallet::OrchardAccount0RecoveryProgress> ChainstateService::recoverOrch
                 if(wallet.getSetting("wallet_initial_owner_v1").empty())return Status::Invalid;
                 std::vector<uint8_t> bytes(seed->Bytes().begin(),seed->Bytes().end());
                 struct Wipe{std::vector<uint8_t>& b;~Wipe(){OPENSSL_cleanse(b.data(),b.size());}} wipe{bytes};
-                if(wallet.loadInitialPqMaster(bytes))return Status::Invalid;
+                if(wallet.InitialPqMasterPresentInTransaction(bytes))return Status::Invalid;
                 // The ownership check requires a FULL transaction even though
                 // this path never stages/adopts wallet state. Release it before
                 // the selected-source and network callbacks below.
@@ -7360,7 +7360,7 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
         }
         {
             const auto lease=wallet.AcquireDatabaseLease();
-            if(wallet.database_leases_!=1||!lease->Database()||lease->Session()!=expected_session||
+            if(!wallet.SoleDatabaseLeaseHeld()||!lease->Database()||lease->Session()!=expected_session||
                wallet.getUTXOIndex()!=expected_index)return Status::Invalid;
         }
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
@@ -7394,7 +7394,7 @@ SignResult ChainstateService::signAndStageWalletPayment(WalletManager& wallet,
              throw std::runtime_error("Payment source lifetime unavailable");
          index=utxo_index_.get();}
         {auto lease=wallet.AcquireDatabaseLease();
-         if(wallet.database_leases_!=1||!lease->Database()||lease->Session()!=identity.session||wallet.getUTXOIndex()!=index)
+         if(!wallet.SoleDatabaseLeaseHeld()||!lease->Database()||lease->Session()!=identity.session||wallet.getUTXOIndex()!=index)
              throw std::runtime_error("Payment wallet source binding changed");}
         {
             // LoadSnapshot takes this lock before acquiring the selected lock
@@ -7683,7 +7683,7 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
         }
         {
             const auto lease=wallet.AcquireDatabaseLease();
-            if(wallet.database_leases_!=1 || !lease->Database() || lease->Session()!=session ||
+            if(!wallet.SoleDatabaseLeaseHeld() || !lease->Database() || lease->Session()!=session ||
                wallet.getUTXOIndex()!=&index || !sqlite3_get_autocommit(lease->Database()))return Status::Invalid;
         }
         // All expensive source capture/replay is outside selected and wallet
@@ -15031,12 +15031,14 @@ std::optional<uint32_t> ChainstateService::RescanWalletFromSelectedHistory(
         uint64_t session = 0;
         {
             const auto lease = wallet.AcquireDatabaseLease();
-            if (!lease->Database() || wallet.database_leases_ != 1 ||
+            if (!lease->Database() || !wallet.SoleDatabaseLeaseHeld() ||
                 !sqlite3_get_autocommit(lease->Database()))
                 return fail("selected-history-wallet-ownership-unavailable");
             session = lease->Session();
         } // No wallet ownership during selected-chain acquisition or validation.
-        auto owned = std::unique_ptr<SelectedWalletHistory>(new SelectedWalletHistory());
+        std::vector<Block> bodies;
+        uint256 tip, genesis;
+        std::string network;
         uint32_t height = 0;
         const auto selected = [&]() {
             if (!chain_db_ || !active_tip_ || !consensus_utxo_set_ ||
@@ -15061,10 +15063,10 @@ std::optional<uint32_t> ChainstateService::RescanWalletFromSelectedHistory(
             constexpr size_t max_material = 256 * 1024 * 1024;
             if (height >= max_blocks || height >= Params().orchard_activation_height)
                 return fail("selected-history-profile-or-size-unsupported");
-            owned->tip_ = active_tip_->hash;
-            owned->network_ = Params().network_id;
-            owned->genesis_ = uint256::FromHexUnsafe(Params().genesis_hash);
-            uint256 expected = owned->tip_;
+            tip = active_tip_->hash;
+            network = Params().network_id;
+            genesis = uint256::FromHexUnsafe(Params().genesis_hash);
+            uint256 expected = tip;
             size_t material = 0;
             for (uint64_t remaining = uint64_t(height) + 1; remaining; --remaining) {
                 const auto at = static_cast<uint32_t>(remaining - 1);
@@ -15078,32 +15080,34 @@ std::optional<uint32_t> ChainstateService::RescanWalletFromSelectedHistory(
                     return fail("selected-history-material-limit");
                 material += bytes;
                 expected = body->header.prev_block_hash;
-                owned->blocks_.push_back(*body);
+                bodies.push_back(*body);
             }
-            if (!expected.IsNull() || owned->blocks_.back().GetHash() != owned->genesis_)
+            if (!expected.IsNull() || bodies.back().GetHash() != genesis)
                 return fail("selected-history-genesis-mismatch");
-            std::reverse(owned->blocks_.begin(), owned->blocks_.end());
+            std::reverse(bodies.begin(), bodies.end());
         } // Expensive independent replay holds neither chain nor wallet ownership.
         assumeutxo::AssumeUtxoReplayEngine replay;
         std::string validation_error;
-        if (!replay.SeedGenesis(owned->blocks_.front(), validation_error))
+        if (!replay.SeedGenesis(bodies.front(), validation_error))
             return fail("selected-history-genesis-validation-failed");
         for (uint32_t h = 1; h <= height; ++h) {
-            const auto& block = owned->blocks_[h];
+            const auto& block = bodies[h];
             if (!replay.ConnectAndAdvance(block, h, block.GetHash(), validation_error))
                 return fail("selected-history-consensus-validation-failed");
         }
         {
             std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
-            if (!selected() || active_tip_->hash != owned->tip_ || active_tip_->height != height ||
-                Params().network_id != owned->network_ ||
-                uint256::FromHexUnsafe(Params().genesis_hash) != owned->genesis_)
+            if (!selected() || active_tip_->hash != tip || active_tip_->height != height ||
+                Params().network_id != network ||
+                uint256::FromHexUnsafe(Params().genesis_hash) != genesis)
                 return fail("selected-history-source-changed");
         }
         // Const ownership is local and no source callback reaches the wallet.
         // A later chain change still needs ordinary catch-up/reorg processing.
-        const auto immutable = std::unique_ptr<const SelectedWalletHistory>(owned.release());
-        if (!wallet.RescanBlockchainImpl(start_height, gap_limit, nullptr, immutable.get(), session))
+        SelectedWalletHistory::Builder builder(network, genesis, tip);
+        for (auto& block : bodies) builder.AppendBlock(std::move(block));
+        const auto immutable = builder.Build();
+        if (!wallet.RescanFromSelectedHistory(start_height, gap_limit, *immutable, session))
             return fail("selected-history-wallet-apply-failed");
         return height;
     } catch (...) {
@@ -15122,7 +15126,7 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
         uint64_t session=0;std::set<std::vector<uint8_t>> scripts;
         {
             auto lease=wallet.AcquireDatabaseLease();
-            if(wallet.database_leases_!=1||!lease->Database()||!sqlite3_get_autocommit(lease->Database())||
+            if(!wallet.SoleDatabaseLeaseHeld()||!lease->Database()||!sqlite3_get_autocommit(lease->Database())||
                wallet.getUTXOIndex()!=&index->Index()||wallet.isLocked())return fail("wallet recovery ownership or unlocked keys unavailable");
             session=lease->Session();if(expected_session&&session!=expected_session)return fail("wallet changed before recovery");
             sqlite3_stmt* raw=nullptr;
@@ -15137,9 +15141,9 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
             }
             if(step!=SQLITE_DONE||scripts.empty())return fail("wallet recovery watch set empty or unreadable");
         }
-        auto prepared=std::unique_ptr<SelectedWalletHistory>(new SelectedWalletHistory());
-        prepared->network_=Params().network_id;prepared->genesis_=uint256::FromHexUnsafe(Params().genesis_hash);
-        uint32_t base_height=0,target=0;BlockHeader base_header;std::string path;
+        const std::string network=Params().network_id;
+        const uint256 genesis_hash=uint256::FromHexUnsafe(Params().genesis_hash);
+        uint256 tip;uint32_t base_height=0,target=0;BlockHeader base_header;std::string path;
         std::vector<std::pair<uint256,uint32_t>> ancestry;
         {
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
@@ -15151,8 +15155,8 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
                 return fail("snapshot recovery base/range unavailable or over capacity");
             path=config_?config_->GetString("assumeutxo_snapshot",""):"";
             if(path.empty())return fail("retained snapshot file is unavailable");
-            prepared->tip_=active_tip_->hash;prepared->first_height_=base_height+1;
-            auto expected=prepared->tip_;
+            tip=active_tip_->hash;
+            auto expected=tip;
             for(uint32_t height=target;;--height){
                 const auto header=chain_db_->getHeader(expected);const auto stored_height=chain_db_->getBlockHeight(expected);
                 if(!header.ok()||header->GetHash()!=expected||!stored_height.ok()||*stored_height<0||uint32_t(*stored_height)!=height)
@@ -15164,14 +15168,14 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
         Block genesis;
         // Use the exact compiled genesis construction already used by archival
         // replay; only its coinbase outputs may be absent from forest leaves.
-        const auto genesis_header=chain_db_->getHeader(prepared->genesis_);
-        if(!genesis_header.ok()||genesis_header->GetHash()!=prepared->genesis_)return fail("compiled genesis header unavailable");
+        const auto genesis_header=chain_db_->getHeader(genesis_hash);
+        if(!genesis_header.ok()||genesis_header->GetHash()!=genesis_hash)return fail("compiled genesis header unavailable");
         genesis.header=*genesis_header;
         Transaction generation;if(!TransactionSerializer::Deserialize(generation,Params().genesis.genesisCoinbaseHex))
             return fail("compiled genesis transaction unavailable");
         genesis.vtx.push_back(generation);
-        prepared->snapshot_=ReadSnapshotWalletSourceFile(path,base_header,base_height,genesis);
-        prepared->snapshot_scripts_=scripts;
+        auto snapshot_data=ReadSnapshotWalletSourceFile(path,base_header,base_height,genesis);
+        SelectedWalletHistory::Builder builder(network,genesis_hash,tip);
         std::reverse(ancestry.begin(),ancestry.end());size_t material=0,missing=0;
         const auto* daemon=DaemonContext::instance();
         const auto peers=daemon&&daemon->chainstate.get()==this?std::dynamic_pointer_cast<P2PService>(daemon->p2p):nullptr;
@@ -15189,7 +15193,7 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
             if(body->GetHash()!=hash||body->vtx.empty()||consensus::ComputeMerkleRoot(body->vtx,&mutated)!=body->header.merkle_root||mutated)
                 return fail("selected recovery body inclusion failed");
             const auto size=body->Serialize().size();if(size>128*1024*1024-material)return fail("wallet recovery bodies exceed material limit");
-            material+=size;prepared->blocks_.push_back(*body);
+            material+=size;builder.AppendBlock(*body);
         }
         if(missing)return fail("waiting for selected post-snapshot wallet history");
         // Old leaves bind value/script/outpoint but not height/coinbase. Verify
@@ -15198,7 +15202,7 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
         // header selector need not retain a second in-memory copy of the prefix.
         std::map<uint32_t,uint256> legacy_ancestry;
         legacy_ancestry.emplace(base_height,base_header.GetHash());
-        for(const auto& coin:prepared->snapshot_->coins){
+        for(const auto& coin:snapshot_data.coins){
             if(coin.maturity_bound||!scripts.contains(coin.script))continue;
             while(legacy_ancestry.begin()->first>coin.height){
                 const auto [height,hash]=*legacy_ancestry.begin();
@@ -15221,18 +15225,20 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
                 found=true;break;
             }
             if(!found)return fail("legacy owned coin creation missing");
-            prepared->verified_legacy_origins_.emplace(coin.txid,coin.output);
+            builder.AddVerifiedLegacyOrigin(coin.txid,coin.output);
         }
         std::unique_lock<std::mutex> snapshot(snapshot_load_mutex_);
         std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
         const auto current=UtreexoRpcSnapshotUnderLock();
-        if(!current.ok()||current->block_hash!=prepared->tip_||current->height!=target||
+        if(!current.ok()||current->block_hash!=tip||current->height!=target||
            GetSnapshotWalletRecoveryBaseHeight()!=base_height||
            config_->GetString("assumeutxo_snapshot","")!=path)
             return fail("selected wallet recovery source changed; retry");
         auto lifetime=assumeutxo_lifecycle_->AcquireSnapshotUse(base_header.GetHash(),base_height);
         if(!lifetime)return fail("snapshot lifecycle changed before wallet recovery");
-        if(!wallet.RescanBlockchainImpl(int(base_height+1),0,nullptr,prepared.get(),session))
+        builder.SetSnapshot(base_height+1,std::move(snapshot_data),std::move(scripts));
+        const auto immutable=builder.Build();
+        if(!wallet.RescanFromSelectedHistory(int(base_height+1),0,*immutable,session))
             return fail("authenticated snapshot wallet application failed");
         return target;
     }catch(const std::exception& e){return fail(e.what());}
@@ -15371,7 +15377,7 @@ StatusOr<size_t> ChainstateService::DiscoverSnapshotWalletCandidates(WalletManag
          if(!wallet_index_uses_by_thread_.contains(std::this_thread::get_id())||!utxo_index_)return Status::Invalid;
          index=utxo_index_.get();}
         {auto lease=wallet.AcquireDatabaseLease();
-         if(wallet.database_leases_!=1||lease->Session()!=session||!lease->Database()||
+         if(!wallet.SoleDatabaseLeaseHeld()||lease->Session()!=session||!lease->Database()||
              wallet.getUTXOIndex()!=index||!sqlite3_get_autocommit(lease->Database()))return Status::Invalid;}
         std::unique_lock<std::mutex> snapshot(snapshot_load_mutex_);
         std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);

@@ -792,6 +792,22 @@ public:
                           int gap_limit = 20,
                           const wallet::IWalletChainView* view = nullptr);
 
+    // Rescan against an owned, independently replayed selected history (built
+    // via SelectedWalletHistory::Builder, which enforces its structure). The
+    // wallet revalidates session and ownership itself; a caller gets nothing
+    // beyond what rescanBlockchain grants.
+    bool RescanFromSelectedHistory(int start_height, int gap_limit,
+                                   const SelectedWalletHistory&, uint64_t expected_session);
+
+    // True while exactly one database lease exists. Meaningful only while the
+    // caller itself holds a lease; otherwise the answer can change under it.
+    bool SoleDatabaseLeaseHeld() const;
+
+    // True when the sealed initial PQ master is present for this seed. Needs
+    // the caller's open wallet SQL transaction (throws outside one). Never
+    // returns key material.
+    bool InitialPqMasterPresentInTransaction(const std::vector<uint8_t>& seed);
+
     // A single UTXO-set coin to match against this wallet's watch_scripts.
     struct UtxoSetEntry {
         std::string txid_hex;                 // canonical txid hex (consensus convention)
@@ -801,6 +817,12 @@ public:
         uint32_t height = 0;
         bool is_coinbase = false;
     };
+
+    // Sole producer is the selected service's checked frozen-base capture.
+    // Separate DATA table; no utxos, progress, tip or account-owner updates.
+    // Validates expected_session against the live lease itself.
+    int DiscoverSnapshotCandidates(std::span<const UtxoSetEntry>,uint32_t base_height,
+        const uint256& base,const std::string& root,uint64_t expected_session);
 
     // Rescan a UTXO set (e.g. an AssumeUTXO snapshot's chainstate) for coins
     // owned by this wallet, complementing the block-replay rescan which cannot
@@ -1135,7 +1157,6 @@ private:
     std::filesystem::path dataDir_;
 #endif
     std::string current_;
-    friend class ChainstateService;
     friend struct WalletObservationTestAccess;
     friend struct WalletDetachedReadTestAccess;
     friend struct WalletSeedReadTestAccess;
@@ -1146,10 +1167,6 @@ private:
     bool RescanBlockchainImpl(int start_height, int gap_limit,
                               const wallet::IWalletChainView*,
                               const SelectedWalletHistory*, uint64_t expected_session);
-    // Sole producer is the selected service's checked frozen-base capture.
-    // Separate DATA table; no utxos, progress, tip or account-owner updates.
-    int DiscoverSnapshotCandidates(std::span<const UtxoSetEntry>,uint32_t base_height,
-        const uint256& base,const std::string& root,uint64_t expected_session);
     std::vector<WalletUTXO> ReadSnapshotCandidatesOwned() const;
     friend class RuntimeOrdinaryDelivery;
     friend class RuntimeWalletRecovery;

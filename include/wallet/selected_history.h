@@ -1,18 +1,69 @@
 #pragma once
 #include "primitives/block.h"
 #include "wallet/snapshot_wallet_types.h"
+#include <memory>
 #include <optional>
 #include <set>
+#include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace dinero {
-class ChainstateService;
 class WalletManager;
-// Owned, independently replayed historical bodies. Only the selected service
-// constructs this value. It is an as-of source, not a wallet baseline receipt,
-// complete key discovery, or proof that the selected chain cannot change later.
+// Owned, independently replayed historical bodies. Built only through the
+// Builder below, which enforces the structural facts every consumer relies on
+// (hash linkage, tip and genesis binding, snapshot-mode shape). It is an as-of
+// source, not a wallet baseline receipt, complete key discovery, or proof that
+// the selected chain cannot change later: deeper consensus validation of the
+// bodies remains the producer's burden and is NOT certified by this value.
 class SelectedWalletHistory final {
-    friend class ChainstateService;
+public:
+    class Builder final {
+    public:
+        Builder(std::string network, uint256 genesis, uint256 tip)
+            : value_(new SelectedWalletHistory()) {
+            value_->network_ = std::move(network);
+            value_->genesis_ = genesis;
+            value_->tip_ = tip;
+        }
+        // Blocks are appended in ascending height order, first through tip.
+        void AppendBlock(Block block) { value_->blocks_.push_back(std::move(block)); }
+        // Snapshot mode: bodies start at first_height (> 0) above the
+        // snapshot base instead of at genesis.
+        void SetSnapshot(uint32_t first_height, SnapshotWalletSourceData snapshot,
+                         std::set<std::vector<uint8_t>> scripts) {
+            value_->first_height_ = first_height;
+            value_->snapshot_ = std::move(snapshot);
+            value_->snapshot_scripts_ = std::move(scripts);
+        }
+        void AddVerifiedLegacyOrigin(const uint256& txid, uint32_t output) {
+            value_->verified_legacy_origins_.emplace(txid, output);
+        }
+        // Validates structure; throws std::invalid_argument on violation.
+        std::unique_ptr<const SelectedWalletHistory> Build() {
+            auto& v = *value_;
+            const bool snapshot = v.snapshot_.has_value();
+            if (snapshot != (v.first_height_ > 0))
+                throw std::invalid_argument("selected-history-mode-mismatch");
+            if (!snapshot && v.blocks_.empty())
+                throw std::invalid_argument("selected-history-empty");
+            for (size_t i = 1; i < v.blocks_.size(); ++i)
+                if (v.blocks_[i].header.prev_block_hash != v.blocks_[i - 1].GetHash())
+                    throw std::invalid_argument("selected-history-not-linked");
+            if (!v.blocks_.empty()) {
+                if (v.blocks_.back().GetHash() != v.tip_)
+                    throw std::invalid_argument("selected-history-tip-mismatch");
+                if (!snapshot && v.blocks_.front().GetHash() != v.genesis_)
+                    throw std::invalid_argument("selected-history-genesis-mismatch");
+            }
+            return std::unique_ptr<const SelectedWalletHistory>(value_.release());
+        }
+
+    private:
+        std::unique_ptr<SelectedWalletHistory> value_;
+    };
+
+private:
     friend class WalletManager;
     SelectedWalletHistory() = default;
     std::vector<Block> blocks_; // exact first_height_ through captured tip
