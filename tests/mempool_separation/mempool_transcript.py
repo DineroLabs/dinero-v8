@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 
@@ -151,6 +152,14 @@ def run(dinerod, config):
                                repr(transcript.entries[-1]["body"]))
         transcript.call(node, "rbf.pool", "getrawmempool", [True])
         before_restart = node.ok("getrawmempool", [True])
+        # On Windows the harness's SIGTERM helper terminates the process
+        # immediately. Exercise the same graceful daemon shutdown everywhere
+        # so mempool.dat is actually written before inspecting it.
+        node.ok("stop", [])
+        try:
+            node.proc.wait(timeout=90)
+        except subprocess.TimeoutExpired as error:
+            raise rpc.RunError("daemon did not stop cleanly for the persistence check") from error
         node.stop()
         file_state = persisted(Path(node.datadir) / "mempool.dat")
         if len(file_state["entries"]) != 1:
