@@ -395,6 +395,11 @@ def test_t1_wallet_headers_run_on_posix_and_are_declared_skip_on_windows():
     t1 = steps(POSIX)["t1"]
     assert "sep_ctest SepWalletHeadersSelfContained" in t1
     assert "sep_prereq" not in t1            # needs only the configured compiler
+    # trezor_transport.h needs protobuf even with ENABLE_TREZOR off (the
+    # checker enumerates sources from the CMakeLists text): round-14 lanes
+    # failed FAIL COMPILE 'google/protobuf/message.h' without these.
+    assert "libprotobuf-dev" in POSIX
+    assert "brew install ccache protobuf" in POSIX
     assert "for g in W1 W2 W3 W4 W5 W6 T1; do row" in POSIX
     assert "'| T1 | SKIP (POSIX only" in WINDOWS
     assert "SepWalletHeadersSelfContained" not in WINDOWS

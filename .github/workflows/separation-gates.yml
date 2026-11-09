@@ -183,9 +183,13 @@ jobs:
           GCC_MAJOR: ${{ matrix.gcc_major }}
         run: |
           sudo apt-get update -qq
+          # libprotobuf-dev: T1 compiles wallet/trezor_transport.h standalone;
+          # protobuf is the Trezor transport's legitimate vendored dep
+          # (tests/separation/CMakeLists.txt) and lives on the default include
+          # path here.
           sudo apt-get install -y --no-install-recommends \
             build-essential "gcc-${GCC_MAJOR}" "g++-${GCC_MAJOR}" ccache pkg-config perl \
-            libcurl4-openssl-dev libudev-dev libusb-1.0-0-dev
+            libcurl4-openssl-dev libudev-dev libusb-1.0-0-dev libprotobuf-dev
           echo "CC=gcc-${GCC_MAJOR}" >> "$GITHUB_ENV"
           echo "CXX=g++-${GCC_MAJOR}" >> "$GITHUB_ENV"
 
@@ -199,7 +203,10 @@ jobs:
           test "$(xcodebuild -version | head -1)" = "Xcode ${XCODE}"
           case "$(xcrun -f clang++)" in "/Applications/Xcode_${XCODE}.app/"*) ;;
             *) echo "::error::clang++ is not from Xcode ${XCODE}: $(xcrun -f clang++)"; exit 1 ;; esac
-          brew install ccache
+          # protobuf: T1 compiles wallet/trezor_transport.h standalone; the
+          # ctest registration adds /opt/homebrew/include when
+          # google/protobuf/message.h exists there at configure time.
+          brew install ccache protobuf
 
       - name: Record compiler
         env:
