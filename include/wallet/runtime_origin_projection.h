@@ -8,7 +8,6 @@
 #include <vector>
 
 namespace dinero {
-class ChainstateService;
 class RuntimeOrdinaryDelivery;
 class RuntimeAccountReplay;
 class RuntimeWalletCoverageProjection;
@@ -35,14 +34,25 @@ public:
     const RuntimeOutboxCursor& FirstCursor() const { return first_.cursor; }
     const uint256& OriginHash() const { return first_.context.parent_hash; }
     uint32_t OriginHeight() const { return first_.context.height - 1; }
+    const std::optional<std::map<std::string,std::string>>& ImportedCohort() const { return imported_cohort_; }
+    // Producer feed. Restriction is by evidence, not caller identity:
+    // SetFirstEvent accepts only the shape a checked delivery page proves
+    // (the first canonical Connect event at a nonzero activation origin, set
+    // once); AppendValidated accepts only bodies that extend the previous
+    // appended block by hash, contiguously from height 0, ending exactly at
+    // the origin parent. Violations throw and discard only the in-memory
+    // projection. Consensus validity of each body stays the producer's burden.
+    void SetFirstEvent(const RuntimeOutboxEvent&);
+    void AppendValidated(const Block&,uint32_t height);
+    void SetImportedCohort(std::map<std::string,std::string> cohort) { imported_cohort_=std::move(cohort); }
 private:
-    friend class ChainstateService;
     friend class RuntimeOrdinaryDelivery;
     friend class RuntimeIndexDelivery;
     friend class RuntimeWalletCoverageProjection;
     friend struct RuntimeOriginProjectionTestAccess;
     RuntimeWalletOriginProjection() = default;
-    void AppendValidated(const Block&,uint32_t);
+    uint256 last_appended_;
+    uint32_t appended_ = 0;
     std::string identity_;
     uint64_t session_ = 0;
     bool existing_identity_only_ = false;
@@ -90,22 +100,26 @@ public:
     const uint256& TipHash() const { return tip_hash_; }
     uint32_t TipHeight() const { return tip_height_; }
     const RuntimeWalletOriginProjection& Origin() const { return *origin_; }
+    // The checked, owned runtime replay this coverage was built from.
+    const std::shared_ptr<const RuntimeAccountReplay>& Replay() const { return replay_; }
+    // Builds from an origin projection and the service's checked replay,
+    // verifying every event while it runs (see class comment). Restriction is
+    // by those inputs, not caller identity.
+    static std::shared_ptr<const RuntimeWalletCoverageProjection> Build(
+        std::shared_ptr<const RuntimeWalletOriginProjection>,
+        std::shared_ptr<const RuntimeAccountReplay>,RuntimeOutboxCursor through = {});
     // Immutable exact-prefix facts collected while Build verifies every event.
     // This lookup never touches the replay source or any wallet/index owner.
     const uint256& ProfileDigest() const { return profile_digest_; }
     std::optional<std::pair<uint256,uint32_t>> PrefixTip(RuntimeOutboxCursor cursor) const;
 
 private:
-    friend class ChainstateService;
     friend class RuntimeOrdinaryDelivery;
     friend class RuntimeIndexDelivery;
     // Test construction only (Task 6.3 R4): the standalone recovery test
     // fakes a coverage source without a node.
     friend struct RuntimeCoverageProjectionTestAccess;
     RuntimeWalletCoverageProjection() = default;
-    static std::shared_ptr<const RuntimeWalletCoverageProjection> Build(
-        std::shared_ptr<const RuntimeWalletOriginProjection>,
-        std::shared_ptr<const RuntimeAccountReplay>,RuntimeOutboxCursor through = {});
     std::shared_ptr<const RuntimeWalletOriginProjection> origin_;
     std::shared_ptr<const RuntimeAccountReplay> replay_;
     std::map<TxOutPoint,Coin> coins_;

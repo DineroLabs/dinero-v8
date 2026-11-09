@@ -7568,11 +7568,11 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
             const auto page=getRuntimeDeliveryPage({},1);
             if(!page.ok())return page.status();
             if(safe_mode_active_ || (*page)->events.size()!=1)return Status::Invalid;
-            result->first_=(*page)->events.front();head=(*page)->head;
-            const auto& first=result->first_;
+            const auto& first=(*page)->events.front();
             if(first.cursor.sequence!=1 || first.direction!=RuntimeBlockDirection::Connect ||
                first.context.height!=first.context.activation_height || !first.context.height)
                 return Status::Invalid;
+            result->SetFirstEvent(first);head=(*page)->head;
             auto expected=first.context.parent_hash;
             // Operational ancestry cap, not a resident-memory certificate.
             // Retains hashes only; full bodies are read/validated one at a time.
@@ -7643,7 +7643,7 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
             const auto page=getRuntimeDeliveryPage({},1);
             if(!page.ok())return page.status();
             if(safe_mode_active_ || (*page)->head!=head || (*page)->events.size()!=1 ||
-               (*page)->events.front().cursor!=result->first_.cursor)return Status::Invalid;
+               (*page)->events.front().cursor!=result->FirstCursor())return Status::Invalid;
             if(public_history||retained_history){
                 if(!index||!existing_identity_only||!compact_startup_||!compact_startup_->imported_parent||
                    compact_startup_->imported_parent->first!=result->OriginHash()||
@@ -7655,7 +7655,7 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
                    cohort.at(assumeutxo::kExpectedUtreexoRootKey)!=replay.UtreexoRootHex()||
                    cohort.at(assumeutxo::kExpectedShieldedRootKey)!=legacy->GetHex()||
                    index->ReadAssumedStartupMetadata()!=cohort)return Status::Invalid;
-                result->imported_cohort_=cohort;
+                result->SetImportedCohort(cohort);
             }
         }
         RuntimeOrdinaryDelivery::CheckOriginDomain(wallet,*result,index);
@@ -7756,7 +7756,7 @@ Status ChainstateService::adoptRuntimeWalletOrigin(WalletManager& wallet,UTXOInd
           const auto page=getRuntimeDeliveryPage({},1);
           if(!page.ok())return page.status();
           if(safe_mode_active_ || (*page)->events.size()!=1 ||
-             (*page)->events.front().cursor!=source.first_.cursor)return Status::Invalid; }
+             (*page)->events.front().cursor!=source.FirstCursor())return Status::Invalid; }
         RuntimeOrdinaryDelivery::AdoptOrigin(wallet,index,source);
         return Status::Ok;
     } catch(...) { return Status::Internal; }
@@ -21527,16 +21527,16 @@ ChainstateService::reconcileImportedRuntimeWalletCoverage(WalletManager& wallet,
         ParentPreparationScope preparation(*this);
         std::unique_lock<std::mutex> snapshot(snapshot_load_mutex_);
         auto selected=AcquireBlockIngressActivationLock();
-        auto source=CaptureImportedOrchardDeliveryUnderLock(snapshot,index,*coverage.replay_);
-        if(!source||!coverage.Origin().imported_cohort_||
-           *coverage.Origin().imported_cohort_!=source->metadata)return Status::Invalid;
+        auto source=CaptureImportedOrchardDeliveryUnderLock(snapshot,index,*coverage.Replay());
+        if(!source||!coverage.Origin().ImportedCohort()||
+           *coverage.Origin().ImportedCohort()!=source->metadata)return Status::Invalid;
         // Called in both existing FULL writers under this SAME real source /
         // original-cohort/lifecycle interval. Index SQL is checked directly in
         // its own transaction by the writer, never via an autocommit bypass.
         const std::function<void()> fence=[&]{
             compact_startup_->selected_consistency->Check(*chain_db_);
             if(!source->lifecycle||utxo_index_.get()!=&index||wallet.getUTXOIndex()!=&index||
-               !CheckRuntimeAccountReplayCurrentUnderLock(*coverage.replay_,*source->selected))
+               !CheckRuntimeAccountReplayCurrentUnderLock(*coverage.Replay(),*source->selected))
                 throw std::runtime_error("Imported mixed coverage source changed before commit");
         };
         fence();RuntimeOrdinaryDelivery::ReconcileCoverage(wallet,index,coverage,*prepared,fence);
@@ -21568,12 +21568,12 @@ ChainstateService::resumeRuntimeImportedMixedRecovery(WalletManager& wallet,UTXO
         if((*orchard)->applied!=coverage.Head()||(*orchard)->observed_head!=coverage.Head())return Status::Invalid;
         const auto prepared=RuntimeOrdinaryDelivery::PrepareCoverage(wallet,coverage);
         using Account=wallet::OrchardAccountDelivery;
-        const auto catalog=Account::PrepareCatalogRecovery(wallet,session,*coverage.replay_,
+        const auto catalog=Account::PrepareCatalogRecovery(wallet,session,*coverage.Replay(),
             Account::CatalogRecoveryAction::Observe);
         const auto owners=Account::CatalogRecoveryBefore(*catalog);
         if(owners.catalog.revision!=(*orchard)->catalog_revision||owners.accounts.size()!=(*orchard)->account_revisions.size())
             return Status::Invalid;
-        const auto checkpoint=coverage.replay_->Point(coverage.Head()).checkpoint;
+        const auto checkpoint=coverage.Replay()->Point(coverage.Head()).checkpoint;
         for(size_t n=0;n<owners.accounts.size();++n){const auto& account=owners.accounts[n];
             const auto& revision=(*orchard)->account_revisions[n];
             const auto& delivered=account.state.account.Delivery();
@@ -21584,13 +21584,13 @@ ChainstateService::resumeRuntimeImportedMixedRecovery(WalletManager& wallet,UTXO
         ParentPreparationScope preparation(*this);
         std::unique_lock<std::mutex> snapshot(snapshot_load_mutex_);
         auto selected=AcquireBlockIngressActivationLock();
-        auto source=CaptureImportedOrchardDeliveryUnderLock(snapshot,index,*coverage.replay_);
-        if(!source||!coverage.Origin().imported_cohort_||*coverage.Origin().imported_cohort_!=source->metadata)
+        auto source=CaptureImportedOrchardDeliveryUnderLock(snapshot,index,*coverage.Replay());
+        if(!source||!coverage.Origin().ImportedCohort()||*coverage.Origin().ImportedCohort()!=source->metadata)
             return Status::Invalid;
         const std::function<void()> current=[&]{
             compact_startup_->selected_consistency->Check(*chain_db_);
             if(!source->lifecycle||utxo_index_.get()!=&index||wallet.getUTXOIndex()!=&index||
-               !CheckRuntimeAccountReplayCurrentUnderLock(*coverage.replay_,*source->selected))
+               !CheckRuntimeAccountReplayCurrentUnderLock(*coverage.Replay(),*source->selected))
                 throw std::runtime_error("Imported mixed source changed before commit");
             // Every call is in the SAME real ordinary transaction, including
             // the callback immediately before the actual index COMMIT.
@@ -21622,13 +21622,13 @@ ChainstateService::readImportedRuntimeWalletBalance(WalletManager& wallet,UTXOIn
         ParentPreparationScope preparation(*this);
         std::unique_lock<std::mutex> snapshot(snapshot_load_mutex_);
         auto selected=AcquireBlockIngressActivationLock();
-        auto source=CaptureImportedOrchardDeliveryUnderLock(snapshot,index,*coverage.replay_);
-        if(!source||!coverage.Origin().imported_cohort_||*coverage.Origin().imported_cohort_!=source->metadata)
+        auto source=CaptureImportedOrchardDeliveryUnderLock(snapshot,index,*coverage.Replay());
+        if(!source||!coverage.Origin().ImportedCohort()||*coverage.Origin().ImportedCohort()!=source->metadata)
             return Status::Invalid;
         const std::function<void()> current=[&]{
             compact_startup_->selected_consistency->Check(*chain_db_);
             if(!source->lifecycle||utxo_index_.get()!=&index||wallet.getUTXOIndex()!=&index||
-               !CheckRuntimeAccountReplayCurrentUnderLock(*coverage.replay_,*source->selected))
+               !CheckRuntimeAccountReplayCurrentUnderLock(*coverage.Replay(),*source->selected))
                 throw std::runtime_error("Imported balance source changed during capture");
         };
         return RuntimeOrdinaryDelivery::ReadCoverageBalanceSnapshot(wallet,index,coverage,*prepared,expected_wallet,current);

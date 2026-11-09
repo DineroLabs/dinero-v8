@@ -612,9 +612,25 @@ void RuntimeOrdinaryDelivery::CheckOriginDomain(WalletManager& wallet,const Runt
     if(index)RuntimeIndexDelivery::CheckOriginDomain(*index,source);
     transaction.Commit();
 }
+void RuntimeWalletOriginProjection::SetFirstEvent(const RuntimeOutboxEvent& first) {
+    if(first_.cursor.sequence)Fail("Origin projection first event already set");
+    if(first.cursor.sequence!=1||first.direction!=RuntimeBlockDirection::Connect||
+       first.context.height!=first.context.activation_height||!first.context.height)
+        Fail("Origin projection first event is not a checked activation origin");
+    first_=first;
+}
 void RuntimeWalletOriginProjection::AppendValidated(const Block& block,uint32_t height) {
-    // The service calls this only AFTER owned consensus replay of this body.
+    // The producer calls this only AFTER owned consensus replay of this body.
     // Failure discards the entire in-memory projection, never wallet state.
+    if(!first_.cursor.sequence)Fail("Origin projection first event not set");
+    if(height!=appended_)Fail("Origin projection body height not contiguous");
+    if(height>=first_.context.height)Fail("Origin projection body beyond its origin");
+    if(height&&block.header.prev_block_hash!=last_appended_)
+        Fail("Origin projection body does not extend its parent");
+    last_appended_=block.GetHash();
+    if(height+1==first_.context.height&&last_appended_!=first_.context.parent_hash)
+        Fail("Origin projection final body is not the origin parent");
+    ++appended_;
     constexpr size_t limit=64*1024*1024;
     const auto charge=[&](size_t n) {
         if(n>limit-retained_bytes_)Fail("Origin projection material limit");
