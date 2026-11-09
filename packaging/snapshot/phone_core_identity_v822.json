@@ -1,0 +1,27 @@
+{
+  "schema": "dinero.phone-core-identity-evidence.v1",
+  "scope": "Physical-device version observations and native input identity; NOT compact v6 import qualification",
+  "captured_utc_date": "2026-11-09",
+  "native_source_sha": "87ef0f46c5ad90f35b7c83b4a91b3edf7cc679fa",
+  "ios": {
+    "observed_probe_row": "NCPROBE\tVERSION\tdinerod 8.2.2-87ef0f46c5ad90f35b7c83b4a91b3edf7cc679fa",
+    "device_model": "iPhone 15 Pro Max",
+    "app_version": "1.3.10",
+    "app_build": "2026110802",
+    "artifact_kind": "ios-arm64-nodecore-archive",
+    "artifact_sha256": "38cba8889ec1ca1058ebeed3ec5d165d5be8eccda7a830afb5ec96e2bf81e86a",
+    "provenance": "ios-device/nodecore-sdk.manifest.json source_base and sha256 match the app's Libraries/NodeCore.xcframework/ios-arm64/libnodecore-ios-device.a",
+    "version_override": "inject-nodecore-version-v822.cmake force-includes nodecore-version-v822.h, overriding DINERO_CLI_GIT_SHA for MOBILE_NODECORE_BUILD"
+  },
+  "android": {
+    "observed_probe_row": "NCPROBE\tVERSION\tdinerod 8.2.2-87ef0f46c5ad90f35b7c83b4a91b3edf7cc679fa",
+    "device_model": "Samsung SM-A176U",
+    "app_version": "0.4.8",
+    "app_build": 13,
+    "artifact_kind": "android-arm64-v8a-nodecore-shared-library",
+    "artifact_sha256": "7f99699f3c657345538849053cc0be9e40a7f16e99a68631979bec2c491b49a9",
+    "apk_sha256": "9d138af3e92492d7e28ca429ae5a1c0ebd20fafab0057f5f647e813b0d92fad6",
+    "provenance": "lib/arm64-v8a/libnodecore_ffi.so extracted from the release APK; google-apk-payload-parity-details.json independently records identical bytes in the Google-generated APK",
+    "version_override": "nodecore_ffi.cpp compile command force-includes native-nodecore/build/nodecore-version-override.h"
+  }
+}

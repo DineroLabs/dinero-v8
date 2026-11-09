@@ -25,6 +25,16 @@ from snapshot_transport import inspect
 
 PUBLIC_KEY = base64.b64decode('lFOdW71hOC7Q5Y0bYRLDvyFtv8ddU9Tf4a8dbr1Y4Yw=')
 CORE_SHA = '87ef0f46c5ad90f35b7c83b4a91b3edf7cc679fa'
+# These are the exact arm64 inputs used by the updated physical-phone builds,
+# independently hashed from the distributed SDK/APK. The build wrappers inject
+# a version header after the CMake "nodecore" default; captures of the actual
+# device VERSION rows are retained in phone_core_identity_v822.json.
+CORE_ARTIFACTS = {
+    'ios': {'kind': 'ios-arm64-nodecore-archive',
+            'sha256': '38cba8889ec1ca1058ebeed3ec5d165d5be8eccda7a830afb5ec96e2bf81e86a'},
+    'android': {'kind': 'android-arm64-v8a-nodecore-shared-library',
+                'sha256': '7f99699f3c657345538849053cc0be9e40a7f16e99a68631979bec2c491b49a9'},
+}
 MIRRORS = ('https://seed3.dinerolabs.org/snapshot',
            'https://seed.dinerolabs.org/snapshot',
            'https://seed2.dinerolabs.org/snapshot')
@@ -107,6 +117,16 @@ def verify_phone(receipt_path, platform, staging):
             receipt.get('base_height') == snap['height'] and receipt.get('base_hash') == snap['block_hash'],
             platform + ': qualification is for different snapshot bytes or base')
     require(receipt.get('native_source_sha') == CORE_SHA, platform + ': not the updated qualified Core')
+    artifact = receipt.get('native_artifact', {})
+    expected = CORE_ARTIFACTS[platform]
+    require(artifact.get('kind') == expected['kind'] and artifact.get('sha256') == expected['sha256'],
+            platform + ': native artifact is not the exact updated app input')
+    relative = Path(artifact.get('path', ''))
+    require(artifact.get('path') and not relative.is_absolute() and '..' not in relative.parts,
+            platform + ': invalid native artifact path')
+    native_binary = path.parent/relative
+    require(native_binary.is_file() and not native_binary.is_symlink() and
+            digest(native_binary) == expected['sha256'], platform + ': native artifact bytes differ from the pin')
     require(isinstance(receipt.get('app_version'), str) and receipt['app_version'].strip(),
             platform + ': missing app identity')
     require(all(receipt.get('checks', {}).get(check) is True for check in CHECKS),
@@ -157,8 +177,7 @@ def verify_native_log(path, snap, cold):
     records = [line.split('\t', 2) for line in text.splitlines() if line.startswith('NCPROBE\t')]
     require(any(row[1:] == ['START', '0'] for row in records) and
             any(row[1:] == ['STOP', '0'] for row in records), 'native evidence lacks clean start/stop')
-    require(any(len(row) == 3 and row[1] == 'VERSION' and row[2] == 'dinerod 8.2.2-' + CORE_SHA
-                for row in records), 'native evidence has wrong Core version')
+    verify_native_version(text)
     bootstraps, accumulators = [], []
     for row in records:
         if len(row) != 3: continue
@@ -187,6 +206,13 @@ def verify_native_log(path, snap, cold):
         require(any(state.get('manifest_required') is True for state in bootstraps),
                 'native import did not require the exact manifest')
     return accumulators[-1]
+
+
+def verify_native_version(text):
+    versions = [row[2] for line in text.splitlines()
+                if len(row := line.split('\t', 2)) == 3 and row[:2] == ['NCPROBE', 'VERSION']]
+    require(versions and all(value == 'dinerod 8.2.2-' + CORE_SHA for value in versions),
+            'native evidence has wrong Core version')
 
 
 def verify_chain(cli, datadir, snap):
@@ -248,8 +274,10 @@ def install_generation(root, generation, staging, phone_hashes, chain_check, on_
                 verify_generation(copied, staging)
                 summary = {'schema': 'dinero.phone-snapshot-promotion.v1',
                            'payload_sha256': staging['snapshot']['sha256'],
-                           'manifest_sha256': staging['manifest_sha256'], 'phone_receipts_sha256': phone_hashes}
+                           'manifest_sha256': staging['manifest_sha256'], 'phone_receipts_sha256': phone_hashes,
+                           'core_source_sha': CORE_SHA, 'phone_native_artifacts': CORE_ARTIFACTS}
                 (copied/'qualification-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+                (copied/'qualification-summary.json').chmod(0o644)
                 with (copied/'qualification-summary.json').open('rb') as stream: os.fsync(stream.fileno())
                 copied.chmod(0o755); sync_directory(copied); os.rename(copied, destination)
             sync_directory(archive)
