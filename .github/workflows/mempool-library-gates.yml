@@ -192,7 +192,8 @@ jobs:
           if ($env:MP_ORCHARD -eq 'ON') { $configureArgs += '-DDINERO_ORCHARD_WINDOWS_QUALIFICATION=ON' }
           & cmake @configureArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Build daemon, supported NodeCore, standalone and adapter consumers
+      - name: Build daemon, NodeCore and focused consumers on POSIX
+        if: runner.os != 'Windows'
         shell: bash
         env:
           MP_ORCHARD: ${{ matrix.orchard }}
@@ -200,13 +201,33 @@ jobs:
           targets=(dinerod sep_mempool_forced_link sep_mempool_standalone
             test_chain_db_mempool_view test_mempool_retained_load test_mempool_transaction_body
             test_tx_relay_g3 test_relay_refresh_owner test_csn_proof_refresh)
-          # NodeCore embeds a POSIX runtime and is not a Windows build target.
-          # Keep the configured graph, but match the existing Windows gates by
-          # building the daemon and wallet-facing contracts there instead.
-          if [ "$RUNNER_OS" != Windows ]; then targets+=(nodecore_link_smoke); fi
+          targets+=(nodecore_link_smoke)
           if [ "$MP_ORCHARD" = ON ]; then targets+=(test_mempool_orchard_scan_sink); fi
           cmake --build build-mempool --target "${targets[@]}" --parallel 4
-          if [ "$RUNNER_OS" != Windows ]; then ./build-mempool/nodecore_link_smoke; fi
+          ./build-mempool/nodecore_link_smoke
+      - name: Build daemon and focused consumers on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MP_ORCHARD: ${{ matrix.orchard }}
+        run: |
+          # Git Bash puts its own /usr/bin/link.exe ahead of MSVC's linker.
+          # Build through PowerShell and place cl.exe's directory first so
+          # Cargo build scripts also inherit the real MSVC link.exe.
+          $msvcBin = Split-Path (Get-Command cl.exe).Source
+          $env:PATH = $msvcBin + [IO.Path]::PathSeparator + $env:PATH
+          $linker = (Get-Command link.exe).Source
+          if (-not $linker.StartsWith($msvcBin, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "MSVC linker was shadowed: $linker"
+          }
+          $targets = @('dinerod', 'sep_mempool_forced_link', 'sep_mempool_standalone',
+                       'test_chain_db_mempool_view', 'test_mempool_retained_load',
+                       'test_mempool_transaction_body', 'test_tx_relay_g3',
+                       'test_relay_refresh_owner', 'test_csn_proof_refresh')
+          if ($env:MP_ORCHARD -eq 'ON') { $targets += 'test_mempool_orchard_scan_sink' }
+          $buildArgs = @('--build', 'build-mempool', '--target') + $targets + @('--parallel', '4')
+          & cmake @buildArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Enforce the owned boundary and report inherited shielded debt
         shell: bash
         run: python scripts/ci/mempool-separation/library_boundary.py --build build-mempool --owned-only
