@@ -3,13 +3,12 @@
 #include "daemon/runtime_block_outbox.h"
 
 namespace dinero {
-class ChainstateService;
 namespace consensus {class ValidatedOrchardBlock;}
 // Immutable branch views assembled by the selected service before wallet
 // ownership. Revalidates Orchard authorizations/state from retained canonical
 // replay material; does not independently certify historical consensus/baseline.
 // Ordinary retained-only capture refuses missing pre-origin history/frames.
-// A separate private factory can prepend genuinely revalidated activation
+// A separate factory can prepend genuinely revalidated activation
 // bodies without creating or renumbering any canonical delivery event.
 class RuntimeAccountReplay {
 public:
@@ -48,11 +47,13 @@ public:
     wallet::OrchardAccountDelivery::RestorePoint ActivationOrigin() const;
     wallet::OrchardAccountDelivery::RestorePoint UnappliedPrefixPoint(uint32_t,const uint256&) const;
     ActivationPrefixStep PrefixStep(uint32_t) const;
-private:
-    friend class ChainstateService;
-    friend struct RuntimeAccountReplayTestAccess;
+    // Factories. Restriction is by evidence, not caller identity: ReadSource
+    // revalidates every page it captures, BuildWithActivationPrefix accepts
+    // only steps carrying a revalidated block, and the activation-prefix base
+    // comes from the captured material itself. Data stays opaque (defined in
+    // the .cpp) and the constructor stays private, so no view exists without
+    // that validation.
     using Source=std::function<RuntimeOutboxPage(RuntimeOutboxCursor,size_t)>;
-    static std::shared_ptr<const RuntimeAccountReplay> Capture(const Source&);
     struct Data;
     static std::shared_ptr<Data> ReadSource(const Source&);
     static std::shared_ptr<const RuntimeAccountReplay> Build(std::shared_ptr<Data>);
@@ -65,6 +66,9 @@ private:
     };
     static std::shared_ptr<const RuntimeAccountReplay> BuildWithActivationPrefix(
         std::shared_ptr<Data>,const std::function<VerifiedPrefixStep(uint32_t)>&);
+private:
+    friend struct RuntimeAccountReplayTestAccess;
+    static std::shared_ptr<const RuntimeAccountReplay> Capture(const Source&);
     static std::shared_ptr<const RuntimeAccountReplay> BuildTail(std::shared_ptr<Data>);
     wallet::OrchardAccountDelivery::RestorePoint PointAt(const uint256&) const;
     explicit RuntimeAccountReplay(std::shared_ptr<const Data> data):data_(std::move(data)){}

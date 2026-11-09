@@ -15,6 +15,7 @@ class WalletManager;
 class ChainstateService;
 class RuntimeWalletOriginProjection;
 class RuntimeWalletCoverageProjection;
+class RuntimeWalletBalanceSnapshot;
 struct RuntimeIndexProgress {
     RuntimeOutboxCursor cursor;
     uint256 origin_hash, tip_hash;
@@ -85,5 +86,13 @@ public:
     static bool CoverageRequiredForWallet(WalletManager&,UTXOIndex&,uint64_t session);
     static std::optional<RuntimeIndexProgress> ReadForWallet(WalletManager&, uint64_t expected_session);
     static RuntimeIndexProgress ApplyForWallet(WalletManager&, uint64_t expected_session, const RuntimeOutboxEvent&);
+    // One owned read of the covered balance, minted as an immutable snapshot.
+    // Same read and source fence as the private summary read; the fence runs
+    // again after the read and the snapshot's cursor/tip come from the given
+    // coverage, never from the caller. Only this read mints the snapshot.
+    static std::shared_ptr<const RuntimeWalletBalanceSnapshot> ReadCoverageBalanceSnapshot(
+        WalletManager&,UTXOIndex&,const RuntimeWalletCoverageProjection&,
+        const wallet::OrchardCatalogCapture&,const std::string& expected_wallet,
+        const std::function<void()>& source_before_capture);
 };
 } // namespace dinero

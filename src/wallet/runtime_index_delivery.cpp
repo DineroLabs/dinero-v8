@@ -3,6 +3,7 @@
 #include "wallet/orchard_account_delivery.h"
 #include "wallet/orchard_ownership_inventory.h"
 #include "wallet/runtime_account_replay.h"
+#include "wallet/runtime_wallet_balance.h"
 #include "wallet/wallet_manager.h"
 #include "primitives/orchard_block_reader.h"
 #include "primitives/block.h"
@@ -1341,6 +1342,15 @@ WalletManager::BalanceSummary RuntimeOrdinaryDelivery::ReadCoverageBalance(Walle
         current();
     });
     transaction.Commit();return result;
+}
+std::shared_ptr<const RuntimeWalletBalanceSnapshot> RuntimeOrdinaryDelivery::ReadCoverageBalanceSnapshot(
+        WalletManager& wallet,UTXOIndex& index,const RuntimeWalletCoverageProjection& source,
+        const wallet::OrchardCatalogCapture& prepared,const std::string& expected_wallet,
+        const std::function<void()>& source_before_capture) {
+    auto summary=ReadCoverageBalance(wallet,index,source,prepared,expected_wallet,source_before_capture);
+    source_before_capture(); // ReadCoverageBalance refuses an empty fence.
+    return std::shared_ptr<const RuntimeWalletBalanceSnapshot>(new RuntimeWalletBalanceSnapshot(
+        std::move(summary),source.Head(),source.TipHash(),source.TipHeight()));
 }
 void RuntimeOrdinaryDelivery::ReconcileCoverage(WalletManager& wallet,UTXOIndex& index,
         const RuntimeWalletCoverageProjection& source,const wallet::OrchardCatalogCapture& prepared,

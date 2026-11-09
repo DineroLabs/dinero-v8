@@ -7451,10 +7451,10 @@ SignResult ChainstateService::signAndStageWalletPayment(WalletManager& wallet,
                 // selected-chain mutation remain excluded through wallet COMMIT.
                 // The existing wallet owner still rejects Orchard accounts and
                 // authenticates keys before retaining any signed payment.
-                return WalletTransactionOwner::SignBeforeActivation(wallet,identity,input,intent);
+                return SignWalletPaymentBeforeActivation(wallet,identity,input,intent);
             }
             if(ordinary)
-                return WalletTransactionOwner::SignBeforeActivation(wallet,identity,input,intent);
+                return SignWalletPaymentBeforeActivation(wallet,identity,input,intent);
             // Retained history survives a rollback below activation. Unknown
             // state/read errors follow the canonical refusal path, never legacy.
         }
@@ -21625,10 +21625,7 @@ ChainstateService::readImportedRuntimeWalletBalance(WalletManager& wallet,UTXOIn
                !CheckRuntimeAccountReplayCurrentUnderLock(*coverage.replay_,*source->selected))
                 throw std::runtime_error("Imported balance source changed during capture");
         };
-        auto summary=RuntimeOrdinaryDelivery::ReadCoverageBalance(wallet,index,coverage,*prepared,expected_wallet,current);
-        current();
-        return std::shared_ptr<const RuntimeWalletBalanceSnapshot>(new RuntimeWalletBalanceSnapshot(
-            std::move(summary),coverage.Head(),coverage.TipHash(),coverage.TipHeight()));
+        return RuntimeOrdinaryDelivery::ReadCoverageBalanceSnapshot(wallet,index,coverage,*prepared,expected_wallet,current);
     }catch(...){return Status::Invalid;}
 #else
     (void)wallet;(void)index;(void)session;(void)expected_wallet;return Status::Internal;

@@ -39,24 +39,22 @@ def test_ignores_wallet_internal_friends_comments_and_substrings():
 
 
 def test_live_repo_findings_match_design_inventory():
-    # Stage A state: exactly the 11 effective grants from the design doc §2
-    # (the orchard_account_delivery.h:443 duplicate is deleted in this stage).
-    # Each later stage shrinks this list; stage E empties it. Update this
-    # expectation in the same PR that drops a grant.
+    # Stage B state: 8 grants remain (stage B dropped runtime_account_replay.h,
+    # runtime_wallet_balance.h and wallet_transaction_signer.h; stage A dropped
+    # the orchard_account_delivery.h:443 duplicate). Each later stage shrinks
+    # this list; stage E empties it. Update this expectation in the same PR
+    # that drops a grant.
     findings = cnf.scan_repo(REPO)
     files = sorted({f.split(":")[0] for f in findings})
-    assert len(findings) == 11, findings
+    assert len(findings) == 8, findings
     assert files == [
         "include/wallet/authenticated_shield_inputs.h",
         "include/wallet/orchard_account_catalog.h",
         "include/wallet/orchard_account_delivery.h",
-        "include/wallet/runtime_account_replay.h",
         "include/wallet/runtime_index_delivery.h",
         "include/wallet/runtime_origin_projection.h",
-        "include/wallet/runtime_wallet_balance.h",
         "include/wallet/selected_history.h",
         "include/wallet/wallet_manager.h",
-        "include/wallet/wallet_transaction_signer.h",
     ]
 
 
