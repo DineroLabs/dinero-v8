@@ -112,6 +112,30 @@ jobs:
     outputs:
       gates: ${{ steps.filter.outputs.gates }}
 
+  # GitHub does not expand ${{ matrix.* }} in the check-run name of a job that
+  # is skipped at job level, so skipping the gates job can never satisfy the
+  # per-leg required contexts by itself (verified live: PR #890 stayed BLOCKED
+  # with one skipped run literally named "gates ${{ matrix.toolchain }} ...").
+  # When the filter proves no gate-relevant path changed, these cheap stand-ins
+  # report success under the exact required context names instead. Strict
+  # == 'false' (and no !cancelled()): if the filter job fails, the real gates
+  # run fail-open and these stay skipped, so both jobs can never report the
+  # same expanded context name on one commit.
+  gates-skip-confirm:
+    name: gates ${{ matrix.toolchain }} orchard=${{ matrix.orchard }}
+    needs: changes
+    if: ${{ needs.changes.outputs.gates == 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [linux-gcc15, linux-gcc13, macos15-arm64]
+        orchard: [off, on]
+    steps:
+      - name: Report skip
+        run: echo "No gate-relevant paths changed; context 'gates ${{ matrix.toolchain }} orchard=${{ matrix.orchard }}' is satisfied without a build."
+
   gates:
     name: gates ${{ matrix.toolchain }} orchard=${{ matrix.orchard }}
     needs: changes
