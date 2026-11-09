@@ -22476,7 +22476,7 @@ std::unique_ptr<wallet::OrchardQueuedSpend> ChainstateService::queueRuntimeWalle
                         throw std::runtime_error("Imported shield current input changed before commit");
                 }
             };
-            wallet::AuthenticatedShieldInputs authority(wallet,session,point.height,point.block_hash,source.root,std::move(wallet_inputs),current);
+            auto authority=wallet::AuthenticatedShieldInputs::Grant(wallet,session,point.height,point.block_hash,source.root,std::move(wallet_inputs),current);
             current();std::vector<orchard::TransparentOutput> outputs;
             {auto lease=wallet.AcquireDatabaseLease();
              if(lease->Session()!=session||!sqlite3_get_autocommit(lease->Database()))throw std::runtime_error("Imported shield wallet session changed");
@@ -22609,7 +22609,7 @@ std::unique_ptr<wallet::OrchardQueuedSpend> ChainstateService::queueRuntimeWalle
                 const auto decoded=DecodeWitnessAddress(address,network==0?"din":network==1?"tdin":"rdin");
                 if(!decoded.is_valid||decoded.witness_version!=1||decoded.witness_program.size()!=32)
                     throw std::runtime_error("Compact input change issuance refused");outputs.push_back({total-required,decoded.script_pubkey});}}
-            wallet::AuthenticatedShieldInputs authority(wallet,session,candidate_height,candidate_base,candidate_root,std::move(wallet_inputs),current,
+            auto authority=wallet::AuthenticatedShieldInputs::Grant(wallet,session,candidate_height,candidate_base,candidate_root,std::move(wallet_inputs),current,
                 std::move(input_kinds),std::move(post_base_kinds));
             prepared=wallet::OrchardAccountDelivery::CommitShieldReservation(wallet,session,std::move(catalog),inputs,outputs,&jobs,
                 &authority).queued;

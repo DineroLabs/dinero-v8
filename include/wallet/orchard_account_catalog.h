@@ -6,7 +6,7 @@
 #include <span>
 #include <vector>
 struct sqlite3;
-namespace dinero { class WalletManager; class ChainstateService; }
+namespace dinero { class WalletManager; }
 namespace dinero::wallet {
 // Seed-authenticated account inventory. Missing legacy metadata and recovered
 // identities are not certificates of an empty historical wallet. Authentication
@@ -57,15 +57,17 @@ public:
     // Caller owns a transaction and the exact wallet/seed lifetime. No writes,
     // schema initialization or live publication. Missing is distinct from error.
     static std::optional<Snapshot> Read(sqlite3*,std::span<const uint8_t> seed);
-private:
-    friend class dinero::WalletManager;
-    friend class OrchardAccountDelivery;
-    friend class dinero::ChainstateService;
-    // Only the selected service may supply this checkpoint. Existing unknown
-    // initial catalog and every empty storage row are checked; no repair/DDL.
+    // Producer checkpoint staging and empty-inventory proof, inside the
+    // CALLER's open transaction on the wallet handle, keyed by the seed pin
+    // only a live lease can mint. Existing unknown initial catalog and every
+    // empty storage row are checked; no repair/DDL. Restriction is by that
+    // evidence, not caller identity: both refuse on any divergence.
     static Snapshot StagePreactivation(sqlite3*,std::span<const uint8_t>,
                                       const Snapshot::Preactivation&);
     static Snapshot RequireUnknownEmpty(sqlite3*,std::span<const uint8_t>);
+private:
+    friend class dinero::WalletManager;
+    friend class OrchardAccountDelivery;
     static Snapshot StageRecoveredAccount0(sqlite3*,std::span<const uint8_t>,const Snapshot::RecoveredAccount0&);
     // Caller owns the complete authenticated account inventory and transaction.
     // Compare the authenticated revision and add exactly one never-used number;

@@ -12,7 +12,6 @@ namespace dinero {
 namespace wallet { class OrchardCatalogCapture; }
 class UTXOIndex;
 class WalletManager;
-class ChainstateService;
 class RuntimeWalletOriginProjection;
 class RuntimeWalletCoverageProjection;
 class RuntimeWalletBalanceSnapshot;

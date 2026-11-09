@@ -51,7 +51,6 @@ class UTXOIndex;  // UTXO indexing for address registration
 class uint256;
 class SelectedWalletHistory;
 class WalletTransactionOwner;
-class ChainstateService;
 namespace wallet { class OrchardAccountDelivery; class IWalletChainView; class IWalletMempoolView; }
 
 namespace lightning {
