@@ -19,6 +19,7 @@ retention. Its selected-chain validator is a test double, so this is a
 mempool persistence check, not Orchard proof validation.
 
 Windows has no exact-base MP4 reference yet. The non-required Windows job
-builds the daemon and NodeCore and runs the focused contracts, while it
-reports MP4 as unmeasured. The POSIX CI jobs compare against these reviewed
-references.
+builds the daemon and runs the focused contracts, while it reports MP4 as
+unmeasured. NodeCore's embedded runtime is a POSIX target; the Linux and macOS
+jobs link and run its smoke executable. The POSIX jobs compare against these
+reviewed references.

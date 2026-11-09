@@ -9,15 +9,20 @@ on:
       - 'include/daemon/scanner_mempool_sink.h'
       - 'include/daemon/relay_transaction_reader.h'
       - 'include/storage/chain_db_mempool_view.h'
+      - 'include/storage/chain_db.h'
+      - 'src/storage/chain_db.cpp'
       - 'include/mempool/**'
       - 'include/policy/**'
       - 'include/mining/ct_selection_policy.h'
       - 'include/mining/address_validator.h'
       - 'src/daemon/mempool.cpp'
       - 'src/daemon/relay_transaction_reader.cpp'
+      - 'src/daemon/tx_relay_manager.cpp'
+      - 'include/daemon/tx_relay_manager.h'
       - 'src/daemon/CMakeLists.txt'
       - 'src/daemon/services/mempool_service.cpp'
       - 'include/daemon/services/mempool_service.h'
+      - 'src/daemon/services/chainstate_service.cpp'
       - 'src/nodecore/CMakeLists.txt'
       - 'build_nodecore_xcframework.sh'
       - 'rust/orchard_backend/CMakeLists.txt'
@@ -198,9 +203,10 @@ jobs:
           # NodeCore embeds a POSIX runtime and is not a Windows build target.
           # Keep the configured graph, but match the existing Windows gates by
           # building the daemon and wallet-facing contracts there instead.
-          if [ "$RUNNER_OS" != Windows ]; then targets+=(nodecore_ffi); fi
+          if [ "$RUNNER_OS" != Windows ]; then targets+=(nodecore_link_smoke); fi
           if [ "$MP_ORCHARD" = ON ]; then targets+=(test_mempool_orchard_scan_sink); fi
           cmake --build build-mempool --target "${targets[@]}" --parallel 4
+          if [ "$RUNNER_OS" != Windows ]; then ./build-mempool/nodecore_link_smoke; fi
       - name: Enforce the owned boundary and report inherited shielded debt
         shell: bash
         run: python scripts/ci/mempool-separation/library_boundary.py --build build-mempool --owned-only
@@ -211,6 +217,7 @@ jobs:
         run: |
           python - <<'PY'
           import os
+          import json
           import pathlib
           import re
           import subprocess
@@ -222,6 +229,12 @@ jobs:
           floor = pathlib.Path('scripts/ci/separation/never_run_floor.txt')
           forbidden = {s.strip() for s in floor.read_text().splitlines() if s.strip() and not s.startswith('#')}
           assert forbidden and not set(names) & forbidden
+          listed = json.loads(subprocess.check_output([
+              'ctest', '--test-dir', 'build-mempool', '--show-only=json-v1'], text=True))
+          available = {test['name'] for test in listed['tests']}
+          missing = sorted(set(names) - available)
+          if missing:
+              raise SystemExit('required mempool contracts not registered: ' + ', '.join(missing))
           subprocess.run(['ctest', '--test-dir', 'build-mempool', '--no-tests=error',
                           '-R', '^(' + '|'.join(map(re.escape, names)) + ')$',
                           '--verbose', '--output-on-failure'], check=True)
