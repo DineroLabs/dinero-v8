@@ -7,6 +7,8 @@
 #include "mining/tx_inclusion_analyzer.h"
 #include "wallet/fee_bump_engine.h"
 #include "mempool/mempool.h"
+#include "daemon/mempool_wallet_view.h"  // Task 5.3: detector/engine take IWalletMempoolView
+#include <optional>
 #include "mining/block_assembler.h"
 #include "rpc/ergonomics_rpc_handlers.h"  // For NodeHealth
 #include "common/logger.h"
@@ -79,6 +81,11 @@ WalletFeeBumpHooks::WalletBumpSummary WalletFeeBumpHooks::GetWalletBumpSummary(
     const WalletManager* wallet,
     const Mempool* mempool
 ) const {
+    std::optional<dinero::MempoolWalletView> pool_view_slot;
+    if (mempool) pool_view_slot.emplace(*mempool);
+    const dinero::wallet::IWalletMempoolView* pool_view =
+        pool_view_slot ? &*pool_view_slot : nullptr;
+
     dinero::g_logger.debug("WalletFeeBumpHooks: Getting wallet bump summary");
 
     WalletBumpSummary summary;
@@ -111,8 +118,8 @@ WalletFeeBumpHooks::WalletBumpSummary WalletFeeBumpHooks::GetWalletBumpSummary(
         );
 
         // Check RBF/CPFP capabilities
-        RbfCapability rbf_cap = detector.CheckRbfCapability(txid, mempool);
-        CpfpCapability cpfp_cap = detector.CheckCpfpCapability(txid, wallet, mempool);
+        RbfCapability rbf_cap = detector.CheckRbfCapability(txid, pool_view);
+        CpfpCapability cpfp_cap = detector.CheckCpfpCapability(txid, wallet, pool_view);
 
         // Categorize by inclusion state
         if (status.state == InclusionState::LIKELY) {
@@ -146,6 +153,11 @@ std::vector<uint256> WalletFeeBumpHooks::GetTransactionsNeedingBump(
     const Mempool* mempool,
     uint32_t target_blocks
 ) const {
+    std::optional<dinero::MempoolWalletView> pool_view_slot;
+    if (mempool) pool_view_slot.emplace(*mempool);
+    const dinero::wallet::IWalletMempoolView* pool_view =
+        pool_view_slot ? &*pool_view_slot : nullptr;
+
     dinero::g_logger.debug("WalletFeeBumpHooks: Getting transactions needing bump (target: " +
                           std::to_string(target_blocks) + " blocks)");
 
@@ -179,7 +191,7 @@ std::vector<uint256> WalletFeeBumpHooks::GetTransactionsNeedingBump(
         // Check if transaction would benefit from bump to reach target
         uint32_t estimated_blocks = engine.EstimateConfirmationBlocks(
             status.effective_feerate,
-            mempool
+            pool_view
         );
 
         // Transaction needs bump if:
@@ -206,6 +218,11 @@ TxInclusionStatus WalletFeeBumpHooks::CheckTransactionStatus(
     const WalletManager* wallet,
     const Mempool* mempool
 ) const {
+    std::optional<dinero::MempoolWalletView> pool_view_slot;
+    if (mempool) pool_view_slot.emplace(*mempool);
+    const dinero::wallet::IWalletMempoolView* pool_view =
+        pool_view_slot ? &*pool_view_slot : nullptr;
+
     dinero::g_logger.debug("WalletFeeBumpHooks: Checking status for tx " +
                           txid.ToString().substr(0, 16) + "...");
 
@@ -220,8 +237,8 @@ TxInclusionStatus WalletFeeBumpHooks::CheckTransactionStatus(
 
     // Add wallet-specific RBF/CPFP availability
     RbfCpfpDetector& detector = GetRbfCpfpDetector();
-    RbfCapability rbf_cap = detector.CheckRbfCapability(txid, mempool);
-    CpfpCapability cpfp_cap = detector.CheckCpfpCapability(txid, wallet, mempool);
+    RbfCapability rbf_cap = detector.CheckRbfCapability(txid, pool_view);
+    CpfpCapability cpfp_cap = detector.CheckCpfpCapability(txid, wallet, pool_view);
 
     status.rbf_available = rbf_cap.can_be_replaced;
     status.cpfp_available = cpfp_cap.viable;
@@ -235,6 +252,11 @@ FeeBumpRecommendation WalletFeeBumpHooks::GetBumpRecommendation(
     const Mempool* mempool,
     uint32_t target_blocks
 ) const {
+    std::optional<dinero::MempoolWalletView> pool_view_slot;
+    if (mempool) pool_view_slot.emplace(*mempool);
+    const dinero::wallet::IWalletMempoolView* pool_view =
+        pool_view_slot ? &*pool_view_slot : nullptr;
+
     dinero::g_logger.debug("WalletFeeBumpHooks: Getting bump recommendation for tx " +
                           txid.ToString().substr(0, 16) + "... (target: " +
                           std::to_string(target_blocks) + " blocks)");
@@ -253,7 +275,7 @@ FeeBumpRecommendation WalletFeeBumpHooks::GetBumpRecommendation(
     RescueStrategy rescue_strategy = detector.DetermineRescueStrategy(
         txid,
         wallet,
-        mempool
+        pool_view
     );
 
     // Step 3: Generate recommendation
@@ -262,7 +284,7 @@ FeeBumpRecommendation WalletFeeBumpHooks::GetBumpRecommendation(
         txid,
         inclusion_status,
         rescue_strategy,
-        mempool,
+        pool_view,
         wallet,
         target_blocks
     );
@@ -275,6 +297,11 @@ bool WalletFeeBumpHooks::CanBumpTransaction(
     const WalletManager* wallet,
     const Mempool* mempool
 ) const {
+    std::optional<dinero::MempoolWalletView> pool_view_slot;
+    if (mempool) pool_view_slot.emplace(*mempool);
+    const dinero::wallet::IWalletMempoolView* pool_view =
+        pool_view_slot ? &*pool_view_slot : nullptr;
+
     if (!wallet) {
         return false;
     }
@@ -282,13 +309,13 @@ bool WalletFeeBumpHooks::CanBumpTransaction(
     RbfCpfpDetector& detector = GetRbfCpfpDetector();
 
     // Check RBF capability
-    RbfCapability rbf_cap = detector.CheckRbfCapability(txid, mempool);
+    RbfCapability rbf_cap = detector.CheckRbfCapability(txid, pool_view);
     if (rbf_cap.can_be_replaced) {
         return true;
     }
 
     // Check CPFP capability
-    CpfpCapability cpfp_cap = detector.CheckCpfpCapability(txid, wallet, mempool);
+    CpfpCapability cpfp_cap = detector.CheckCpfpCapability(txid, wallet, pool_view);
     if (cpfp_cap.viable) {
         return true;
     }
@@ -302,6 +329,11 @@ bool WalletFeeBumpHooks::NeedsAttention(
     const Mempool* mempool,
     uint32_t target_blocks
 ) const {
+    std::optional<dinero::MempoolWalletView> pool_view_slot;
+    if (mempool) pool_view_slot.emplace(*mempool);
+    const dinero::wallet::IWalletMempoolView* pool_view =
+        pool_view_slot ? &*pool_view_slot : nullptr;
+
     if (!wallet) {
         return false;
     }
@@ -328,7 +360,7 @@ bool WalletFeeBumpHooks::NeedsAttention(
     FeeBumpEngine& engine = GetFeeBumpEngine();
     uint32_t estimated_blocks = engine.EstimateConfirmationBlocks(
         status.effective_feerate,
-        mempool
+        pool_view
     );
 
     if (estimated_blocks > target_blocks) {

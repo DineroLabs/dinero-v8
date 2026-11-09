@@ -1,0 +1,8 @@
+{
+  "_doc": "root -> A -> B -> A (static libraries; cycle inside the closure).",
+  "targets": {
+    "root": {"type": "STATIC_LIBRARY", "link": ["A"], "sources": ["src/consensus/root.cpp"]},
+    "A": {"type": "STATIC_LIBRARY", "link": ["B"], "sources": ["src/a/a.cpp"]},
+    "B": {"type": "STATIC_LIBRARY", "link": ["A"], "sources": ["src/b/b.cpp"]}
+  }
+}

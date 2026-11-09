@@ -1,4 +1,6 @@
 #include "wallet/runtime_wallet_recovery.h"
+#include "wallet/runtime_recovery_source.h"
+#include "wallet/runtime_index_delivery.h"
 #include "wallet/wallet_manager.h"
 #include <algorithm>
 #include <stdexcept>
@@ -364,4 +366,79 @@ RuntimeOrchardCatalogRecoveryResult RuntimeWalletRecovery::ResumePreparedOrchard
     // on this distinct route. Even success is ONLY this captured Orchard prefix.
     return {target,std::move(revisions),final.head,current.catalog.revision};
 }
+
+// ---------------------------------------------------------------------------
+// Public entry points over the R1 recovery source (Task 6.3, R2/R3).
+// The lease precondition, the CoverageRequiredForWallet decision and the
+// !ok() -> runtime_error mapping moved here from the node adapter with the
+// same checks and the same exception messages.
+// ---------------------------------------------------------------------------
+RuntimeTransparentRecoveryResult RuntimeWalletRecovery::ResumeTransparentStores(
+        const wallet::IRuntimeRecoverySource& chain, WalletManager& wallet,
+        UTXOIndex& index, uint64_t session) {
+    return Resume([&chain](RuntimeOutboxCursor cursor,size_t count) {
+        const auto page=chain.GetDeliveryPage(cursor,count);
+        if (!page.ok()) throw std::runtime_error("Wallet recovery checked source unavailable");
+        return **page;
+    },wallet,index,session);
+}
+
+RuntimeWalletRecoveryResult RuntimeWalletRecovery::ResumeWalletStores(
+        const wallet::IRuntimeRecoverySource& chain,WalletManager& wallet,
+        UTXOIndex& index,uint64_t session,uint32_t account) {
+    {const auto lease=wallet.AcquireDatabaseLease();
+     if(wallet.database_leases_!=1)throw std::runtime_error("Wallet recovery requires released caller lease");}
+    const auto view=chain.GetAccountReplay();
+    if(!view.ok())throw std::runtime_error("Wallet recovery checked account source unavailable");
+    return ResumeAccount(**view,[&chain](RuntimeOutboxCursor cursor,size_t count){
+        const auto page=chain.GetDeliveryPage(cursor,count);
+        if(!page.ok())throw std::runtime_error("Wallet recovery checked source unavailable");
+        return **page;
+    },wallet,index,session,account);
+}
+
+RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumeEnrolledWalletStores(
+        const wallet::IRuntimeRecoverySource& chain,WalletManager& wallet,
+        UTXOIndex& index,uint64_t session) {
+    {const auto lease=wallet.AcquireDatabaseLease();
+     if(wallet.database_leases_!=1)throw std::runtime_error("Wallet recovery requires released caller lease");}
+    const auto view=chain.GetAccountReplay();
+    if(!view.ok())throw std::runtime_error("Wallet recovery checked account source unavailable");
+    return ResumeAccounts(**view,[&chain](RuntimeOutboxCursor cursor,size_t count){
+        const auto page=chain.GetDeliveryPage(cursor,count);
+        if(!page.ok())throw std::runtime_error("Wallet recovery checked source unavailable");
+        return **page;
+    },wallet,index,session,std::nullopt);
+}
+
+RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumeCatalogWalletStores(
+        const wallet::IRuntimeRecoverySource& chain,WalletManager& wallet,
+        UTXOIndex& index,uint64_t session) {
+    {const auto lease=wallet.AcquireDatabaseLease();
+     if(wallet.database_leases_!=1)throw std::runtime_error("Wallet recovery requires released caller lease");}
+    if(RuntimeOrdinaryDelivery::CoverageRequiredForWallet(wallet,index,session)) {
+        const auto coverage=chain.GetWalletCoverage(wallet,session,index);
+        if(!coverage.ok())throw std::runtime_error("Wallet recovery coverage source unavailable");
+        if(chain.ReconcileWalletCoverage(wallet,index,**coverage)!=Status::Ok)
+            throw std::runtime_error("Wallet recovery coverage reconciliation refused");
+    }
+    const auto view=chain.GetAccountReplay();
+    if(!view.ok())throw std::runtime_error("Wallet recovery checked account source unavailable");
+    return ResumeAccounts(**view,[&chain](RuntimeOutboxCursor cursor,size_t count){
+        const auto page=chain.GetDeliveryPage(cursor,count);
+        if(!page.ok())throw std::runtime_error("Wallet recovery checked source unavailable");
+        return **page;
+    },wallet,index,session,std::nullopt,true);
+}
+
+RuntimeOrchardCatalogRecoveryResult RuntimeWalletRecovery::ResumePreparedOrchardCatalogStores(
+        const RuntimeAccountReplay& replay,const wallet::IRuntimeRecoverySource& chain,
+        WalletManager& wallet,uint64_t session,const OrchardSourceOwner& owner) {
+    return ResumePreparedOrchardCatalog(replay,[&chain](RuntimeOutboxCursor cursor,size_t count){
+        const auto page=chain.GetDeliveryPage(cursor,count);
+        if(!page.ok())throw std::runtime_error("Imported Orchard delivery page unavailable");
+        return **page;
+    },wallet,session,owner);
+}
+
 } // namespace dinero

@@ -234,7 +234,15 @@ if(TARGET dinero_chainstate)
   add_library(dinero_orchard_wallet_account STATIC "${ORCHARD_HOST_ROOT}/src/wallet/orchard_account_state.cpp")
   target_link_libraries(dinero_orchard_wallet_account PUBLIC dinero_orchard_wallet_scan dinero_orchard_account_metadata)
   add_library(dinero_orchard_header STATIC "${ORCHARD_HOST_ROOT}/src/consensus/orchard_header.cpp")
-  target_link_libraries(dinero_orchard_header PUBLIC dinero_orchard_transparent dinero_consensus)
+  # Task 6.3 follow-up (owner 2026-11-07): the pure block-context function is
+  # its own small consensus-side library, so wallet delivery code can name it
+  # without the node-coupled header-validation library.
+  add_library(dinero_orchard_block_context STATIC
+    "${ORCHARD_HOST_ROOT}/src/consensus/orchard_block_context.cpp")
+  target_include_directories(dinero_orchard_block_context PRIVATE "${ORCHARD_HOST_ROOT}/src")
+  # orchard_header.h's include closure needs the backend/transparent headers.
+  target_link_libraries(dinero_orchard_block_context PUBLIC dinero_orchard_transparent dinero_consensus)
+  target_link_libraries(dinero_orchard_header PUBLIC dinero_orchard_transparent dinero_consensus dinero_orchard_block_context)
   add_library(dinero_orchard_runtime_reader STATIC
     "${ORCHARD_HOST_ROOT}/src/daemon/runtime_reorg_store.cpp")
   if(TARGET dinero_core)
@@ -308,7 +316,16 @@ if(TARGET dinero_chainstate)
     # linkers, even for small fixtures that first enter through genesis/storage.
     target_link_libraries(dinero_orchard_chainstate_write PRIVATE dinero_core)
     target_link_libraries(dinero_orchard_reindex PRIVATE dinero_core)
-    target_link_libraries(dinero_orchard_header PRIVATE dinero_core)
+    # The removed core edge had also been supplying the RocksDB include dirs
+    # transitively; the lib's headers (pow_context -> archival_block_reader ->
+    # chain_db.h) still need the DECLARATIONS, so declare the include dir
+    # directly (6.1a pattern), with no link.
+    target_include_directories(dinero_orchard_header BEFORE PRIVATE
+      "${ORCHARD_HOST_ROOT}/third_party/rocksdb/include")
+    # dinero_orchard_header's PRIVATE dinero_core edge removed 2026-11-08:
+    # after the SelectedOrchardBlockContext extraction its objects need zero
+    # core symbols (nm audit), and the edge dragged dinero_core into every
+    # header-test closure on GNU ld.
   endif()
   add_library(dinero_orchard_snapshot STATIC
     "${ORCHARD_HOST_ROOT}/src/consensus/orchard_snapshot_catalog.cpp"
@@ -341,18 +358,23 @@ if(TARGET dinero_chainstate)
     target_link_libraries(dinero_core PUBLIC dinero_orchard_snapshot_store)
   endif()
   add_library(dinero_orchard_account_replay STATIC "${ORCHARD_HOST_ROOT}/src/wallet/runtime_account_replay.cpp")
-  target_link_libraries(dinero_orchard_account_replay PUBLIC dinero_orchard_chainstate_write dinero_orchard_wallet_account)
+  # Task 6.3: account_replay needs only SelectedOrchardBlockContext from the
+  # header library (nm audit); the chainstate_write edge is gone. The
+  # header->staging->chainstate reach that remains is the queued owner
+  # decision (task-6.3-owner-decision-orchard-header.md).
+  target_link_libraries(dinero_orchard_account_replay PUBLIC dinero_orchard_block_context dinero_orchard_wallet_account)
   target_link_libraries(dinero_orchard_runtime_reader PUBLIC dinero_orchard_chainstate_write)
   add_library(dinero_orchard_index_delivery STATIC
     "${ORCHARD_HOST_ROOT}/src/wallet/runtime_index_delivery.cpp"
     "${ORCHARD_HOST_ROOT}/src/wallet/runtime_wallet_index_delivery.cpp"
     "${ORCHARD_HOST_ROOT}/src/wallet/runtime_wallet_recovery.cpp"
-    "${ORCHARD_HOST_ROOT}/src/wallet/runtime_wallet_recovery_service.cpp"
     "${ORCHARD_HOST_ROOT}/src/wallet/orchard_account_delivery.cpp")
   target_include_directories(dinero_orchard_index_delivery PRIVATE "${ORCHARD_HOST_ROOT}/src")
   # WalletManager references ChainDB/BlockStorage even in the account-only
   # executable. Keep its archive before the chainstate provider for GNU ld.
-  target_link_libraries(dinero_orchard_index_delivery PUBLIC dinero_wallet dinero_orchard_account_replay dinero_orchard_chainstate_write dinero_orchard_operation_archive dinero_orchard_wallet_account sqlite3 dinero_orchard_proof_jobs dinero_orchard_ownership_inventory)
+  # Task 6.3: the wallet delivery library is node-free — no chainstate_write
+  # (its objects need zero symbols from it; nm audit 2026-11-07).
+  target_link_libraries(dinero_orchard_index_delivery PUBLIC dinero_wallet dinero_orchard_account_replay dinero_orchard_operation_archive dinero_orchard_wallet_account sqlite3 dinero_orchard_proof_jobs dinero_orchard_ownership_inventory)
   if(TARGET test_assumeutxo_replay)
     # The service's reader definition is source-local. Bind the projection
     # tests to the actual optional implementation rather than inheriting it.
@@ -426,6 +448,15 @@ if(TARGET dinero_chainstate)
   endif()
   if(TARGET dinero_core)
     target_link_libraries(dinero_core PUBLIC dinero_orchard_index_delivery)
+    # Task 6.3: the R1 recovery adapter is node code; dinero_core links it.
+    add_library(dinero_orchard_recovery_adapter STATIC
+      "${ORCHARD_HOST_ROOT}/src/wallet/runtime_wallet_recovery_service.cpp")
+    target_include_directories(dinero_orchard_recovery_adapter PRIVATE
+      "${ORCHARD_HOST_ROOT}/src" "${ORCHARD_HOST_ROOT}/src/daemon")
+    target_include_directories(dinero_orchard_recovery_adapter BEFORE PRIVATE
+      "${ORCHARD_HOST_ROOT}/third_party/rocksdb/include")
+    target_link_libraries(dinero_orchard_recovery_adapter PUBLIC dinero_orchard_index_delivery)
+    target_link_libraries(dinero_core PUBLIC dinero_orchard_recovery_adapter)
   endif()
 
   if(TARGET dinero_core)
@@ -609,7 +640,11 @@ if(DINERO_ORCHARD_BUILD_TESTS)
       "${ORCHARD_HOST_ROOT}/src/consensus/header_store.cpp"
       "${ORCHARD_HOST_ROOT}/src/consensus/genesis_canonical.cpp"
       "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
-    target_link_libraries(test_orchard_header PRIVATE dinero_orchard_header)
+        # Task 6.1a: declares RocksDB itself (consensus no longer exports it).
+    target_include_directories(test_orchard_header BEFORE PRIVATE "${ORCHARD_HOST_ROOT}/third_party/rocksdb/include")
+target_link_libraries(test_orchard_header PRIVATE dinero_orchard_header)
+    # After the main block: GNU ld needs RocksDB to follow consensus (I1).
+    target_link_libraries(test_orchard_header PRIVATE RocksDB::rocksdb)
     target_include_directories(test_orchard_header PRIVATE "${ORCHARD_HOST_ROOT}/src")
     add_test(NAME OrchardHeader COMMAND test_orchard_header)
     set_tests_properties(OrchardHeader PROPERTIES TIMEOUT 120 LABELS "orchard;integration-staging")
@@ -668,7 +703,6 @@ if(DINERO_ORCHARD_BUILD_TESTS)
       "${ORCHARD_HOST_ROOT}/src/daemon/lightning_stubs.cpp"
       "${ORCHARD_HOST_ROOT}/tests/stubs/mempool_test_stubs.cpp"
       "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_wallet_account.cpp"
-      "${ORCHARD_HOST_ROOT}/src/wallet/utxo_index.cpp"
       "${ORCHARD_HOST_ROOT}/src/sqlite_open.cpp"
       "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
     target_compile_definitions(test_orchard_account_delivery PRIVATE DINERO_TEST_BOUND_ACCOUNT=1)
@@ -680,7 +714,6 @@ if(DINERO_ORCHARD_BUILD_TESTS)
       "${ORCHARD_HOST_ROOT}/src/daemon/lightning_stubs.cpp"
       "${ORCHARD_HOST_ROOT}/tests/stubs/mempool_test_stubs.cpp"
       "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_block_staging.cpp"
-      "${ORCHARD_HOST_ROOT}/src/wallet/utxo_index.cpp"
       "${ORCHARD_HOST_ROOT}/src/sqlite_open.cpp"
       "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
     target_compile_definitions(test_orchard_index_delivery PRIVATE DINERO_TEST_ORCHARD_INDEX_DELIVERY=1)
@@ -740,4 +773,23 @@ if(DINERO_ORCHARD_BUILD_TESTS)
       "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS=-C target-feature=-crt-static")
   endif()
 
+endif()
+
+# Task 6.3 R4: standalone wallet recovery through the fake R1 source. With
+# the SelectedOrchardBlockContext extraction (owner decision 2026-11-07),
+# this target's whole link closure is node-free — verified by
+# check_link_closure --gate W6: 0 violations (task-6.3b-r4closure_on.log).
+if(TARGET dinero_orchard_index_delivery)
+  add_executable(test_wallet_recovery_without_node
+    "${ORCHARD_HOST_ROOT}/tests/wallet/test_wallet_recovery_without_node.cpp")
+  target_include_directories(test_wallet_recovery_without_node PRIVATE
+    "${ORCHARD_HOST_ROOT}/include" "${ORCHARD_HOST_ROOT}")
+  target_link_libraries(test_wallet_recovery_without_node PRIVATE
+    dinero_orchard_index_delivery
+    dinero_orchard_account_replay
+    dinero_wallet
+    sqlite3)
+  add_test(NAME WalletRecoveryWithoutNode COMMAND test_wallet_recovery_without_node)
+  set_tests_properties(WalletRecoveryWithoutNode PROPERTIES TIMEOUT 120
+    LABELS "orchard;wallet;separation")
 endif()

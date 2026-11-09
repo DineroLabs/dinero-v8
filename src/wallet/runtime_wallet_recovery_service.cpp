@@ -1,57 +1,37 @@
-#include "wallet/runtime_wallet_recovery.h"
+// Node-side R1 adapter implementation (Task 6.3). This file is compiled into
+// the node-side dinero_orchard_recovery_adapter target, NOT into the wallet
+// delivery libraries: it is the only recovery file allowed to name
+// ChainstateService. It forwards the four service calls verbatim; the lease
+// precondition, the coverage decision and the error-message mapping moved to
+// src/wallet/runtime_wallet_recovery.cpp (R3).
+
+#include "daemon/services/chainstate_recovery_source.h"
 #include "daemon/services/chainstate_service.h"
-#include "wallet/wallet_manager.h"
-#include <stdexcept>
 
 namespace dinero {
-RuntimeTransparentRecoveryResult RuntimeWalletRecovery::ResumeTransparentStores(
-        ChainstateService& chain, WalletManager& wallet, UTXOIndex& index, uint64_t session) {
-    return Resume([&chain](RuntimeOutboxCursor cursor,size_t count) {
-        const auto page=chain.getRuntimeDeliveryPage(cursor,count);
-        if (!page.ok()) throw std::runtime_error("Wallet recovery checked source unavailable");
-        return **page;
-    },wallet,index,session);
+
+StatusOr<std::shared_ptr<const RuntimeOutboxPage>>
+ChainstateRuntimeRecoverySource::GetDeliveryPage(const RuntimeOutboxCursor& after,
+                                                 size_t maximum_events) const {
+    return chain_.getRuntimeDeliveryPage(after, maximum_events);
 }
-RuntimeWalletRecoveryResult RuntimeWalletRecovery::ResumeWalletStores(
-        ChainstateService& chain,WalletManager& wallet,UTXOIndex& index,uint64_t session,uint32_t account) {
-    {const auto lease=wallet.AcquireDatabaseLease();
-     if(wallet.database_leases_!=1)throw std::runtime_error("Wallet recovery requires released caller lease");}
-    const auto view=chain.getRuntimeAccountReplay();
-    if(!view.ok())throw std::runtime_error("Wallet recovery checked account source unavailable");
-    return ResumeAccount(**view,[&chain](RuntimeOutboxCursor cursor,size_t count){
-        const auto page=chain.getRuntimeDeliveryPage(cursor,count);
-        if(!page.ok())throw std::runtime_error("Wallet recovery checked source unavailable");
-        return **page;
-    },wallet,index,session,account);
+
+StatusOr<std::shared_ptr<const RuntimeAccountReplay>>
+ChainstateRuntimeRecoverySource::GetAccountReplay() const {
+    return chain_.getRuntimeAccountReplay();
 }
-RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumeEnrolledWalletStores(
-        ChainstateService& chain,WalletManager& wallet,UTXOIndex& index,uint64_t session) {
-    {const auto lease=wallet.AcquireDatabaseLease();
-     if(wallet.database_leases_!=1)throw std::runtime_error("Wallet recovery requires released caller lease");}
-    const auto view=chain.getRuntimeAccountReplay();
-    if(!view.ok())throw std::runtime_error("Wallet recovery checked account source unavailable");
-    return ResumeAccounts(**view,[&chain](RuntimeOutboxCursor cursor,size_t count){
-        const auto page=chain.getRuntimeDeliveryPage(cursor,count);
-        if(!page.ok())throw std::runtime_error("Wallet recovery checked source unavailable");
-        return **page;
-    },wallet,index,session,std::nullopt);
+
+StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>>
+ChainstateRuntimeRecoverySource::GetWalletCoverage(WalletManager& wallet,
+                                                   uint64_t expected_session,
+                                                   UTXOIndex& index) const {
+    return chain_.getRuntimeWalletCoverage(wallet, expected_session, index);
 }
-RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumeCatalogWalletStores(
-        ChainstateService& chain,WalletManager& wallet,UTXOIndex& index,uint64_t session) {
-    {const auto lease=wallet.AcquireDatabaseLease();
-     if(wallet.database_leases_!=1)throw std::runtime_error("Wallet recovery requires released caller lease");}
-    if(RuntimeOrdinaryDelivery::CoverageRequiredForWallet(wallet,index,session)) {
-        const auto coverage=chain.getRuntimeWalletCoverage(wallet,session,index);
-        if(!coverage.ok())throw std::runtime_error("Wallet recovery coverage source unavailable");
-        if(chain.reconcileRuntimeWalletCoverage(wallet,index,**coverage)!=Status::Ok)
-            throw std::runtime_error("Wallet recovery coverage reconciliation refused");
-    }
-    const auto view=chain.getRuntimeAccountReplay();
-    if(!view.ok())throw std::runtime_error("Wallet recovery checked account source unavailable");
-    return ResumeAccounts(**view,[&chain](RuntimeOutboxCursor cursor,size_t count){
-        const auto page=chain.getRuntimeDeliveryPage(cursor,count);
-        if(!page.ok())throw std::runtime_error("Wallet recovery checked source unavailable");
-        return **page;
-    },wallet,index,session,std::nullopt,true);
+
+Status ChainstateRuntimeRecoverySource::ReconcileWalletCoverage(
+        WalletManager& wallet, UTXOIndex& index,
+        const RuntimeWalletCoverageProjection& coverage) const {
+    return chain_.reconcileRuntimeWalletCoverage(wallet, index, coverage);
 }
+
 } // namespace dinero

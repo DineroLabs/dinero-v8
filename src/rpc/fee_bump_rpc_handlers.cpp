@@ -2,6 +2,8 @@
 // Phase W.4.4: Fee Bump RPC Handler Implementations
 
 #include "rpc/fee_bump_rpc_handlers.h"
+#include "daemon/mempool_wallet_view.h"
+#include <optional>
 #include "rpc/rpc_registry.h"
 #include "din_json.h"
 #include "mining/tx_inclusion_analyzer.h"
@@ -236,8 +238,12 @@ Json::Value dinero::wallet_gettxinclusion(
     // Also check RBF/CPFP capabilities
     RbfCpfpDetector& detector = GetRbfCpfpDetector();
 
-    RbfCapability rbf_cap = detector.CheckRbfCapability(txid, mempool);
-    CpfpCapability cpfp_cap = detector.CheckCpfpCapability(txid, wallet, mempool);
+    std::optional<dinero::MempoolWalletView> mempool_view;
+    if (mempool) mempool_view.emplace(*mempool);
+    const dinero::wallet::IWalletMempoolView* pool_view =
+        mempool_view ? &*mempool_view : nullptr;
+    RbfCapability rbf_cap = detector.CheckRbfCapability(txid, pool_view);
+    CpfpCapability cpfp_cap = detector.CheckCpfpCapability(txid, wallet, pool_view);
 
     status.rbf_available = rbf_cap.can_be_replaced;
     status.cpfp_available = cpfp_cap.viable;
@@ -301,10 +307,14 @@ Json::Value dinero::wallet_gettxbumprecommendation(
 
     // Step 2: Detect RBF/CPFP capabilities
     RbfCpfpDetector& detector = GetRbfCpfpDetector();
+    std::optional<dinero::MempoolWalletView> mempool_view;
+    if (mempool) mempool_view.emplace(*mempool);
+    const dinero::wallet::IWalletMempoolView* pool_view =
+        mempool_view ? &*mempool_view : nullptr;
     RescueStrategy rescue_strategy = detector.DetermineRescueStrategy(
         txid,
         wallet,
-        mempool
+        pool_view
     );
 
     // Step 3: Generate fee bump recommendation
@@ -313,7 +323,7 @@ Json::Value dinero::wallet_gettxbumprecommendation(
         txid,
         inclusion_status,
         rescue_strategy,
-        mempool,
+        pool_view,
         wallet,
         target_blocks
     );

@@ -1051,8 +1051,6 @@ set_tests_properties(HashWrapperVectors PROPERTIES
 
 # Minimal wallet stubs shared by wallet-focused tests.
 add_library(wallet_test_deps STATIC
-  src/wallet/utxo_index.cpp
-  src/sqlite_open.cpp
   src/daemon/lightning_stubs.cpp
 )
 
@@ -3196,14 +3194,12 @@ endif()
 if(TARGET dinero_wallet AND TARGET gtest)
   add_executable(test_shielded_note_store_rollback
     tests/wallet/test_shielded_note_store_rollback.cpp
-    tests/stubs/mempool_test_stubs.cpp
   )
   add_dependencies(test_shielded_note_store_rollback gtest dinero_wallet)
   target_link_libraries(test_shielded_note_store_rollback PRIVATE
     GTest::gtest
     GTest::gtest_main
     dinero_wallet
-    wallet_test_deps
     dinero_shielded
     sqlite3
   )
@@ -3253,14 +3249,12 @@ if(TARGET dinero_wallet AND TARGET gtest)
 
   add_executable(test_shielded_outgoing_view
     tests/wallet/test_shielded_outgoing_view.cpp
-    tests/stubs/mempool_test_stubs.cpp
   )
   add_dependencies(test_shielded_outgoing_view gtest dinero_wallet)
   target_link_libraries(test_shielded_outgoing_view PRIVATE
     GTest::gtest
     GTest::gtest_main
     dinero_wallet
-    wallet_test_deps
     dinero_shielded
     dinero_zk
     jsoncpp_static
@@ -4817,7 +4811,6 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_wallet_ffi_concurrency.cpp)
   add_executable(test_wallet_ffi_concurrency
     tests/test_wallet_ffi_concurrency.cpp
-    src/wallet/taproot_control_block.cpp
     src/wallet/p2mr_address.cpp
     src/daemon/bech32_encoder.cpp
     tests/stubs/mempool_test_stubs.cpp
@@ -4998,16 +4991,61 @@ endif()
 # Real SQLite wallet rollback, independent of the mock correctness suite below.
 add_executable(test_wallet_revert_atomic
   tests/utxo/test_wallet_revert_atomic.cpp
-  src/wallet/utxo_index.cpp
   src/sqlite_open.cpp
   src/primitives/uint256.cpp
   src/common/logger.cpp
 )
 target_include_directories(test_wallet_revert_atomic PRIVATE
   ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(test_wallet_revert_atomic PRIVATE sqlite3 Threads::Threads)
+target_link_libraries(test_wallet_revert_atomic PRIVATE dinero_wallet sqlite3 Threads::Threads)
 add_test(NAME WalletRevertAtomic COMMAND test_wallet_revert_atomic)
 set_tests_properties(WalletRevertAtomic PROPERTIES LABELS "wallet;utxo;storage" TIMEOUT 60)
+
+# Task 5.1: wallet node-facing interfaces (header-only contract + test fakes).
+add_executable(test_node_interfaces
+  tests/wallet/test_node_interfaces.cpp
+  src/primitives/uint256.cpp
+)
+target_include_directories(test_node_interfaces PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR})
+add_test(NAME WalletNodeInterfaces COMMAND test_node_interfaces)
+set_tests_properties(WalletNodeInterfaces PROPERTIES LABELS "wallet;separation" TIMEOUT 60)
+
+# Task 5.2: rescan through IWalletChainView (adapter + wallet integration).
+add_executable(test_wallet_chain_view
+  tests/wallet/test_wallet_chain_view.cpp
+  src/daemon/lightning_stubs.cpp
+  src/daemon/config.cpp  # GetConfig() for chainstate members GNU ld pulls (Linux qualification fix)
+  tests/stubs/mempool_test_stubs.cpp
+)
+target_include_directories(test_wallet_chain_view PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR})
+target_link_libraries(test_wallet_chain_view PRIVATE
+  dinero_wallet
+  dinero_chainstate
+  dinero_consensus
+  dinero_crypto
+  sqlite3
+  Threads::Threads
+)
+add_test(NAME WalletChainView COMMAND test_wallet_chain_view)
+set_tests_properties(WalletChainView PROPERTIES LABELS "wallet;separation" TIMEOUT 120)
+
+# Task 5.3: mempool observations through IWalletMempoolView.
+add_executable(test_wallet_mempool_view
+  tests/wallet/test_wallet_mempool_view.cpp
+)
+target_include_directories(test_wallet_mempool_view PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR})
+target_link_libraries(test_wallet_mempool_view PRIVATE
+  dinero_wallet
+  dinero_consensus
+  dinero_crypto
+  sqlite3
+  Threads::Threads
+)
+add_test(NAME WalletMempoolView COMMAND test_wallet_mempool_view)
+set_tests_properties(WalletMempoolView PROPERTIES LABELS "wallet;separation" TIMEOUT 120)
 
 # Priority 3: UTXO Index Correctness Tests
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/utxo/test_utxo_index_correctness.cpp)
@@ -5825,6 +5863,11 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     tests/stubs/daemon_test_stubs.cpp   # Mempool extras + vault
   )
   add_dependencies(test_assumeutxo_replay gtest)
+  if(MSVC)
+    # The TU aggregates ~150 *_checks.h suites and exceeds the default
+    # COFF section limit (fatal error C1128).
+    target_compile_options(test_assumeutxo_replay PRIVATE /bigobj)
+  endif()
   option(DINERO_TEST_ORCHARD_QT_CONTRACT "Build in-process node/Qt Orchard contract tests" OFF)
   if(DINERO_TEST_ORCHARD_QT_CONTRACT)
     find_package(Qt6 REQUIRED COMPONENTS Core)
@@ -6186,23 +6229,30 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   add_test(NAME OrchardRawIngress COMMAND test_assumeutxo_replay --gtest_filter=OrchardRawIngress.*)
   set_tests_properties(OrchardRawIngress PROPERTIES LABELS "daemon;orchard;ingress;mandatory" TIMEOUT 120)
   add_test(NAME OrchardCanonicalCatalog COMMAND test_assumeutxo_replay --gtest_filter=OrchardCanonicalCatalog.*)
-  add_test(NAME OrchardSnapshotRuntime COMMAND test_assumeutxo_replay --gtest_filter=OrchardSnapshotRuntime.*)
-  add_test(NAME OrchardCatalogTransfer COMMAND test_assumeutxo_replay --gtest_filter=OrchardCatalogTransfer.*)
-  add_test(NAME OrchardCatalogClient COMMAND test_assumeutxo_replay --gtest_filter=OrchardCatalogClient.*)
-  set_tests_properties(OrchardCatalogClient PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;p2p;mandatory")
-  add_test(NAME OrchardCatalogDownload COMMAND test_assumeutxo_replay --gtest_filter=OrchardCatalogDownload.*)
-  set_tests_properties(OrchardCatalogDownload PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;p2p;mandatory")
-  add_test(NAME OrchardReopenFences COMMAND test_assumeutxo_replay --gtest_filter=OrchardReopenFences.*)
-  set_tests_properties(OrchardReopenFences PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;mempool;mandatory")
+  # POSIX-only suites: defined in orchard_snapshot_runtime_checks.h, which
+  # Windows does not compile (chmod/fchmod/fsync/symlink semantics; see the
+  # guarded include in test_assumeutxo_replay.cpp). Registering them on
+  # Windows would advertise hollow coverage (the gtest filter matches none).
   if(UNIX)
+    add_test(NAME OrchardSnapshotRuntime COMMAND test_assumeutxo_replay --gtest_filter=OrchardSnapshotRuntime.*)
+    add_test(NAME OrchardCatalogTransfer COMMAND test_assumeutxo_replay --gtest_filter=OrchardCatalogTransfer.*)
+    add_test(NAME OrchardCatalogClient COMMAND test_assumeutxo_replay --gtest_filter=OrchardCatalogClient.*)
+    set_tests_properties(OrchardCatalogClient PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;p2p;mandatory")
+    add_test(NAME OrchardCatalogDownload COMMAND test_assumeutxo_replay --gtest_filter=OrchardCatalogDownload.*)
+    set_tests_properties(OrchardCatalogDownload PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;p2p;mandatory")
+    add_test(NAME OrchardReopenFences COMMAND test_assumeutxo_replay --gtest_filter=OrchardReopenFences.*)
+    set_tests_properties(OrchardReopenFences PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;mempool;mandatory")
     add_test(NAME OrchardReopenJournal COMMAND test_assumeutxo_replay --gtest_filter=OrchardReopenJournal.*)
     set_tests_properties(OrchardReopenJournal PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mempool;storage;mandatory")
     add_test(NAME OrchardReopenIntent COMMAND test_assumeutxo_replay --gtest_filter=OrchardReopenIntent.*)
     set_tests_properties(OrchardReopenIntent PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mempool;storage;mandatory")
   endif()
-  add_test(NAME OrchardActivationOrigin COMMAND test_assumeutxo_replay --gtest_filter=OrchardActivationOrigin.*)
-  set_tests_properties(OrchardActivationOrigin PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;recovery;mandatory")
-  add_test(NAME OrchardPhoneHistory COMMAND test_assumeutxo_replay --gtest_filter=OrchardPhoneHistory.*)
+  if(UNIX)
+    add_test(NAME OrchardActivationOrigin COMMAND test_assumeutxo_replay --gtest_filter=OrchardActivationOrigin.*)
+    set_tests_properties(OrchardActivationOrigin PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;recovery;mandatory")
+    add_test(NAME OrchardPhoneHistory COMMAND test_assumeutxo_replay --gtest_filter=OrchardPhoneHistory.*)
+    set_tests_properties(OrchardPhoneHistory PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;p2p;recovery")
+  endif()
   add_test(NAME OrchardEmptyParentAccount COMMAND test_assumeutxo_replay --gtest_filter=OrchardEmptyParentAccount.*)
   set_tests_properties(OrchardEmptyParentAccount PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;mandatory")
   add_test(NAME OrchardEmptyParentQueue COMMAND test_assumeutxo_replay --gtest_filter=OrchardEmptyParentQueue.*)
@@ -6211,13 +6261,12 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(WalletFundingDownload PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;inputproof")
   add_test(NAME OrchardLegacyMobileParent COMMAND test_assumeutxo_replay --gtest_filter=OrchardLegacyMobileParent.*)
   set_tests_properties(OrchardLegacyMobileParent PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;mandatory")
-  set_tests_properties(OrchardPhoneHistory PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;p2p;recovery")
   if(UNIX)
     add_test(NAME OrchardHistoryCache COMMAND test_assumeutxo_replay --gtest_filter=OrchardHistoryCache.*)
     set_tests_properties(OrchardHistoryCache PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;p2p;recovery;restart")
   endif()
-  add_test(NAME OrchardActivationParent COMMAND test_assumeutxo_replay --gtest_filter=OrchardActivationParent.*)
   if(UNIX)
+    add_test(NAME OrchardActivationParent COMMAND test_assumeutxo_replay --gtest_filter=OrchardActivationParent.*)
     add_test(NAME OrchardActivationHandoff COMMAND test_assumeutxo_replay --gtest_filter=OrchardActivationHandoff.*)
     set_tests_properties(OrchardActivationHandoff PROPERTIES TIMEOUT 240 LABELS "daemon;orchard;storage;restart;mandatory")
     add_test(NAME OrchardActivationHeaders COMMAND test_assumeutxo_replay --gtest_filter=OrchardActivationHeaders.*)
@@ -6232,12 +6281,12 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     set_tests_properties(OrchardActivationEventHistory PROPERTIES TIMEOUT 240 LABELS "daemon;orchard;storage;restart;mandatory")
     add_test(NAME OrchardActivationBaseline COMMAND test_assumeutxo_replay --gtest_filter=OrchardActivationBaseline.*)
     set_tests_properties(OrchardActivationBaseline PROPERTIES TIMEOUT 240 LABELS "daemon;orchard;storage;restart;mandatory")
+    set_tests_properties(OrchardActivationParent PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
+    add_test(NAME OrchardActivationProof COMMAND test_assumeutxo_replay --gtest_filter=OrchardActivationProof.*)
+    set_tests_properties(OrchardActivationProof PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
+    set_tests_properties(OrchardCatalogTransfer PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;p2p;mandatory")
+    set_tests_properties(OrchardSnapshotRuntime PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;snapshot;mandatory")
   endif()
-  set_tests_properties(OrchardActivationParent PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
-  add_test(NAME OrchardActivationProof COMMAND test_assumeutxo_replay --gtest_filter=OrchardActivationProof.*)
-  set_tests_properties(OrchardActivationProof PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
-  set_tests_properties(OrchardCatalogTransfer PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;p2p;mandatory")
-  set_tests_properties(OrchardSnapshotRuntime PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;snapshot;mandatory")
   set_tests_properties(OrchardCanonicalCatalog PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
   add_test(NAME OrchardParentCatalog COMMAND test_assumeutxo_replay --gtest_filter=OrchardParentCatalog.*)
   set_tests_properties(OrchardParentCatalog PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;mandatory")
@@ -8670,12 +8719,14 @@ if(NOT WIN32)
   add_executable(test_wallet_database_lease
     tests/wallet/test_wallet_database_lease.cpp
     src/wallet/wallet_worker.cpp
+    src/daemon/config.cpp  # GetConfig() for chainstate members GNU ld pulls (Linux qualification fix)
     src/daemon/lightning_stubs.cpp
     tests/stubs/mempool_test_stubs.cpp
     tests/stubs/vault_test_stubs.cpp
   )
   add_dependencies(test_wallet_database_lease gtest gtest_main)
   target_link_libraries(test_wallet_database_lease PRIVATE
+    dinero_pq_wallet_handlers # Task 2.5: rpc::v7 P2MR handlers (small lib; Linux fix)
     dinero_wallet
     dinero_chainstate
     dinero_consensus
@@ -11158,7 +11209,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_block_assembler_smoke.
     src/consensus/tx_parser.cpp
     src/consensus/script_verify.cpp
     src/storage/chain_db.cpp
-    src/wallet/utxo_index.cpp
     src/wallet/wallet_worker.cpp
     src/wallet/wallet_manager.cpp  # Modern HD wallet with BIP84 (Nov 2025)
     src/wallet/address.cpp
@@ -11235,7 +11285,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_consensus_integrati
     src/consensus/tx_parser.cpp
     src/consensus/script_verify.cpp
     src/storage/chain_db.cpp
-    src/wallet/utxo_index.cpp
     src/wallet/wallet_worker.cpp
     src/wallet/wallet_manager.cpp  # Modern HD wallet with BIP84 (Nov 2025)
     src/wallet/address.cpp
@@ -11308,7 +11357,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/integration/test_codebase_verifica
     src/consensus/tx_parser.cpp
     src/consensus/script_verify.cpp
     src/storage/chain_db.cpp
-    src/wallet/utxo_index.cpp
     src/wallet/wallet_worker.cpp
     src/wallet/wallet_manager.cpp  # Modern HD wallet with BIP84 (Nov 2025)
     src/wallet/address.cpp
@@ -11389,7 +11437,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_comprehensive.c
     src/wallet/bip39.cpp
     src/wallet/psbt.cpp
     src/wallet/coin_selection.cpp
-    src/crypto/pbkdf2.cpp
     src/consensus/coinbase_maturity.cpp
   )
   target_link_libraries(test_wallet_comprehensive PRIVATE
@@ -11420,7 +11467,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/test_taproot_mining.cpp)
     src/wallet/bip39.cpp
     src/wallet/psbt.cpp
     src/wallet/coin_selection.cpp
-    src/wallet/utxo_index.cpp
     src/wallet/bip143_signer.cpp
     src/wallet/taproot_tx_signer.cpp
     src/crypto/pbkdf2.cpp
@@ -11590,7 +11636,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_psbt_comprehensive.cpp
     src/wallet/hd_wallet.cpp
     src/wallet/bip39.cpp
     src/wallet/psbt.cpp
-    src/crypto/pbkdf2.cpp
     src/consensus/coinbase_maturity.cpp
   )
   target_link_libraries(test_psbt_comprehensive PRIVATE
@@ -11860,7 +11905,6 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_smoke.cpp)
     src/consensus/tx_parser.cpp
     src/consensus/script_verify.cpp
     src/storage/chain_db.cpp
-    src/wallet/utxo_index.cpp
     src/wallet/wallet_worker.cpp
     src/wallet/wallet_manager.cpp  # Modern HD wallet with BIP84 (Nov 2025)
     src/wallet/address.cpp
@@ -12570,12 +12614,18 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_fork_choice.cpp)
     src/consensus/header_store.cpp
     src/common/logger.cpp
   )
-  target_link_libraries(test_header_fork_choice PRIVATE
+    # Task 6.1a: dinero_consensus no longer exports RocksDB; this target
+  # compiles header_store.cpp directly and declares RocksDB itself.
+  target_include_directories(test_header_fork_choice BEFORE PRIVATE ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include)
+target_link_libraries(test_header_fork_choice PRIVATE
     dinero_consensus
     dinero_wallet
     dinero_crypto
     secp256k1
   )
+  # GNU ld resolves archives in order: RocksDB must FOLLOW dinero_consensus
+  # now that consensus no longer exports it (Task 6.1a, review I1).
+  target_link_libraries(test_header_fork_choice PRIVATE RocksDB::rocksdb)
   link_zstd_if_needed(test_header_fork_choice)
   target_include_directories(test_header_fork_choice PRIVATE
     ${CMAKE_SOURCE_DIR}/include
@@ -12599,12 +12649,18 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_pow_verification.cpp)
     src/consensus/genesis_canonical.cpp
     src/common/logger.cpp
   )
-  target_link_libraries(test_header_pow_verification PRIVATE
+    # Task 6.1a: dinero_consensus no longer exports RocksDB; this target
+  # compiles header_store.cpp directly and declares RocksDB itself.
+  target_include_directories(test_header_pow_verification BEFORE PRIVATE ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include)
+target_link_libraries(test_header_pow_verification PRIVATE
     dinero_consensus
     dinero_wallet
     dinero_crypto
     secp256k1
   )
+  # GNU ld resolves archives in order: RocksDB must FOLLOW dinero_consensus
+  # now that consensus no longer exports it (Task 6.1a, review I1).
+  target_link_libraries(test_header_pow_verification PRIVATE RocksDB::rocksdb)
   link_zstd_if_needed(test_header_pow_verification)
   target_include_directories(test_header_pow_verification PRIVATE
     ${CMAKE_SOURCE_DIR}/include
@@ -12627,12 +12683,18 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_real_mainnet_replay.cp
     src/consensus/header_store.cpp
     src/common/logger.cpp
   )
-  target_link_libraries(test_header_real_mainnet_replay PRIVATE
+    # Task 6.1a: dinero_consensus no longer exports RocksDB; this target
+  # compiles header_store.cpp directly and declares RocksDB itself.
+  target_include_directories(test_header_real_mainnet_replay BEFORE PRIVATE ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include)
+target_link_libraries(test_header_real_mainnet_replay PRIVATE
     dinero_consensus
     dinero_wallet
     dinero_crypto
     secp256k1
   )
+  # GNU ld resolves archives in order: RocksDB must FOLLOW dinero_consensus
+  # now that consensus no longer exports it (Task 6.1a, review I1).
+  target_link_libraries(test_header_real_mainnet_replay PRIVATE RocksDB::rocksdb)
   link_zstd_if_needed(test_header_real_mainnet_replay)
   target_include_directories(test_header_real_mainnet_replay PRIVATE
     ${CMAKE_SOURCE_DIR}/include
@@ -12959,7 +13021,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_utreexo_enforcement
     src/consensus/utreexo_accumulator.cpp
     src/consensus/tx_parser.cpp
     src/consensus/script_verify.cpp
-    src/wallet/utxo_index.cpp
     src/database/sqlite_manager.cpp
     src/sqlite_open.cpp
     src/common/logger.cpp
@@ -13009,7 +13070,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_block_stateless_equ
     src/consensus/utreexo_accumulator.cpp
     src/consensus/tx_parser.cpp
     src/consensus/script_verify.cpp
-    src/wallet/utxo_index.cpp
     src/database/sqlite_manager.cpp
     src/sqlite_open.cpp
     src/common/logger.cpp
@@ -13086,7 +13146,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_utreexo_stateless_v
     src/consensus/tx_parser.cpp
     src/consensus/script_verify.cpp
     src/consensus/script_validation.cpp
-    src/wallet/utxo_index.cpp
     src/database/sqlite_manager.cpp
     src/sqlite_open.cpp
     src/common/logger.cpp
@@ -13341,7 +13400,6 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_utreexo_consensus_r
     src/consensus/script_verify.cpp
     src/consensus/chainparams_impl.cpp
     src/consensus/adapters/wallet_utxo_adapter.cpp
-    src/wallet/utxo_index.cpp
     src/database/sqlite_manager.cpp
     src/sqlite_open.cpp
     src/common/logger.cpp
@@ -15560,7 +15618,6 @@ endif()
 if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_mining_maturity.cpp)
   add_executable(test_mining_maturity
     tests/consensus/test_mining_maturity.cpp
-    src/wallet/utxo_index.cpp
     src/consensus/block_validation.cpp
     src/consensus/coinbase_maturity.cpp
     src/primitives/block.cpp
@@ -15616,7 +15673,10 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_sync_restart.cpp)
     src/common/sha256d.cpp
     src/consensus/chainwork.cpp
   )
-  target_link_libraries(test_header_sync_restart PRIVATE
+    # Task 6.1a: dinero_consensus no longer exports RocksDB; this target
+  # compiles header_store.cpp directly and declares RocksDB itself.
+  target_include_directories(test_header_sync_restart BEFORE PRIVATE ${CMAKE_SOURCE_DIR}/third_party/rocksdb/include)
+target_link_libraries(test_header_sync_restart PRIVATE
     dinero_consensus   # Required for BlockUtreexoData serialization
     dinero_crypto      # Required for SHA256 and crypto operations
     RocksDB::rocksdb
@@ -15627,6 +15687,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_sync_restart.cpp)
     # Use system GTest to match system GTest headers (from /opt/homebrew/include)
     GTest::gtest
   )
+  # GNU ld resolves archives in order: RocksDB must FOLLOW dinero_consensus
+  # now that consensus no longer exports it (Task 6.1a, review I1).
+  target_link_libraries(test_header_sync_restart PRIVATE RocksDB::rocksdb)
   link_zstd_if_needed(test_header_sync_restart)  # Required for Utreexo compression
   # Explicitly remove vendored GTest interface includes for this target only
   set_target_properties(test_header_sync_restart PROPERTIES
@@ -17784,15 +17847,12 @@ if(TARGET dinero_wallet AND TARGET gtest)
   add_executable(test_escrow_builders_fail_safe
     tests/wallet/test_escrow_builders_fail_safe.cpp
     src/contracts/escrow_contract.cpp
-    src/wallet/taproot_control_block.cpp
-    tests/stubs/mempool_test_stubs.cpp
   )
   add_dependencies(test_escrow_builders_fail_safe gtest dinero_wallet)
   target_link_libraries(test_escrow_builders_fail_safe PRIVATE
     GTest::gtest
     GTest::gtest_main
     dinero_wallet
-    wallet_test_deps
     sqlite3
   )
   target_include_directories(test_escrow_builders_fail_safe BEFORE PRIVATE

@@ -1,4 +1,5 @@
 #include "daemon/services/wallet_service.h"
+#include "storage/chain_db_wallet_view.h"
 #include "daemon/services/logger_service.h"
 #include "daemon/services/config_service.h"
 #include "daemon/services/chainstate_service.h"
@@ -665,11 +666,12 @@ bool WalletService::RecoverActiveWalletFromSnapshotIfNeeded(std::string* error, 
         const uint32_t tip_height = chainstate_->getBlockHeight();
         if (base_height < tip_height) {
             auto* chain_db = chainstate_->GetChainDB();
-            if (!chain_db || !wallet_mgr_->rescanBlockchain(
+            std::optional<dinero::storage::ChainDbWalletView> chain_view;
+            if (chain_db) chain_view.emplace(*chain_db, block_storage_);
+            if (!chain_view || !wallet_mgr_->rescanBlockchain(
                     static_cast<int>(base_height + 1),
                     /*gap_limit=*/20,
-                    chain_db,
-                    block_storage_)) {
+                    &*chain_view)) {
                 if (error) *error = "post-snapshot wallet replay failed";
                 return false;
             }

@@ -9,7 +9,7 @@
 namespace dinero {
 
 // Forward declarations
-class ChainDB;
+namespace wallet { class IWalletChainView; }
 
 /**
  * @brief Phase W.2.4: Reorg Detection and Visibility
@@ -64,12 +64,12 @@ public:
      * The wallet state machine should handle balance updates in response
      * to the emitted ReorgEvent.
      *
-     * @param chain_db Chain database (for tip hash and height)
+     * @param chain_view Wallet chain view (for tip hash and height)
      * @param current_time_ms Current timestamp
      * @return ReorgEvent if reorg detected, nullopt otherwise
      */
     std::optional<ReorgEvent> CheckForReorg(
-        const ChainDB* chain_db,
+        const wallet::IWalletChainView* chain_view,
         uint64_t current_time_ms
     );
 
@@ -147,11 +147,11 @@ private:
     /**
      * @brief Detect reorg by comparing chain tips
      *
-     * @param chain_db Chain database
+     * @param chain_view Wallet chain view
      * @param current_time_ms Current timestamp
      * @return Reorg depth if detected, 0 otherwise
      */
-    int DetectReorgDepth(const ChainDB* chain_db, uint64_t current_time_ms);
+    int DetectReorgDepth(const wallet::IWalletChainView* chain_view, uint64_t current_time_ms);
 
     // Last known chain tip hash (to detect reorgs)
     std::string last_tip_hash_;

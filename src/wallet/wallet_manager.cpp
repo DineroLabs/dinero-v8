@@ -17,7 +17,6 @@
 #include "consensus/chainparams.h"       // For GetActiveChain
 #include "wallet/descriptor_store.h"  // Phase 3C: For descriptor-based address generation
 // #include "lightning/lightning_service.h"  // DISABLED: Lightning is standalone
-#include "storage/archival_block_reader.h"
 #include "sqlite_open.h"
 #include "sqlite_txn.h"
 #include "common/logger.h"
@@ -50,7 +49,6 @@
 #include "wallet/key_identity.h"  // Week 1 Day 2: KeyID for descriptor wallet
 #include "wallet/key_origin.h"    // Week 1 Day 2: KeyOriginInfo for descriptor wallet
 #include "address/addr_codec.h"
-#include "daemon/mempool.h"
 #include "dinero/core/common/AddressCodec.h"  // For P2TR address encoding
 #include "external/bech32/bech32.hpp"  // For Bech32/Bech32m encoding
 #include "primitives/block.h"    // Phase 3D: For Block structure in wallet notifications
@@ -64,24 +62,7 @@
 #include <direct.h>
 #endif
 
-// Forward declare coinbase maturity functions to avoid namespace conflicts
-namespace dinero {
-    class CoinbaseMaturity {
-    public:
-        static constexpr uint32_t COINBASE_MATURITY = 100;
-        static bool isCoinbaseMature(uint32_t coinbase_height, uint32_t current_height) {
-            if (current_height < coinbase_height) return false;
-            uint32_t confirmations = current_height - coinbase_height + 1;
-            return confirmations >= COINBASE_MATURITY;
-        }
-        static uint32_t getBlocksUntilMature(uint32_t coinbase_height, uint32_t current_height) {
-            if (isCoinbaseMature(coinbase_height, current_height)) return 0;
-            if (current_height < coinbase_height) return COINBASE_MATURITY;
-            uint32_t confirmations = current_height - coinbase_height + 1;
-            return COINBASE_MATURITY - confirmations;
-        }
-    };
-}
+#include "consensus/coinbase_maturity.h"
 #include <sqlite3.h>
 #include <stdexcept>
 #include <sstream>
@@ -90,7 +71,7 @@ namespace dinero {
 #include <cctype>
 #include <chrono>
 #include <set>                    // For rescanBlockchain watch_scripts matching
-#include "storage/chain_db.h"     // For rescanBlockchain ChainDB access
+#include "wallet/node_interfaces.h"  // Rescan reads the chain through IWalletChainView
 #include "crypto/dinero_crypto_minimal.h"
 
 namespace dinero {
@@ -6188,7 +6169,7 @@ void WalletManager::checkUnlockTimeout() {
 
 // UTXO management for PSBT creation
 std::vector<WalletManager::WalletUTXO> WalletManager::listUnspentUTXOs(
-    int min_confirmations, int max_confirmations, const Mempool* mempool) const {
+    int min_confirmations, int max_confirmations, const wallet::IWalletMempoolView* mempool) const {
     auto lease = const_cast<WalletManager&>(*this).AcquireDatabaseLease();
     if (!db_ || current_wallet_id_ <= 0)
         throw std::runtime_error("Wallet UTXO inventory unavailable");
@@ -6314,7 +6295,7 @@ std::vector<WalletManager::WalletUTXO> WalletManager::listUnspentUTXOs(
                 utxo.is_confidential = coin->is_confidential;
             }
         }
-        if (mempool && mempool->isOutputSpentInMempool(
+        if (mempool && mempool->IsOutputSpent(
                 OutPoint(TxId(uint256::FromHexUnsafe(utxo.txid)), utxo.vout))) continue;
         if (utxo.amount_una > 0) utxos.push_back(std::move(utxo));
     }
@@ -6339,7 +6320,7 @@ std::vector<WalletManager::WalletUTXO> WalletManager::listUnspentUTXOs(
             continue; // Also preserve an ordinary spent row; never resurrect it.
         }
         checked(found,SQLITE_DONE);
-        if(mempool&&mempool->isOutputSpentInMempool(OutPoint(TxId(uint256::FromHexUnsafe(candidate.txid)),candidate.vout)))continue;
+        if(mempool&&mempool->IsOutputSpent(OutPoint(TxId(uint256::FromHexUnsafe(candidate.txid)),candidate.vout)))continue;
         utxos.push_back(std::move(candidate));
     }
     return utxos;
@@ -7478,9 +7459,8 @@ WalletManager::WalletScanStatus WalletManager::GetScanStatus(uint32_t chain_heig
 
 bool WalletManager::rescanBlockchain(int start_height,
                                      int gap_limit,
-                                     dinero::ChainDB* chain_db,
-                                     dinero::BlockStorage* block_storage) {
-    return RescanBlockchainImpl(start_height, gap_limit, chain_db, block_storage, nullptr, 0);
+                                     const wallet::IWalletChainView* view) {
+    return RescanBlockchainImpl(start_height, gap_limit, view, nullptr, 0);
 }
 
 bool WalletManager::snapshotRecoveryAlreadyApplied(uint32_t height,const std::string& hash) {
@@ -7502,9 +7482,9 @@ bool WalletManager::snapshotRecoveryAlreadyApplied(uint32_t height,const std::st
 }
 
 bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
-                                        ChainDB* chain_db, BlockStorage* block_storage,
+                                        const wallet::IWalletChainView* view,
                                         const SelectedWalletHistory* prepared, uint64_t expected_session) {
-    if (!chain_db && !prepared) return false;
+    if (!view && !prepared) return false;
     std::unique_ptr<DatabaseLease> database_lease;
     try { database_lease = AcquireDatabaseLease(); }
     catch (...) { return false; }
@@ -7554,8 +7534,8 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
             if(prepared->snapshot_&&(prepared->snapshot_->height+1!=prepared->first_height_ ||
                 (!utxo_index_) || wallet_locked_))return false;
         } else {
-            const auto tip = chain_db->getTip();
-            if (!tip.ok() || tip->height < 0) return false;
+            const auto tip = view->GetTip();
+            if (!tip || tip->height < 0) return false;
             tip_height = static_cast<uint32_t>(tip->height);
         }
         start_height = std::max(start_height, 0);
@@ -7635,11 +7615,11 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
             const auto height = static_cast<uint32_t>(cursor);
             std::optional<Block> legacy_body;
             if (!prepared) {
-                const auto hash = chain_db->getBlockHashByHeight(height);
-                if (!hash.ok()) throw std::runtime_error("Block rescan source height unavailable");
-                const auto source = dinero::storage::ReadArchivalBlock(*chain_db, block_storage, *hash);
-                if (!source.ok()) throw std::runtime_error("Block rescan source body unavailable");
-                legacy_body = *source;
+                const auto hash = view->GetBlockHashAtHeight(static_cast<int32_t>(height));
+                if (!hash) throw std::runtime_error("Block rescan source height unavailable");
+                auto source = view->ReadBlock(*hash);
+                if (!source) throw std::runtime_error("Block rescan source body unavailable");
+                legacy_body = std::move(*source);
             }
             const auto& block = prepared ? prepared->blocks_[height-prepared->first_height_] : *legacy_body;
             for (size_t tx_index = 0; tx_index < block.vtx.size(); ++tx_index) {

@@ -30,7 +30,7 @@ namespace consensus {
 class PrecomputedTransactionData;
 
 // Forward declaration - avoid pulling in RocksDB headers
-class CoinsViewCache;
+class ChainStateView;
 
 // ============================================================================
 // Phase 23.1: Transaction Validation Results
@@ -262,7 +262,7 @@ struct TxValidationOutput {
  */
 TxValidationOutput validateTransaction(
     const Transaction& tx,
-    CoinsViewCache& view,
+    const ChainStateView& view,
     const TxValidationContext& ctx,
     bool is_coinbase = false
 );
@@ -338,7 +338,7 @@ TxValidationResult validateOutputs(const Transaction& tx, AmountUna& total_out);
  */
 TxValidationResult validateInputs(
     const Transaction& tx,
-    CoinsViewCache& view,
+    const ChainStateView& view,
     const TxValidationContext& ctx,
     AmountUna& total_in
 );
@@ -360,7 +360,7 @@ TxValidationResult validateInputs(
  */
 bool checkSequenceLocks(
     const Transaction& tx,
-    CoinsViewCache& view,
+    const ChainStateView& view,
     const TxValidationContext& ctx
 );
 

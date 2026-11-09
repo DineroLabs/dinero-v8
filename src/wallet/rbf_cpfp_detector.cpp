@@ -2,7 +2,7 @@
 // Phase W.4.2: RBF & CPFP Capability Detection - Implementation
 
 #include "wallet/rbf_cpfp_detector.h"
-#include "daemon/mempool.h"  // For getMempoolEntry, MempoolEntry
+#include "wallet/node_interfaces.h"  // Mempool observations via IWalletMempoolView (Task 5.3)
 #include "wallet/wallet_manager.h"
 #include "common/logger.h"
 
@@ -68,7 +68,7 @@ RbfCpfpDetector::~RbfCpfpDetector() {
 
 RbfCapability RbfCpfpDetector::CheckRbfCapability(
     const uint256& txid,
-    const Mempool* mempool
+    const wallet::IWalletMempoolView* mempool
 ) const {
     RbfCapability capability;
 
@@ -82,7 +82,7 @@ RbfCapability RbfCpfpDetector::CheckRbfCapability(
     }
 
     // Query mempool for transaction entry
-    auto entry_opt = mempool->getMempoolEntry(txid);
+    auto entry_opt = mempool->GetEntry(txid);
     bool tx_in_mempool = entry_opt.has_value();
 
     if (!tx_in_mempool) {
@@ -97,7 +97,7 @@ RbfCapability RbfCpfpDetector::CheckRbfCapability(
     // Any input with sequence < 0xfffffffe signals RBF
     const auto& entry = *entry_opt;
     bool signals_rbf = false;
-    for (const auto& vin : entry.tx.Historical().vin) {
+    for (const auto& vin : entry.vin()) {
         if (vin.sequence < 0xfffffffe) {
             signals_rbf = true;
             break;
@@ -123,7 +123,7 @@ RbfCapability RbfCpfpDetector::CheckRbfCapability(
 
 bool RbfCpfpDetector::CanBeReplaced(
     const uint256& txid,
-    const Mempool* mempool
+    const wallet::IWalletMempoolView* mempool
 ) const {
     RbfCapability capability = CheckRbfCapability(txid, mempool);
     return capability.can_be_replaced;
@@ -131,14 +131,14 @@ bool RbfCpfpDetector::CanBeReplaced(
 
 uint64_t RbfCpfpDetector::CalculateMinReplacementFee(
     const uint256& txid,
-    const Mempool* mempool
+    const wallet::IWalletMempoolView* mempool
 ) const {
     if (!mempool) {
         return 0;
     }
 
     // Get original transaction fee from mempool
-    auto entry_opt = mempool->getMempoolEntry(txid);
+    auto entry_opt = mempool->GetEntry(txid);
     if (!entry_opt) {
         return 0;  // Transaction not in mempool
     }
@@ -165,7 +165,7 @@ uint64_t RbfCpfpDetector::CalculateMinReplacementFee(
 CpfpCapability RbfCpfpDetector::CheckCpfpCapability(
     const uint256& txid,
     const WalletManager* wallet,
-    const Mempool* mempool
+    const wallet::IWalletMempoolView* mempool
 ) const {
     CpfpCapability capability;
     capability.max_ancestor_count = max_ancestor_count_;
@@ -179,7 +179,7 @@ CpfpCapability RbfCpfpDetector::CheckCpfpCapability(
     }
 
     // Check if transaction exists in mempool
-    auto entry_opt = mempool->getMempoolEntry(txid);
+    auto entry_opt = mempool->GetEntry(txid);
     bool tx_in_mempool = entry_opt.has_value();
 
     if (!tx_in_mempool) {
@@ -251,14 +251,14 @@ std::vector<SpendableOutput> RbfCpfpDetector::FindSpendableOutputs(
 
 bool RbfCpfpDetector::IsWithinPackageLimits(
     const uint256& txid,
-    const Mempool* mempool
+    const wallet::IWalletMempoolView* mempool
 ) const {
     if (!mempool) {
         return false;
     }
 
     // Query mempool for transaction entry
-    auto entry_opt = mempool->getMempoolEntry(txid);
+    auto entry_opt = mempool->GetEntry(txid);
     if (!entry_opt) {
         return false;  // Not in mempool
     }
@@ -289,7 +289,7 @@ bool RbfCpfpDetector::IsWithinPackageLimits(
 RescueStrategy RbfCpfpDetector::DetermineRescueStrategy(
     const uint256& txid,
     const WalletManager* wallet,
-    const Mempool* mempool
+    const wallet::IWalletMempoolView* mempool
 ) const {
     RescueStrategy strategy;
 

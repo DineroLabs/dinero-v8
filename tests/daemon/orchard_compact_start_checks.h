@@ -104,7 +104,8 @@ TEST(OrchardCompactStart, MetadataAbsenceChecksSqlErrorsAndBorrowedTransaction) 
     ASSERT_TRUE(index.SetMetadata("borrowed","retain transaction"));
     ASSERT_TRUE(index.RollbackTransaction());EXPECT_FALSE(index.GetMetadata("borrowed"));
     EXPECT_EQ(index.GetMetadata("unrelated"),"preserve");
-    sqlite3* raw=nullptr;ASSERT_EQ(sqlite3_open(f.WalletPath().c_str(),&raw),SQLITE_OK);
+    // path::c_str() is const wchar_t* on Windows; sqlite3_open takes UTF-8.
+    sqlite3* raw=nullptr;ASSERT_EQ(sqlite3_open(f.WalletPath().string().c_str(),&raw),SQLITE_OK);
     std::unique_ptr<sqlite3,decltype(&sqlite3_close)> connection(raw,sqlite3_close);
     ASSERT_EQ(sqlite3_exec(raw,"DROP TABLE utxo_metadata",nullptr,nullptr,nullptr),SQLITE_OK);
     EXPECT_THROW(index.RequireMetadataAbsent({"reorg_in_progress"}),std::exception);

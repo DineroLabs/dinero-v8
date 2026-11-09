@@ -11,7 +11,7 @@
 
 // Forward declarations
 namespace dinero {
-    class Mempool;
+    namespace wallet { class IWalletMempoolView; }
     class WalletManager;
     struct TxInclusionStatus;
     struct RescueStrategy;
@@ -164,7 +164,7 @@ public:
         const uint256& txid,
         const TxInclusionStatus& inclusion_status,
         const RescueStrategy& rescue_strategy,
-        const Mempool* mempool = nullptr,
+        const wallet::IWalletMempoolView* mempool = nullptr,
         const WalletManager* wallet = nullptr,
         uint32_t target_blocks = 1  // Default: next block
     ) const;
@@ -182,7 +182,7 @@ public:
         const uint256& txid,
         const RescueStrategy& rescue_strategy,
         uint64_t target_feerate,
-        const Mempool* mempool = nullptr
+        const wallet::IWalletMempoolView* mempool = nullptr
     ) const;
 
     /**
@@ -199,7 +199,7 @@ public:
         const uint256& txid,
         const RescueStrategy& rescue_strategy,
         uint64_t target_feerate,
-        const Mempool* mempool = nullptr,
+        const wallet::IWalletMempoolView* mempool = nullptr,
         const WalletManager* wallet = nullptr
     ) const;
 
@@ -216,7 +216,7 @@ public:
      */
     uint64_t EstimateFeeRate(
         uint32_t target_blocks,
-        const Mempool* mempool = nullptr
+        const wallet::IWalletMempoolView* mempool = nullptr
     ) const;
 
     /**
@@ -228,7 +228,7 @@ public:
      */
     uint32_t EstimateConfirmationBlocks(
         uint64_t feerate,
-        const Mempool* mempool = nullptr
+        const wallet::IWalletMempoolView* mempool = nullptr
     ) const;
 
     /**
@@ -237,7 +237,7 @@ public:
      * @param mempool Mempool instance
      * @return Minimum fee rate to enter mempool (sat/vB)
      */
-    uint64_t GetMempoolMinFeeRate(const Mempool* mempool = nullptr) const;
+    uint64_t GetMempoolMinFeeRate(const wallet::IWalletMempoolView* mempool = nullptr) const;
 
     // ========================================================================
     // Cost Analysis

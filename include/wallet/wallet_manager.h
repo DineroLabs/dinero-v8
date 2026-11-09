@@ -46,16 +46,13 @@ struct Block;
 struct Transaction;
 struct UnsignedTransaction;
 class WalletManager;
-class Mempool;
 class ILogger;  // Dependency injection for logging
 class UTXOIndex;  // UTXO indexing for address registration
-class ChainDB;  // Chain database for UTXO discovery during rescan
 class uint256;
-class BlockStorage;
 class SelectedWalletHistory;
 class WalletTransactionOwner;
 class ChainstateService;
-namespace wallet { class OrchardAccountDelivery; }
+namespace wallet { class OrchardAccountDelivery; class IWalletChainView; class IWalletMempoolView; }
 
 namespace lightning {
     class LightningService;  // Forward declaration for Lightning integration
@@ -601,7 +598,7 @@ public:
     };
     std::vector<WalletUTXO> listUnspentUTXOs(int min_confirmations = 1,
                                              int max_confirmations = 9999999,
-                                             const Mempool* mempool = nullptr) const;
+                                             const wallet::IWalletMempoolView* mempool = nullptr) const;
     std::vector<WalletUTXO> getUTXOsForAddress(const std::string& address, int min_confirmations = 1) const;
 
     // Phase 35: UTXO Locking (wallet.lockunspent)
@@ -793,8 +790,7 @@ public:
     bool snapshotRecoveryAlreadyApplied(uint32_t height,const std::string& hash);
     bool rescanBlockchain(int start_height = 0,
                           int gap_limit = 20,
-                          dinero::ChainDB* chain_db = nullptr,
-                          dinero::BlockStorage* block_storage = nullptr);
+                          const wallet::IWalletChainView* view = nullptr);
 
     // A single UTXO-set coin to match against this wallet's watch_scripts.
     struct UtxoSetEntry {
@@ -1147,7 +1143,8 @@ private:
     friend struct WalletInitialOwnerTestAccess;
     friend struct WalletOrchardCatalogTestAccess;
     friend struct WalletUnlockOwnerTestAccess;
-    bool RescanBlockchainImpl(int start_height, int gap_limit, ChainDB*, BlockStorage*,
+    bool RescanBlockchainImpl(int start_height, int gap_limit,
+                              const wallet::IWalletChainView*,
                               const SelectedWalletHistory*, uint64_t expected_session);
     // Sole producer is the selected service's checked frozen-base capture.
     // Separate DATA table; no utxos, progress, tip or account-owner updates.

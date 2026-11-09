@@ -6,6 +6,10 @@
 
 add_library(dinero_chainstate STATIC
   ${CMAKE_SOURCE_DIR}/src/storage/chain_db.cpp             # ChainDB (RocksDB backend)
+  ${CMAKE_SOURCE_DIR}/src/storage/chain_db_wallet_view.cpp # Wallet chain view over ChainDB (Task 5.2)
+  ${CMAKE_SOURCE_DIR}/src/consensus/coins_db.cpp           # CoinsDB (UTXO database backend; moved from consensus, Task 2.1)
+  ${CMAKE_SOURCE_DIR}/src/consensus/coins_view_cache.cpp   # CoinsViewCache (L1 UTXO cache; moved from consensus, Task 2.1)
+  ${CMAKE_SOURCE_DIR}/src/indexing/utxo_position_index.cpp # Global UTXO -> Utreexo position index (moved from consensus, Task 2.2)
   ${CMAKE_SOURCE_DIR}/src/storage/orchard_state.cpp         # Staged Orchard block state/undo
   ${CMAKE_SOURCE_DIR}/src/storage/legacy_retirement.cpp     # Staged frozen legacy receipt/undo
   ${CMAKE_SOURCE_DIR}/src/storage/persistent_utxo_adapter.cpp  # Bridges consensus to persistence
@@ -16,8 +20,6 @@ add_library(dinero_chainstate STATIC
   # Phase 39: ChainManager DELETED (header, implementation, stubs all removed)
   # All usage migrated to ChainstateService / ChainDB / BlockStorage.
   # startup_validator.cpp temporarily disabled - needs API fixes.
-  ${CMAKE_SOURCE_DIR}/src/wallet/utxo_index.cpp            # UTXO index (uses RocksDB)
-  ${CMAKE_SOURCE_DIR}/src/sqlite_open.cpp                  # Minimal SQLite stub (compatibility)
   ${CMAKE_SOURCE_DIR}/src/consensus/pow_consensus_engine.cpp   # PoW engine (needs ChainDB)
   ${CMAKE_SOURCE_DIR}/src/chainstate/mtp_lookup.cpp        # BIP68 MTP lookup factory
 )
@@ -32,6 +34,8 @@ target_include_directories(dinero_chainstate PUBLIC
 )
 
 target_link_libraries(dinero_chainstate PUBLIC
+  dinero_logging
+  dinero_sqlite
   dinero_consensus
   dinero_crypto
   jsoncpp_static

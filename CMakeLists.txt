@@ -280,6 +280,8 @@ target_include_directories(dinero_address_encoding PUBLIC
   ${CMAKE_SOURCE_DIR}
   ${CMAKE_SOURCE_DIR}/src
 )
+# Task 2.7: declare the consensus dependency its sources already use.
+target_link_libraries(dinero_address_encoding PUBLIC dinero_consensus)
 
 # Hardware wallet mock signing guard.
 include(cmake/HardwareWalletMock.cmake)
@@ -541,6 +543,19 @@ set(PROJECT_VERSION "\"${PROJECT_VERSION}\"")
 set(GIT_HASH "\"${GIT_HASH}\"")
 set(BUILD_TIME "\"${BUILD_TIME}\"")
 
+# Logger: its own static library so every target that logs declares it
+# instead of compiling src/common/logger.cpp into itself.
+add_library(dinero_logging STATIC src/common/logger.cpp)
+target_include_directories(dinero_logging PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_compile_features(dinero_logging PUBLIC cxx_std_20)
+
+# SQLite open helper: one shared static library, so wallet and chainstate
+# link it instead of compiling src/sqlite_open.cpp into themselves.
+add_library(dinero_sqlite STATIC src/sqlite_open.cpp)
+target_include_directories(dinero_sqlite PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_compile_features(dinero_sqlite PUBLIC cxx_std_20)
+target_link_libraries(dinero_sqlite PUBLIC sqlite3)
+
 # Core crypto library (minimal, vendored crypto)
 add_library(dinero_crypto STATIC
   src/crypto/sha256.cpp
@@ -576,6 +591,7 @@ add_library(dinero_crypto STATIC
   src/crypto/sha256_arm_shani_wrapper.cpp
   src/crypto/encrypted_key.cpp  # Phase W.1.1: Encrypted key utilities (ParseBase64, SecureZero)
   src/crypto/decrypt_encrypted_key.cpp  # Phase W.1.1: Encrypted key decryption
+  src/crypto/pbkdf2.cpp
 )
 
 # Enable ARM Crypto Extensions on ARM64 platforms
@@ -599,7 +615,7 @@ target_include_directories(dinero_crypto PUBLIC
 # Declare the dependency on the target so its configured headers and static
 # archive travel together; a source-tree header copy must never supply this
 # dependency implicitly.
-target_link_libraries(dinero_crypto PUBLIC OpenSSL::Crypto)
+target_link_libraries(dinero_crypto PUBLIC OpenSSL::Crypto dinero_logging secp256k1)  # hd_keychain, extended_pubkey, dinero_crypto_minimal call secp256k1_*
 
 # macOS Security framework is required because dinero_crypto_minimal.cpp
 # calls SecRandomCopyBytes (Apple's CSPRNG). Declared INTERFACE so every
@@ -731,6 +747,18 @@ if(ENABLE_LIGHTNING)
 endif() # ENABLE_LIGHTNING
 
 # RPC handlers library (includes GUI-compatible handlers)
+# V7 post-quantum wallet RPC handlers as their own small library (Task 2.5
+# follow-up, Linux qualification fix 2026-11-07): consumers that need ONLY
+# these handlers (wallet tests, pq tools) link this instead of the full RPC
+# monolith, whose other members pull dinero_core objects that GNU ld cannot
+# resolve outside the daemon executable.
+add_library(dinero_pq_wallet_handlers STATIC src/rpc/v7_pq_handlers.cpp)
+target_include_directories(dinero_pq_wallet_handlers PUBLIC
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+target_compile_features(dinero_pq_wallet_handlers PUBLIC cxx_std_20)
+target_link_libraries(dinero_pq_wallet_handlers PUBLIC
+  dinero_wallet dinero_pq OpenSSL::Crypto)
+
 add_library(dinero_rpc_handlers STATIC
   src/daemon/rpc/wallet_gui_handlers.cpp
   src/daemon/rpc/wallet_import_handlers.cpp  # Phase W.1.1: Wallet import/rescan (importmnemonic RPC)
@@ -846,7 +874,6 @@ add_library(dinero_rpc_handlers STATIC
   src/rpc/logs_rpc_handlers_context.cpp  # logs.recent, logs.services, logs.tail (Unified log aggregator)
   src/rpc/v7_pq_rpc_json.cpp             # Phase 4c.3.1: V7 post-quantum wallet RPC JSON adapters (getnewp2mraddress, listp2mraddresses, signp2mr)
   src/rpc/shielded_rpc_json.cpp          # V7 shielded pool RPCs: wallet.shield, wallet.unshield, wallet.shieldedbalance
-  # NOTE: src/rpc/v7_pq_handlers.cpp is part of dinero_pq (src/consensus/pq/CMakeLists.txt) — linked via target_link_libraries(... dinero_pq)
   src/dpi/dpi_protocol.cpp               # DPI Phase 1: Payment Intent protocol (serialize, verify, tagged hash)
   src/rpc/dpi_rpc_handlers.cpp           # DPI Phase 1: RPC handlers (createinvoice, payinvoice, verifypackage, checkconflicts)
   # DISABLED: Payroll feature (experimental Lightning-based payroll with ZK privacy)
@@ -899,6 +926,7 @@ target_include_directories(dinero_rpc_handlers PUBLIC
 )
 target_link_libraries(dinero_rpc_handlers PRIVATE
   dinero_core      # Needed for address_validator.cpp (IsValidDineroAddress)
+  dinero_pq_wallet_handlers  # v7_pq_handlers.cpp lives there (Task 2.5 follow-up)
   dinero_wallet
   dinero_crypto
   dinero_pq        # Phase 4c.3.1: V7 post-quantum wallet RPC handlers (v7_pq_handlers.cpp, v7_pq_rpc_json.cpp)
@@ -1162,11 +1190,15 @@ add_library(dinero_core STATIC
   src/network/tor_runtime_controller.cpp
   src/network/embedded_tor_process.cpp
 
+  # Node-side sync/fee diagnostics (moved from the wallet, Task 6.1)
+  src/wallet/wallet_sync_status.cpp
+  src/wallet/slow_reason_analyzer.cpp
+  src/wallet/wallet_fee_bump_hooks.cpp
+
   # Common utilities
-  src/common/logger.cpp
+  src/consensus/global_utxo_set_impl.cpp  # GlobalUTXOSet implementation (moved from consensus, Task 2.3)
   src/common/json_logger.cpp
   src/common/logger_router.cpp
-  src/common/address_script_builder.cpp
   src/common/config_manager.cpp
   src/util/ser.cpp  # Compact size varint serialization
 
@@ -1251,6 +1283,7 @@ set_property(SOURCE src/daemon/runtime_block_reader.cpp src/daemon/orchard_compa
 # pool accounting does not depend on core/daemon code; no reverse archive edge.
 
 target_link_libraries(dinero_core PUBLIC
+  dinero_logging
   dinero_address_encoding
   dinero_crypto
   dinero_chainstate
@@ -1398,4 +1431,11 @@ include(cmake/OptionalComponents.cmake)
 option(DINERO_BUILD_ORCHARD_BACKEND "Build the staged Orchard backend" OFF)
 if(DINERO_BUILD_ORCHARD_BACKEND)
   add_subdirectory(rust/orchard_backend)
+endif()
+
+# Wallet/consensus separation gate probes (K1/W1 forced-link executables and
+# their ctests, label "separation"). Off by default; targets are EXCLUDE_FROM_ALL.
+option(DINERO_SEPARATION_GATES "Build wallet/consensus separation gate probes" OFF)
+if(DINERO_SEPARATION_GATES)
+  add_subdirectory(tests/separation)
 endif()

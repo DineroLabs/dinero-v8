@@ -12,11 +12,11 @@ target_compile_features(dinero_wallet_catalog PUBLIC cxx_std_20)
 target_link_libraries(dinero_wallet_catalog PUBLIC OpenSSL::Crypto sqlite3)
 
 add_library(dinero_wallet STATIC
-  ${CMAKE_SOURCE_DIR}/src/common/logger.cpp         # Logger used by wallet code
   ${CMAKE_CURRENT_SOURCE_DIR}/address.cpp
   ${CMAKE_SOURCE_DIR}/src/common/AddressCodec.cpp  # Taproot address encoding (P2TR)
   ${CMAKE_SOURCE_DIR}/src/address/addr_codec.cpp    # Taproot address decoding and scriptPubKey creation
   ${CMAKE_SOURCE_DIR}/src/address/addr_types.cpp    # Address type definitions
+  ${CMAKE_SOURCE_DIR}/src/common/address_script_builder.cpp  # BuildScriptPubKeyFromAddress (moved from core, Task 4.2)
   ${CMAKE_CURRENT_SOURCE_DIR}/wallet_manager.cpp  # Modern HD wallet with BIP84 (Nov 2025)
   ${CMAKE_CURRENT_SOURCE_DIR}/key_identity.cpp    # Week 1: KeyID-based wallet identity
   ${CMAKE_CURRENT_SOURCE_DIR}/key_origin.cpp      # Week 1: KeyOriginInfo for descriptor wallet
@@ -37,6 +37,7 @@ add_library(dinero_wallet STATIC
   # Phase W.1.1: Rescan logic moved to wallet_worker.cpp (reuses existing block processing)
   # src/wallet/transaction.cpp REMOVED: duplicate of src/primitives/transaction.cpp (now in dinero_consensus)
   # Wallet uses Transaction from dinero_consensus (already linked)
+  ${CMAKE_CURRENT_SOURCE_DIR}/utxo_index.cpp       # Wallet UTXO index (SQLite; moved from chainstate, Task 4.3)
   ${CMAKE_CURRENT_SOURCE_DIR}/transaction_deserializer.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/coin_selection.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/bip143_signer.cpp
@@ -48,6 +49,7 @@ add_library(dinero_wallet STATIC
   ${CMAKE_CURRENT_SOURCE_DIR}/intent_descriptor.cpp  # B3: Intent descriptor for SigHash v1 ext_commitment
   ${CMAKE_CURRENT_SOURCE_DIR}/policy_descriptor.cpp  # B2: PolicyDescriptor + policy_id computation
   ${CMAKE_CURRENT_SOURCE_DIR}/taproot_template_builder.cpp  # B2: Taproot template tree builder (PROTECTED/ESCROW)
+  ${CMAKE_CURRENT_SOURCE_DIR}/taproot_control_block.cpp     # TaprootControlBlock + buildScriptPathWitness (moved from test-only compiles, Task 4.4)
   ${CMAKE_CURRENT_SOURCE_DIR}/swap/htlc.cpp  # DIN<->BTC swap HTLC builders (docs/design/din-btc-atomic-swaps.md)
   ${CMAKE_CURRENT_SOURCE_DIR}/swap/offer.cpp  # DIN<->BTC swap offer/accept messages
   ${CMAKE_CURRENT_SOURCE_DIR}/swap/fee_ladder.cpp  # pre-signed swap fee ladders
@@ -72,16 +74,13 @@ add_library(dinero_wallet STATIC
   # Hardware wallet files added conditionally below (not available on iOS)
   # Trezor files conditionally added below (ENABLE_TREZOR)
   ${CMAKE_CURRENT_SOURCE_DIR}/recipient_descriptor.cpp  # DecodePaymentTarget — structured address resolution
-  ${CMAKE_CURRENT_SOURCE_DIR}/wallet_sync_status.cpp  # Phase W.2.1: Truthful wallet sync UX
   ${CMAKE_CURRENT_SOURCE_DIR}/shielded_wallet_runtime.cpp  # v5 shielded note runtime + block sync (wallet-side only)
   ${CMAKE_CURRENT_SOURCE_DIR}/shielded_hardware_wallet.cpp # hardware-wallet outgoing-view trust boundary
   ${CMAKE_CURRENT_SOURCE_DIR}/sync_eta_estimator.cpp  # Phase W.2.2: Honest ETA estimation
   ${CMAKE_CURRENT_SOURCE_DIR}/sync_progress_tracker.cpp  # Phase W.2.2: Phase-aware progress tracking
   ${CMAKE_CURRENT_SOURCE_DIR}/reorg_detector.cpp  # Phase W.2.4: Reorg detection and visibility
-  ${CMAKE_CURRENT_SOURCE_DIR}/slow_reason_analyzer.cpp  # Phase W.2.5: Slow reason analyzer
   ${CMAKE_CURRENT_SOURCE_DIR}/rbf_cpfp_detector.cpp  # Phase W.4.2: RBF & CPFP capability detection
   ${CMAKE_CURRENT_SOURCE_DIR}/fee_bump_engine.cpp  # Phase W.4.3: Fee bump recommendation engine
-  ${CMAKE_CURRENT_SOURCE_DIR}/wallet_fee_bump_hooks.cpp  # Phase W.4.5: Wallet fee bump UX hooks
   # Phase 33: Full Wallet Activation
   ${CMAKE_CURRENT_SOURCE_DIR}/wallet_features.cpp     # Wallet feature flags (all features enabled)
   # Milestone 12.2: Formal UTXO State Model (v0.12.0)
@@ -102,11 +101,17 @@ add_library(dinero_wallet STATIC
   ${CMAKE_SOURCE_DIR}/src/assets/asset_proof.cpp        # Merkle proofs for asset operations
   ${CMAKE_SOURCE_DIR}/src/assets/asset_transfer.cpp     # Asset transfer protocol
   ${CMAKE_SOURCE_DIR}/src/assets/asset_registry.cpp     # Global asset registry (SQLite)
-  ${CMAKE_SOURCE_DIR}/src/crypto/pbkdf2.cpp
   ${CMAKE_SOURCE_DIR}/src/crypto/wallet_crypto.cpp  # Wallet encryption (Argon2id + AES-256-GCM)
   # Wallet UX Abstractions (Phase CT.2 - Unified API layer)
   ${CMAKE_CURRENT_SOURCE_DIR}/unified_balance_service.cpp # UnifiedBalanceService: combined transparent + CT balance
   ${CMAKE_CURRENT_SOURCE_DIR}/address_factory.cpp         # AddressFactory: generate any address type
+  # Task 2.5: wallet-side PQ sources moved out of dinero_pq
+  ${CMAKE_CURRENT_SOURCE_DIR}/pq_derivation.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/secure_keypair.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/aead_seed.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/v7_p2mr_store.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/wallet_key_provider.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/p2mr_signing.cpp
 )
 
 target_include_directories(dinero_wallet PUBLIC
@@ -116,6 +121,8 @@ target_include_directories(dinero_wallet PUBLIC
 )
 
 target_link_libraries(dinero_wallet PUBLIC
+  dinero_logging
+  dinero_sqlite
   dinero_wallet_catalog
   dinero_address_encoding
   dinero_bip32

@@ -100,6 +100,24 @@ din::Json rpc_context_wallet_decoderawtransaction(const ExecutionContext&, const
 #include <future>
 #ifdef _WIN32
 #include <process.h>
+#include <cstring>
+#include <random>
+// POSIX mkdtemp for the *_checks.h fixture headers below: MSVC has no
+// equivalent. Same contract: replaces the trailing XXXXXX, creates the
+// directory, returns the template or nullptr. create_directory fails on
+// an existing name, preserving the no-reuse guarantee.
+static char* mkdtemp(char* tmpl) {
+    const size_t len = std::strlen(tmpl);
+    if (len < 6 || std::strcmp(tmpl + len - 6, "XXXXXX") != 0) return nullptr;
+    static const char alphabet[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+    std::random_device rd;
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        for (size_t i = len - 6; i < len; ++i) tmpl[i] = alphabet[rd() % 36];
+        std::error_code ec;
+        if (std::filesystem::create_directory(tmpl, ec)) return tmpl;
+    }
+    return nullptr;
+}
 #else
 #include <unistd.h>
 #endif
@@ -1108,7 +1126,14 @@ int main(int argc, char** argv) {
 #include "replay_forest_partitions_checks.h"
 
 #include "orchard_canonical_catalog_checks.h"
+#ifndef _WIN32
+// POSIX-only coverage: these cases exercise chmod/fchmod/fsync/O_NOFOLLOW
+// permission bits and symlink/hardlink attack surfaces with POSIX
+// semantics. They have never been registered on Windows (the TU did not
+// compile there before the mkdtemp shim above); porting them is a
+// separate task, not a build fix.
 #include "orchard_snapshot_runtime_checks.h"
+#endif
 #include "orchard_compact_service_checks.h"
 #include "orchard_compact_handoff_checks.h"
 #include "orchard_compact_undo_handoff_checks.h"

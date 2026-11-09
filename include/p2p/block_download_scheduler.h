@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "common/sync_phase.h"  // SyncPhase (moved there, Task 6.1)
 #include "network/types.h"
 #include "primitives/uint256.h"
 #include <algorithm>
@@ -17,15 +18,7 @@
 
 namespace dinero {
 
-/**
- * Sync phase (Phase G.12)
- * Determines scheduling behavior based on sync state
- */
-enum class SyncPhase {
-    IBD,           // Initial Block Download - aggressive parallelism
-    CATCHING_UP,   // Behind but syncing - balanced approach
-    STEADY_STATE   // Caught up - conservative, network-friendly
-};
+// SyncPhase moved verbatim to common/sync_phase.h (Task 6.1).
 
 /**
  * Block download request

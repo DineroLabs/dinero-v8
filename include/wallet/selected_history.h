@@ -1,6 +1,6 @@
 #pragma once
 #include "primitives/block.h"
-#include "daemon/services/snapshot_wallet_source.h"
+#include "wallet/snapshot_wallet_types.h"
 #include <optional>
 #include <set>
 #include <vector>
