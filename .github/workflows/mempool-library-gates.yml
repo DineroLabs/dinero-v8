@@ -93,6 +93,16 @@ jobs:
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
         with:
           arch: x64
+      - name: Keep the pinned CMake ahead of Visual Studio's copy
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $scripts = python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
+          "$scripts" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          $env:PATH = $scripts + [IO.Path]::PathSeparator + $env:PATH
+          if (@(cmake --version)[0] -ne "cmake version $env:MP_CMAKE_VERSION") {
+            throw 'Windows runner did not select the pinned CMake'
+          }
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           toolchain: stable
@@ -141,7 +151,8 @@ jobs:
           cmake -S depends -B depends/build -G Ninja
           cmake --build depends/build --parallel 4
           cat depends/current-prefix.env >> "$GITHUB_ENV"
-      - name: Configure the real library and gates
+      - name: Configure the real library and gates on POSIX
+        if: runner.os != 'Windows'
         shell: bash
         env:
           MP_ORCHARD: ${{ matrix.orchard }}
@@ -154,6 +165,28 @@ jobs:
             -DBUILD_NODECORE=ON -DENABLE_TESTS=ON \
             -DDINERO_BUILD_ORCHARD_BACKEND="$MP_ORCHARD" \
             -DDINERO_MEMPOOL_SEPARATION_GATES=ON
+      - name: Configure the real library and gates on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MP_ORCHARD: ${{ matrix.orchard }}
+        run: |
+          New-Item -ItemType Directory -Force 'build-mempool/.cmake/api/v1/query' | Out-Null
+          New-Item -ItemType File -Force 'build-mempool/.cmake/api/v1/query/codemodel-v2' | Out-Null
+          $configureArgs = @(
+            '-S', '.', '-B', 'build-mempool', '-G', 'Ninja',
+            '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON',
+            '-DCMAKE_C_COMPILER=cl', '-DCMAKE_CXX_COMPILER=cl',
+            '-DDINERO_USE_VENDORED_DEPS=ON', '-DENABLE_GRPC=OFF',
+            '-DBUILD_NODECORE=ON', '-DENABLE_TESTS=ON',
+            '-DDINERO_WINDOWS_SERVER_BUILD=ON', '-DDINERO_BUILD_MINER=OFF',
+            '-DDINERO_MEMPOOL_SEPARATION_GATES=ON',
+            "-DDINERO_BUILD_ORCHARD_BACKEND=$env:MP_ORCHARD",
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake"
+          )
+          if ($env:MP_ORCHARD -eq 'ON') { $configureArgs += '-DDINERO_ORCHARD_WINDOWS_QUALIFICATION=ON' }
+          & cmake @configureArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build daemon, supported NodeCore, standalone and adapter consumers
         shell: bash
         env:
