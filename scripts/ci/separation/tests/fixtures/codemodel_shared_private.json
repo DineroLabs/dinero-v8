@@ -1,0 +1,9 @@
+{
+  "_doc": "root links shared S; S links sqlite3 PRIVATE (not in its interface) and zlib PUBLIC.",
+  "targets": {
+    "root": {"type": "STATIC_LIBRARY", "link": ["S"], "sources": ["src/consensus/root.cpp"]},
+    "S": {"type": "SHARED_LIBRARY", "link": ["sqlite3", "zlib"], "ilink": ["zlib"], "sources": ["src/s/s.cpp"]},
+    "sqlite3": {"type": "STATIC_LIBRARY", "sources": ["third_party/sqlite/sqlite3.c"]},
+    "zlib": {"type": "STATIC_LIBRARY", "sources": ["third_party/zlib/z.c"]}
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "_doc": "Externals as they appear in real replies: an imported abstract target, a raw link fragment, include dirs, an INTERFACE abstract target.",
+  "targets": {
+    "root": {"type": "STATIC_LIBRARY",
+      "link": ["RocksDB::rocksdb", {"fragment": "-lsqlite3"}, "lightning_core_static"],
+      "ilink": [{"fragment": "/opt/x/_deps/rocksdb-install/lib/librocksdb.a"}],
+      "includes": ["/repo/third_party/rocksdb/include", "/repo/src/daemon", "/repo/src/daemon/sub"],
+      "sources": ["src/consensus/root.cpp"]}
+  },
+  "abstract": {
+    "RocksDB::rocksdb": {"type": "STATIC_LIBRARY", "imported": true, "nameOnDisk": "librocksdb.a",
+      "artifacts": ["_deps/rocksdb-install/lib/librocksdb.a"], "ilink": [{"fragment": "pthread"}]},
+    "lightning_core_static": {"type": "INTERFACE_LIBRARY"}
+  }
+}
