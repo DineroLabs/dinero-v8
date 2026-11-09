@@ -1,0 +1,14 @@
+[Unit]
+Description=Prepare private compact v6 candidate for native phone qualification
+After=dinero.service
+Requires=dinero.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+Environment=DATADIR=/var/lib/dinero
+Environment=CLI_BIN=/usr/bin/dinero-cli
+ExecStart=/usr/local/libexec/dinero-phone-v6/prepare_phone_v6.sh
+TimeoutStartSec=2400

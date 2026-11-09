@@ -113,6 +113,34 @@ the previous publication. Native import verifies full state, profile, selected
 headers, burial and consensus commitments; transport inspection supplies none
 of that authority. Mainnet v6 cannot be live-qualified before activation/burial.
 
+## Private phone candidate preparation
+
+`prepare_phone_v6.sh` prepares a postactivation compact v6 candidate without
+promoting the public phone endpoint. Install it with the publisher and
+`snapshot_transport.py` in a separate directory. The accompanying
+`dinero-phone-v6-prepare.service` and `.timer` retry every three minutes;
+before H150000 the wrapper performs only a tip query. The publisher keeps its
+candidate while waiting for 288 descendants and runs its normal native import
+gate before writing the private publication.
+
+The compact pending namespace `phone-v6-qualification` is separate from the
+root `pending.*` files owned by the H149999 capture. Both use the existing
+publisher lock, so exports cannot overlap. The default private root is
+`/var/lib/dinero/snapshot-qualification/compact-v6`; the wrapper refuses a
+`/var/www` root. No phone endpoint or normal daily timer is changed by this job.
+
+`phone-qualification-required.json` records the exact payload and manifest
+digests after the server import gate. It explicitly leaves iOS and Android
+qualification false. This receipt is **not publication approval**. Before
+promoting those bytes, exercise both updated phone runtimes in disposable
+application/datadir namespaces: fleet-signature and payload verification,
+native import at the exact base, forward selected-tip/accumulator parity, a
+clean stop and cold restart, and refusal of a full-profile or altered artifact.
+Record app/Core identities and payload/manifest digests in each receipt. Then
+promote the exact qualified generation and verify the signatures and digests
+served by all three mirrors. Existing app wallets and chain owners are not
+qualification datadirs.
+
 The job remains an external scheduled/systemd operation. Updating repository
 source does not deploy it, change a fleet timer, rotate keys, publish a snapshot,
 or replace a phone's existing chain database. A fresh snapshot is for fresh

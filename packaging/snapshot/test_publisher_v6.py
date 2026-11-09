@@ -305,4 +305,28 @@ while True:
     def test_phone_publication_requires_signature(self):
         root,_,_,r=self.run_publication(key=False);self.assertNotEqual(r.returncode,0);self.assertEqual((root/'www/latest/retained').read_text(),'previous publication')
 
+    def test_private_compact_candidate_preserves_boundary_pending(self):
+        root,payload,_,env=self.run_publication(prepare_only=True)
+        dumps=root/'data/snapshots'; private=dumps/'phone-v6-qualification';private.mkdir()
+        for name in ('pending.dat','pending.json'):
+            (dumps/name).rename(private/name)
+        boundary=b'retained exact H149999 capture'
+        (dumps/'pending.dat').write_bytes(boundary)
+        (dumps/'pending.json').write_text('{"base_height":149999}')
+        env['SNAPSHOT_COMPACT_PENDING_NAMESPACE']=private.name
+        result=subprocess.run(['bash',str(SCRIPT)],env=env,capture_output=True,text=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual((dumps/'pending.dat').read_bytes(),boundary)
+        self.assertEqual((dumps/'pending.json').read_text(),'{"base_height":149999}')
+        self.assertEqual((root/'www/latest/snapshot.dat').read_bytes(),payload)
+
+    def test_compact_namespace_cannot_escape_or_collide_with_full(self):
+        for namespace in ('../escape','full','/tmp/escape','two/parts'):
+            with self.subTest(namespace=namespace):
+                root,_,_,env=self.run_publication(prepare_only=True)
+                env['SNAPSHOT_COMPACT_PENDING_NAMESPACE']=namespace
+                result=subprocess.run(['bash',str(SCRIPT)],env=env,capture_output=True,text=True,timeout=5)
+                self.assertNotEqual(result.returncode,0)
+                self.assertFalse((root/'configured-gate').exists())
+
 if __name__=='__main__':unittest.main()

@@ -1,0 +1,10 @@
+[Unit]
+Description=Prepare compact v6 phone candidate after activation and burial
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=3min
+Unit=dinero-phone-v6-prepare.service
+
+[Install]
+WantedBy=timers.target

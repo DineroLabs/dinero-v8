@@ -26,6 +26,14 @@ SNAPSHOT_ROOT=$DATADIR/snapshots
 # other's retained candidate while it waits for burial.
 DUMPDIR=$SNAPSHOT_ROOT
 if [ "$SNAPSHOT_PROFILE" = full ]; then DUMPDIR=$SNAPSHOT_ROOT/full; fi
+# A private phone qualification candidate must not consume the exact H149999
+# capture in pending.*. Keep the normal publication namespace unchanged.
+if [ -n "${SNAPSHOT_COMPACT_PENDING_NAMESPACE:-}" ]; then
+    [ "$SNAPSHOT_PROFILE" = compact ] || { echo 'compact pending namespace requires compact profile' >&2; exit 2; }
+    [[ "$SNAPSHOT_COMPACT_PENDING_NAMESPACE" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || { echo 'invalid compact pending namespace' >&2; exit 2; }
+    [ "$SNAPSHOT_COMPACT_PENDING_NAMESPACE" != full ] || { echo 'compact namespace cannot use full' >&2; exit 2; }
+    DUMPDIR=$SNAPSHOT_ROOT/$SNAPSHOT_COMPACT_PENDING_NAMESPACE
+fi
 PUBROOT=${PUBROOT:-/var/www/dinero-snapshots}
 KEY=${KEY:-/etc/dinero-snapshot/ed25519.key}
 CLI=("${CLI_BIN:-dinero-cli}" "-datadir=$DATADIR")
