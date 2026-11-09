@@ -1017,9 +1017,9 @@ set(DINERO_CORE_METRICS_SOURCES
 )
 
 set(DINERO_CORE_POLICY_SOURCES
-  src/policy/mempool_policy.cpp
-  src/policy/rbf_policy.cpp
-  src/policy/fee_estimator.cpp
+
+
+
 )
 
 set(DINERO_CORE_ADDRESS_SOURCES
@@ -1068,14 +1068,6 @@ set(DINERO_CORE_MINING_TEMPLATE_SUPPORT_SOURCES
   src/mining/template_delta_tracker.cpp
 )
 
-set(DINERO_CORE_MEMPOOL_SUPPORT_SOURCES
-  src/mempool/coins_view_mempool.cpp
-  src/mempool/mempool_persistence.cpp
-  src/mempool/fee_estimator.cpp
-  src/mempool/invalid_tx_cache.cpp
-  src/mempool/tx_orphan_pool.cpp
-)
-
 set(DINERO_CORE_DAEMON_EDGE_SERVICE_SOURCES
   src/daemon/services/rbf_policy_service.cpp
   src/daemon/services/block_ingress_service.cpp
@@ -1088,6 +1080,8 @@ set(DINERO_CORE_DAEMON_EDGE_SERVICE_SOURCES
 # This library contains all core business logic that can be tested independently.
 # Excludes: main(), RPC server, gRPC server, WebSocket server
 # Includes: consensus, mining, mempool, services, metrics, daemon context
+include(cmake/MempoolLibrary.cmake)
+
 add_library(dinero_core STATIC
   # Canonical selected-chain maintenance belongs to the core owner, not RPC.
   src/pool/canonical_maintenance.cpp
@@ -1145,14 +1139,14 @@ add_library(dinero_core STATIC
   # Mining subsystem (Phase C - core logic)
   src/mining/block_assembler.cpp
   ${DINERO_CORE_MINING_TEMPLATE_SUPPORT_SOURCES}
-  src/mining/ct_selection_policy.cpp  # CT-specific transaction selection policies
+    # CT-specific transaction selection policies
   src/mining/tx_inclusion_analyzer.cpp  # Phase W.4.1: Transaction inclusion analysis (read-only)
   src/mining/mining_manager_v2.cpp
   # src/mining/mining_manager.cpp  # Phase C: Replaced by mining_manager_v2.cpp (ODR violation fix)
   src/mining/miner.cpp
   src/mining/mining_script_override.cpp
   src/mining/midstate_cache.cpp
-  src/mining/address_validator.cpp  # Phase F.5: Address validation for mining RPC
+    # Phase F.5: Address validation for mining RPC
   src/mining/payout_spec.cpp  # Phase C1: Daemon-defined pool payouts
   src/daemon/mining_safety_gates.cpp
   ${DINERO_CORE_MINING_TELEMETRY_SOURCES}
@@ -1183,7 +1177,6 @@ add_library(dinero_core STATIC
   src/consensus/adapters/wallet_utxo_adapter.cpp  # UTXO adapter for wallet integration
 
   # Mempool
-  ${DINERO_CORE_MEMPOOL_SUPPORT_SOURCES}
 
   # Network relay
   src/network/tor_control.cpp
@@ -1237,7 +1230,7 @@ add_library(dinero_core STATIC
   src/daemon/block_relay_ingress.cpp  # Canonical typed relay adapter
   src/daemon/orchard_network_block.cpp # Typed network routing and completion
   src/daemon/tx_relay_manager.cpp  # Phase G.3: Mempool relay
-  src/daemon/relay_transaction_reader.cpp
+
 
   # Privacy
   ${DINERO_CORE_PRIVACY_SOURCES}
@@ -1439,3 +1432,10 @@ option(DINERO_SEPARATION_GATES "Build wallet/consensus separation gate probes" O
 if(DINERO_SEPARATION_GATES)
   add_subdirectory(tests/separation)
 endif()
+
+option(DINERO_MEMPOOL_SEPARATION_GATES "Build standalone mempool boundary probes" OFF)
+if(DINERO_MEMPOOL_SEPARATION_GATES)
+  add_subdirectory(tests/mempool_separation)
+endif()
+
+include(cmake/MempoolConsumers.cmake)

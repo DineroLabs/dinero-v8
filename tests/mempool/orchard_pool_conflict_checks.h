@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Structural conflict fixtures only. These bodies are not admitted, mined or
 // claimed to have passed proof/signature checks for this synthetic context.
 #include "common/ilogger.h"
@@ -101,7 +102,7 @@ TEST_F(OrchardPoolConflicts, HistoricalBodiesHaveNoOrchardNullifiers) {
     const auto tx=ordinary({},17);const MempoolTransaction body(tx);
     EXPECT_TRUE(body.OrchardNullifiers().empty());
     EXPECT_THROW(MempoolTransaction{}.OrchardNullifiers(),std::logic_error);
-    Mempool pool(&db,&coins);MempoolOrchardConflictTestPeer::Install(pool,{body});
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins);MempoolOrchardConflictTestPeer::Install(pool,{body});
     ConnectedBlockEffects effects;effects.orchard_nullifiers.push_back({});
     EXPECT_EQ(pool.onBlockConnected(effects,111),0U);EXPECT_EQ(ids(pool),std::vector<uint256>{body.GetTxid().AsUint256()});
     EXPECT_EQ(pool.getMempoolEntry(body.GetTxid().AsUint256())->tx.Serialize(),body.Serialize());
@@ -125,7 +126,7 @@ TEST_F(OrchardPoolConflicts, AllActionIdentitiesSurviveBodyCopyAndBlockExtractio
 TEST_F(OrchardPoolConflicts, ConflictAndDescendantsAbandonThenPublish) {
     const auto body=MempoolTransaction::FromOrchard(envelope());ASSERT_GT(body.OutputCount(),0U);
     const auto child=ordinary({{body.GetTxid(),0}},21),grandchild=ordinary({{child.GetTxid(),0}},22),survivor=ordinary({},23);
-    Mempool pool(&db,&coins);MempoolOrchardConflictTestPeer::Install(pool,{body,MempoolTransaction(child),MempoolTransaction(grandchild),MempoolTransaction(survivor)});
+    dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins);MempoolOrchardConflictTestPeer::Install(pool,{body,MempoolTransaction(child),MempoolTransaction(grandchild),MempoolTransaction(survivor)});
     const auto before=ids(pool);const auto fees=pool.getTotalFees();const auto input=body.Inputs().at(0);
     auto effects=conflictEffects();ASSERT_FALSE(effects.orchard_nullifiers.empty());
     effects.orchard_nullifiers.push_back(effects.orchard_nullifiers.front()); // A repeated identity removes one branch once.
@@ -142,7 +143,7 @@ TEST_F(OrchardPoolConflicts, ConflictAndDescendantsAbandonThenPublish) {
 }
 TEST_F(OrchardPoolConflicts, ConfirmationRetainsTransparentChildAndExactBody) {
     const auto body=MempoolTransaction::FromOrchard(envelope());const auto child=ordinary({{body.GetTxid(),0}},24);
-    Mempool pool(&db,&coins);MempoolOrchardConflictTestPeer::Install(pool,{body,MempoolTransaction(child)});
+    dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins);MempoolOrchardConflictTestPeer::Install(pool,{body,MempoolTransaction(child)});
     const auto effects=BuildOrchardConnectedBlockEffects(block(body.Orchard()));
     {auto prepared=pool.prepareBlockConnected(effects,111);EXPECT_EQ(prepared->EvictedCount(),0U);prepared->PublishAfterCommit();}
     EXPECT_EQ(ids(pool),std::vector<uint256>{child.GetTxid().AsUint256()});
@@ -153,7 +154,7 @@ TEST_F(OrchardPoolConflicts, ConfirmationRetainsTransparentChildAndExactBody) {
 }
 TEST_F(OrchardPoolConflicts, PreparationFailurePreservesEntriesIndexesAndRetry) {
     const auto body=MempoolTransaction::FromOrchard(envelope());const auto child=ordinary({{body.GetTxid(),0}},25);
-    Logger logger;Mempool pool(&db,&coins);pool.setLogger(&logger);
+    Logger logger;dinero::ChainDbMempoolView mempool_chain_view_4{&db}; Mempool pool(&mempool_chain_view_4,&coins);pool.setLogger(&logger);
     MempoolOrchardConflictTestPeer::Install(pool,{body,MempoolTransaction(child)});
     const auto before=ids(pool);const auto fees=pool.getTotalFees();const auto effects=conflictEffects();
     logger.fail=true;EXPECT_THROW(pool.prepareBlockConnected(effects,111),std::runtime_error);logger.fail=false;

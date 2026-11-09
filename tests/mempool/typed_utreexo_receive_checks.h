@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 #include "daemon/utreexo_tx_reader.h"
 namespace {
 class TypedUtreexoReceive : public TypedBridgeProofOwner {
@@ -26,7 +27,7 @@ TEST_F(TypedUtreexoReceive, ExactHistoricalAndLegacyWirePublishesWholeCache) {
     const auto decoded=UtreexoTransactionPayload::Decode(*bytes,RelayTransactionReadMode::AvailableFamilies);
     const auto verified=decoded.VerifyInputs(stump(),110);ASSERT_TRUE(verified);
     EXPECT_EQ(verified->Body().Serialize(),body.Serialize());EXPECT_EQ(verified->Wire(),*bytes);
-    Mempool pool(&db,&coins);MempoolOrchardConflictTestPeer::Install(pool,{body});
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins);MempoolOrchardConflictTestPeer::Install(pool,{body});
     EXPECT_FALSE(pool.publishProofPayload(*verified)); // no acknowledged pool tip yet
     pool.onBlockConnected(ConnectedBlockEffects{},110,verified->Root());
     ASSERT_TRUE(pool.publishProofPayload(*verified));
@@ -44,13 +45,13 @@ TEST_F(TypedUtreexoReceive, StaleSnapshotAndDifferentWitnessKeepPriorState) {
     const auto decoded=UtreexoTransactionPayload::Decode(*bytes,RelayTransactionReadMode::AvailableFamilies);
     const auto verified=decoded.VerifyInputs(stump(),110);ASSERT_TRUE(verified);
     auto replacement=tx;replacement.vin[0].witness={{4,5,6}};ASSERT_EQ(replacement.GetTxid(),tx.GetTxid());
-    Mempool mismatch(&db,&coins);MempoolOrchardConflictTestPeer::Install(mismatch,{MempoolTransaction(replacement)});
+    dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool mismatch(&mempool_chain_view_2,&coins);MempoolOrchardConflictTestPeer::Install(mismatch,{MempoolTransaction(replacement)});
     mismatch.onBlockConnected(ConnectedBlockEffects{},110,verified->Root());
     EXPECT_FALSE(mismatch.publishProofPayload(*verified));
     const auto wrong=mismatch.getMempoolEntry(tx.GetTxid().AsUint256());ASSERT_TRUE(wrong);
     EXPECT_TRUE(wrong->cached_utxotx_payload.empty());EXPECT_TRUE(wrong->validated_at_root.empty());
     EXPECT_EQ(wrong->tx.Serialize(),replacement.Serialize());
-    Mempool pool(&db,&coins);MempoolOrchardConflictTestPeer::Install(pool,{body});pool.onBlockConnected(ConnectedBlockEffects{},110,verified->Root());ASSERT_TRUE(pool.publishProofPayload(*verified));
+    dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins);MempoolOrchardConflictTestPeer::Install(pool,{body});pool.onBlockConnected(ConnectedBlockEffects{},110,verified->Root());ASSERT_TRUE(pool.publishProofPayload(*verified));
     uint256 extra;extra.data[0]=224;coins.MutateForestGuarded([&](consensus::UtreexoForest& f){f.add(consensus::HashUTXOForCreationHeight(extra,0,3000,{0x51},111,false));});
     const auto next=stump();pool.onBlockConnected(ConnectedBlockEffects{},111,next.getCommitment());
     EXPECT_FALSE(decoded.VerifyInputs(next,111));EXPECT_FALSE(pool.publishProofPayload(*verified));
@@ -61,7 +62,7 @@ TEST_F(TypedUtreexoReceive, StaleSnapshotAndDifferentWitnessKeepPriorState) {
 }
 TEST_F(TypedUtreexoReceive, WholeMessageAndProofRefusalLeavePoolUntouched) {
     const MempoolTransaction body(ordinary({input(225)},73));install(body);const auto wire=CaptureUtreexoTransactionPayload(body,*bridge);ASSERT_TRUE(wire);
-    Mempool pool(&db,&coins);MempoolOrchardConflictTestPeer::Install(pool,{body});pool.onBlockConnected(ConnectedBlockEffects{},110,stump().getCommitment());
+    dinero::ChainDbMempoolView mempool_chain_view_4{&db}; Mempool pool(&mempool_chain_view_4,&coins);MempoolOrchardConflictTestPeer::Install(pool,{body});pool.onBlockConnected(ConnectedBlockEffects{},110,stump().getCommitment());
     for(size_t length:std::vector<size_t>{0,32,wire->size()-1}) {
         const std::vector<uint8_t> shorter(wire->begin(),wire->begin()+length);
         EXPECT_THROW(UtreexoTransactionPayload::Decode(shorter,RelayTransactionReadMode::AvailableFamilies),std::invalid_argument);
@@ -81,7 +82,7 @@ TEST_F(TypedUtreexoReceive, OrchardInputProofReceiptPreservesFamilyWithoutAdmiss
     const auto verified=decoded.VerifyInputs(stump(),110);ASSERT_TRUE(verified);EXPECT_EQ(verified->Body().Serialize(),body.Serialize());
     EXPECT_THROW(UtreexoTransactionPayload::Decode(*wire,RelayTransactionReadMode::HistoricalOnly),std::invalid_argument);
     // Explicit structural pool fixture; no admission/proving/signature claim.
-    Mempool pool(&db,&coins);MempoolOrchardConflictTestPeer::Install(pool,{body});pool.onBlockConnected(ConnectedBlockEffects{},110,verified->Root());
+    dinero::ChainDbMempoolView mempool_chain_view_5{&db}; Mempool pool(&mempool_chain_view_5,&coins);MempoolOrchardConflictTestPeer::Install(pool,{body});pool.onBlockConnected(ConnectedBlockEffects{},110,verified->Root());
     ASSERT_TRUE(pool.publishProofPayload(*verified));const auto entry=pool.getMempoolEntry(body.GetTxid().AsUint256());ASSERT_TRUE(entry);
     EXPECT_TRUE(entry->tx.IsOrchard());EXPECT_EQ(entry->cached_utxotx_payload,*wire);EXPECT_THROW(entry->tx.Historical(),std::logic_error);
 }

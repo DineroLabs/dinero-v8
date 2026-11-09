@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign operation-lifetime checks on the patched implementation only.
 #include "consensus/chainparams.h"
 #include "consensus/genesis_canonical.h"
@@ -63,7 +64,7 @@ private:
 };
 TEST_F(MiningChainGuard, ChainPrecedesPoolAndOutlivesPoolRelease) {
     auto service=std::make_shared<ChainstateService>();unsigned held=0,acquired=0,observed=0;
-    Mempool pool(&db,&coins);BlockAssembler assembler(&db);wire(assembler);
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins);BlockAssembler assembler(&db);wire(assembler);
     assembler.SetChainstateReadGuardFactory(factoryFor(service,held,acquired));
     assembler.SetMempoolAccessFactory([&]() -> std::unique_ptr<MempoolAccess> {
         service->AssertActivationLockHeld("mining pool acquisition");EXPECT_EQ(held,1U);
@@ -82,7 +83,7 @@ TEST_F(MiningChainGuard, ChainPrecedesPoolAndOutlivesPoolRelease) {
 }
 TEST_F(MiningChainGuard, CapturedFactorySurvivesReplacementAndUnavailableRefusesEarly) {
     auto service=std::make_shared<ChainstateService>();std::weak_ptr<ChainstateService> weak=service;
-    unsigned held=0,acquired=0,pool_acquired=0;Mempool pool(&db,&coins);BlockAssembler assembler(&db);wire(assembler);
+    unsigned held=0,acquired=0,pool_acquired=0;dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins);BlockAssembler assembler(&db);wire(assembler);
     assembler.SetChainstateReadGuardFactory(factoryFor(service,held,acquired));
     assembler.SetMempoolAccessFactory([&]() -> std::unique_ptr<MempoolAccess> {
         ++pool_acquired;EXPECT_EQ(held,1U);
@@ -101,7 +102,7 @@ TEST_F(MiningChainGuard, CapturedFactorySurvivesReplacementAndUnavailableRefuses
 }
 TEST_F(MiningChainGuard, ExplicitParentMustEqualCurrentDurableTip) {
     auto service=std::make_shared<ChainstateService>();unsigned held=0,acquired=0;
-    Mempool pool(&db,&coins);BlockAssembler assembler(&db);wire(assembler);assembler.setMempool(&pool);
+    dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins);BlockAssembler assembler(&db);wire(assembler);assembler.setMempool(&pool);
     assembler.SetChainstateReadGuardFactory(factoryFor(service,held,acquired));
     const auto tip=db.getTip();ASSERT_TRUE(tip.ok());const auto selected=tip->hash;
     // A separately recorded header is not selected merely because its height is known.

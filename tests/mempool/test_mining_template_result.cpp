@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign owned template result checks on the patched implementation only.
 #include "consensus/chainparams.h"
 #include "consensus/genesis_canonical.h"
@@ -69,7 +70,7 @@ protected:
     }
 };
 TEST_F(MiningTemplateResult, CapturedFeesSurvivePoolRemoval) {
-    Mempool pool(&db,&coins);const auto tx=payment(51,3000);
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins);const auto tx=payment(51,3000);
     ASSERT_TRUE(pool.submitTransaction(tx,"fixture",false).accepted());
     BlockAssembler assembler(&db);wire(assembler);assembler.setMempool(&pool);
     struct ClearAfterCapture final:Mempool::ChainstateReadGuard {
@@ -84,7 +85,7 @@ TEST_F(MiningTemplateResult, CapturedFeesSurvivePoolRemoval) {
     EXPECT_EQ(assembler.getBlockTemplateStats().total_fees,3000U);
 }
 TEST_F(MiningTemplateResult, ExcludedAncestorsHaveNoResultFees) {
-    Mempool pool(&db,&coins);const auto parent=payment(52,1000),descendant=child(parent,0,10000),independent=payment(53,4000);
+    dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins);const auto parent=payment(52,1000),descendant=child(parent,0,10000),independent=payment(53,4000);
     for(const auto& tx:{parent,descendant,independent})ASSERT_TRUE(pool.submitTransaction(tx,"fixture",false).accepted());
     BlockAssembler assembler(&db);wire(assembler);assembler.setMempool(&pool);
     std::unordered_map<uint256,uint64_t> fees;
@@ -95,7 +96,7 @@ TEST_F(MiningTemplateResult, ExcludedAncestorsHaveNoResultFees) {
     EXPECT_EQ(pool.size(),3U);
 }
 TEST_F(MiningTemplateResult, FailurePreservesOutputAndEmptyRetryReplacesIt) {
-    Mempool pool(&db,&coins);BlockAssembler assembler(&db);wire(assembler);assembler.setMempool(&pool);
+    dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins);BlockAssembler assembler(&db);wire(assembler);assembler.setMempool(&pool);
     std::unordered_map<uint256,uint64_t> fees{{uint256{},999}};const auto before=fees;
     pool.setChainstateReadGuardFactory([]{return std::unique_ptr<Mempool::ChainstateReadGuard>{};});
     EXPECT_THROW(assembler.CreateNewBlock(address,{},&fees),std::runtime_error);

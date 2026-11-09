@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 #include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
 #include "daemon/mempool.h"
@@ -39,7 +40,7 @@ protected:
 TEST_F(WalletInputCoins, SnapshotMapCoinNeedsNoAuxiliaryRowAndSpentCoinCannotFallBack) {
     const auto out = Out(1);
     ASSERT_TRUE(coins.AddCoin(out, CoinAt()));
-    Mempool pool(&db, &coins);
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1, &coins);
     auto result = pool.getConfirmedWalletCoins({out, Out(2)});
     ASSERT_EQ(result.size(), 2U); ASSERT_TRUE(result[0]); EXPECT_FALSE(result[1]);
     EXPECT_EQ(result[0]->value.GetUna(), 100000U);
@@ -51,14 +52,14 @@ TEST_F(WalletInputCoins, SnapshotMapCoinNeedsNoAuxiliaryRowAndSpentCoinCannotFal
 }
 TEST_F(WalletInputCoins, StatelessPostBaseCoinUsesConfiguredDatabaseFallback) {
     const auto out = Out(2); PutAux(out);
-    Mempool pool(&db, &coins, true);
+    dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2, &coins, true);
     EXPECT_TRUE(pool.getConfirmedWalletCoins({out})[0]);
     ASSERT_EQ(db.deleteCoin(ChainWriteToken::CreateForTesting(), out.txid.AsUint256(), 0), Status::Ok);
     EXPECT_FALSE(pool.getConfirmedWalletCoins({out})[0]);
 }
 TEST_F(WalletInputCoins, FrozenCoinRequiresLiveForestEvenWhenAuxiliaryRowSurvives) {
     const auto out = Out(3); PutAux(out);
-    Mempool pool(&db, &coins, true);
+    dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3, &coins, true);
     bool live = true;
     pool.setPreBaseCoinPredicate([&](const OutPoint& candidate) { return candidate == out; });
     pool.setPreBaseCoinResolver([&](const OutPoint& candidate) -> std::optional<consensus::UTXOEntry> {
@@ -71,7 +72,7 @@ TEST_F(WalletInputCoins, FrozenCoinRequiresLiveForestEvenWhenAuxiliaryRowSurvive
 }
 TEST_F(WalletInputCoins, MempoolSpendAndUnconfirmedChangeAreNotCandidates) {
     const auto out = Out(4); ASSERT_TRUE(coins.AddCoin(out, CoinAt()));
-    Mempool pool(&db, &coins);
+    dinero::ChainDbMempoolView mempool_chain_view_4{&db}; Mempool pool(&mempool_chain_view_4, &coins);
     const auto tx = Spend(out); pool.addUnchecked(tx);
     auto result = pool.getConfirmedWalletCoins({out, OutPoint{tx.GetTxid(), 0}});
     EXPECT_FALSE(result[0]); EXPECT_FALSE(result[1]);
@@ -81,7 +82,7 @@ TEST_F(WalletInputCoins, MaturityUsesCurrentNextBlockAndRejectsFutureCoins) {
     ASSERT_TRUE(coins.AddCoin(mature, CoinAt(11, true)));
     ASSERT_TRUE(coins.AddCoin(immature, CoinAt(12, true)));
     ASSERT_TRUE(coins.AddCoin(future, CoinAt(111, false)));
-    Mempool pool(&db, &coins);
+    dinero::ChainDbMempoolView mempool_chain_view_5{&db}; Mempool pool(&mempool_chain_view_5, &coins);
     auto result = pool.getConfirmedWalletCoins({mature, immature, future});
     EXPECT_TRUE(result[0]); EXPECT_FALSE(result[1]); EXPECT_FALSE(result[2]);
     coins.SetBestBlock(uint256{}, 109);
@@ -89,7 +90,7 @@ TEST_F(WalletInputCoins, MaturityUsesCurrentNextBlockAndRejectsFutureCoins) {
 }
 TEST_F(WalletInputCoins, GuardPrecedesMempoolLockCoversBatchAndIsReleasedBeforeReturn) {
     const auto out = Out(8); ASSERT_TRUE(coins.AddCoin(out, CoinAt()));
-    Mempool pool(&db, &coins);
+    dinero::ChainDbMempoolView mempool_chain_view_6{&db}; Mempool pool(&mempool_chain_view_6, &coins);
     bool held = false; unsigned acquisitions = 0, lookups = 0;
     struct Guard final : Mempool::ChainstateReadGuard {
         bool& held; explicit Guard(bool& flag) : held(flag) { held = true; }
@@ -107,7 +108,7 @@ TEST_F(WalletInputCoins, GuardPrecedesMempoolLockCoversBatchAndIsReleasedBeforeR
 }
 TEST_F(WalletInputCoins, UnavailableChainstateGuardFailsClosed) {
     const auto out = Out(10); ASSERT_TRUE(coins.AddCoin(out, CoinAt()));
-    Mempool pool(&db, &coins);
+    dinero::ChainDbMempoolView mempool_chain_view_7{&db}; Mempool pool(&mempool_chain_view_7, &coins);
     pool.setChainstateReadGuardFactory([]() -> std::unique_ptr<Mempool::ChainstateReadGuard> { return nullptr; });
     pool.setPreBaseCoinPredicate([](const OutPoint&) { ADD_FAILURE() << "must not read without guard"; return false; });
     auto result = pool.getConfirmedWalletCoins({out});

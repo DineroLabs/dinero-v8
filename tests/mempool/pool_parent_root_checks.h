@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 #pragma once
 // Healthy prepared rollback owners and immutable proof receipts; no unsafe originals.
 namespace {
@@ -11,7 +12,7 @@ TEST_F(PoolParentRoot, AbandonAndPublishKeepExactParentProofContext) {
     coins.MutateForestGuarded([&](auto& f){f.add(consensus::HashUTXOForCreationHeight(extra,0,3000,{0x51},111,false));});
     const auto child_wire=CaptureUtreexoTransactionPayload(body,*bridge);ASSERT_TRUE(child_wire);
     const auto child_receipt=UtreexoTransactionPayload::Decode(*child_wire,RelayTransactionReadMode::AvailableFamilies).VerifyInputs(stump(),111);ASSERT_TRUE(child_receipt);
-    Mempool pool(&db,&coins);MempoolOrchardConflictTestPeer::Install(pool,{body});pool.onBlockConnected(ConnectedBlockEffects{},111,child_receipt->Root());ASSERT_TRUE(pool.publishProofPayload(*child_receipt));
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins);MempoolOrchardConflictTestPeer::Install(pool,{body});pool.onBlockConnected(ConnectedBlockEffects{},111,child_receipt->Root());ASSERT_TRUE(pool.publishProofPayload(*child_receipt));
     auto shared_bridge=std::shared_ptr<network::BridgeNode>(std::move(bridge));
     {auto prepared=PreparedPoolTip::DisconnectToParent(pool,shared_bridge,{},111,parent_receipt->Root());ASSERT_TRUE(prepared);}
     EXPECT_EQ(pool.getCachedUtxoTxPayload(body.GetTxid().AsUint256()),child_wire);EXPECT_TRUE(pool.publishProofPayload(*child_receipt));EXPECT_FALSE(pool.publishProofPayload(*parent_receipt));EXPECT_EQ(shared_bridge->GetCacheSnapshot().tx_entries,1U);EXPECT_EQ(pool.getStats().last_connected_height,111U);
@@ -24,7 +25,7 @@ TEST_F(PoolParentRoot, AbandonAndPublishKeepExactParentProofContext) {
 TEST_F(PoolParentRoot, InvalidContextAndCacheOnlyEntryPreserveOwnerRules) {
     const MempoolTransaction body(ordinary({input(233)},82));install(body);const auto wire=CaptureUtreexoTransactionPayload(body,*bridge);ASSERT_TRUE(wire);
     const auto receipt=UtreexoTransactionPayload::Decode(*wire,RelayTransactionReadMode::AvailableFamilies).VerifyInputs(stump(),109);ASSERT_TRUE(receipt);
-    Mempool pool(&db,&coins);MempoolOrchardConflictTestPeer::Install(pool,{body});pool.onBlockConnected(ConnectedBlockEffects{},110,receipt->Root());
+    dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins);MempoolOrchardConflictTestPeer::Install(pool,{body});pool.onBlockConnected(ConnectedBlockEffects{},110,receipt->Root());
     const auto id=body.GetTxid().AsUint256();ASSERT_TRUE(pool.setCachedUtxoTxPayload(id,{4,5,6}));ASSERT_TRUE(pool.getMempoolEntry(id)->validated_at_root.empty());
     EXPECT_THROW(pool.prepareBlockDisconnectedToParent(0,receipt->Root()),std::invalid_argument);
     EXPECT_THROW(pool.prepareBlockDisconnectedToParent(110,{1,2,3}),std::invalid_argument);
@@ -38,7 +39,7 @@ TEST_F(PoolParentRoot, InvalidContextAndCacheOnlyEntryPreserveOwnerRules) {
 TEST_F(PoolParentRoot, TypedFamilyAndRefreshFailureRetainPublishedParent) {
     const auto body=MempoolTransaction::FromOrchard(envelope());install(body);const auto wire=CaptureUtreexoTransactionPayload(body,*bridge);ASSERT_TRUE(wire);
     const auto receipt=UtreexoTransactionPayload::Decode(*wire,RelayTransactionReadMode::AvailableFamilies).VerifyInputs(stump(),109);ASSERT_TRUE(receipt);
-    Mempool pool(&db,&coins);MempoolOrchardConflictTestPeer::Install(pool,{body});pool.onBlockConnected(ConnectedBlockEffects{},110,receipt->Root());ASSERT_TRUE(pool.refreshProof(body.GetTxid().AsUint256(),receipt->Root(),110));
+    dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins);MempoolOrchardConflictTestPeer::Install(pool,{body});pool.onBlockConnected(ConnectedBlockEffects{},110,receipt->Root());ASSERT_TRUE(pool.refreshProof(body.GetTxid().AsUint256(),receipt->Root(),110));
     auto shared_bridge=std::shared_ptr<network::BridgeNode>(std::move(bridge));auto relay=std::make_shared<TxRelayManager>(nullptr);relay->SetCsnMode(true);unsigned attempts=0;
     relay->SetSendMessageCallback([&](const auto&,const auto&,const auto&){++attempts;EXPECT_EQ(pool.getStaleCount(),1U);EXPECT_EQ(shared_bridge->GetCacheSnapshot().tx_entries,0U);throw std::runtime_error("fixture ambiguous refresh");});
     auto prepared=PreparedPoolTip::DisconnectToParent(pool,shared_bridge,relay,110,receipt->Root());prepared->PublishAfterCommit();EXPECT_THROW(prepared->RequestRefresh(),std::runtime_error);EXPECT_EQ(attempts,1U);

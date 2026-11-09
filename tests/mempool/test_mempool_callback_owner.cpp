@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Patched-path ownership invariants only. Never run this fixture against an
 // unsafe original or a control that removes synchronization/lifetime ownership.
 #include "consensus/chainparams.h"
@@ -45,24 +46,24 @@ protected:
     };
 };
 TEST_F(MempoolCallbackOwner, OwnedCallbacksAfterLocksAndReplacementSnapshot) {
-    const auto tx=fund(1);Mempool pool(&db,&coins);bool held=false;pool.setChainstateReadGuardFactory([&]{return std::make_unique<Guard>(held);});
+    const auto tx=fund(1);dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins);bool held=false;pool.setChainstateReadGuardFactory([&]{return std::make_unique<Guard>(held);});
     int accepted=0,old_broadcast=0,new_broadcast=0;auto owner=std::make_shared<int>(17);std::weak_ptr<int> weak=owner;
     pool.setTxBroadcastCallback([&,owner](const uint256& id){EXPECT_FALSE(held);if(held)return;EXPECT_EQ(*owner,17);EXPECT_EQ(id,tx.GetTxid().AsUint256());EXPECT_TRUE(pool.hasTransaction(id));++old_broadcast;});owner.reset();
     pool.setTxAcceptedCallback([&](const Transaction& body){EXPECT_FALSE(held);if(held)return;++accepted;EXPECT_EQ(body.GetTxid(),tx.GetTxid());EXPECT_TRUE(pool.hasTransaction(tx.GetTxid().AsUint256()));pool.setTxAcceptedCallback({});pool.setTxBroadcastCallback([&](const uint256&){++new_broadcast;});EXPECT_FALSE(weak.expired());});
     const auto result=pool.submitTransaction(tx,"fixture",true);ASSERT_TRUE(result.accepted())<<result.message;EXPECT_FALSE(held);EXPECT_EQ(accepted,1);EXPECT_EQ(old_broadcast,1);EXPECT_EQ(new_broadcast,0);EXPECT_TRUE(weak.expired());pool.broadcastTransaction(tx.GetTxid().AsUint256());EXPECT_EQ(new_broadcast,1);
 }
 TEST_F(MempoolCallbackOwner, PreflightDoesNotPublishOrNotify) {
-    const auto tx=fund(2);Mempool pool(&db,&coins);bool held=false;pool.setChainstateReadGuardFactory([&]{return std::make_unique<Guard>(held);});int calls=0;
+    const auto tx=fund(2);dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins);bool held=false;pool.setChainstateReadGuardFactory([&]{return std::make_unique<Guard>(held);});int calls=0;
     pool.setTxAcceptedCallback([&](const Transaction&){++calls;});pool.setTxBroadcastCallback([&](const uint256&){++calls;});
     const auto result=pool.submitTransactionTestOnly(tx,"fixture");ASSERT_TRUE(result.accepted())<<result.message;EXPECT_FALSE(held);EXPECT_EQ(calls,0);EXPECT_FALSE(pool.hasTransaction(tx.GetTxid().AsUint256()));EXPECT_FALSE(pool.isOutputSpentInMempool({tx.vin[0].prevout.txid,tx.vin[0].prevout.vout}));
 }
 TEST_F(MempoolCallbackOwner, CallbackExceptionPreservesAdmissionAndReleasesOwners) {
-    const auto tx=fund(3);Mempool pool(&db,&coins);bool held=false;pool.setChainstateReadGuardFactory([&]{return std::make_unique<Guard>(held);});int broadcasts=0;
+    const auto tx=fund(3);dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins);bool held=false;pool.setChainstateReadGuardFactory([&]{return std::make_unique<Guard>(held);});int broadcasts=0;
     pool.setTxAcceptedCallback([&](const Transaction&){EXPECT_FALSE(held);throw std::runtime_error("fixture observer failed after publication");});pool.setTxBroadcastCallback([&](const uint256&){++broadcasts;});
     EXPECT_THROW(pool.submitTransaction(tx,"fixture",true),std::runtime_error);EXPECT_FALSE(held);EXPECT_EQ(broadcasts,0);EXPECT_TRUE(pool.hasTransaction(tx.GetTxid().AsUint256()));EXPECT_TRUE(pool.isOutputSpentInMempool({tx.vin[0].prevout.txid,tx.vin[0].prevout.vout}));pool.setTxAcceptedCallback({});EXPECT_TRUE(pool.removeTransaction(tx.GetTxid().AsUint256()));
 }
 TEST_F(MempoolCallbackOwner, CleanupCompletesBeforeExternalObservers) {
-    const auto tx=fund(4);Mempool pool(&db,&coins);pool.setMaxSize(1);bool held=false;pool.setChainstateReadGuardFactory([&]{return std::make_unique<Guard>(held);});int calls=0;
+    const auto tx=fund(4);dinero::ChainDbMempoolView mempool_chain_view_4{&db}; Mempool pool(&mempool_chain_view_4,&coins);pool.setMaxSize(1);bool held=false;pool.setChainstateReadGuardFactory([&]{return std::make_unique<Guard>(held);});int calls=0;
     pool.setTxAcceptedCallback([&](const Transaction&){EXPECT_FALSE(held);if(held)return;++calls;EXPECT_FALSE(pool.hasTransaction(tx.GetTxid().AsUint256()));});pool.setTxBroadcastCallback([&](const uint256&){EXPECT_FALSE(held);if(held)return;++calls;EXPECT_FALSE(pool.hasTransaction(tx.GetTxid().AsUint256()));});
     const auto result=pool.submitTransaction(tx,"fixture",true);ASSERT_TRUE(result.accepted())<<result.message;EXPECT_EQ(calls,2);EXPECT_FALSE(pool.hasTransaction(tx.GetTxid().AsUint256()));EXPECT_FALSE(held);
 }

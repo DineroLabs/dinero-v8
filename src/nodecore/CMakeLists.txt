@@ -47,7 +47,7 @@ if(BUILD_NODECORE OR (CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT BUILD_FFI_ONLY))
     src/daemon/legacy_globals_stub.cpp
     src/daemon/config.cpp
     src/daemon/rpc_context_wiring.cpp
-    src/daemon/mempool.cpp
+
     src/daemon/db_repair.cpp
 
     # Read-only contract inspection RPC dependencies. Fund-moving handlers

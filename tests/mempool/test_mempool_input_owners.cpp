@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign patched-path policy invariants. No unsafe-original execution.
 #include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
@@ -39,7 +40,7 @@ protected:
     }
 };
 TEST_F(MempoolInputOwners, AdmissionAndReplacementPreserveExactOwners) {
-    Mempool pool(&db, &coins);
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1, &coins);
     pool.setRBFEnabled(true);
     const auto funding = fund(1);
     const auto first = spend(funding, 1000000, 10000);
@@ -66,7 +67,7 @@ TEST_F(MempoolInputOwners, AdmissionAndReplacementPreserveExactOwners) {
     EXPECT_FALSE(pool.isOutputSpentInMempool(funding));
 }
 TEST_F(MempoolInputOwners, PreparedPublicationAndConfirmationRetainChildOwner) {
-    Mempool pool(&db, &coins);
+    dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2, &coins);
     const auto funding = fund(2);
     const auto parent = spend(funding, 1000000, 1000);
     const OutPoint output{parent.GetTxid(), 0};
@@ -95,7 +96,7 @@ TEST_F(MempoolInputOwners, PreparedPublicationAndConfirmationRetainChildOwner) {
     EXPECT_EQ(pool.size(), 0U);
 }
 TEST_F(MempoolInputOwners, MaintenanceAndClearReleaseOwners) {
-    Mempool pool(&db, &coins);
+    dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3, &coins);
     const auto funding = fund(3);
     const auto tx = spend(funding, 1000000, 1000);
     const auto id = tx.GetTxid().AsUint256();
@@ -117,7 +118,7 @@ TEST_F(MempoolInputOwners, MaintenanceAndClearReleaseOwners) {
     EXPECT_EQ(pool.getInputSpenders(funding), std::vector<uint256>{id});
 }
 TEST_F(MempoolInputOwners, SyntheticSharedInputRemovalRetainsRemainingOwner) {
-    Mempool pool(&db, &coins);
+    dinero::ChainDbMempoolView mempool_chain_view_4{&db}; Mempool pool(&mempool_chain_view_4, &coins);
     const auto funding = fund(4);
     const auto first = spend(funding, 1000000, 1000);
     const auto second = spend(funding, 1000000, 2000);

@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign patched-path policy invariants. No unsafe-original execution.
 #include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
@@ -38,7 +39,8 @@ class MempoolServiceOwnerTestPeer {
 public:
     static std::shared_ptr<MempoolService> Published(ChainDB& db, consensus::ConsensusUTXOSet& coins) {
         auto service = std::make_shared<MempoolService>();
-        service->mempool_ = std::make_unique<Mempool>(&db, &coins);
+        service->chain_view_=std::make_unique<ChainDbMempoolView>(&db);
+        service->mempool_=std::make_unique<Mempool>(service->chain_view_.get(),&coins);
         service->accepting_ = true;
         service->started_ = true;
         return service;

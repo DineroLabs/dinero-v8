@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 #include "consensus/chainparams.h"
 #include "daemon/mempool.h"
 #include "storage/chain_db.h"
@@ -58,7 +59,7 @@ protected:
 };
 
 TEST_F(TemplateMaturityTest, RewindExcludesCoinbaseSpendAndDescendantsThenReleasesThem) {
-    Mempool pool(&db_);
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db_}; Mempool pool(&mempool_chain_view_1);
     const auto parent = Spend(PutCoin(1, 11, true));
     const auto child = Spend(OutPoint{parent.GetTxid(), 0}, 1'000);
     const auto unrelated = Spend(PutCoin(2, 1, true));
@@ -84,19 +85,19 @@ TEST_F(TemplateMaturityTest, RewindExcludesCoinbaseSpendAndDescendantsThenReleas
 }
 
 TEST_F(TemplateMaturityTest, FutureCoinbaseHeightDoesNotUnderflow) {
-    Mempool pool(&db_);
+    dinero::ChainDbMempoolView mempool_chain_view_2{&db_}; Mempool pool(&mempool_chain_view_2);
     pool.addUnchecked(Spend(PutCoin(3, 200, true)));
     EXPECT_TRUE(pool.selectTransactionsForBlock(1'000'000, 4'000'000, 110).empty());
 }
 
 TEST_F(TemplateMaturityTest, OrdinaryOutputsDoNotRequireCoinbaseMaturity) {
-    Mempool pool(&db_);
+    dinero::ChainDbMempoolView mempool_chain_view_3{&db_}; Mempool pool(&mempool_chain_view_3);
     pool.addUnchecked(Spend(PutCoin(4, 109, false)));
     EXPECT_EQ(pool.selectTransactionsForBlock(1'000'000, 4'000'000, 110).size(), 1U);
 }
 
 TEST_F(TemplateMaturityTest, FrozenCoinUsesLiveForestAuthorizationAndOriginalHeight) {
-    Mempool pool(&db_);
+    dinero::ChainDbMempoolView mempool_chain_view_4{&db_}; Mempool pool(&mempool_chain_view_4);
     // Auxiliary row deliberately disagrees with the authorized frozen record.
     const auto out = PutCoin(5, 1, false);
     bool authorized = true;
@@ -119,7 +120,7 @@ TEST_F(TemplateMaturityTest, FrozenCoinUsesLiveForestAuthorizationAndOriginalHei
 }
 
 TEST_F(TemplateMaturityTest, ChainstateGuardPrecedesMempoolLockAndCoversCoinLookup) {
-    Mempool pool(&db_);
+    dinero::ChainDbMempoolView mempool_chain_view_5{&db_}; Mempool pool(&mempool_chain_view_5);
     const auto out = PutCoin(6, 1, false);
     pool.addUnchecked(Spend(out));
     bool held = false;

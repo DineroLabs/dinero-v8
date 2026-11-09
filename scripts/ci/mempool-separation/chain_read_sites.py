@@ -108,7 +108,10 @@ def head_name(head):
         return None
     m = CLASS_HEAD.search(h)
     if m and "(" not in h[:m.start()]:
-        return m.group(1)
+        # These two private adapters were renamed when their ChainDB dependency
+        # became a borrowed interface. Preserve the recorded read identity.
+        return {"MempoolChainUTXOView": "ChainDBUTXOView",
+                "MempoolChainStateView": "ChainDBStateView"}.get(m.group(1), m.group(1))
     # function: the identifier before the parameter list. The first '(' after
     # the name may follow template args or attributes; take the last qualified
     # name that is followed by '(' and is not a keyword, before any ')' at depth 0

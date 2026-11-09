@@ -1,6 +1,6 @@
 # Mempool separation design anchors (spec docs/superpowers/specs/2026-11-01-mempool-separation-design.md).
 # Checked by scripts/ci/separation/check_design_anchors.py (wallet project, reused unmodified).
-# path<TAB>line<TAB>substring. Baseline: dinero-main c4940d86c.
+# path<TAB>line<TAB>substring. Baseline: dinero-main 3d84b96fd (2026-11-09).
 src/daemon/mempool.cpp	10	#include "storage/chain_db.h"
 src/daemon/mempool.cpp	11	#include "daemon/p2p_message.h"
 src/daemon/mempool.cpp	13	#include "mining/address_validator.h"
@@ -37,22 +37,22 @@ include/storage/chain_db.h	37	struct Coin {
 include/storage/chain_write_token.h	1	#pragma once
 include/mempool/mempool_persistence.h	51	MAGIC[8]
 src/daemon/services/mempool_service.cpp	125	mempool_ = std::make_unique<Mempool>(
-src/daemon/services/chainstate_service.cpp	20079	struct ChainstateService::MempoolReadGuard final
-src/daemon/services/chainstate_service.cpp	13172	ReconcileAfterReorg(
-src/storage/chain_db.cpp	1073	Status ChainDB::setTip(
-src/storage/chain_db.cpp	1475	Status ChainDB::writeBatch(
-src/storage/chain_db.cpp	3086	/tmp/chaindb_foreach_utxo.log
-CMakeLists.txt	991	set(DINERO_CORE_POLICY_SOURCES
-CMakeLists.txt	1043	set(DINERO_CORE_MEMPOOL_SUPPORT_SOURCES
-CMakeLists.txt	1063	add_library(dinero_core STATIC
-CMakeLists.txt	1102	src/daemon/services/mempool_service.cpp
-CMakeLists.txt	1120	src/mining/ct_selection_policy.cpp
-CMakeLists.txt	1127	src/mining/address_validator.cpp
-CMakeLists.txt	1208	src/daemon/relay_transaction_reader.cpp
+src/daemon/services/chainstate_service.cpp	20919	struct ChainstateService::MempoolReadGuard final
+src/daemon/services/chainstate_service.cpp	13750	ReconcileAfterReorg(
+src/storage/chain_db.cpp	1145	Status ChainDB::setTip(
+src/storage/chain_db.cpp	1547	Status ChainDB::writeBatch(
+src/storage/chain_db.cpp	3159	/tmp/chaindb_foreach_utxo.log
+CMakeLists.txt	1019	set(DINERO_CORE_POLICY_SOURCES
+CMakeLists.txt	1071	set(DINERO_CORE_MEMPOOL_SUPPORT_SOURCES
+CMakeLists.txt	1091	add_library(dinero_core STATIC
+CMakeLists.txt	1130	src/daemon/services/mempool_service.cpp
+CMakeLists.txt	1148	src/mining/ct_selection_policy.cpp
+CMakeLists.txt	1155	src/mining/address_validator.cpp
+CMakeLists.txt	1240	src/daemon/relay_transaction_reader.cpp
 src/daemon/CMakeLists.txt	58	src/daemon/mempool.cpp
 src/daemon/CMakeLists.txt	133	src/daemon/mempool.cpp
 src/nodecore/CMakeLists.txt	50	src/daemon/mempool.cpp
 rust/orchard_backend/CMakeLists.txt	178	add_library(dinero_orchard_mempool_body STATIC
 rust/orchard_backend/CMakeLists.txt	184	DINERO_HAS_ORCHARD_RELAY_READER=1
-tests/CMakeLists.txt	17204	function(dinero_attach_real_mempool_fixture_runtime)
-tests/CMakeLists.txt	17269	mempool_test_stubs|daemon_test_stubs
+tests/CMakeLists.txt	17379	function(dinero_attach_real_mempool_fixture_runtime)
+tests/CMakeLists.txt	17452	mempool_test_stubs|daemon_test_stubs

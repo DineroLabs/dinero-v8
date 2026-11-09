@@ -72,6 +72,17 @@ def test_view_call_maps_to_same_read(tmp_path):
     assert "DIFF" not in r.stdout
 
 
+def test_renamed_storage_free_adapter_keeps_read_identity(tmp_path):
+    _, base, _ = record(tmp_path, BASELINE_CPP)
+    after = BASELINE_CPP.replace("ChainDBUTXOView", "MempoolChainUTXOView")
+    after = after.replace("chain_db_->getCoinWithConfidentialFallback",
+                          "chain_view_->GetCoinWithConfidentialFallback")
+    src = tmp_path / "renamed.cpp"
+    src.write_text(after)
+    result = run("check", str(src), "--baseline", str(base))
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_moved_guard_is_diff(tmp_path):
     _, base, _ = record(tmp_path, BASELINE_CPP)
     moved = BASELINE_CPP.replace(

@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign patched-path policy invariants. No unsafe-original execution.
 #include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
@@ -44,14 +45,14 @@ struct JoinPolicyWorker {
     ~JoinPolicyWorker() {stop.store(true);if(worker.joinable())worker.join();}
 };
 TEST_F(MempoolPolicyOwner, ConfigurationSnapshotsDoNotEscapeMutableState) {
-    Mempool pool(&db,&coins);mining::CTSelectionConfig initial;initial.ct_min_fee_rate=7;initial.max_ct_per_block=31;pool.SetCTConfig(initial);
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins);mining::CTSelectionConfig initial;initial.ct_min_fee_rate=7;initial.max_ct_per_block=31;pool.SetCTConfig(initial);
     auto captured=pool.GetCTConfig();captured.ct_min_fee_rate=99;EXPECT_EQ(pool.GetCTConfig().ct_min_fee_rate,7U);
     pool.SetCTMinFeeRate(8);pool.SetCTWeightMultiplier(2.5);pool.SetCTMaxPerBlock(32);pool.SetCTProofWeightFactor(6);
     const auto current=pool.GetCTConfig();EXPECT_EQ(current.ct_min_fee_rate,8U);EXPECT_EQ(current.ct_weight_multiplier,2.5);EXPECT_EQ(current.max_ct_per_block,32U);EXPECT_EQ(current.ct_proof_weight_factor,6U);
     EXPECT_EQ(captured.ct_min_fee_rate,99U);EXPECT_EQ(captured.max_ct_per_block,31U);EXPECT_EQ(current.max_ct_proof_data,initial.max_ct_proof_data);EXPECT_EQ(current.batch_size_threshold,initial.batch_size_threshold);
 }
 TEST_F(MempoolPolicyOwner, IndependentFieldUpdatesAndReadsPreserveConfiguration) {
-    Mempool pool(&db,&coins);std::atomic<bool> start{false},stop{false};
+    dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins);std::atomic<bool> start{false},stop{false};
     std::thread fee([&]{while(!start.load()&&!stop.load())std::this_thread::yield();if(stop.load())return;for(uint64_t i=1;i<=200;++i){pool.SetCTMinFeeRate(i);const auto snapshot=pool.GetCTConfig();EXPECT_GE(snapshot.ct_min_fee_rate,1U);}});
     JoinPolicyWorker fee_owner{fee,stop};
     std::thread count([&]{while(!start.load()&&!stop.load())std::this_thread::yield();if(stop.load())return;for(size_t i=1;i<=200;++i){pool.SetCTMaxPerBlock(i);const auto snapshot=pool.GetCTConfig();EXPECT_GE(snapshot.max_ct_per_block,1U);}});
@@ -59,7 +60,7 @@ TEST_F(MempoolPolicyOwner, IndependentFieldUpdatesAndReadsPreserveConfiguration)
     start.store(true);fee.join();count.join();const auto result=pool.GetCTConfig();EXPECT_EQ(result.ct_min_fee_rate,200U);EXPECT_EQ(result.max_ct_per_block,200U);EXPECT_EQ(result.ct_weight_multiplier,1.5);
 }
 TEST_F(MempoolPolicyOwner, AdmissionAndOwnedSettingsCompleteTogether) {
-    Mempool pool(&db,&coins);std::atomic<bool> done{false};std::atomic<unsigned> updates{0};std::thread writer([&]{while(!done.load()){pool.setMaxSize(1000000);pool.setMaxAge(std::chrono::hours(24));pool.setMinFeeRate(1.0);pool.SetCTProofWeightFactor(4);EXPECT_EQ(pool.getMinFeeRate(),1.0);++updates;}});
+    dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins);std::atomic<bool> done{false};std::atomic<unsigned> updates{0};std::thread writer([&]{while(!done.load()){pool.setMaxSize(1000000);pool.setMaxAge(std::chrono::hours(24));pool.setMinFeeRate(1.0);pool.SetCTProofWeightFactor(4);EXPECT_EQ(pool.getMinFeeRate(),1.0);++updates;}});
     JoinPolicyWorker writer_owner{writer,done};while(updates.load()==0)std::this_thread::yield();
     for(uint8_t i=10;i<26;++i){const auto tx=spend(fund(i),1000000,2000);const auto result=pool.submitTransaction(tx,"fixture",false);EXPECT_TRUE(result.accepted())<<result.message;}
     done.store(true);writer.join();EXPECT_EQ(pool.size(),16U);EXPECT_EQ(pool.GetCTConfig().ct_proof_weight_factor,4U);
