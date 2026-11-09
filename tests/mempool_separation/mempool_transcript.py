@@ -157,9 +157,11 @@ def run(dinerod, config):
         # so mempool.dat is actually written before inspecting it.
         node.ok("stop", [])
         try:
-            node.proc.wait(timeout=90)
+            exit_code = node.proc.wait(timeout=90)
         except subprocess.TimeoutExpired as error:
             raise rpc.RunError("daemon did not stop cleanly for the persistence check") from error
+        if exit_code != 0:
+            raise rpc.RunError("daemon exited rc=%s during the persistence check" % exit_code)
         node.stop()
         file_state = persisted(Path(node.datadir) / "mempool.dat")
         if len(file_state["entries"]) != 1:

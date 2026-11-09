@@ -270,9 +270,16 @@ jobs:
           python tests/mempool_separation/mempool_transcript.py check \
             --dinerod "$(pwd)/build-mempool/dinerod" --config "$config" \
             --out "tests/mempool_separation/transcripts/$config.json"
-      - name: Record Windows transcript status
+      - name: Compare Windows regtest mempool RPC, restart and reorg transcript
         if: runner.os == 'Windows'
-        shell: bash
+        shell: pwsh
+        env:
+          MP_ORCHARD: ${{ matrix.orchard }}
         run: |
-          echo 'UNMEASURED: the reviewed pre-extraction Windows MP4 reference is pending.'
-          echo 'This Windows job qualifies build/link and focused contracts only.'
+          $daemons = @(Get-ChildItem -Path 'build-mempool' -Recurse -Filter 'dinerod.exe')
+          if ($daemons.Count -ne 1) { throw "Expected one built dinerod.exe, found $($daemons.Count)" }
+          $cfg = $env:MP_ORCHARD.ToLowerInvariant()
+          python tests/mempool_separation/mempool_transcript.py check `
+            --dinerod $daemons[0].FullName --config $cfg `
+            --out "tests/mempool_separation/transcripts/$cfg.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
