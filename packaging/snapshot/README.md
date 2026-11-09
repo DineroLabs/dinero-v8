@@ -155,6 +155,83 @@ output from both runs. Successful START/STOP or a zero launcher exit is not
 snapshot qualification: require the exact base and selected-tip accumulator
 checks above, with the compact validator role and zero full-forest memory.
 
+## Promote the exact phone-qualified generation
+
+Run `promote_phone_v6.py` on EU1 after both real-device receipts exist. It
+recomputes payload and manifest digests against the private staging receipt,
+inspects the compact v6 header, cryptographically verifies the raw manifest
+signature against the public key pinned in both apps, and rechecks selected
+ancestry plus 288 descendants through the local CLI. There is no public-key
+override or option to skip phone receipts or mirror verification.
+
+The phone receipt schema is `dinero.phone-snapshot-qualification.v1`, with:
+
+- `state: PASS_NATIVE_COMPACT_V6`, `platform: ios` or `android`, `network:
+  mainnet`, `app_version`, and `native_source_sha` equal to the updated apps'
+  Core `87ef0f46c5ad90f35b7c83b4a91b3edf7cc679fa`.
+- `payload_sha256`, `manifest_sha256`, `base_height`, and `base_hash` matching
+  the staging receipt; `forward_height` equal to the last qualified initial
+  native accumulator sample and strictly above the base.
+- `validation_role: compact_validator`, `retains_full_state: false`,
+  `forest_memory_bytes_estimate: 0`, and at least two distinct named
+  `independent_observers`.
+- A `checks` object with each of `fleet_signature_verified`,
+  `payload_hash_verified`, `transport_profile_verified`,
+  `native_import_verified`, `forward_selected_tip_and_accumulator_verified`,
+  `cold_restart_verified`, `clean_shutdown_verified`,
+  `altered_payload_rejected`, and `full_profile_rejected` set to JSON `true`.
+- An `evidence` object with `initial_import`, `cold_restart`, `transport`,
+  `negative_controls`, and `fleet_agreement` entries. Each names a retained
+  receipt-relative file via `path` and its `sha256`. The script rehashes every
+  file. Initial/restart logs must contain the actual `NCPROBE` records, clean
+  start/stop, exact snapshot base and a forward compact accumulator. Initial
+  import must require the manifest; cold restart must omit the configured
+  snapshot and must not reimport it. A startup-only log is rejected even if
+  every receipt checkbox says true.
+
+The fleet evidence is JSON with `network: mainnet` and a `checkpoints` list.
+For each initial/restart sample include `height`, `block_hash`, `commitment`,
+and an `observers` list naming at least two of the receipt's independent
+observers that returned those same values. These are recorded observations,
+not values synthesized from the phone's own response. Keep device identifiers
+and raw evidence private; the public generation includes only receipt hashes.
+
+Example invocation (paths below refer to genuine completed qualification):
+
+```sh
+python3 /usr/local/libexec/dinero-phone-v6/promote_phone_v6.py \
+  --staging-receipt /var/lib/dinero/snapshot-qualification/compact-v6/phone-qualification-required.json \
+  --ios-receipt /var/lib/dinero/snapshot-qualification/phones/ios/receipt.json \
+  --android-receipt /var/lib/dinero/snapshot-qualification/phones/android/receipt.json \
+  --report /var/lib/dinero/snapshot-qualification/compact-v6/promotion.json \
+  --dry-run
+```
+
+Remove `--dry-run` to promote. The script installs and re-verifies an immutable
+archive generation under the shared publication-root lock, rechecks ancestry,
+then atomically replaces `latest`. It neither rewrites the v5 pin nor prunes
+archives. Dry run writes only the private report. Retrying the same verified
+generation is safe; replacing a full-profile endpoint or rolling height back
+is refused.
+
+NA/SJ currently pull once daily. After the EU1 swap, trigger their existing
+mirror services from the operator host (no new fleet-to-fleet SSH trust):
+
+```sh
+ssh dinero-na systemctl start dinero-snapshot-mirror.service
+ssh dinero-sj systemctl start dinero-snapshot-mirror.service
+```
+
+Promotion waits up to 15 minutes for all three public URLs. Each must serve
+the exact manifest bytes, a valid pinned-key signature, and a fully downloaded
+payload of the exact size and SHA-256; the manifest is checked again after the
+payload transfer. Success is `PROMOTED_ALL_MIRRORS_VERIFIED`. If a mirror stays
+old or fails verification after the local swap, the command exits nonzero with
+`LOCAL_PROMOTED_MIRROR_VERIFICATION_FAILED`, preserving the qualified EU1
+generation and recording each mirror's result. Refresh the lagging mirror and
+rerun; an incomplete rollout is never reported as a preflight refusal or as
+success.
+
 The job remains an external scheduled/systemd operation. Updating repository
 source does not deploy it, change a fleet timer, rotate keys, publish a snapshot,
 or replace a phone's existing chain database. A fresh snapshot is for fresh
