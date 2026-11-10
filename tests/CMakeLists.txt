@@ -34,6 +34,12 @@ endif()
 # Tests (only if we have working test files)
 enable_testing()
 
+if(TARGET dinero-cli)
+  add_test(NAME CliRpcTimeout
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_cli_rpc_timeout.py $<TARGET_FILE:dinero-cli>)
+  set_tests_properties(CliRpcTimeout PROPERTIES LABELS "integration;cli" TIMEOUT 45)
+endif()
+
 if(TARGET v7_p2mr_key_read_test)
   add_test(NAME WalletP2MRKeyRead COMMAND v7_p2mr_key_read_test)
   set_tests_properties(WalletP2MRKeyRead PROPERTIES

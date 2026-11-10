@@ -81,6 +81,13 @@ preservation copies are under
 The daily publisher remains held. Compact v6 staging uses its separate namespace;
 publication still requires burial and genuine phone qualification.
 
+Compact v6 export can exceed the CLI's ordinary 30-second receive timeout.
+The publisher uses `-rpcclienttimeout=900` for `dumptxoutset`; other CLI calls
+retain the 30-second default. If a timed-out export leaves a payload without
+metadata, preserve it for inspection. Recover the staging pair from measured
+bytes and a genuine export response before resuming; native loading, burial,
+signatures and physical-phone qualification remain required.
+
 ## Qualification
 
 Run the exact OrchardParentService, OrchardParentReplay, OrchardParentDrain,
