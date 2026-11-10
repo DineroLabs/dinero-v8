@@ -20709,7 +20709,11 @@ bool ChainstateService::BindActivationParentUnderLock(CBlockIndex* best,CBlockIn
             // and durable state comparison remains at the actual boundary.
             if(!parent.state_->history_ || !parent.state_->history_->Finished() ||
                 parent.state_->history_->Count()!=uint64_t(proven.height)+1) return false;
-            const bool selected_forward=disconnects.empty() && fork && fork==active_tip_ && target==active_tip_;
+            // CheckPreparedOrchardParent consumes a full node's owned coin and
+            // forest views. Compact owners retain their separate authenticated
+            // catalog/state binding and the historical rebind below.
+            const bool selected_forward=!compact_startup_ && consensus_utxo_set_ &&
+                disconnects.empty() && fork && fork==active_tip_ && target==active_tip_;
             if(selected_forward) {
                 // No historical block is disconnected or reconnected here.
                 // Consume the independently replayed selected prefix, with its

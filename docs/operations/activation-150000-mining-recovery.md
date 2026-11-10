@@ -46,11 +46,13 @@ coin, forest, shielded or historical comparison.
 
 The selected-prefix builder audits the canonical height index during detached
 preparation, then binds that audit to the unchanged storage owner, selected tip
-and historical revision. Forward catch-up can consume this audit without reading
+and historical revision. Full-node forward catch-up can consume this audit without reading
 the entire historical prefix again under the selected lock. Every use still
 checks live and durable state, and every incoming Orchard block remains rebound
 and validated. A replacement that disconnects or reconnects historical blocks
-retains the full historical header and body comparisons.
+retains the full historical header and body comparisons. Compact owners retain
+their authenticated catalog/state binding and historical rebind; they do not
+consume the full node's coin/forest before-image check.
 
 ## Storage preflight
 
