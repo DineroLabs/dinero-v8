@@ -8,7 +8,7 @@
 #include "wallet/orchard_account_catalog.h"
 #include "wallet/orchard_proof_jobs.h"
 #include "wallet/runtime_funding_candidates.h"
-namespace dinero { class ChainstateService; class RuntimeOrdinaryDelivery; class RuntimeWalletRecovery; struct RuntimeOutboxCursor; class WalletManager; class RuntimeAccountReplay; struct WalletSigningIdentity; struct UnsignedTransaction; struct PendingPaymentIntent; struct SignResult; }
+namespace dinero { class RuntimeOrdinaryDelivery; class RuntimeWalletRecovery; struct RuntimeOutboxCursor; class WalletManager; class RuntimeAccountReplay; struct WalletSigningIdentity; struct UnsignedTransaction; struct PendingPaymentIntent; struct SignResult; }
 namespace dinero::wallet {
 class AuthenticatedShieldInputs;
 // Narrow request classification after authenticated catalog restoration.
@@ -368,12 +368,18 @@ public:
         const OrchardBlockCandidate&, const RestorePoint& parent);
     static Applied Historical(WalletManager&, uint64_t session, const Profile&,
         uint64_t expected_revision, const RestorePoint&, const RuntimeOutboxEvent&);
-private:
-    friend class dinero::ChainstateService;
+    // ── Producer replay surface ──────────────────────────────────────────
+    // Formerly reachable only through a ChainstateService friend grant. None
+    // of the entry points below trust their caller: each authenticates the
+    // session and lease, the catalog, and the supplied immutable replay in
+    // its own transaction (or the caller's, where the name says
+    // InTransaction), and refuses on any divergence. Restriction is by that
+    // evidence, never by caller identity.
     static std::unique_ptr<OrchardAccount0RecoveryPlan> PrepareRecoveredAccount0(
         WalletManager&,uint64_t,const RuntimeAccountReplay&,bool restart);
     static void CommitRecoveredAccount0(WalletManager&,uint64_t,
         std::unique_ptr<OrchardAccount0RecoveryPlan>);
+private:
     friend struct OrchardDetachedShieldSigningTestAccess;
     static std::unique_ptr<orchard::TransactionEnvelope> SignShieldWithRestorePoints(
         WalletManager&,uint64_t,const Profile&,const RuntimeAccountReplay&,const orchard::Hash&,
@@ -388,12 +394,14 @@ private:
         std::span<const orchard::ResolvedInput>,std::span<const orchard::WalletPayment>,
         std::span<const orchard::TransparentOutput>,uint64_t,
         const std::function<RestorePoint(RuntimeOutboxCursor)>&);
-    // Never acquires a source owner. The selected service retains its real
-    // validated owner; an optional lexical callback rechecks that held source
+public:
+    // Never acquires a source owner. The producer retains its real validated
+    // owner; an optional lexical callback rechecks that held source
     // immediately before this checked Ready/history COMMIT.
     static FinalizedProof CommitCatalogFinalization(WalletManager&,uint64_t,
         std::unique_ptr<OrchardCatalogFinalizationPlan>,const consensus::VerifiedOrchardAuthorizations&,
         const std::function<void()>& current_source={});
+private:
     friend struct OrchardDetachedIssuanceTestAccess;
     friend struct OrchardDetachedProofReadTestAccess;
     enum class CatalogProofRequest { Any, Spend, Shield, StoredSpend, StoredShield };
@@ -410,16 +418,20 @@ private:
     friend class OrchardCatalogRecoveryPlan;
     friend class dinero::RuntimeWalletRecovery;
     friend struct OrchardDetachedRecoveryTestAccess;
+public:
     enum class CatalogRecoveryAction { Observe, Apply, Reconcile };
     static std::unique_ptr<OrchardCatalogRecoveryPlan> PrepareCatalogRecovery(
         WalletManager&,uint64_t,const RuntimeAccountReplay&,CatalogRecoveryAction,uint64_t=0);
+private:
     static std::unique_ptr<OrchardCatalogRecoveryPlan> PrepareCatalogRecoveryWithPoints(
         WalletManager&,uint64_t,const RuntimeAccountReplay&,CatalogRecoveryAction,uint64_t,
         const std::function<RestorePoint(RuntimeOutboxCursor)>&);
     static void CompleteCatalogRecoveryWithPoints(OrchardCatalogRecoveryPlan&,CatalogRecoveryAction,uint64_t,
         const std::function<RestorePoint(RuntimeOutboxCursor)>&);
+public:
     static const CatalogEnrolled& CatalogRecoveryBefore(const OrchardCatalogRecoveryPlan&);
     static void RecheckCatalogRecoveryInTransaction(WalletManager&,uint64_t,const OrchardCatalogRecoveryPlan&);
+private:
     static Applied CommitCatalogRecoveryAccount(WalletManager&,uint64_t,OrchardCatalogRecoveryPlan&,size_t,
         const std::function<void()>& current_source={});
 
@@ -441,15 +453,18 @@ private:
     static CatalogEnrolled ReadCatalogWithRestorePoints(WalletManager&,uint64_t,
         const RuntimeAccountReplay&,const std::function<RestorePoint(RuntimeOutboxCursor)>&);
     friend struct OrchardDetachedOrdinaryPaymentTestAccess;
+public:
     static std::unique_ptr<OrchardCatalogRecoveryPlan> PrepareOrdinaryPaymentForReplay(
         WalletManager&,const WalletSigningIdentity&,const RuntimeAccountReplay&);
+private:
     static std::unique_ptr<OrchardCatalogRecoveryPlan> PrepareOrdinaryPaymentWithPoints(
         WalletManager&,const WalletSigningIdentity&,const RuntimeAccountReplay&,
         const std::function<RestorePoint(RuntimeOutboxCursor)>&);
+public:
     static SignResult CommitOrdinaryPaymentForReplay(WalletManager&,const WalletSigningIdentity&,
         std::unique_ptr<OrchardCatalogRecoveryPlan>,const UnsignedTransaction&,const PendingPaymentIntent&);
-    // Only the actual selected source service can request signatures and Ready
-    // promotion. It must keep signed intermediate bytes private until commit.
+    // The producer must keep signed intermediate bytes private until commit;
+    // the signing path reauthenticates the catalog against the replay itself.
     static std::unique_ptr<orchard::TransactionEnvelope> SignShieldProofForReplay(
         WalletManager&,uint64_t,const Profile&,const RuntimeAccountReplay&,const orchard::Hash&,
         std::span<const orchard::ResolvedInput>,std::span<const orchard::WalletPayment>,
@@ -458,6 +473,7 @@ private:
         WalletManager&,uint64_t,const Profile&,const RuntimeAccountReplay&,const orchard::Hash&,
         std::span<const orchard::ResolvedInput>,std::span<const orchard::WalletPayment>,
         std::span<const orchard::TransparentOutput>,uint64_t,OrchardProofJobs&);
+private:
     struct SpendResult { std::unique_ptr<PreparedSpend> direct; std::unique_ptr<QueuedSpend> queued; };
     static SpendResult ReserveSpendForReplay(WalletManager&,uint64_t,const Profile&,uint64_t,
         const RuntimeAccountReplay&,const orchard::Hash&,std::span<const orchard::WalletPayment>,
@@ -469,18 +485,21 @@ private:
         std::span<const orchard::TransparentOutput>,uint64_t,OrchardProofJobs*,bool,
         const std::function<RestorePoint(RuntimeOutboxCursor)>&);
 
-    struct ShieldResult { std::unique_ptr<PreparedSpend> direct; OrchardShieldRequest queued; };
     friend struct OrchardDetachedShieldReservationTestAccess;
+public:
+    struct ShieldResult { std::unique_ptr<PreparedSpend> direct; OrchardShieldRequest queued; };
     enum class ShieldRequestMode { Unbound, Exact, Stored };
     static std::unique_ptr<OrchardCatalogRecoveryPlan> PrepareShieldReservationForReplay(
         WalletManager&,uint64_t,const Profile&,uint64_t,const RuntimeAccountReplay&,const orchard::Hash&,
         std::span<const orchard::ResolvedInput>,std::span<const orchard::WalletPayment>,
         std::span<const orchard::TransparentOutput>,uint64_t,ShieldRequestMode,bool existing_only=false);
+private:
     static std::unique_ptr<OrchardCatalogRecoveryPlan> PrepareShieldReservationWithPoints(
         WalletManager&,uint64_t,const Profile&,uint64_t,const RuntimeAccountReplay&,const orchard::Hash&,
         std::span<const orchard::ResolvedInput>,std::span<const orchard::WalletPayment>,
         std::span<const orchard::TransparentOutput>,uint64_t,ShieldRequestMode,bool,
         const std::function<RestorePoint(RuntimeOutboxCursor)>&);
+public:
     static std::unique_ptr<QueuedSpend> TakePreparedShieldRetry(WalletManager&,uint64_t,OrchardCatalogRecoveryPlan&);
     static std::vector<orchard::ResolvedInput> ReadPreparedShieldCandidates(
         WalletManager&,uint64_t,const Profile&,uint64_t,const OrchardCatalogRecoveryPlan&);
@@ -496,6 +515,7 @@ private:
     static ShieldResult CommitShieldReservation(WalletManager&,uint64_t,std::unique_ptr<OrchardCatalogRecoveryPlan>,
         std::span<const orchard::ResolvedInput>,std::span<const orchard::TransparentOutput>,OrchardProofJobs*,
         const AuthenticatedShieldInputs* = nullptr);
+private:
     static ShieldResult ReserveShieldForReplay(WalletManager&,uint64_t,const Profile&,uint64_t,
         const RuntimeAccountReplay&,const orchard::Hash&,std::span<const orchard::ResolvedInput>,
         std::span<const orchard::WalletPayment>,std::span<const orchard::TransparentOutput>,uint64_t,OrchardProofJobs*,bool existing_only=false);

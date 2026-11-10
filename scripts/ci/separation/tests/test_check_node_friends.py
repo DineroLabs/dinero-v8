@@ -39,25 +39,11 @@ def test_ignores_wallet_internal_friends_comments_and_substrings():
 
 
 def test_live_repo_findings_match_design_inventory():
-    # Stage A state: exactly the 11 effective grants from the design doc §2
-    # (the orchard_account_delivery.h:443 duplicate is deleted in this stage).
-    # Each later stage shrinks this list; stage E empties it. Update this
-    # expectation in the same PR that drops a grant.
-    findings = cnf.scan_repo(REPO)
-    files = sorted({f.split(":")[0] for f in findings})
-    assert len(findings) == 11, findings
-    assert files == [
-        "include/wallet/authenticated_shield_inputs.h",
-        "include/wallet/orchard_account_catalog.h",
-        "include/wallet/orchard_account_delivery.h",
-        "include/wallet/runtime_account_replay.h",
-        "include/wallet/runtime_index_delivery.h",
-        "include/wallet/runtime_origin_projection.h",
-        "include/wallet/runtime_wallet_balance.h",
-        "include/wallet/selected_history.h",
-        "include/wallet/wallet_manager.h",
-        "include/wallet/wallet_transaction_signer.h",
-    ]
+    # Stage E end state: ZERO node-side friend grants in wallet code — GATE F1
+    # is GREEN. (Stages A–E removed all 12: the duplicate plus the 11 real
+    # grants inventoried in the design doc §2.) This holding is the sep2
+    # program's end state; any new node-side friend fails here and in CI.
+    assert cnf.scan_repo(REPO) == []
 
 
 def test_cli_exit_codes(tmp_path):

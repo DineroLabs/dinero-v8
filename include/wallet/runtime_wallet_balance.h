@@ -3,8 +3,11 @@
 #include "daemon/runtime_outbox_cursor.h"
 
 namespace dinero {
+class RuntimeOrdinaryDelivery;
 // Immutable result of one owned read, not a reusable source/coin capability or
-// whole-wallet readiness certificate. No caller or deserializer can mint it.
+// whole-wallet readiness certificate. No caller or deserializer can mint it:
+// only the wallet-side coverage-balance read (RuntimeOrdinaryDelivery::
+// ReadCoverageBalanceSnapshot) does, from the coverage it just read against.
 class RuntimeWalletBalanceSnapshot final {
 public:
     const WalletManager::BalanceSummary& Summary() const { return summary_; }
@@ -12,7 +15,7 @@ public:
     const uint256& TipHash() const { return tip_; }
     uint32_t TipHeight() const { return height_; }
 private:
-    friend class ChainstateService;
+    friend class RuntimeOrdinaryDelivery;
     RuntimeWalletBalanceSnapshot(WalletManager::BalanceSummary summary,RuntimeOutboxCursor cursor,
         uint256 tip,uint32_t height):summary_(std::move(summary)),cursor_(cursor),tip_(tip),height_(height){}
     WalletManager::BalanceSummary summary_;
