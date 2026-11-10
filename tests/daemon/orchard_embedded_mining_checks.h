@@ -21,6 +21,12 @@ void RunEmbeddedOrchardMining(solo::MinerBackend backend,bool historical_start=f
             MutableParams().orchard_catalog_commitment_activation_height=activation;
         ShieldedStateStartupTestAccess::InstallHistoricalMiningValidator(*raw.f.service);
     }
+    if(!historical_start) {
+        // Real cold-start wallet recovery runs before the first mining job.
+        // It must finish outside the selected lock and leave a reusable proof.
+        const auto baseline=raw.f.service->getRuntimeAccountReplay();
+        ASSERT_TRUE(baseline.ok());ASSERT_TRUE(*baseline);
+    }
     struct Notices final : RuntimeBlockNotifications {
         std::atomic<unsigned> published{0};
         uint32_t activation;

@@ -113,6 +113,7 @@ CommitmentTree::CommitmentTree() {
 
 CommitmentTree::CommitmentTree(const CommitmentTree& other) {
     std::lock_guard<std::mutex> lock(other.mutex_);
+    cached_root_ = other.cached_root_;
     size_ = other.size_;
     frontier_ = other.frontier_;
     leaves_ = other.leaves_;
@@ -123,6 +124,7 @@ CommitmentTree& CommitmentTree::operator=(const CommitmentTree& other) {
         return *this;
     }
     std::scoped_lock lock(mutex_, other.mutex_);
+    cached_root_ = other.cached_root_;
     size_ = other.size_;
     frontier_ = other.frontier_;
     leaves_ = other.leaves_;
@@ -131,6 +133,7 @@ CommitmentTree& CommitmentTree::operator=(const CommitmentTree& other) {
 
 CommitmentTree::CommitmentTree(CommitmentTree&& other) noexcept {
     std::lock_guard<std::mutex> lock(other.mutex_);
+    cached_root_ = other.cached_root_;
     size_ = other.size_;
     frontier_ = std::move(other.frontier_);
     leaves_ = std::move(other.leaves_);
@@ -141,6 +144,7 @@ CommitmentTree& CommitmentTree::operator=(CommitmentTree&& other) noexcept {
         return *this;
     }
     std::scoped_lock lock(mutex_, other.mutex_);
+    cached_root_ = other.cached_root_;
     size_ = other.size_;
     frontier_ = std::move(other.frontier_);
     leaves_ = std::move(other.leaves_);
@@ -149,6 +153,7 @@ CommitmentTree& CommitmentTree::operator=(CommitmentTree&& other) noexcept {
 
 uint64_t CommitmentTree::Append(const Hash& commitment) {
     std::lock_guard<std::mutex> lock(mutex_);
+    cached_root_.reset();
     const uint64_t index = size_;
     leaves_.push_back(commitment);
     Hash current = commitment;
@@ -176,6 +181,7 @@ uint64_t CommitmentTree::Append(const Hash& commitment) {
 
 Hash CommitmentTree::Root() const {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (cached_root_) return *cached_root_;
     Hash current = EmptyRoots()[0];
     for (size_t depth = 0; depth < TREE_DEPTH; ++depth) {
         if (((size_ >> depth) & 1) == 1) {
@@ -184,6 +190,7 @@ Hash CommitmentTree::Root() const {
             current = PoseidonHash2(current, EmptyRoots()[depth]);
         }
     }
+    cached_root_ = current;
     return current;
 }
 
@@ -230,6 +237,7 @@ bool CommitmentTree::Truncate(uint64_t new_size) {
     }
 
     std::vector<Hash> retained(leaves_.begin(), leaves_.begin() + static_cast<std::ptrdiff_t>(new_size));
+    cached_root_.reset();
     frontier_.fill(Hash{});
     leaves_.clear();
     size_ = 0;
@@ -270,6 +278,7 @@ std::vector<uint8_t> CommitmentTree::SerializeFrontier() const {
 bool CommitmentTree::DeserializeFrontier(const uint8_t* data, size_t len) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (len < 8 + TREE_DEPTH * HASH_BYTES) return false;
+    cached_root_.reset();
     size_ = 0;
     leaves_.clear();
     for (int i = 0; i < 8; ++i) {

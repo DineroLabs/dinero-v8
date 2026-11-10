@@ -219,7 +219,7 @@ public:
     // callers before I/O. Captures real storage owners briefly under the lock,
     // then reads and independently validates the hash-linked branch outside it.
     // A prepared result is not activation permission or an acknowledgment.
-    [[nodiscard]] std::unique_ptr<PreparedOrchardParent> PrepareSelectedOrchardParent();
+    [[nodiscard]] std::unique_ptr<PreparedOrchardParent> PrepareSelectedOrchardParent(bool prepare_catalog=true);
     // Read-only comparison against ALL current selected live/durable owners.
     // Result is valid only for this call, not a continuing readiness certificate.
     [[nodiscard]] std::optional<storage::LegacyRetirementRecord>
@@ -1712,7 +1712,7 @@ private:
     bool CompleteActivationParentPlan(ActivationParentPlan&);
     void ActivateBestChainPass(const ActivationParentPlan*,std::unique_ptr<ActivationParentPlan>&,bool,
         PreparedOrchardInverse* = nullptr);
-    bool CompletePreparedOrchardParent(PreparedOrchardParent&);
+    bool CompletePreparedOrchardParent(PreparedOrchardParent&,bool prepare_catalog=true);
     bool BindActivationParentUnderLock(CBlockIndex*,CBlockIndex*,const std::vector<CBlockIndex*>&,
         const std::vector<CBlockIndex*>&,const ActivationParentPlan*,std::unique_ptr<ActivationParentPlan>&,
         bool,std::unique_ptr<ParentPreparationScope>&);
@@ -1749,6 +1749,7 @@ private:
     // accepts ONLY independently executed full backing, never assumed state.
     bool CheckIndependentLegacyMobileParentUnderLock() const;
     std::shared_ptr<const RuntimeAccountReplay> CaptureEmptyActivationParentReplayUnderLock();
+    std::shared_ptr<const RuntimeAccountReplay> CaptureEmptyActivationParentReplay();
     // Caller owns snapshot_load_mutex_ THEN activation_mutex_. The context
     // retains its original full/explicit-proof coin authority unchanged.
     bool CheckRuntimeAccountReplayCurrentUnderLock(const RuntimeAccountReplay&,

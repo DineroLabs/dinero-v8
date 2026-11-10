@@ -39,3 +39,16 @@
 # declaration and all other orchard_header content unchanged.
 6 modify src/consensus/orchard_header.cpp
 6 add src/consensus/orchard_block_context.cpp
+
+# Activation recovery: memoize unchanged legacy tree roots under the existing
+# mutex. Exact insertions only; hashing and serialization remain unchanged.
+6 insert include/consensus/shielded/commitment_tree.h@144 ^    mutable std::optional<Hash> cached_root_;$
+6 insert src/consensus/shielded/commitment_tree.cpp@115 ^    cached_root_ = other\.cached_root_;$
+6 insert src/consensus/shielded/commitment_tree.cpp@125 ^    cached_root_ = other\.cached_root_;$
+6 insert src/consensus/shielded/commitment_tree.cpp@133 ^    cached_root_ = other\.cached_root_;$
+6 insert src/consensus/shielded/commitment_tree.cpp@143 ^    cached_root_ = other\.cached_root_;$
+6 insert src/consensus/shielded/commitment_tree.cpp@151 ^    cached_root_\.reset\(\);$
+6 insert src/consensus/shielded/commitment_tree.cpp@178 ^    if \(cached_root_\) return \*cached_root_;$
+6 insert src/consensus/shielded/commitment_tree.cpp@186 ^    cached_root_ = current;$
+6 insert src/consensus/shielded/commitment_tree.cpp@232 ^    cached_root_\.reset\(\);$
+6 insert src/consensus/shielded/commitment_tree.cpp@272 ^    cached_root_\.reset\(\);$

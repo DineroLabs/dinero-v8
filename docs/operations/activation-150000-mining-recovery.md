@@ -18,6 +18,15 @@ represent the same accepted result. A submission generation fences delayed job
 responses, and CPU/GPU winners are checked against current work before taking
 the submission slot. No consensus rule or activation height changes.
 
+The live canary also exposed cold empty-wallet recovery replaying the same
+historical prefix under the selected lock. It now uses the shared detached
+preparation before taking the snapshot and selected locks. Legacy shielded-tree
+roots are memoized under their existing mutex, copied with the frontier and
+invalidated on append, truncate, and restore. The original Poseidon calculation
+and serialized frontier are unchanged. An independent uncached oracle checks
+all mutations and ownership transfers; exact positional K5 allowances cover
+only those cache insertions, without replacing the consensus baseline.
+
 ## Snapshot preservation
 
 EU1 and NA independently captured H149999, block
@@ -40,6 +49,9 @@ handlers, a private genuine-PoW chain, mixed shielded bodies, boundary and succe
 blocks, and independent inspection of stored commitments and PoW. Metal is also
 exercised when built on supported Apple hardware. The historical-start case tests
 protocol continuity from the block before activation through its successors.
+Also run CommitmentTree and the OrchardEmptyParentAccount/Queue suites for the
+cold-wallet recovery path. Headless fleet builds use `ENABLE_GPU_MINING=OFF`
+and must pass the destination host's dynamic-loader check before installation.
 
 For rollout, retain the old binaries, stop cleanly, preserve existing datadirs,
 verify the candidate binary hashes, start one canary, and require real job creation,

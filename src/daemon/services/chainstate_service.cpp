@@ -984,7 +984,6 @@ struct PreparedOrchardParent::State {
     struct BoundaryMaterial {
         std::unique_ptr<OrchardHistoryCapture> history;
         OrchardParentReplay replay;
-        std::unique_ptr<PreparedOrchardCatalog> catalog;
         explicit BoundaryMaterial(const OrchardParentReplay::Target& target)
             : replay(target, SelectedParentReplayWorkLimits()) {}
     };
@@ -997,7 +996,7 @@ struct PreparedOrchardParent::State {
     const std::shared_ptr<BoundaryMaterial> boundary_;
     std::unique_ptr<OrchardHistoryCapture>& history_;
     OrchardParentReplay& replay_;
-    std::unique_ptr<PreparedOrchardCatalog>& catalog_;
+    std::shared_ptr<PreparedOrchardCatalog> catalog_;
     std::optional<HistoricalCompactReplay::Target> historical_target_;
     std::unique_ptr<HistoricalCompactReplay> historical_replay_;
     std::unique_ptr<PreparedHistoricalCatalog> historical_catalog_;
@@ -1015,7 +1014,7 @@ struct PreparedOrchardParent::State {
         std::shared_ptr<BoundaryMaterial> boundary = {})
         : use_(std::move(use)),source_(source),db_(std::move(db)),blocks_(std::move(blocks)),
           target_(target),boundary_(boundary ? std::move(boundary) : std::make_shared<BoundaryMaterial>(target)),
-          history_(boundary_->history),replay_(boundary_->replay),catalog_(boundary_->catalog),branch_base_height_(target_.height) {}
+          history_(boundary_->history),replay_(boundary_->replay),branch_base_height_(target_.height) {}
 };
 struct ChainstateService::BoundaryParentCache {
     std::weak_ptr<ChainDB> db;
@@ -1024,6 +1023,7 @@ struct ChainstateService::BoundaryParentCache {
     std::string profile;
     std::optional<std::pair<uint64_t,uint64_t>> revision;
     std::shared_ptr<PreparedOrchardParent::State::BoundaryMaterial> material;
+    std::shared_ptr<PreparedOrchardCatalog> catalog;
 };
 #else
 struct PreparedOrchardParent::State {};
@@ -7530,11 +7530,7 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
         if(empty){
             auto self=std::const_pointer_cast<ChainstateService>(weak_from_this().lock());
             if(!self)return Status::Invalid;
-            // Same order as snapshot replacement. Recapture the actual zero
-            // source after both owners; never hold selected while waiting here.
-            std::lock_guard<std::mutex> snapshot(self->snapshot_load_mutex_);
-            std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
-            const auto parent=self->CaptureEmptyActivationParentReplayUnderLock();
+            const auto parent=self->CaptureEmptyActivationParentReplay();
             if(!parent)return Status::Invalid;
             return parent;
         }
@@ -11396,7 +11392,7 @@ struct ChainstateService::ParentPreparationScope {
         for(auto* p=current;p;p=p->previous) if(&p->owner==&service) return p;
         return nullptr;
     }
-    explicit ParentPreparationScope(ChainstateService& service,const std::string* submitted=nullptr):owner(service),
+    explicit ParentPreparationScope(ChainstateService& service,const std::string* submitted=nullptr,bool prepare_catalog=true):owner(service),
         use(std::make_unique<SelectedReadUse>(service.weak_from_this().lock())) {
         if(owner.activation_mutex_.HeldByCurrentThread()) {
             if(const auto* outer=Find(owner)) {
@@ -11406,7 +11402,7 @@ struct ChainstateService::ParentPreparationScope {
             // A scope for another chainstate may hold its selected lock. The
             // real daemon has one chainstate; do not replay inside that scope.
             owned_inverse=owner.PrepareSelectedOrchardInverse();inverse=owned_inverse.get();
-            owned=owner.PrepareSelectedOrchardParent(); prepared=owned.get();
+            owned=owner.PrepareSelectedOrchardParent(prepare_catalog); prepared=owned.get();
         }
         current=this;
         // Compact extension capture audits its selected parent. Expose only
@@ -19927,7 +19923,7 @@ std::unique_ptr<ChainstateService::BlockIngressUse> ChainstateService::AcquireBl
     catch(const SelectedReadUse::Unavailable&) { return {}; }
 }
 
-std::unique_ptr<PreparedOrchardParent> ChainstateService::PrepareSelectedOrchardParent() {
+std::unique_ptr<PreparedOrchardParent> ChainstateService::PrepareSelectedOrchardParent(bool prepare_catalog) {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     // Checking BEFORE any recursive acquisition is necessary: releasing a new
     // guard would not release a lock already held by our caller.
@@ -19959,22 +19955,32 @@ std::unique_ptr<PreparedOrchardParent> ChainstateService::PrepareSelectedOrchard
             boundary_parent_cache_->target.height==target.height &&
             boundary_parent_cache_->target.hash==target.hash &&
             boundary_parent_cache_->target.chainwork==target.chainwork) {
-            return std::unique_ptr<PreparedOrchardParent>(new PreparedOrchardParent(
+            // Wallet reads need the proof, but must not write catalog rows.
+            // Create the immutable catalog only for a mining/transition caller;
+            // each request owns its shared_ptr, so upgrading cannot race readers.
+            if(prepare_catalog && !boundary_parent_cache_->catalog) {
+                const ChainWriteToken token;
+                boundary_parent_cache_->catalog=PreparedOrchardCatalog::Create(*db,token,
+                    boundary_parent_cache_->material->replay,*boundary_parent_cache_->material->history);
+            }
+            auto prepared=std::unique_ptr<PreparedOrchardParent>(new PreparedOrchardParent(
                 std::make_unique<PreparedOrchardParent::State>(std::move(use),this,
                     std::move(db),std::move(blocks),target,boundary_parent_cache_->material)));
+            prepared->state_->catalog_=boundary_parent_cache_->catalog;
+            return prepared;
         }
         boundary_parent_cache_.reset();
         auto prepared=std::unique_ptr<PreparedOrchardParent>(
             new PreparedOrchardParent(std::make_unique<PreparedOrchardParent::State>(
                 std::move(use),this,std::move(db),std::move(blocks),target)));
-        if(!CompletePreparedOrchardParent(*prepared)) return {};
+        if(!CompletePreparedOrchardParent(*prepared,prepare_catalog)) return {};
         if(!revision || prepared->state_->db_->readRevision()!=revision ||
             consensus::ValidatedOrchardBlock::CaptureProfile()!=profile) return {};
         // Never cache incomplete or poisoned results, and never cache a
         // selected-read token (which would prevent shutdown from draining).
         boundary_parent_cache_=std::make_unique<BoundaryParentCache>(BoundaryParentCache{
             prepared->state_->db_,prepared->state_->blocks_,target,profile,
-            prepared->state_->db_->readRevision(),prepared->state_->boundary_});
+            prepared->state_->db_->readRevision(),prepared->state_->boundary_,prepared->state_->catalog_});
         return prepared;
     } catch (...) { return {}; }
 #else
@@ -19982,7 +19988,7 @@ std::unique_ptr<PreparedOrchardParent> ChainstateService::PrepareSelectedOrchard
 #endif
 }
 
-bool ChainstateService::CompletePreparedOrchardParent(PreparedOrchardParent& prepared) {
+bool ChainstateService::CompletePreparedOrchardParent(PreparedOrchardParent& prepared,bool prepare_catalog) {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     if(activation_mutex_.HeldByCurrentThread() || ParentPreparationScope::current) return false;
     try {
@@ -20076,7 +20082,7 @@ bool ChainstateService::CompletePreparedOrchardParent(PreparedOrchardParent& pre
         // Detached, bounded immutable preparation writes. These nodes have no
         // canonical head and cannot authorize activation or compact ingress.
         const ChainWriteToken catalog_token;
-        prepared.state_->catalog_=PreparedOrchardCatalog::Create(*prepared.state_->db_,catalog_token,
+        if(prepare_catalog)prepared.state_->catalog_=PreparedOrchardCatalog::Create(*prepared.state_->db_,catalog_token,
             prepared.state_->replay_,*prepared.state_->history_);
         if(prepared.state_->historical_replay_)
             prepared.state_->historical_catalog_=PreparedHistoricalCatalog::Create(*prepared.state_->db_,catalog_token,
@@ -20127,7 +20133,7 @@ bool ChainstateService::CompletePreparedOrchardParent(PreparedOrchardParent& pre
         return true;
     } catch (...) { return false; }
 #else
-    (void)prepared;return false;
+    (void)prepared;(void)prepare_catalog;return false;
 #endif
 }
 
@@ -21323,6 +21329,16 @@ bool ChainstateService::CheckIndependentLegacyMobileParentUnderLock() const{
 #else
     return false;
 #endif
+}
+
+std::shared_ptr<const RuntimeAccountReplay> ChainstateService::CaptureEmptyActivationParentReplay(){
+    // Empty-wallet recovery must use the same detached, single-flight parent
+    // proof as mining. Otherwise the legacy fallback replays genesis under
+    // the selected lock, freezing networking and queuing unrelated RPCs.
+    ParentPreparationScope preparation(*this,nullptr,false);
+    std::lock_guard<std::mutex> snapshot(snapshot_load_mutex_);
+    std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+    return CaptureEmptyActivationParentReplayUnderLock();
 }
 
 std::shared_ptr<const RuntimeAccountReplay> ChainstateService::CaptureEmptyActivationParentReplayUnderLock(){
