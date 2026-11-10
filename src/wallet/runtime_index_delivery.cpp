@@ -620,17 +620,10 @@ void RuntimeWalletOriginProjection::SetFirstEvent(const RuntimeOutboxEvent& firs
     first_=first;
 }
 void RuntimeWalletOriginProjection::AppendValidated(const Block& block,uint32_t height) {
-    // The producer calls this only AFTER owned consensus replay of this body.
+    // Projection arithmetic only (see the header contract): the producer calls
+    // this only AFTER owned consensus replay of this body, and body ordering /
+    // chain linkage stay the producer's burden, rechecked by CheckOriginDomain.
     // Failure discards the entire in-memory projection, never wallet state.
-    if(!first_.cursor.sequence)Fail("Origin projection first event not set");
-    if(height!=appended_)Fail("Origin projection body height not contiguous");
-    if(height>=first_.context.height)Fail("Origin projection body beyond its origin");
-    if(height&&block.header.prev_block_hash!=last_appended_)
-        Fail("Origin projection body does not extend its parent");
-    last_appended_=block.GetHash();
-    if(height+1==first_.context.height&&last_appended_!=first_.context.parent_hash)
-        Fail("Origin projection final body is not the origin parent");
-    ++appended_;
     constexpr size_t limit=64*1024*1024;
     const auto charge=[&](size_t n) {
         if(n>limit-retained_bytes_)Fail("Origin projection material limit");

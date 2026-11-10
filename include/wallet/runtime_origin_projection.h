@@ -35,13 +35,14 @@ public:
     const uint256& OriginHash() const { return first_.context.parent_hash; }
     uint32_t OriginHeight() const { return first_.context.height - 1; }
     const std::optional<std::map<std::string,std::string>>& ImportedCohort() const { return imported_cohort_; }
-    // Producer feed. Restriction is by evidence, not caller identity:
-    // SetFirstEvent accepts only the shape a checked delivery page proves
-    // (the first canonical Connect event at a nonzero activation origin, set
-    // once); AppendValidated accepts only bodies that extend the previous
-    // appended block by hash, contiguously from height 0, ending exactly at
-    // the origin parent. Violations throw and discard only the in-memory
-    // projection. Consensus validity of each body stays the producer's burden.
+    // Producer feed. SetFirstEvent accepts only the shape a checked delivery
+    // page proves (the first canonical Connect event at a nonzero activation
+    // origin, set once) and throws otherwise. AppendValidated is projection
+    // arithmetic only: consensus validity, body ordering and chain linkage
+    // stay the producer's burden (rechecked by CheckOriginDomain); it throws
+    // only on arithmetic violations (repeated spends/creations, CT history,
+    // material limits), discarding the in-memory projection, never wallet
+    // state.
     void SetFirstEvent(const RuntimeOutboxEvent&);
     void AppendValidated(const Block&,uint32_t height);
     void SetImportedCohort(std::map<std::string,std::string> cohort) { imported_cohort_=std::move(cohort); }
@@ -51,8 +52,6 @@ private:
     friend class RuntimeWalletCoverageProjection;
     friend struct RuntimeOriginProjectionTestAccess;
     RuntimeWalletOriginProjection() = default;
-    uint256 last_appended_;
-    uint32_t appended_ = 0;
     std::string identity_;
     uint64_t session_ = 0;
     bool existing_identity_only_ = false;
