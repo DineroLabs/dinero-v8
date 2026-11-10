@@ -7481,6 +7481,21 @@ bool WalletManager::snapshotRecoveryAlreadyApplied(uint32_t height,const std::st
     return true;
 }
 
+bool WalletManager::RescanFromSelectedHistory(int start_height, int gap_limit,
+                                              const SelectedWalletHistory& prepared,
+                                              uint64_t expected_session) {
+    return RescanBlockchainImpl(start_height, gap_limit, nullptr, &prepared, expected_session);
+}
+
+bool WalletManager::SoleDatabaseLeaseHeld() const {
+    std::lock_guard<std::recursive_mutex> lock(database_lifecycle_mutex_);
+    return database_leases_ == 1;
+}
+
+bool WalletManager::InitialPqMasterPresentInTransaction(const std::vector<uint8_t>& seed) {
+    return loadInitialPqMaster(seed).has_value();
+}
+
 bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                                         const wallet::IWalletChainView* view,
                                         const SelectedWalletHistory* prepared, uint64_t expected_session) {
