@@ -1,0 +1,38 @@
+# ─────────────────────────────────────────────────────────────────────────
+# GATE P1: ambient-global reads in the consensus libraries may only shrink
+# (sep3 program).
+# docs/superpowers/specs/2026-11-10-consensus-globals-purity-design.md §4
+#
+# Deliberately unfiltered: a seconds-long source scan, so it always runs.
+# An always-run single job can never hit the skipped-matrix check-run
+# naming problem (PR #890/#891) — there is nothing to skip.
+#
+# Unlike F1 (designed red until its migration finished), P1 ratchets
+# against a committed baseline and is green from day one: a count above
+# baseline is a regression, a count below baseline without a regenerated
+# baseline in the same commit is stale — both fail. It becomes a required
+# context in stage F.
+# ─────────────────────────────────────────────────────────────────────────
+name: separation-purity-gate
+
+on:
+  pull_request:
+  push:
+    branches: [dinero-main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: purity-gate-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  p1:
+    name: P1 consensus ambient-global ratchet
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: GATE P1
+        run: python3 scripts/ci/separation/check_consensus_globals.py
