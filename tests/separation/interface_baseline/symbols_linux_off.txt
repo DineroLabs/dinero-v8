@@ -108,7 +108,6 @@ nodecore_ffi T nodecore_unwatch_script
 nodecore_ffi T nodecore_version
 nodecore_ffi T nodecore_watch_script
 nodecore_ffi T nodecore_watch_scripts_batch
-nodecore_ffi V DW.ref._ZTIN6dinero18MempoolPersistence11MissingFileE
 nodecore_ffi V DW.ref._ZTISt17bad_function_call
 nodecore_ffi V DW.ref._ZTISt9exception
 nodecore_ffi V DW.ref.__gxx_personality_v0
