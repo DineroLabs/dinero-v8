@@ -1,0 +1,36 @@
+# ─────────────────────────────────────────────────────────────────────────
+# GATE F1: no node-side class may be a friend of wallet code (sep2 program).
+# docs/superpowers/specs/2026-11-09-node-friend-access-removal-design.md §4
+#
+# Deliberately unfiltered: the check is a seconds-long source scan, so it
+# always runs. An always-run single job can never hit the skipped-matrix
+# check-run naming problem that bit the gates workflows (PR #890, fixed by
+# the stand-in jobs in PR #891) — there is nothing to skip.
+#
+# Stage A..E: this job is NOT required and is expected RED (it lists every
+# remaining node-side friend grant). It becomes required in stage F, when
+# the last grant is gone and it is observed GREEN.
+# ─────────────────────────────────────────────────────────────────────────
+name: separation-friend-gate
+
+on:
+  pull_request:
+  push:
+    branches: [dinero-main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: friend-gate-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  f1:
+    name: F1 no node-side wallet friends
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: GATE F1
+        run: python3 scripts/ci/separation/check_node_friends.py

@@ -440,7 +440,6 @@ private:
     // callers always obtain every point from the supplied validated view.
     static CatalogEnrolled ReadCatalogWithRestorePoints(WalletManager&,uint64_t,
         const RuntimeAccountReplay&,const std::function<RestorePoint(RuntimeOutboxCursor)>&);
-    friend class dinero::ChainstateService;
     friend struct OrchardDetachedOrdinaryPaymentTestAccess;
     static std::unique_ptr<OrchardCatalogRecoveryPlan> PrepareOrdinaryPaymentForReplay(
         WalletManager&,const WalletSigningIdentity&,const RuntimeAccountReplay&);
