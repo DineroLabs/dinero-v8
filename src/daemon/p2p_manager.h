@@ -49,6 +49,12 @@ enum class PeerLifetimeState {
     DESTROYED       // Object destroyed (not used - tracked by shared_ptr)
 };
 
+// ⚠️ ADDING A FIELD? It must be wired in THREE places or it is SILENTLY
+// DROPPED from getpeerinfo / get_connected_peers() snapshots:
+//   1. this struct, 2. the hand-written move constructor below (the atomic
+//   members delete the implicit one), 3. the manual copy block in
+//   P2PManager::get_connected_peers().
+// (Sync primitives and connection-local state are deliberately NOT moved.)
 struct PeerInfo {
     struct ViaRelayInfo {
         uint64_t circuit_id{0};
@@ -202,6 +208,9 @@ struct PeerInfo {
     const char* path_name() const { return punched ? "punched" : (via_relay ? "relayed" : "direct"); }
 
     // Ring 3 Phase 4c: Move constructor (atomic is not movable, must load/store)
+    // ⚠️ Explicit init list: a data field missing here is value-initialized in
+    // the destination, so snapshots return 0/false for it even though the
+    // live map entry holds the real value. Keep in sync with the struct.
     PeerInfo(PeerInfo&& other) noexcept
         : address(std::move(other.address)),
           port(other.port),
