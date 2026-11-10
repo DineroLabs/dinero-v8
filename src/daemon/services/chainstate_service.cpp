@@ -11666,10 +11666,16 @@ bool ChainstateService::CompleteActivationParentPlan(ActivationParentPlan& reque
         // Straight activation from the still-selected boundary must join the
         // same single-flight proof as mining, ingress and wallet recovery.
         // Replacement/history/snapshot owners retain their distinct replay.
-        const bool selected_boundary=!request.outgoing && request.snapshot.disconnects.empty() && active &&
+        bool selected_boundary=!request.outgoing && request.snapshot.disconnects.empty() && active &&
             !captured.historical_target_ && !captured.snapshot_base_ &&
             std::get<3>(*active)==captured.target_.height && std::get<0>(*active)==captured.target_.hash &&
             ChainworkFromHex(std::get<9>(*active))==captured.target_.chainwork;
+        if(selected_boundary) {
+            // The shared factory owns a full node's selected coin/forest view.
+            // Compact owners must complete their independent captured replay.
+            std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+            selected_boundary=!compact_startup_ && consensus_utxo_set_;
+        }
         if(selected_boundary) {
             auto shared=PrepareSelectedOrchardParent();
             if(!shared || shared->state_->source_!=captured.source_ ||
