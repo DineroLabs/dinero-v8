@@ -211,6 +211,10 @@ struct RuntimeOriginProjectionTestAccess {
 #endif
 
 struct ShieldedStateStartupTestAccess {
+    static bool HasBoundaryCache(ChainstateService& service) {
+        std::lock_guard<std::mutex> lock(service.boundary_parent_cache_mutex_);
+        return bool(service.boundary_parent_cache_);
+    }
     static bool RestoreSnapshotCache(ChainstateService& service, std::string& error) {
         return service.RestoreStatefulSnapshotCoinCache(error);
     }

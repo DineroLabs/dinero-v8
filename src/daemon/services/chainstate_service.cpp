@@ -984,6 +984,9 @@ struct PreparedOrchardParent::State {
     struct BoundaryMaterial {
         std::unique_ptr<OrchardHistoryCapture> history;
         OrchardParentReplay replay;
+        // Accessed only under the originating service's selected lock. This
+        // memoizes the historical index audit, never the live coin/root checks.
+        std::optional<std::pair<uint64_t,uint64_t>> canonical_revision;
         explicit BoundaryMaterial(const OrchardParentReplay::Target& target)
             : replay(target, SelectedParentReplayWorkLimits()) {}
     };
@@ -20757,16 +20760,21 @@ ChainstateService::CheckPreparedOrchardParent(const PreparedOrchardParent& prepa
             consensus_utxo_set_->GetHeight()!=height || consensus_utxo_set_->GetBestBlock()!=hash ||
             !prepared.state_->history_ || !prepared.state_->history_->Finished() || prepared.state_->history_->Count()!=uint64_t(height)+1) return {};
         consensus::CheckPreparedLegacyRetirementUnderLock(*chain_db_,record);
-        for(uint32_t h=0;uint64_t(h)<prepared.state_->history_->Count();++h) {
-            const auto captured=prepared.state_->history_->HeaderAt(h);
-            const auto canonical=chain_db_->getBlockHashByHeight(int(h));
-            const auto header=chain_db_->getHeader(captured.hash);
-            const auto stored_height=chain_db_->getBlockHeight(captured.hash);
-            const auto work=chain_db_->getBlockWork(captured.hash);
-            if(!canonical.ok() || *canonical!=captured.hash || !header.ok() ||
-                header->SerializeForHash()!=captured.header.SerializeForHash() ||
-                !stored_height.ok() || *stored_height!=int(h) || !work.ok() || *work!=captured.work)
-                return {};
+        const auto revision=chain_db_->readRevision();
+        if(!revision || prepared.state_->boundary_->canonical_revision!=revision) {
+            for(uint32_t h=0;uint64_t(h)<prepared.state_->history_->Count();++h) {
+                const auto captured=prepared.state_->history_->HeaderAt(h);
+                const auto canonical=chain_db_->getBlockHashByHeight(int(h));
+                const auto header=chain_db_->getHeader(captured.hash);
+                const auto stored_height=chain_db_->getBlockHeight(captured.hash);
+                const auto work=chain_db_->getBlockWork(captured.hash);
+                if(!canonical.ok() || *canonical!=captured.hash || !header.ok() ||
+                    header->SerializeForHash()!=captured.header.SerializeForHash() ||
+                    !stored_height.ok() || *stored_height!=int(h) || !work.ok() || *work!=captured.work)
+                    return {};
+            }
+            if(chain_db_->readRevision()!=revision)return {};
+            prepared.state_->boundary_->canonical_revision=revision;
         }
         const auto& proven = replay.ProvenUtxos();
         const auto& live = consensus_utxo_set_->GetUTXOs();
@@ -20825,7 +20833,8 @@ ChainstateService::CheckPreparedOrchardParent(const PreparedOrchardParent& prepa
         const auto anchors=replay.ShieldedAnchors()->SerializePersistenceBytes();
         if(!stored_frontier.ok() || !stored_anchors.ok() ||
             *stored_frontier!=std::string(frontier.begin(),frontier.end()) ||
-            *stored_anchors!=std::string(anchors.begin(),anchors.end()) || active_tip_!=selected)
+            *stored_anchors!=std::string(anchors.begin(),anchors.end()) || active_tip_!=selected ||
+            chain_db_->readRevision()!=revision)
             return {};
         return record;
     } catch (...) { return {}; }

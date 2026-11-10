@@ -17,6 +17,7 @@
 #include <atomic>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <functional>
 #include <map>
 #include <vector>
@@ -186,6 +187,7 @@ private:
     std::filesystem::path dir_;  // Remembered for lock recovery
     uint64_t open_generation_=0;
     std::atomic<uint64_t> historical_revision_{0};
+    std::mutex historical_write_mutex_;
     void invalidateHistoricalReadCache() {
         auto previous=historical_revision_.load();
         while(previous!=UINT64_MAX &&
@@ -194,9 +196,10 @@ private:
 
 public:
 
-    // Process-local historical input identity. Header/body/height-index writes
-    // and reopen invalidate it. Selected coin/forest/shielded state must still
-    // be compared in full; this is not a consensus certificate.
+    // Identity of existing historical inputs. Overwrites, deletes, canonical
+    // height-index changes and reopen invalidate it. New hash-addressed inputs
+    // cannot change a completed prefix; their later overwrite still invalidates
+    // at commit. Selected coin/forest/shielded checks remain mandatory.
     std::optional<std::pair<uint64_t,uint64_t>> readRevision() const;
 
     // ═══════════════════════════════════════════════════════════════════════

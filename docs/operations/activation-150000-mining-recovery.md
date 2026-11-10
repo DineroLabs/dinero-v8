@@ -27,6 +27,16 @@ and serialized frontier are unchanged. An independent uncached oracle checks
 all mutations and ownership transfers; exact positional K5 allowances cover
 only those cache insertions, without replacing the consensus baseline.
 
+At the activation parent, WalletService startup defers canonical recovery to the
+existing runtime worker and suppresses legacy scanning until that recovery is
+checked. The historical index audit is reused only at the same database input
+revision; selected coins, durable coins, forest, shielded state and markers are
+still compared on every request. Hash-addressed additions outside a completed
+prefix do not invalidate it. Existing-key overwrites, deletes, canonical index
+changes and reopen do. Historical writes are serialized with their commit-time
+existence comparison, including previously staged inserts that become overwrites.
+The GUI template inspector uses immutable jobs and does not poll hidden templates.
+
 ## Snapshot preservation
 
 EU1 and NA independently captured H149999, block

@@ -170,6 +170,72 @@ TEST(OrchardParentService, CommittingAnEarlierStagedHistoricalEditInvalidatesNew
     EXPECT_TRUE(f.service.PrepareSelectedOrchardParent());
 }
 
+TEST(OrchardParentService, CachedHistoricalAuditRejectsCanonicalAndWorkChangesOnTheSameOwner) {
+    OwnedSelectedParentFixture f;
+    auto prepared=f.service.PrepareSelectedOrchardParent();ASSERT_TRUE(prepared);
+    const auto expected=f.service.CheckPreparedOrchardParent(*prepared);ASSERT_TRUE(expected);
+    ASSERT_EQ(f.service.CheckPreparedOrchardParent(*prepared),expected);
+    ASSERT_EQ(f.db.putHeightIndex(f.token,1,f.blocks.front().GetHash()),Status::Ok);
+    EXPECT_FALSE(f.service.CheckPreparedOrchardParent(*prepared));
+    ASSERT_EQ(f.db.putHeightIndex(f.token,1,f.blocks[1].GetHash()),Status::Ok);
+    EXPECT_EQ(f.service.CheckPreparedOrchardParent(*prepared),expected);
+    const auto hash=f.blocks[1].GetHash();const auto work=f.db.getBlockWork(hash);ASSERT_TRUE(work.ok());
+    rocksdb::WriteBatch staged;
+    ASSERT_EQ(f.db.putHeader(f.token,hash,f.blocks[1].header,1,*work+arith_uint256(1),&staged),Status::Ok);
+    EXPECT_EQ(f.service.CheckPreparedOrchardParent(*prepared),expected);
+    ASSERT_EQ(f.db.writeBatch(f.token,std::move(staged)),Status::Ok);
+    EXPECT_FALSE(f.service.CheckPreparedOrchardParent(*prepared));
+    ASSERT_EQ(f.db.putHeader(f.token,hash,f.blocks[1].header,1,*work),Status::Ok);
+    EXPECT_EQ(f.service.CheckPreparedOrchardParent(*prepared),expected);
+    f.CheckUnpublished();
+}
+
+TEST(OrchardParentService, NewUnselectedInputsAndIdenticalWritesDoNotDiscardCompletedPrefix) {
+    OwnedSelectedParentFixture f;
+    auto first=f.service.PrepareSelectedOrchardParent();ASSERT_TRUE(first);
+    const auto* identity=&first->Record();const auto revision=f.db.readRevision();ASSERT_TRUE(revision);
+    auto side=f.blocks[1];++side.header.nonce;
+    ASSERT_EQ(f.db.putHeader(f.token,side.GetHash(),side.header,1,arith_uint256(1)),Status::Ok);
+    ASSERT_EQ(f.db.putBlock(f.token,side.GetHash(),side),Status::Ok);
+    ChainDB::PersistedHeaderMetadata metadata{};metadata.height=1;
+    metadata.file_number=1;metadata.data_pos=100;metadata.data_size=100;
+    ASSERT_EQ(f.db.putHeaderMetadata(f.token,side.GetHash(),metadata),Status::Ok);
+    auto next=f.blocks.back().header;next.prev_block_hash=f.tip.hash;++next.nonce;
+    ASSERT_EQ(f.db.putHeader(f.token,next.GetHash(),next,int(f.tip.height+1),arith_uint256(1)),Status::Ok);
+    rocksdb::WriteBatch identical;
+    ASSERT_EQ(f.db.putHeader(f.token,f.tip.hash,f.blocks.back().header,f.tip.height,
+        ChainworkFromHex(f.tip.chainwork),&identical),Status::Ok);
+    ASSERT_EQ(f.db.putBlock(f.token,f.blocks[1].GetHash(),f.blocks[1],&identical),Status::Ok);
+    ASSERT_EQ(f.db.putHeightIndex(f.token,1,f.blocks[1].GetHash(),&identical),Status::Ok);
+    ASSERT_EQ(f.db.writeBatch(f.token,std::move(identical)),Status::Ok);
+    EXPECT_EQ(f.db.readRevision(),revision);
+    auto cached=f.service.PrepareSelectedOrchardParent();ASSERT_TRUE(cached);
+    EXPECT_EQ(&cached->Record(),identity);EXPECT_EQ(f.service.CheckPreparedOrchardParent(*cached),first->Record());
+    metadata.height=f.tip.height;metadata.data_size=0;metadata.file_number=0;metadata.data_pos=0;
+    ASSERT_EQ(f.db.putHeaderMetadata(f.token,f.tip.hash,metadata),Status::Ok);
+    metadata.status_flags=BLOCK_HAVE_DATA;
+    ASSERT_EQ(f.db.putHeaderMetadata(f.token,f.tip.hash,metadata),Status::Ok);
+    EXPECT_EQ(f.db.readRevision(),revision);
+    metadata.data_size=100;metadata.data_pos=100;
+    ASSERT_EQ(f.db.putHeaderMetadata(f.token,f.tip.hash,metadata),Status::Ok);
+    EXPECT_NE(f.db.readRevision(),revision);
+    f.CheckUnpublished();
+}
+
+TEST(OrchardParentService, StagedNewKeyThatBecomesAnOverwriteInvalidatesAtCommit) {
+    OwnedSelectedParentFixture f;
+    auto side=f.blocks[1];++side.header.nonce;auto changed=side;
+    changed.vtx.front().vout.front().value=AmountUna::Una(1);
+    rocksdb::WriteBatch staged;
+    ASSERT_EQ(f.db.putBlock(f.token,side.GetHash(),changed,&staged),Status::Ok);
+    ASSERT_EQ(f.db.putBlock(f.token,side.GetHash(),side),Status::Ok);
+    ASSERT_TRUE(f.service.PrepareSelectedOrchardParent());
+    const auto before=f.db.readRevision();ASSERT_TRUE(before);
+    ASSERT_EQ(f.db.writeBatch(f.token,std::move(staged)),Status::Ok);
+    EXPECT_NE(f.db.readRevision(),before);
+    f.CheckUnpublished();
+}
+
 TEST(OrchardParentService, CapturedBranchCannotOverrideChangedSelectedState) {
     OwnedSelectedParentFixture f;
     auto prepared=f.service.PrepareSelectedOrchardParent(); ASSERT_TRUE(prepared);

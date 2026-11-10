@@ -542,7 +542,6 @@ void ChainDB::close() {
 }
 
 Status ChainDB::putBlock(const ChainWriteToken& token, const uint256& hash, const Block& block, rocksdb::WriteBatch* wb) {
-    invalidateHistoricalReadCache();
     if (!db_) return Status::Internal;
 
     // token validates authorization (compile-time check)
@@ -555,13 +554,12 @@ Status ChainDB::putBlock(const ChainWriteToken& token, const uint256& hash, cons
         wb->Put(cf_[idx_blocks_].get(), key, value);
         return Status::Ok;
     } else {
-        auto status = db_->Put(rocksdb::WriteOptions(), cf_[idx_blocks_].get(), key, value);
-        return convertRocksDBStatus(status);
+        rocksdb::WriteBatch batch;batch.Put(cf_[idx_blocks_].get(),key,value);
+        return writeBatch(token,std::move(batch),false);
     }
 }
 
 Status ChainDB::deleteBlock(const ChainWriteToken& token, const uint256& hash, rocksdb::WriteBatch* wb) {
-    invalidateHistoricalReadCache();
     if (!db_) return Status::Internal;
 
     // token validates authorization (compile-time check)
@@ -573,8 +571,8 @@ Status ChainDB::deleteBlock(const ChainWriteToken& token, const uint256& hash, r
         wb->Delete(cf_[idx_blocks_].get(), key);
         return Status::Ok;
     } else {
-        auto status = db_->Delete(rocksdb::WriteOptions(), cf_[idx_blocks_].get(), key);
-        return convertRocksDBStatus(status);
+        rocksdb::WriteBatch batch;batch.Delete(cf_[idx_blocks_].get(),key);
+        return writeBatch(token,std::move(batch),false);
     }
 }
 
@@ -671,7 +669,6 @@ Status ChainDB::putUndo(const ChainWriteToken& token, const uint256& hash, const
 }
 
 Status ChainDB::putHeader(const ChainWriteToken& token, const uint256& hash, const BlockHeader& header, int height, arith_uint256 work, rocksdb::WriteBatch* wb) {
-    invalidateHistoricalReadCache();
     if (!db_) return Status::Internal;
 
     // token validates authorization (compile-time check)
@@ -691,8 +688,8 @@ Status ChainDB::putHeader(const ChainWriteToken& token, const uint256& hash, con
         wb->Put(cf_[idx_headers_].get(), key, value);
         return Status::Ok;
     } else {
-        auto status = db_->Put(rocksdb::WriteOptions(), cf_[idx_headers_].get(), key, value);
-        return convertRocksDBStatus(status);
+        rocksdb::WriteBatch batch;batch.Put(cf_[idx_headers_].get(),key,value);
+        return writeBatch(token,std::move(batch),false);
     }
 }
 
@@ -786,8 +783,8 @@ Status ChainDB::putHeaderMetadata(const ChainWriteToken& token, const uint256& h
         wb->Put(cf_[idx_headers_].get(), key, value);
         return Status::Ok;
     } else {
-        auto status = db_->Put(rocksdb::WriteOptions(), cf_[idx_headers_].get(), key, value);
-        return convertRocksDBStatus(status);
+        rocksdb::WriteBatch batch;batch.Put(cf_[idx_headers_].get(),key,value);
+        return writeBatch(token,std::move(batch),false);
     }
 }
 
@@ -1360,7 +1357,6 @@ StatusOr<bool> ChainDB::getPruneMode() const {
 }
 
 Status ChainDB::putHeightIndex(const ChainWriteToken& token, int height, const uint256& hash, rocksdb::WriteBatch* wb) {
-    invalidateHistoricalReadCache();
     if (!db_) return Status::Internal;
 
     // token validates authorization (compile-time check)
@@ -1372,13 +1368,12 @@ Status ChainDB::putHeightIndex(const ChainWriteToken& token, int height, const u
         wb->Put(cf_[idx_height_].get(), key, hash.GetHex());
         return Status::Ok;
     } else {
-        auto status = db_->Put(rocksdb::WriteOptions(), cf_[idx_height_].get(), key, hash.GetHex());
-        return convertRocksDBStatus(status);
+        rocksdb::WriteBatch batch;batch.Put(cf_[idx_height_].get(),key,hash.GetHex());
+        return writeBatch(token,std::move(batch),false);
     }
 }
 
 Status ChainDB::deleteHeightIndex(const ChainWriteToken& token, int height, rocksdb::WriteBatch* wb) {
-    invalidateHistoricalReadCache();
     if (!db_) return Status::Internal;
 
     (void)token;
@@ -1389,8 +1384,8 @@ Status ChainDB::deleteHeightIndex(const ChainWriteToken& token, int height, rock
         wb->Delete(cf_[idx_height_].get(), key);
         return Status::Ok;
     } else {
-        auto status = db_->Delete(rocksdb::WriteOptions(), cf_[idx_height_].get(), key);
-        return convertRocksDBStatus(status);
+        rocksdb::WriteBatch batch;batch.Delete(cf_[idx_height_].get(),key);
+        return writeBatch(token,std::move(batch),false);
     }
 }
 
@@ -1559,20 +1554,53 @@ Status ChainDB::flushForTesting() {
 Status ChainDB::writeBatch(const ChainWriteToken& token, rocksdb::WriteBatch&& batch, bool sync) {
     if (!db_) return Status::Internal;
 
-    // A staged historical edit may commit after a cache was prepared. Observe
-    // the committed batch too, while leaving immutable catalog-node writes
-    // free to reuse the independently verified historical prefix.
+    // Serialize the existence comparison with the actual commit. In particular,
+    // an old staged "new-key insert" must detect a key created before it commits.
+    // Hash-addressed additions cannot change a completed prefix; treating every
+    // side-chain header as a mutation would continually discard its proof.
+    std::lock_guard historical_write(historical_write_mutex_);
+    const std::array<uint32_t,3> families={cf_[idx_blocks_]->GetID(),cf_[idx_headers_]->GetID(),cf_[idx_height_]->GetID()};
+    const auto replaces=[&](uint32_t id,const rocksdb::Slice& key,const rocksdb::Slice& value) {
+        if(id==families[1] && !key.empty() && key[0]==PREFIX_HEADER_META) {
+            // Status/undo bookkeeping is not historical body input. A changed
+            // canonical flatfile locator IS, including a newly introduced row.
+            uint256 hash;
+            if(key.size()!=65 || !uint256::FromHex(key.ToString().substr(1),hash))return true;
+            const auto height=getBlockHeight(hash);
+            if(!height.ok())return height.status()!=Status::NotFound;
+            const auto canonical=getBlockHashByHeight(*height);
+            if(!canonical.ok())return canonical.status()!=Status::NotFound;
+            if(*canonical!=hash)return false;
+            const auto next=DeserializePersistedHeaderMetadataValue(value.ToString());
+            if(!next.ok())return true;
+            const auto previous=getHeaderMetadata(hash);
+            if(!previous.ok())return previous.status()!=Status::NotFound || next->data_size!=0;
+            return previous->file_number!=next->file_number || previous->data_pos!=next->data_pos ||
+                previous->data_size!=next->data_size;
+        }
+        for(const auto& handle:cf_)if(handle->GetID()==id) {
+            std::string existing;
+            const auto status=db_->Get(rocksdb::ReadOptions(),handle.get(),key,&existing);
+            if(status.IsNotFound())return id==families[2];
+            return !status.ok() || rocksdb::Slice(existing)!=value;
+        }
+        return true;
+    };
     struct HistoricalWrites final : rocksdb::WriteBatch::Handler {
         std::array<uint32_t,3> families;
+        const decltype(replaces)& check_replacement;
         bool changed=false;
-        explicit HistoricalWrites(std::array<uint32_t,3> ids):families(ids){}
-        void Observe(uint32_t id) {changed=changed || std::find(families.begin(),families.end(),id)!=families.end();}
-        rocksdb::Status PutCF(uint32_t id,const rocksdb::Slice&,const rocksdb::Slice&) override {Observe(id);return rocksdb::Status::OK();}
+        HistoricalWrites(std::array<uint32_t,3> ids,const decltype(replaces)& check):families(ids),check_replacement(check){}
+        bool Historical(uint32_t id)const{return std::find(families.begin(),families.end(),id)!=families.end();}
+        void Observe(uint32_t id) {changed=changed || Historical(id);}
+        rocksdb::Status PutCF(uint32_t id,const rocksdb::Slice& key,const rocksdb::Slice& value) override {
+            if(Historical(id)&&check_replacement(id,key,value))changed=true;return rocksdb::Status::OK();
+        }
         rocksdb::Status DeleteCF(uint32_t id,const rocksdb::Slice&) override {Observe(id);return rocksdb::Status::OK();}
         rocksdb::Status SingleDeleteCF(uint32_t id,const rocksdb::Slice&) override {Observe(id);return rocksdb::Status::OK();}
         rocksdb::Status DeleteRangeCF(uint32_t id,const rocksdb::Slice&,const rocksdb::Slice&) override {Observe(id);return rocksdb::Status::OK();}
         rocksdb::Status MergeCF(uint32_t id,const rocksdb::Slice&,const rocksdb::Slice&) override {Observe(id);return rocksdb::Status::OK();}
-    } historical({cf_[idx_blocks_]->GetID(),cf_[idx_headers_]->GetID(),cf_[idx_height_]->GetID()});
+    } historical(families,replaces);
     if(!batch.Iterate(&historical).ok())historical.changed=true;
     struct HistoricalCommit {
         ChainDB& owner;bool changed;

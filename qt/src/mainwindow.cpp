@@ -5936,12 +5936,13 @@ void MainWindow::refresh() {
   rpc_->getBestBlockHash();  // Load explorer data
 
   // Auto-refresh block template when mining is active
-  if (isMining_ && edtMiningAddress_ && !edtMiningAddress_->text().trimmed().isEmpty()) {
+  if (isMining_ && txtBlockTemplate_ && txtBlockTemplate_->isVisible() &&
+      edtMiningAddress_ && !edtMiningAddress_->text().trimmed().isEmpty()) {
     QJsonArray tplParams;
     QJsonObject tplReq;
     tplReq["address"] = edtMiningAddress_->text().trimmed();
     tplParams.append(tplReq);
-    rpc_->call("mining.getblocktemplate", tplParams);
+    rpc_->call("mining.getjob", tplParams);
   }
 }
 
@@ -7847,7 +7848,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       
       tblPeersOverview_->setSortingEnabled(true);
     }
-  } else if (method == "mining.getblocktemplate") {
+  } else if (method == "mining.getjob" || method == "mining.getblocktemplate") {
     if (result.isObject()) {
       updateBlockTemplate(result.toObject());
     }
@@ -16201,12 +16202,12 @@ void MainWindow::onRefreshTemplate() {
     return;
   }
 
-  // v0.14: getblocktemplate REQUIRES an address param; calling with empty params fails.
+  // The inspector requests the same immutable work protocol as the embedded miner.
   QJsonArray params;
   QJsonObject req;
   req["address"] = addr;
   params.append(req);
-  rpc_->call("mining.getblocktemplate", params);
+  rpc_->call("mining.getjob", params);
 }
 
 // === QR Code Generator ===
@@ -16959,13 +16960,15 @@ void MainWindow::updateBlockTemplate(const QJsonObject& blockTemplate) {
   }
 
   if (lblTemplateTxCount_) {
-    QJsonArray transactions = blockTemplate["transactions"].toArray();
-    lblTemplateTxCount_->setText(QString::number(transactions.size()));
+    const int count = blockTemplate.contains("transaction_count")
+        ? blockTemplate["transaction_count"].toInt() : blockTemplate["transactions"].toArray().size();
+    lblTemplateTxCount_->setText(QString::number(count));
   }
 
   if (lblTemplateFees_) {
     // totalfees is in una, convert to DIN
-    double feesUnas = blockTemplate["totalfees"].toDouble();
+    double feesUnas = blockTemplate.value(blockTemplate.contains("total_fees_una")
+        ? "total_fees_una" : "totalfees").toDouble();
     double feesDIN = feesUnas / 100000000.0;  // 1 DIN = 100,000,000 unas
     lblTemplateFees_->setText(QString::number(feesDIN, 'f', 8) + " DIN");
   }
