@@ -62,7 +62,7 @@ void CheckHeader(
     if (header.timestamp > now_seconds && header.timestamp - now_seconds > 7200)
         Reject(Error::TimeTooNew);
 
-    const auto consensus = GetConsensusForCurrentNetwork();
+    const auto consensus = GetConsensusForNetwork(dinero::Params());
     const auto anchor_height = TimingUpgradeAnchorHeight(context.height, consensus);
     const auto indexed_parent = headers.GetHeaderValue(context.parent_hash);
     HeaderAsertContext ancestry;

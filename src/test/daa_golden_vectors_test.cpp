@@ -276,7 +276,7 @@ TEST(ASERTDAA, AnchorTimeRegressionChangesBits) {
 }
 
 TEST(ASERTDAA, CrossPathInvariantValidationMiningRpcAgree) {
-    const Consensus c = GetConsensusForCurrentNetwork();
+    const Consensus c = GetConsensusForNetwork(dinero::Params());
     const int64_t genesis_time = 1772496000;
     const uint32_t parent_height = 12;
     const int32_t target_height = static_cast<int32_t>(parent_height + 1);
@@ -423,7 +423,7 @@ TEST(ASERTDAA, DebugSnapshotIncludesConsensusFields) {
 // acceptance and block connect cannot drift on the difficulty rule, and the
 // header path does not need chain_db.
 TEST(ASERTDAA, HeaderPathNullChainDbMatchesBlockAndMining) {
-    const Consensus c = GetConsensusForCurrentNetwork();
+    const Consensus c = GetConsensusForNetwork(dinero::Params());
     const int64_t genesis_time = 1772496000;
     const uint32_t max_parent = 20;
 
@@ -472,7 +472,7 @@ TEST(ASERTDAA, HeaderPathNullChainDbMatchesBlockAndMining) {
 // that branch's ancestry, proving GetNextWorkRequiredForCandidate uses the
 // passed parent_entry's chain (prev->GetMedianTimePast walks prev's ancestry).
 TEST(ASERTDAA, SideBranchUsesOwnParentForExpectedBits) {
-    const Consensus c = GetConsensusForCurrentNetwork();
+    const Consensus c = GetConsensusForNetwork(dinero::Params());
     const int64_t genesis_time = 1772496000;
     const uint32_t ph = 15;
 

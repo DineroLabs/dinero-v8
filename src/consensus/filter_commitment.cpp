@@ -71,9 +71,10 @@ std::optional<size_t> FindFilterCommitmentIndex(const Transaction& coinbase) {
 }
 
 std::optional<size_t> FindFilterCommitmentIndexForBlock(
-    const Transaction& coinbase, uint64_t height) {
+    const Transaction& coinbase, uint64_t height,
+    uint32_t coinbase_structure_activation_height) {
     if (IsCoinbaseStructureActive(
-            height, Params().coinbase_structure_activation_height)) {
+            height, coinbase_structure_activation_height)) {
         return FindFilterCommitmentIndex(coinbase);
     }
     if (coinbase.vin.size() != 1 || !coinbase.vin[0].prevout.txid.IsNull()) {
@@ -112,13 +113,15 @@ bool ValidateFilterCommitment(
     const Transaction& coinbase,
     const uint256& filter_hash,
     uint64_t height,
+    uint32_t coinbase_structure_activation_height,
     std::string& error
 ) {
     // Find filter commitment in coinbase
     // Historical validation used a txid-only test here. Preserve it below
     // the separately scheduled coinbase-structure boundary; after activation
     // use the same canonical predicate as ingress, connect and reindex.
-    auto index_opt = FindFilterCommitmentIndexForBlock(coinbase, height);
+    auto index_opt = FindFilterCommitmentIndexForBlock(
+        coinbase, height, coinbase_structure_activation_height);
 
     // No commitment found
     if (!index_opt.has_value()) {

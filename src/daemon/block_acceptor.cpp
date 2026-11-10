@@ -1121,7 +1121,7 @@ bool BlockAcceptor::ValidateProofOfWork(const ParsedBlock& block, uint32_t block
         std::cout << "[POW-DEBUG] Validating PoW for block at height " << nextHeight << std::endl;
 
         // Share the template/header path's network and activation parameters.
-        const Consensus consensus = dinero::GetConsensusForCurrentNetwork();
+        const Consensus consensus = dinero::GetConsensusForNetwork(dinero::Params());
 
         uint32_t requiredBits = 0;
 

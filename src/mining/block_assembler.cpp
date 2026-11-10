@@ -535,7 +535,7 @@ std::shared_ptr<MiningJob> BlockAssembler::CreateJob(const uint256* explicit_tip
     
     // Calculate difficulty through the shared ASERT context builder.
     algo_state_.current_height = job->height;
-    const Consensus consensus = GetConsensusForCurrentNetwork();
+    const Consensus consensus = GetConsensusForNetwork(dinero::Params());
     const int64_t currentTime = static_cast<int64_t>(job->header.timestamp);
     job->target_bits = GetNextWorkRequiredWithChainDB(
         static_cast<int32_t>(job->height),
@@ -1357,7 +1357,7 @@ std::shared_ptr<const OrchardMiningTemplate> BlockAssembler::CreateOrchardBlock(
     if (now <= 0) throw std::runtime_error("Mining clock unavailable");
     header.timestamp = std::max(uint64_t(now), uint64_t(GetMedianTimePast()) + 1);
     header.difficulty = GetNextWorkRequiredWithChainDB(static_cast<int32_t>(height),
-        static_cast<int64_t>(header.timestamp), GetConsensusForCurrentNetwork(), chain_db_);
+        static_cast<int64_t>(header.timestamp), GetConsensusForNetwork(dinero::Params()), chain_db_);
     header.ZeroReserved();
     const auto capture = pool_use.pool->CaptureTypedBlockSelection(
         max_block_weight_ / 4, max_block_weight_, height);
@@ -1460,7 +1460,7 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(
     uint32_t mtp = GetMedianTimePast();
     uint32_t current_time = static_cast<uint32_t>(std::time(nullptr));
     uint32_t header_time = std::max(current_time, mtp + 1);
-    const Consensus consensus = GetConsensusForCurrentNetwork();
+    const Consensus consensus = GetConsensusForNetwork(dinero::Params());
     const int64_t currentTime = static_cast<int64_t>(header_time);
     uint32_t target_bits = GetNextWorkRequiredWithChainDB(
         static_cast<int32_t>(height),

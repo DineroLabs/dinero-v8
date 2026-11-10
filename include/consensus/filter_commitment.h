@@ -74,8 +74,11 @@ std::optional<size_t> FindFilterCommitmentIndex(const Transaction& coinbase);
 /// Block-validation lookup. At the scheduled coinbase-structure boundary it
 /// uses the canonical predicate above; before it, it preserves the historical
 /// txid-only lookup so replaying old blocks does not change their validity.
+/// The boundary height is the caller's chain parameters'
+/// coinbase_structure_activation_height (sep3: no ambient read here).
 std::optional<size_t> FindFilterCommitmentIndexForBlock(
-    const Transaction& coinbase, uint64_t height);
+    const Transaction& coinbase, uint64_t height,
+    uint32_t coinbase_structure_activation_height);
 
 /**
  * Extract filter hash from coinbase commitment output.
@@ -108,6 +111,7 @@ bool ValidateFilterCommitment(
     const Transaction& coinbase,
     const uint256& filter_hash,
     uint64_t height,
+    uint32_t coinbase_structure_activation_height,
     std::string& error
 );
 

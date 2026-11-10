@@ -271,7 +271,8 @@ bool CheckStatelessBlockContextReadOnly(
         return false;
     }
     if (RequiresFilterCommitment(height) &&
-        !FindFilterCommitmentIndexForBlock(coinbase, height)) {
+        !FindFilterCommitmentIndexForBlock(coinbase, height,
+            Params().coinbase_structure_activation_height)) {
         error = "stateless-context-missing-dnrf";
         return false;
     }

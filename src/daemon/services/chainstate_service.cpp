@@ -24244,7 +24244,8 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
     // ═══════════════════════════════════════════════════════════════════════════
     if (consensus::RequiresFilterCommitment(tip_to_connect->height) && !block.vtx.empty()) {
         auto dnrf_idx = consensus::FindFilterCommitmentIndexForBlock(
-            block.vtx[0], tip_to_connect->height);
+            block.vtx[0], tip_to_connect->height,
+            Params().coinbase_structure_activation_height);
         if (!dnrf_idx.has_value()) {
             if (logger_) logger_->error("[ConnectTip] REJECTING block " +
                 std::to_string(tip_to_connect->height) +
@@ -25638,7 +25639,8 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             if (!block.vtx.empty()) {
                 uint256 filter_hash = filter.GetHash();
                 std::string filter_error;
-                if (!consensus::ValidateFilterCommitment(block.vtx[0], filter_hash, tip_to_connect->height, filter_error)) {
+                if (!consensus::ValidateFilterCommitment(block.vtx[0], filter_hash, tip_to_connect->height,
+                        Params().coinbase_structure_activation_height, filter_error)) {
                     // NOTE: The mandatory existence check is now in the pre-validation above
                     // (before ConnectBlock). This post-check verifies the commitment HASH
                     // matches the computed filter. A mismatch here means the commitment exists

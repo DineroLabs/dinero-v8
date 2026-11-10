@@ -9,7 +9,7 @@ BlockHeader CompactTransitionSolvedChild(const consensus::HeaderIndexEntry& pare
     for(size_t i=0;i<sizeof(salt);++i)h.merkle_root.begin()[i]=uint8_t(salt>>(8*i));
     h.merkle_root.begin()[31]=0xa7;
     h.difficulty=GetNextWorkRequiredForCandidate(parent.height+1,h.timestamp,
-        GetConsensusForCurrentNetwork(),static_cast<const CBlockIndex*>(nullptr),
+        GetConsensusForNetwork(dinero::Params()),static_cast<const CBlockIndex*>(nullptr),
         &parent,static_cast<NoChainDb*>(nullptr));
     OrchardAdmissionFixture::Require(h.difficulty!=0);
     return OrchardAdmissionFixture::SolveHeader(h);
