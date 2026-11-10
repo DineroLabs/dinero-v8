@@ -183,6 +183,32 @@ void testSubmissionReconciliationClassification() {
     std::cout << "PASS\n";
 }
 
+void testImmutableJobHeaderAndMalformedMetadata() {
+    const auto require=[](bool ok){if(!ok)throw std::runtime_error("immutable mining job regression");};
+    WorkTemplate fixture;
+    fixture.prev_hash=std::string(64,'1');fixture.merkle_root=std::string(64,'2');
+    fixture.utreexo_root=std::string(64,'3');fixture.timestamp=uint64_t{1}<<33;
+    fixture.difficulty_bits=0x207fffff;
+    auto header=fixture.buildHeader(0);header[127]=0x5a;
+    const auto target=compactToTarget(fixture.difficulty_bits);
+    nlohmann::json job={{"job_id","retained-job"},{"profile","orchard-v1"},
+        {"header_hex",bytesToHex(header.data(),header.size())},{"height",150000},
+        {"prev_hash",fixture.prev_hash},{"bits","207fffff"},
+        {"target",bytesToHex(target.data(),target.size())},
+        {"nonce_offset",112},{"nonce_size",4},{"ntime_offset",100},{"ntime_size",8}};
+    auto work=WorkTemplate::fromJson(job);require(work && work->isValid());
+    auto expected=header;expected[112]=0x78;expected[113]=0x56;expected[114]=0x34;expected[115]=0x12;
+    require(work->buildHeader(0x12345678)==expected);
+    require(work->timestamp==fixture.timestamp && work->buildBlock(0).empty());
+    for(const auto& key:{"job_id","header_hex","target","height","nonce_offset","bits","prev_hash"}) {
+        auto bad=job;bad.erase(key);require(!WorkTemplate::fromJson(bad));
+    }
+    auto bad=job;bad["nonce_offset"]=100;require(!WorkTemplate::fromJson(bad));
+    bad=job;bad["target"]=std::string(64,'f');require(!WorkTemplate::fromJson(bad));
+    bad=job;bad["height"]=-1;require(!WorkTemplate::fromJson(bad));
+    std::cout<<"Immutable jobs preserve exact header and reject malformed metadata: PASS\n";
+}
+
 int main() {
     std::cout << "\n"
               << "═══════════════════════════════════════════════════════════\n"
@@ -199,6 +225,7 @@ int main() {
     testChainIdentity();
     testBackendParsing();
     testSubmissionReconciliationClassification();
+    testImmutableJobHeaderAndMalformedMetadata();
 
     std::cout << "\n✅ All tests passed!\n" << std::endl;
     return 0;

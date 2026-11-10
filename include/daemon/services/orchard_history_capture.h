@@ -61,7 +61,7 @@ public:
     // exact bytes and enforces the prior all-history transaction-ID rule; it
     // cannot itself certify scripts, work, fees, proofs or retirement state.
     void RecordBody(uint32_t height,const Block& body) {
-        CheckReadable();Require(!finished_);
+        CheckThread();CheckReadable();Require(!finished_);
         const auto captured=HeaderAt(height);
         const bool ordered=uint64_t(height)==recorded_;poisoned_=true;
         Require(ordered && body.GetHash()==captured.hash &&
@@ -83,7 +83,7 @@ public:
         batch.Commit();transactions_root_=next_root;transaction_count_=next_count;++recorded_;poisoned_=false;
     }
     void Finish() {
-        CheckReadable();const bool usable=!finished_;poisoned_=true;
+        CheckThread();CheckReadable();const bool usable=!finished_;poisoned_=true;
         Require(usable && reverse_remaining_==0 && recorded_==count_ && transactions_root_!=0);
         // Completion must cover the entire reachable transaction inventory,
         // not merely the keys that a later candidate happens to query.
@@ -139,7 +139,7 @@ private:
     bool poisoned_=false,finished_=false;
     static void Require(bool ok){if(!ok)throw std::runtime_error("Orchard historical capture unavailable or inconsistent");}
     void CheckThread() const {Require(thread_==std::this_thread::get_id());}
-    void CheckReadable() const {CheckThread();Require(!poisoned_);}
+    void CheckReadable() const {if(!finished_)CheckThread();Require(!poisoned_);}
     static void Number(Bytes& bytes,uint64_t value,unsigned size) {
         for(unsigned i=0;i<size;++i){bytes.push_back(uint8_t(value));value>>=8;}
     }

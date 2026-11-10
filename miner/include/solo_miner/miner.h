@@ -41,18 +41,8 @@ struct MinerConfig {
     std::string rpc_password;
     std::string payout_address;     // Required - mining rewards go here
     int threads = 0;                // 0 = auto-detect (hardware_concurrency)
-    // Template refresh poll interval. The daemon's longpollid field in
-    // getblocktemplate is currently cosmetic (returns current best hash,
-    // does NOT hold the response open until tip changes), so the miner
-    // polls on this interval to detect tip advance.
-    //
-    // The original 5000ms default meant a 2+ miner setup wasted up to 5
-    // full seconds hashing stale work after every competitor's block was
-    // accepted (orphan-rate cost proportional to poll interval / block
-    // interval). Reduced to 500ms to cut that window by 10x. Proper fix
-    // is server-side real long-polling on the daemon's getblocktemplate;
-    // until that lands, 500ms is the reasonable floor balancing latency
-    // against local-RPC load.
+    // Error retry floor. Successful immutable jobs use server-side longpoll
+    // on the selected parent, with an eight-second timeout.
     int template_refresh_ms = 500;
 
     // Runtime backend selection. Auto prefers CUDA on Windows/Linux NVIDIA,
@@ -267,6 +257,7 @@ private:
     std::atomic<uint32_t> blocks_accepted_{0};
     std::atomic<uint32_t> blocks_rejected_{0};
     std::atomic<bool> submit_in_flight_{false};
+    std::atomic<uint64_t> work_generation_{0};
     std::atomic<uint32_t> candidate_nonce_hint_{0};
     std::chrono::steady_clock::time_point start_time_;
     std::chrono::steady_clock::time_point last_hashrate_time_;

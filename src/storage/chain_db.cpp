@@ -542,6 +542,7 @@ void ChainDB::close() {
 }
 
 Status ChainDB::putBlock(const ChainWriteToken& token, const uint256& hash, const Block& block, rocksdb::WriteBatch* wb) {
+    invalidateHistoricalReadCache();
     if (!db_) return Status::Internal;
 
     // token validates authorization (compile-time check)
@@ -560,6 +561,7 @@ Status ChainDB::putBlock(const ChainWriteToken& token, const uint256& hash, cons
 }
 
 Status ChainDB::deleteBlock(const ChainWriteToken& token, const uint256& hash, rocksdb::WriteBatch* wb) {
+    invalidateHistoricalReadCache();
     if (!db_) return Status::Internal;
 
     // token validates authorization (compile-time check)
@@ -669,6 +671,7 @@ Status ChainDB::putUndo(const ChainWriteToken& token, const uint256& hash, const
 }
 
 Status ChainDB::putHeader(const ChainWriteToken& token, const uint256& hash, const BlockHeader& header, int height, arith_uint256 work, rocksdb::WriteBatch* wb) {
+    invalidateHistoricalReadCache();
     if (!db_) return Status::Internal;
 
     // token validates authorization (compile-time check)
@@ -1170,6 +1173,13 @@ Status ChainDB::setTip(const ChainWriteToken& token, const uint256& hash, int he
     }
 }
 
+std::optional<std::pair<uint64_t,uint64_t>> ChainDB::readRevision() const {
+    if (!db_) return {};
+    const auto revision=historical_revision_.load();
+    if(revision==UINT64_MAX)return {};
+    return std::make_pair(open_generation_, revision);
+}
+
 StatusOr<TipInfo> ChainDB::getTip() const {
     if (!db_) return Status::Internal;
 
@@ -1350,6 +1360,7 @@ StatusOr<bool> ChainDB::getPruneMode() const {
 }
 
 Status ChainDB::putHeightIndex(const ChainWriteToken& token, int height, const uint256& hash, rocksdb::WriteBatch* wb) {
+    invalidateHistoricalReadCache();
     if (!db_) return Status::Internal;
 
     // token validates authorization (compile-time check)
@@ -1367,6 +1378,7 @@ Status ChainDB::putHeightIndex(const ChainWriteToken& token, int height, const u
 }
 
 Status ChainDB::deleteHeightIndex(const ChainWriteToken& token, int height, rocksdb::WriteBatch* wb) {
+    invalidateHistoricalReadCache();
     if (!db_) return Status::Internal;
 
     (void)token;
@@ -1546,6 +1558,27 @@ Status ChainDB::flushForTesting() {
 
 Status ChainDB::writeBatch(const ChainWriteToken& token, rocksdb::WriteBatch&& batch, bool sync) {
     if (!db_) return Status::Internal;
+
+    // A staged historical edit may commit after a cache was prepared. Observe
+    // the committed batch too, while leaving immutable catalog-node writes
+    // free to reuse the independently verified historical prefix.
+    struct HistoricalWrites final : rocksdb::WriteBatch::Handler {
+        std::array<uint32_t,3> families;
+        bool changed=false;
+        explicit HistoricalWrites(std::array<uint32_t,3> ids):families(ids){}
+        void Observe(uint32_t id) {changed=changed || std::find(families.begin(),families.end(),id)!=families.end();}
+        rocksdb::Status PutCF(uint32_t id,const rocksdb::Slice&,const rocksdb::Slice&) override {Observe(id);return rocksdb::Status::OK();}
+        rocksdb::Status DeleteCF(uint32_t id,const rocksdb::Slice&) override {Observe(id);return rocksdb::Status::OK();}
+        rocksdb::Status SingleDeleteCF(uint32_t id,const rocksdb::Slice&) override {Observe(id);return rocksdb::Status::OK();}
+        rocksdb::Status DeleteRangeCF(uint32_t id,const rocksdb::Slice&,const rocksdb::Slice&) override {Observe(id);return rocksdb::Status::OK();}
+        rocksdb::Status MergeCF(uint32_t id,const rocksdb::Slice&,const rocksdb::Slice&) override {Observe(id);return rocksdb::Status::OK();}
+    } historical({cf_[idx_blocks_]->GetID(),cf_[idx_headers_]->GetID(),cf_[idx_height_]->GetID()});
+    if(!batch.Iterate(&historical).ok())historical.changed=true;
+    struct HistoricalCommit {
+        ChainDB& owner;bool changed;
+        ~HistoricalCommit(){if(changed)owner.invalidateHistoricalReadCache();}
+    } commit{*this,historical.changed};
+    if(historical.changed)invalidateHistoricalReadCache();
 
     // token validates authorization (compile-time check)
     (void)token;

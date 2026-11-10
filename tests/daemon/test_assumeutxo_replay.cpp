@@ -18,6 +18,14 @@
 #include "daemon/utreexo_tx_payload.h"
 #include "daemon/utreexo_tx_reader.h"
 #include "rpc/rpc_registry.h"
+#ifdef DINERO_TEST_EMBEDDED_MINING
+#include "solo_miner/miner.h"
+#include "mining/miner.h"
+#include "daemon/http_rpc_server.h"
+#include "daemon/rpc_auth.h"
+#endif
+din::Json rpc_context_getblockchaininfo(const ExecutionContext&, const din::Json&);
+din::Json rpc_context_getblockhash(const ExecutionContext&, const din::Json&);
 din::Json rpc_getblocktemplate_v14(const ExecutionContext&, const din::Json&);
 din::Json rpc_mining_getjob(const ExecutionContext&, const din::Json&);
 din::Json rpc_mining_submit(const ExecutionContext&, const din::Json&);
@@ -327,6 +335,12 @@ struct ShieldedStateStartupTestAccess {
     }
     static void RemoveBoundaryCoin(ChainstateService& s,const OutPoint& point) {
         s.consensus_utxo_set_->SpendCoin(point);
+    }
+    static void InstallHistoricalMiningValidator(ChainstateService& service) {
+        service.block_validator_=std::make_unique<consensus::BlockValidator>(service.consensus_utxo_set_.get());
+        service.block_validator_->setShieldedState(&service.shielded_tree_,&service.shielded_nullifiers_,
+            &service.shielded_anchor_history_);
+        service.block_validator_->setValidationMode(consensus::ValidationMode::STATEFUL);
     }
     // First boundary fixture invokes the actual service entry points.
     static bool ConnectBoundary(ChainstateService& s,CBlockIndex* next,std::string& error,bool& invalid) {
@@ -922,6 +936,7 @@ TEST(RuntimeOriginProjection, UnavailableWithoutBackend) {
 #include "orchard_parent_drain_checks.h"
 #include "orchard_raw_ingress_checks.h"
 #include "orchard_mining_rpc_checks.h"
+#include "orchard_embedded_mining_checks.h"
 #include "orchard_canonical_pool_checks.h"
 #include "orchard_parent_ingress_checks.h"
 #include "orchard_parent_activation_checks.h"

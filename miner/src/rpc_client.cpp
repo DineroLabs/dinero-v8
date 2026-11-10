@@ -231,7 +231,20 @@ std::optional<nlohmann::json> RpcClient::getBlockTemplate(const std::string& add
     if (!longpollid.empty()) {
         params["longpollid"] = longpollid;
     }
-    return call("getblocktemplate", nlohmann::json::array({params}));
+    return call("mining.getjob", nlohmann::json::array({params}));
+}
+
+bool RpcClient::submitJob(const std::string& job_id, uint32_t nonce) {
+    const auto result = call("mining.submit",
+        nlohmann::json::array({{{"job_id", job_id}, {"nonce", nonce}}}),
+        config_.submit_timeout_seconds);
+    if (!result) return false;
+    // The daemon HTTP transport normalizes successful null results to {}.
+    if (result->is_null() || (result->is_object() && result->empty())) return true;
+    if (result->is_object() && result->contains("error")) {
+        last_error_ = (*result)["error"].is_string() ? (*result)["error"].get<std::string>() : (*result)["error"].dump();
+    } else last_error_ = "Unexpected mining.submit response: " + result->dump();
+    return false;
 }
 
 bool RpcClient::submitBlock(const std::string& block_hex) {

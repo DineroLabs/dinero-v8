@@ -123,6 +123,53 @@ TEST(OrchardParentService, RawAndRecursiveOwnersRefuseBeforeCapture) {
     raw.CheckUnpublished(); owned.CheckUnpublished();
 }
 
+TEST(OrchardParentService, CompletedBoundaryCacheSharesOnlyFrozenEvidenceAcrossThreads) {
+    OwnedSelectedParentFixture f;
+    auto first=f.service.PrepareSelectedOrchardParent();ASSERT_TRUE(first);
+    const auto* identity=&first->Record();const auto record=first->Record();
+    first.reset();
+    bool reused=false,checked=false;
+    std::thread reader([&] {
+        auto next=f.service.PrepareSelectedOrchardParent();
+        if(next){reused=&next->Record()==identity;checked=f.service.CheckPreparedOrchardParent(*next)==record;}
+    });reader.join();
+    EXPECT_TRUE(reused);EXPECT_TRUE(checked);
+    // The cache must hold no thread-affine request token or service cycle.
+    EXPECT_NO_THROW(f.service.Stop());
+}
+
+TEST(OrchardParentService, CachedBoundaryStillRejectsChangedCoinsAndHistoricalBodies) {
+    OwnedSelectedParentFixture f;
+    auto first=f.service.PrepareSelectedOrchardParent();ASSERT_TRUE(first);
+    const auto point=f.replay->ProvenUtxos().begin()->first;
+    const auto original=f.db.getCoin(point.txid.AsUint256(),point.vout);ASSERT_TRUE(original.ok());
+    auto wrong=*original;++wrong.amount;
+    ASSERT_EQ(f.db.putCoin(f.token,point.txid.AsUint256(),point.vout,wrong),Status::Ok);
+    auto cached=f.service.PrepareSelectedOrchardParent();ASSERT_TRUE(cached);
+    EXPECT_FALSE(f.service.CheckPreparedOrchardParent(*cached));
+    ASSERT_EQ(f.db.putCoin(f.token,point.txid.AsUint256(),point.vout,*original),Status::Ok);
+    EXPECT_TRUE(f.service.CheckPreparedOrchardParent(*cached));
+    cached.reset();first.reset();
+    auto changed=f.blocks.front();changed.vtx.front().vout.front().value=AmountUna::Una(1);
+    ASSERT_EQ(f.db.putBlock(f.token,changed.GetHash(),changed),Status::Ok);
+    EXPECT_FALSE(f.service.PrepareSelectedOrchardParent());
+    ASSERT_EQ(f.db.putBlock(f.token,f.blocks.front().GetHash(),f.blocks.front()),Status::Ok);
+    EXPECT_TRUE(f.service.PrepareSelectedOrchardParent());
+    f.CheckUnpublished();
+}
+
+TEST(OrchardParentService, CommittingAnEarlierStagedHistoricalEditInvalidatesNewerCache) {
+    OwnedSelectedParentFixture f;
+    rocksdb::WriteBatch batch;auto changed=f.blocks.front();
+    changed.vtx.front().vout.front().value=AmountUna::Una(1);
+    ASSERT_EQ(f.db.putBlock(f.token,changed.GetHash(),changed,&batch),Status::Ok);
+    ASSERT_TRUE(f.service.PrepareSelectedOrchardParent()); // Captures before commit.
+    ASSERT_EQ(f.db.writeBatch(f.token,std::move(batch)),Status::Ok);
+    EXPECT_FALSE(f.service.PrepareSelectedOrchardParent());
+    ASSERT_EQ(f.db.putBlock(f.token,f.blocks.front().GetHash(),f.blocks.front()),Status::Ok);
+    EXPECT_TRUE(f.service.PrepareSelectedOrchardParent());
+}
+
 TEST(OrchardParentService, CapturedBranchCannotOverrideChangedSelectedState) {
     OwnedSelectedParentFixture f;
     auto prepared=f.service.PrepareSelectedOrchardParent(); ASSERT_TRUE(prepared);

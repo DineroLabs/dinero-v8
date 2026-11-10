@@ -1607,6 +1607,11 @@ private:
 
     struct CompactStartupReadUse;
     struct ParentPreparationScope;
+    // One completed immutable boundary proof per service/profile/parent. This
+    // mutex is acquired only outside the selected-chain lock.
+    struct BoundaryParentCache;
+    std::mutex boundary_parent_cache_mutex_;
+    std::unique_ptr<BoundaryParentCache> boundary_parent_cache_;
     struct PreparedOrchardExtension;
     struct PreparedOrchardInverse;
     std::unique_ptr<PreparedOrchardInverse> CaptureOrchardInverseUnderLock();

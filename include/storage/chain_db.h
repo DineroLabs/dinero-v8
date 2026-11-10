@@ -185,8 +185,19 @@ private:
     Status initReadOnlyForHandoff(const std::filesystem::path& dir);
     std::filesystem::path dir_;  // Remembered for lock recovery
     uint64_t open_generation_=0;
+    std::atomic<uint64_t> historical_revision_{0};
+    void invalidateHistoricalReadCache() {
+        auto previous=historical_revision_.load();
+        while(previous!=UINT64_MAX &&
+              !historical_revision_.compare_exchange_weak(previous,previous+1)) {}
+    }
 
 public:
+
+    // Process-local historical input identity. Header/body/height-index writes
+    // and reopen invalidate it. Selected coin/forest/shielded state must still
+    // be compared in full; this is not a consensus certificate.
+    std::optional<std::pair<uint64_t,uint64_t>> readRevision() const;
 
     // ═══════════════════════════════════════════════════════════════════════
     // Write Operations (REQUIRE ChainWriteToken - BlockAcceptor only)

@@ -979,15 +979,25 @@ struct ChainstateService::CompactStartupReadUse {
 // v2.2.4: Out-of-line constructor/destructor (WalletUTXOAdapter is incomplete in header)
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 struct PreparedOrchardParent::State {
+    // Only completed proof material is shared. Each request still owns its
+    // thread-affine selected-read lifetime and performs all live-state checks.
+    struct BoundaryMaterial {
+        std::unique_ptr<OrchardHistoryCapture> history;
+        OrchardParentReplay replay;
+        std::unique_ptr<PreparedOrchardCatalog> catalog;
+        explicit BoundaryMaterial(const OrchardParentReplay::Target& target)
+            : replay(target, SelectedParentReplayWorkLimits()) {}
+    };
     // Declared first, released last, after all captured database/replay owners.
     const std::unique_ptr<ChainstateService::SelectedReadUse> use_;
     const ChainstateService* const source_;
     const std::shared_ptr<ChainDB> db_;
     const std::shared_ptr<BlockStorage> blocks_;
     const OrchardParentReplay::Target target_;
-    std::unique_ptr<OrchardHistoryCapture> history_;
-    OrchardParentReplay replay_;
-    std::unique_ptr<PreparedOrchardCatalog> catalog_;
+    const std::shared_ptr<BoundaryMaterial> boundary_;
+    std::unique_ptr<OrchardHistoryCapture>& history_;
+    OrchardParentReplay& replay_;
+    std::unique_ptr<PreparedOrchardCatalog>& catalog_;
     std::optional<HistoricalCompactReplay::Target> historical_target_;
     std::unique_ptr<HistoricalCompactReplay> historical_replay_;
     std::unique_ptr<PreparedHistoricalCatalog> historical_catalog_;
@@ -1001,12 +1011,23 @@ struct PreparedOrchardParent::State {
     std::optional<storage::OrchardSnapshotBase> snapshot_base_;
     uint32_t branch_base_height_;
     State(std::unique_ptr<ChainstateService::SelectedReadUse> use, const ChainstateService* source, std::shared_ptr<ChainDB> db,
-        std::shared_ptr<BlockStorage> blocks, OrchardParentReplay::Target target)
+        std::shared_ptr<BlockStorage> blocks, OrchardParentReplay::Target target,
+        std::shared_ptr<BoundaryMaterial> boundary = {})
         : use_(std::move(use)),source_(source),db_(std::move(db)),blocks_(std::move(blocks)),
-          target_(target),replay_(std::move(target),SelectedParentReplayWorkLimits()),branch_base_height_(target_.height) {}
+          target_(target),boundary_(boundary ? std::move(boundary) : std::make_shared<BoundaryMaterial>(target)),
+          history_(boundary_->history),replay_(boundary_->replay),catalog_(boundary_->catalog),branch_base_height_(target_.height) {}
+};
+struct ChainstateService::BoundaryParentCache {
+    std::weak_ptr<ChainDB> db;
+    std::weak_ptr<BlockStorage> blocks;
+    OrchardParentReplay::Target target;
+    std::string profile;
+    std::optional<std::pair<uint64_t,uint64_t>> revision;
+    std::shared_ptr<PreparedOrchardParent::State::BoundaryMaterial> material;
 };
 #else
 struct PreparedOrchardParent::State {};
+struct ChainstateService::BoundaryParentCache {};
 #endif
 PreparedOrchardParent::PreparedOrchardParent(std::unique_ptr<State> state):state_(std::move(state)) {}
 PreparedOrchardParent::~PreparedOrchardParent()=default;
@@ -1124,6 +1145,8 @@ struct ChainstateService::OrchardSnapshotStartupState {
 void ChainstateService::setChainDB(ChainDB* db) {
     if (activation_mutex_.HeldByCurrentThread())
         throw std::logic_error("Database handoff requires an unheld selected lock");
+    std::unique_lock cache_lock(boundary_parent_cache_mutex_);
+    boundary_parent_cache_.reset();
     std::shared_ptr<ChainDB> previous;
     {
         std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
@@ -1139,6 +1162,8 @@ void ChainstateService::setChainDB(ChainDB* db) {
 void ChainstateService::setOwnedChainDB(std::shared_ptr<ChainDB> db) {
     if (activation_mutex_.HeldByCurrentThread())
         throw std::logic_error("Database handoff requires an unheld selected lock");
+    std::unique_lock cache_lock(boundary_parent_cache_mutex_);
+    boundary_parent_cache_.reset();
     std::shared_ptr<ChainDB> previous;
     {
         std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
@@ -19909,6 +19934,10 @@ std::unique_ptr<PreparedOrchardParent> ChainstateService::PrepareSelectedOrchard
     if (activation_mutex_.HeldByCurrentThread()) return {};
     try {
         auto use=std::make_unique<SelectedReadUse>(weak_from_this().lock());
+        // Do not let timed-out clients start parallel genesis replays. A later
+        // retry can consume the result after the first request completes.
+        std::unique_lock cache_lock(boundary_parent_cache_mutex_, std::try_to_lock);
+        if (!cache_lock.owns_lock()) return {};
         std::shared_ptr<ChainDB> db;
         std::shared_ptr<BlockStorage> blocks;
         OrchardParentReplay::Target target{};
@@ -19918,14 +19947,34 @@ std::unique_ptr<PreparedOrchardParent> ChainstateService::PrepareSelectedOrchard
                 !consensus_utxo_set_ || (GetConfig().utreexo_stateless&&!CheckIndependentLegacyMobileParentUnderLock()) || safe_mode_active_ ||
                 !consensus::OrchardProfileConfigurationValid(Params()) ||
                 uint64_t(active_tip_->height)+1!=Params().orchard_activation_height)
-                return {};
+                { boundary_parent_cache_.reset(); return {}; }
             db=chain_db_owner_; blocks=block_storage_;
             target={active_tip_->height,active_tip_->hash,ChainworkFromHex(active_tip_->chainwork)};
         }
+        const auto profile=consensus::ValidatedOrchardBlock::CaptureProfile();
+        const auto revision=db->readRevision();
+        if (revision && boundary_parent_cache_ && boundary_parent_cache_->db.lock()==db &&
+            boundary_parent_cache_->blocks.lock()==blocks && boundary_parent_cache_->profile==profile &&
+            boundary_parent_cache_->revision==revision &&
+            boundary_parent_cache_->target.height==target.height &&
+            boundary_parent_cache_->target.hash==target.hash &&
+            boundary_parent_cache_->target.chainwork==target.chainwork) {
+            return std::unique_ptr<PreparedOrchardParent>(new PreparedOrchardParent(
+                std::make_unique<PreparedOrchardParent::State>(std::move(use),this,
+                    std::move(db),std::move(blocks),target,boundary_parent_cache_->material)));
+        }
+        boundary_parent_cache_.reset();
         auto prepared=std::unique_ptr<PreparedOrchardParent>(
             new PreparedOrchardParent(std::make_unique<PreparedOrchardParent::State>(
                 std::move(use),this,std::move(db),std::move(blocks),target)));
         if(!CompletePreparedOrchardParent(*prepared)) return {};
+        if(!revision || prepared->state_->db_->readRevision()!=revision ||
+            consensus::ValidatedOrchardBlock::CaptureProfile()!=profile) return {};
+        // Never cache incomplete or poisoned results, and never cache a
+        // selected-read token (which would prevent shutdown from draining).
+        boundary_parent_cache_=std::make_unique<BoundaryParentCache>(BoundaryParentCache{
+            prepared->state_->db_,prepared->state_->blocks_,target,profile,
+            prepared->state_->db_->readRevision(),prepared->state_->boundary_});
         return prepared;
     } catch (...) { return {}; }
 #else
