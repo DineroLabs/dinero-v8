@@ -36,6 +36,13 @@ prefix do not invalidate it. Existing-key overwrites, deletes, canonical index
 changes and reopen do. Historical writes are serialized with their commit-time
 existence comparison, including previously staged inserts that become overwrites.
 The GUI template inspector uses immutable jobs and does not poll hidden templates.
+Stored activation plans extending the selected boundary also join that same
+single-flight proof. A busy preparation defers the plan; it never starts another
+genesis replay. Multi-block extensions reuse only the frozen historical prefix,
+then independently validate their exact Orchard branch within the original total
+byte limit. Replacement, historical and snapshot plans retain their own proof
+owners. Refusal diagnostics distinguish unavailable preparation from a failed
+coin, forest, shielded or historical comparison.
 
 ## Snapshot preservation
 

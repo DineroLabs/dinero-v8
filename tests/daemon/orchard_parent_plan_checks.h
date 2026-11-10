@@ -11,6 +11,46 @@ TEST(OrchardParentPlan, UnchangedCapturedPlanCommitsThroughActualSecondPass) {
     EXPECT_EQ(f.f.service->GetActiveTip(),next);EXPECT_EQ(f.notices->published,1u);
     EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*f.f.service));
 }
+TEST(OrchardParentPlan, StoredActivationSharesBoundaryProofAndDefersWhilePreparationBusy) {
+    CanonicalPoolFixture f;const auto built=f.Build();ASSERT_TRUE(built);
+    auto* next=RetainActivationCandidate(f,*built);
+    auto shared=f.f.service->PrepareSelectedOrchardParent();ASSERT_TRUE(shared);
+    const auto* identity=&shared->Record();
+    auto plan=ShieldedStateStartupTestAccess::CaptureActivationPlan(*f.f.service);
+    std::promise<void> locked,release;
+    auto released=release.get_future();
+    std::thread preparing([&] {
+        auto busy=ShieldedStateStartupTestAccess::LockBoundaryPreparation(*f.f.service);
+        locked.set_value();released.wait();
+    });
+    locked.get_future().wait();
+    const bool completed=ShieldedStateStartupTestAccess::CompleteActivationPlan(*f.f.service,plan);
+    release.set_value();preparing.join();
+    EXPECT_FALSE(completed);EXPECT_EQ(f.f.service->GetActiveTip(),f.parent);f.f.CheckUnpublished();
+    ASSERT_TRUE(ShieldedStateStartupTestAccess::CompleteActivationPlan(*f.f.service,plan));
+    EXPECT_EQ(ShieldedStateStartupTestAccess::ActivationParentRecord(plan),identity);
+    ShieldedStateStartupTestAccess::ApplyActivationPlan(*f.f.service,plan);
+    EXPECT_EQ(f.f.service->GetActiveTip(),next);EXPECT_EQ(f.notices->published,1u);
+    EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*f.f.service));
+}
+TEST(OrchardParentPlan, SharedBoundaryPlanStillRejectsChangedDurableCoins) {
+    CanonicalPoolFixture f;const auto built=f.Build();ASSERT_TRUE(built);
+    auto* next=RetainActivationCandidate(f,*built);
+    auto shared=f.f.service->PrepareSelectedOrchardParent();ASSERT_TRUE(shared);
+    auto plan=ShieldedStateStartupTestAccess::CaptureActivationPlan(*f.f.service);
+    ASSERT_TRUE(ShieldedStateStartupTestAccess::CompleteActivationPlan(*f.f.service,plan));
+    const auto point=f.f.replay->ProvenUtxos().begin()->first;
+    const auto original=f.f.db.getCoin(point.txid.AsUint256(),point.vout);ASSERT_TRUE(original.ok());
+    auto wrong=*original;++wrong.amount;
+    ASSERT_EQ(f.f.db.putCoin(f.f.token,point.txid.AsUint256(),point.vout,wrong),Status::Ok);
+    ShieldedStateStartupTestAccess::ApplyActivationPlan(*f.f.service,plan);
+    EXPECT_EQ(f.f.service->GetActiveTip(),f.parent);EXPECT_EQ(f.notices->published,0u);
+    f.f.CheckUnpublished();EXPECT_EQ(next->status&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD),0u);
+    ASSERT_EQ(f.f.db.putCoin(f.f.token,point.txid.AsUint256(),point.vout,*original),Status::Ok);
+    f.f.service->ActivateBestChain();
+    EXPECT_EQ(f.f.service->GetActiveTip(),next);EXPECT_EQ(f.notices->published,1u);
+    EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*f.f.service));
+}
 TEST(OrchardParentPlan, SerializedOperatorDecisionsInvalidateCapturedPlan) {
     CanonicalPoolFixture f;const auto built=f.Build();ASSERT_TRUE(built);
     auto* next=RetainActivationCandidate(f,*built);const auto original_status=next->status;

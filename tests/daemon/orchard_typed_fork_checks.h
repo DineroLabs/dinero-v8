@@ -30,6 +30,32 @@ struct TypedForkNotices final:RuntimeBlockNotifications {
     }
 };
 }
+TEST(OrchardTypedFork, RetainedSuccessorsShareSelectedBoundaryProofBeforeFullBranchValidation) {
+    CanonicalPoolFixture f;auto observer=std::make_shared<TypedForkNotices>();
+    f.f.service->setRuntimeBlockNotifications(observer);
+    const auto first=f.Build();ASSERT_TRUE(first);ASSERT_TRUE(f.Submit(first->WireBytes()).connected);
+    auto* a102=f.f.service->GetActiveTip();
+    BlockAssembler assembler(&f.f.db);WireOrchardAssembler(assembler,f.f);
+    const auto second=assembler.CreateOrchardBlock(OrchardMiningPayout);ASSERT_TRUE(second);
+    ASSERT_TRUE(f.Submit(second->WireBytes()).connected);auto* a103=f.f.service->GetActiveTip();
+    ASSERT_EQ(a103->height,103u);
+    std::string error;ASSERT_TRUE(f.f.service->InvalidateBlock(a102->hash,error))<<error;
+    ASSERT_EQ(f.f.service->GetActiveTip(),f.parent);
+    ASSERT_TRUE(f.f.service->ReconsiderBlock(a102->hash,error))<<error;
+    ASSERT_EQ(f.f.service->GetActiveTip(),f.parent);
+    auto shared=f.f.service->PrepareSelectedOrchardParent();ASSERT_TRUE(shared);
+    auto plan=ShieldedStateStartupTestAccess::CaptureActivationPlan(*f.f.service);
+    ASSERT_TRUE(ShieldedStateStartupTestAccess::CompleteActivationPlan(*f.f.service,plan));
+    EXPECT_EQ(ShieldedStateStartupTestAccess::ActivationParentRecord(plan),&shared->Record());
+    ShieldedStateStartupTestAccess::ApplyActivationPlan(*f.f.service,plan);
+    EXPECT_EQ(f.f.service->GetActiveTip(),a103);
+    EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*f.f.service));
+    const auto first_stored=ReadRuntimeBlockUnderLock(f.f.db,f.files.get(),a102->hash,102);
+    const auto second_stored=ReadRuntimeBlockUnderLock(f.f.db,f.files.get(),a103->hash,103);
+    ASSERT_TRUE(first_stored.ok());ASSERT_TRUE(second_stored.ok());
+    EXPECT_EQ(first_stored->Orchard().WireBytes(),first->WireBytes());
+    EXPECT_EQ(second_stored->Orchard().WireBytes(),second->WireBytes());
+}
 TEST(OrchardTypedFork, HeavierRetainedBranchUsesActualUndoAndCanonicalReconnection) {
     CanonicalPoolFixture f;auto observer=std::make_shared<TypedForkNotices>();
     f.f.service->setRuntimeBlockNotifications(observer);

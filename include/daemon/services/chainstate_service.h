@@ -1713,6 +1713,7 @@ private:
     void ActivateBestChainPass(const ActivationParentPlan*,std::unique_ptr<ActivationParentPlan>&,bool,
         PreparedOrchardInverse* = nullptr);
     bool CompletePreparedOrchardParent(PreparedOrchardParent&,bool prepare_catalog=true);
+    bool CompletePreparedOrchardBranch(PreparedOrchardParent&,size_t historical_bytes);
     bool BindActivationParentUnderLock(CBlockIndex*,CBlockIndex*,const std::vector<CBlockIndex*>&,
         const std::vector<CBlockIndex*>&,const ActivationParentPlan*,std::unique_ptr<ActivationParentPlan>&,
         bool,std::unique_ptr<ParentPreparationScope>&);

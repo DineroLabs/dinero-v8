@@ -215,6 +215,12 @@ struct ShieldedStateStartupTestAccess {
         std::lock_guard<std::mutex> lock(service.boundary_parent_cache_mutex_);
         return bool(service.boundary_parent_cache_);
     }
+    static auto LockBoundaryPreparation(ChainstateService& service) {
+        return std::unique_lock<std::mutex>(service.boundary_parent_cache_mutex_);
+    }
+    static const auto* ActivationParentRecord(const auto& plan) {
+        return plan->parent?&plan->parent->Record():nullptr;
+    }
     static bool RestoreSnapshotCache(ChainstateService& service, std::string& error) {
         return service.RestoreStatefulSnapshotCoinCache(error);
     }
