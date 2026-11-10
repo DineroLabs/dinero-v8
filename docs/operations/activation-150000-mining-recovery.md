@@ -63,6 +63,14 @@ retains the full historical header and body comparisons. Compact owners retain
 their authenticated catalog/state binding and historical rebind; they do not
 consume the full node's coin/forest before-image check.
 
+After first activation, full-node straight forward catch-up binds one exact
+selected extension per root pass. A backlog must not trigger a new genesis
+replay simply because multiple successor bodies are retained. Later arrivals
+cannot change that captured first child; the remaining candidate stays queued.
+Each extension retains its independent proof completion, exact selected-state
+binding and operator-generation fence. First activation, compact owners and
+replacement branches retain their existing whole-branch preparation.
+
 ## Storage preflight
 
 Check `getnetworkinfo.storage_upgrade_refused` before waiting for activation

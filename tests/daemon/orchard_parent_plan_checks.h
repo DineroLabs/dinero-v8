@@ -2,6 +2,91 @@
 #include <condition_variable>
 #include <future>
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
+namespace {
+struct ForwardBacklogNotices final:RuntimeBlockNotifications {
+    unsigned published=0,reorgs=0;
+    struct Event final:PreparedRuntimeBlockNotifications {
+        ForwardBacklogNotices& owner;
+        explicit Event(ForwardBacklogNotices& value):owner(value){}
+        void PublishAfterCommit()noexcept override{++owner.published;}
+    };
+    struct Plan final:PreparedRuntimeReorgNotifications {
+        ForwardBacklogNotices& owner;
+        explicit Plan(ForwardBacklogNotices& value):owner(value){}
+        void Finish(RuntimeReorgProgress progress)noexcept override {
+            EXPECT_TRUE(progress.complete);++owner.reorgs;
+        }
+    };
+    std::unique_ptr<PreparedRuntimeBlockNotifications> Prepare(
+        const RuntimeBlockBody& body,uint32_t height,RuntimeBlockDirection)override {
+        OrchardAdmissionFixture::Require(body.IsOrchardProfile() && height>=102);
+        return std::make_unique<Event>(*this);
+    }
+    std::unique_ptr<PreparedRuntimeReorgNotifications> PrepareReorg(
+        std::shared_ptr<const RuntimeReorgPlan> plan)override {
+        OrchardAdmissionFixture::Require(bool(plan));return std::make_unique<Plan>(*this);
+    }
+};
+auto PrepareFullForwardBacklog(CanonicalPoolFixture& f) {
+    auto notices=std::make_shared<ForwardBacklogNotices>();
+    f.f.service->setRuntimeBlockNotifications(notices);
+    const auto connect=[&](const OrchardMiningTemplate& body) {
+        auto header=body.Header();arith_uint256 compact;compact.SetCompact(header.difficulty);
+        const auto target=uint256::FromHexUnsafe(compact.GetHex());
+        for(header.nonce=0;header.nonce<100000 && target<header.GetHash();++header.nonce){}
+        OrchardAdmissionFixture::Require(!(target<header.GetHash()));
+        auto wire=body.WireBytes();const auto prefix=header.SerializeForHash();
+        std::copy(prefix.begin(),prefix.end(),wire.begin());
+        OrchardAdmissionFixture::Require(f.Submit(wire).connected);
+        return f.f.service->GetActiveTip();
+    };
+    const auto first=f.Build();OrchardAdmissionFixture::Require(bool(first));
+    std::array<CBlockIndex*,3> nodes{connect(*first),nullptr,nullptr};
+    BlockAssembler assembler(&f.f.db);WireOrchardAssembler(assembler,f.f);
+    for(size_t i=1;i<nodes.size();++i) {
+        const auto next=assembler.CreateOrchardBlock(OrchardMiningPayout);
+        OrchardAdmissionFixture::Require(bool(next));nodes[i]=connect(*next);
+    }
+    std::string error;
+    OrchardAdmissionFixture::Require(f.f.service->InvalidateBlock(nodes[1]->hash,error));
+    OrchardAdmissionFixture::Require(f.f.service->GetActiveTip()==nodes[0]);
+    OrchardAdmissionFixture::Require(notices->reorgs==1);
+    OrchardAdmissionFixture::Require(f.f.service->ReconsiderBlock(nodes[1]->hash,error));
+    OrchardAdmissionFixture::Require(f.f.service->GetActiveTip()==nodes[0]);
+    return std::pair{nodes,notices};
+}
+}
+TEST(OrchardParentPlan, FullForwardBacklogUsesSelectedExtensionsWithoutHistoricalReplay) {
+    CanonicalPoolFixture f(true);const auto [nodes,notices]=PrepareFullForwardBacklog(f);
+    const auto genesis=f.f.blocks.front();
+    ASSERT_EQ(f.f.db.deleteBlock(f.f.token,genesis.GetHash()),Status::Ok);
+    // The selected full owner and catalog were genuinely validated above.
+    // A queued straight continuation must use that owner, not replay genesis
+    // merely because more than one retained successor is available.
+    const auto published=notices->published;
+    f.f.service->ActivateBestChain();
+    EXPECT_EQ(f.f.service->GetActiveTip(),nodes[1]);EXPECT_EQ(notices->published,published+1);
+    f.f.service->ActivateBestChain();
+    EXPECT_EQ(f.f.service->GetActiveTip(),nodes[2]);EXPECT_EQ(notices->published,published+2);
+    EXPECT_EQ(nodes[1]->status&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD),0u);
+    EXPECT_EQ(nodes[2]->status&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD),0u);
+    ASSERT_EQ(f.f.db.putBlock(f.f.token,genesis.GetHash(),genesis),Status::Ok);
+    EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*f.f.service));
+}
+TEST(OrchardParentPlan, ForwardPrefixStillRefusesAStaleOperatorGeneration) {
+    CanonicalPoolFixture f(true);const auto [nodes,notices]=PrepareFullForwardBacklog(f);
+    auto plan=ShieldedStateStartupTestAccess::CaptureActivationPlan(*f.f.service);
+    ASSERT_TRUE(ShieldedStateStartupTestAccess::CompleteActivationPlan(*f.f.service,plan));
+    std::string error;
+    ASSERT_TRUE(f.f.service->InvalidateBlock(nodes[1]->hash,error))<<error;
+    ASSERT_TRUE(f.f.service->ReconsiderBlock(nodes[1]->hash,error))<<error;
+    const auto published=notices->published;
+    ShieldedStateStartupTestAccess::ApplyActivationPlan(*f.f.service,plan);
+    EXPECT_EQ(f.f.service->GetActiveTip(),nodes[0]);EXPECT_EQ(notices->published,published);
+    f.f.service->ActivateBestChain();
+    EXPECT_EQ(f.f.service->GetActiveTip(),nodes[1]);EXPECT_EQ(notices->published,published+1);
+    EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*f.f.service));
+}
 TEST(OrchardParentPlan, ConcurrentRootCallersDeferAndOneStoredActivationCommits) {
     CanonicalPoolFixture f(true);const auto built=f.Build();ASSERT_TRUE(built);
     auto header=built->Header();arith_uint256 work_target;work_target.SetCompact(header.difficulty);
