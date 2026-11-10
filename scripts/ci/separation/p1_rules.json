@@ -1,0 +1,34 @@
+{
+  "_comment": [
+    "GATE P1 rules (docs/superpowers/specs/2026-11-10-consensus-globals-purity-design.md §4).",
+    "tokens: name -> regex counted per file (comments and string contents stripped first).",
+    "Lookbehinds exclude identifier characters so Params( does not match SelectParams( or",
+    "MutableParams(, and time(nullptr does not double-count std::time(nullptr.",
+    "extra_files: headers that belong to a tier but appear in no CMake source list.",
+    "exempt_files: the chain-parameters implementation itself — the gate polices consumers",
+    "of ambient state, not the one definition site."
+  ],
+  "tokens": {
+    "Params_call": "(?<![A-Za-z0-9_])Params\\s*\\(",
+    "GetActiveChain": "(?<![A-Za-z0-9_])GetActiveChain\\s*\\(",
+    "IsChainSelected": "(?<![A-Za-z0-9_])IsChainSelected\\s*\\(",
+    "MutableParams": "(?<![A-Za-z0-9_])MutableParams\\s*\\(",
+    "HrpForActiveNetworkRef": "(?<![A-Za-z0-9_])HrpForActiveNetworkRef",
+    "DaemonContext_instance": "DaemonContext\\s*::\\s*instance",
+    "GetConfig": "(?<![A-Za-z0-9_])GetConfig\\s*\\(",
+    "getenv": "(?<![A-Za-z0-9_])getenv\\s*\\(",
+    "std_time": "std\\s*::\\s*time\\s*\\(",
+    "time_nullptr": "(?<![A-Za-z0-9_:])time\\s*\\(\\s*nullptr",
+    "ParamsImpl": "(?<![A-Za-z0-9_])ParamsImpl"
+  },
+  "extra_files": {
+    "K": [
+      "include/consensus/pow_context.h",
+      "src/consensus/pow.hpp"
+    ],
+    "L": []
+  },
+  "exempt_files": [
+    "src/consensus/chainparams_impl.cpp"
+  ]
+}
