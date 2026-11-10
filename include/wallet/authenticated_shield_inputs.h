@@ -2,18 +2,20 @@
 #include "wallet/wallet_manager.h"
 #include <functional>
 
-namespace dinero {class ChainstateService;namespace wallet {
+namespace dinero {namespace wallet {
 class OrchardAccountDelivery;
 class ShieldFundingPending final:public std::runtime_error {
 public:ShieldFundingPending():std::runtime_error("Authenticated shield funding body pending"){}
 };
 // Lexical CURRENT input authority, never serialized or returned by an RPC.
-// Only the selected source can construct it, after both historical inclusion
-// (legacy maturity metadata) and current accumulator membership. This grants
-// only these exact inputs to one atomic reservation, not a general coin view,
-// history/index baseline, signature authorization or Ready certificate.
+// Minted only through Grant, by the producer that verified both historical
+// inclusion (legacy maturity metadata) and current accumulator membership —
+// evidence only the selected source holds, so that verification remains the
+// producer's documented burden (Grant enforces the structure it can see).
+// This grants only these exact inputs to one atomic reservation, not a
+// general coin view, history/index baseline, signature authorization or
+// Ready certificate.
 class AuthenticatedShieldInputs final {
-    friend class dinero::ChainstateService;
     friend class OrchardAccountDelivery;
     WalletManager* const wallet_;
     const uint64_t session_;
@@ -32,6 +34,22 @@ class AuthenticatedShieldInputs final {
              std::vector<bool>(inputs_.size(),true):std::move(snapshot_candidates)),
          post_base_candidates_(post_base_candidates.empty()?std::vector<bool>(inputs_.size(),false):std::move(post_base_candidates)){}
 public:
+    // Structural checks only (see class comment for the producer's burden):
+    // a live source fence, at least one input, nonzero session, and candidate
+    // masks that are empty or exactly input-sized. Throws on violation. The
+    // result is immovable and uncopyable: authority never outlives its scope.
+    static AuthenticatedShieldInputs Grant(WalletManager& wallet,uint64_t session,uint32_t height,
+        uint256 base,std::string root,std::vector<PendingPaymentInput> inputs,
+        std::function<void()> current,std::vector<bool> snapshot_candidates={},
+        std::vector<bool> post_base_candidates={}) {
+        if(!current||!session||inputs.empty()||
+           (!snapshot_candidates.empty()&&snapshot_candidates.size()!=inputs.size())||
+           (!post_base_candidates.empty()&&post_base_candidates.size()!=inputs.size()))
+            throw std::runtime_error("Shield input grant is structurally invalid");
+        return AuthenticatedShieldInputs(wallet,session,height,base,std::move(root),
+            std::move(inputs),std::move(current),std::move(snapshot_candidates),
+            std::move(post_base_candidates));
+    }
     AuthenticatedShieldInputs(const AuthenticatedShieldInputs&)=delete;
     AuthenticatedShieldInputs& operator=(const AuthenticatedShieldInputs&)=delete;
 };
