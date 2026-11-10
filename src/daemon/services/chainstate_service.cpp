@@ -19970,7 +19970,7 @@ std::unique_ptr<PreparedOrchardParent> ChainstateService::PrepareSelectedOrchard
         {
             std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
             if (!chain_db_owner_ || chain_db_owner_.get()!=chain_db_ || !active_tip_ ||
-                !consensus_utxo_set_ || (GetConfig().utreexo_stateless&&!CheckIndependentLegacyMobileParentUnderLock()) || safe_mode_active_ ||
+                !chain_db_->hasSeparatedShieldedState() || !consensus_utxo_set_ || (GetConfig().utreexo_stateless&&!CheckIndependentLegacyMobileParentUnderLock()) || safe_mode_active_ ||
                 !consensus::OrchardProfileConfigurationValid(Params()) ||
                 uint64_t(active_tip_->height)+1!=Params().orchard_activation_height)
                 { boundary_parent_cache_.reset(); return {}; }
@@ -20003,9 +20003,21 @@ std::unique_ptr<PreparedOrchardParent> ChainstateService::PrepareSelectedOrchard
         auto prepared=std::unique_ptr<PreparedOrchardParent>(
             new PreparedOrchardParent(std::make_unique<PreparedOrchardParent::State>(
                 std::move(use),this,std::move(db),std::move(blocks),target)));
-        if(!CompletePreparedOrchardParent(*prepared,prepare_catalog)) return {};
+        if(!CompletePreparedOrchardParent(*prepared,prepare_catalog,true)) return {};
         if(!revision || prepared->state_->db_->readRevision()!=revision ||
             consensus::ValidatedOrchardBlock::CaptureProfile()!=profile) return {};
+        // The selected-prefix builder checked each canonical height alongside
+        // the captured header/work/height. Bind that audit only while the same
+        // selected owner and historical revision still hold. Live/durable coin,
+        // forest and shielded comparisons remain mandatory at every use.
+        {
+            std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+            if(chain_db_owner_!=prepared->state_->db_ || block_storage_!=prepared->state_->blocks_ ||
+                !active_tip_ || active_tip_->height!=target.height || active_tip_->hash!=target.hash ||
+                ChainworkFromHex(active_tip_->chainwork)!=target.chainwork ||
+                prepared->state_->db_->readRevision()!=revision)return {};
+            prepared->state_->boundary_->canonical_revision=revision;
+        }
         // Never cache incomplete or poisoned results, and never cache a
         // selected-read token (which would prevent shutdown from draining).
         boundary_parent_cache_=std::make_unique<BoundaryParentCache>(BoundaryParentCache{
@@ -20018,7 +20030,7 @@ std::unique_ptr<PreparedOrchardParent> ChainstateService::PrepareSelectedOrchard
 #endif
 }
 
-bool ChainstateService::CompletePreparedOrchardParent(PreparedOrchardParent& prepared,bool prepare_catalog) {
+bool ChainstateService::CompletePreparedOrchardParent(PreparedOrchardParent& prepared,bool prepare_catalog,bool audit_canonical) {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     if(activation_mutex_.HeldByCurrentThread() || ParentPreparationScope::current) return false;
     try {
@@ -20068,6 +20080,10 @@ bool ChainstateService::CompletePreparedOrchardParent(PreparedOrchardParent& pre
             const auto work=prepared.state_->db_->getBlockWork(hash);
             if (!header.ok() || header->GetHash()!=hash || !stored_height.ok() ||
                 *stored_height!=int(height) || !work.ok()) return {};
+            if(audit_canonical) {
+                const auto canonical=prepared.state_->db_->getBlockHashByHeight(int(height));
+                if(!canonical.ok() || *canonical!=hash)return false;
+            }
             page.push_back({hash,*header,*work});
             hash=header->prev_block_hash;
             if(page.size()==OrchardHistoryCapture::HeaderBatchLimit || next==1) {
@@ -20131,7 +20147,7 @@ bool ChainstateService::CompletePreparedOrchardParent(PreparedOrchardParent& pre
         return CompletePreparedOrchardBranch(prepared,material);
     } catch (...) { return false; }
 #else
-    (void)prepared;(void)prepare_catalog;return false;
+    (void)prepared;(void)prepare_catalog;(void)audit_canonical;return false;
 #endif
 }
 
@@ -20693,23 +20709,32 @@ bool ChainstateService::BindActivationParentUnderLock(CBlockIndex* best,CBlockIn
             // and durable state comparison remains at the actual boundary.
             if(!parent.state_->history_ || !parent.state_->history_->Finished() ||
                 parent.state_->history_->Count()!=uint64_t(proven.height)+1) return false;
-            for(uint32_t historical_height=0; uint64_t(historical_height)<parent.state_->history_->Count(); ++historical_height) {
-                const auto h=parent.state_->history_->HeaderAt(historical_height);
-                const auto header=chain_db_->getHeader(h.hash);
-                const auto work=chain_db_->getBlockWork(h.hash);
-                const auto height=chain_db_->getBlockHeight(h.hash);
-                if(!header.ok() || header->SerializeForHash()!=h.header.SerializeForHash() ||
-                    !work.ok() || *work!=h.work || !height.ok() || *height!=int(historical_height)) return false;
-                // Replacement may reconnect historical bodies, so bind their
-                // current bytes before old-chain effects. A single extension
-                // instead consumes the already owned immutable parent history;
-                // its live/durable state comparison remains at the boundary.
-                if(whole_branch) {
-                    const auto body=storage::ReadArchivalBlock(*chain_db_,block_storage_.get(),h.hash);
-                    if(!body.ok()) return false;
-                    const auto wire=body->Serialize();uint256 digest;
-                    crypto::CSHA256().Write(wire).Finalize(digest.data);
-                    if(digest!=parent.state_->history_->WireHashAt(historical_height)) return false;
+            const bool selected_forward=disconnects.empty() && fork && fork==active_tip_ && target==active_tip_;
+            if(selected_forward) {
+                // No historical block is disconnected or reconnected here.
+                // Consume the independently replayed selected prefix, with its
+                // revision-bound index audit and all live/durable state checks.
+                // The exact incoming Orchard branch is still rebound below.
+                if(!CheckPreparedOrchardParent(parent))return false;
+            } else {
+                for(uint32_t historical_height=0; uint64_t(historical_height)<parent.state_->history_->Count(); ++historical_height) {
+                    const auto h=parent.state_->history_->HeaderAt(historical_height);
+                    const auto header=chain_db_->getHeader(h.hash);
+                    const auto work=chain_db_->getBlockWork(h.hash);
+                    const auto height=chain_db_->getBlockHeight(h.hash);
+                    if(!header.ok() || header->SerializeForHash()!=h.header.SerializeForHash() ||
+                        !work.ok() || *work!=h.work || !height.ok() || *height!=int(historical_height)) return false;
+                    // Replacement may reconnect historical bodies, so bind their
+                    // current bytes before old-chain effects. A single extension
+                    // instead consumes the already owned immutable parent history;
+                    // its live/durable state comparison remains at the boundary.
+                    if(whole_branch) {
+                        const auto body=storage::ReadArchivalBlock(*chain_db_,block_storage_.get(),h.hash);
+                        if(!body.ok()) return false;
+                        const auto wire=body->Serialize();uint256 digest;
+                        crypto::CSHA256().Write(wire).Finalize(digest.data);
+                        if(digest!=parent.state_->history_->WireHashAt(historical_height)) return false;
+                    }
                 }
             }
             if(whole_branch && fork && uint64_t(fork->height)+1<activation) {
@@ -21340,6 +21365,7 @@ ChainstateService::CaptureSelectedOrchardPoolContextUnderLock(
         return refuse("selected-04");
     std::copy(genesis.begin(),genesis.end(),context.domain.genesis_wire.begin());
     std::optional<storage::OrchardStoredState> parent;
+    if(!chain_db_->hasSeparatedShieldedState())return refuse("selected-05-legacy-layout");
     const auto stored=chain_db_->getOrchardState();
     if(context.height==context.activation_height) {
         if(stored.status()!=Status::NotFound)return refuse("selected-05-stored-state");

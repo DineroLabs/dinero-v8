@@ -15,7 +15,7 @@ public:
     std::unique_ptr<assumeutxo::AssumeUtxoReplayEngine> replay;
     const ChainWriteToken token = ChainWriteToken::CreateForTesting();
     static void Require(bool value) { if (!value) throw std::runtime_error("selected parent fixture setup"); }
-    explicit OwnedSelectedParentFixture(uint32_t parent_height=3,bool catalog_commitment=false) {
+    explicit OwnedSelectedParentFixture(uint32_t parent_height=3,bool catalog_commitment=false,bool separated=true) {
         Require(parent_height>0&&parent_height<UINT32_MAX);
         MutableParams().orchard_activation_height=parent_height+1;
         MutableParams().orchard_branch_id=1;
@@ -30,15 +30,17 @@ public:
         // creates the legacy layout and must never silently migrate it.
         {
             auto families=shielded_store_fixture::legacy;
-            families.push_back(shielded_store_fixture::shielded);
+            if(separated)families.push_back(shielded_store_fixture::shielded);
             shielded_store_fixture::Raw raw(path,families);
             const uint32_t schema=4;
             raw.put("meta","schema_version",std::string(reinterpret_cast<const char*>(&schema),4));
-            raw.put("meta","storage_layout_v1",shielded_store_fixture::ready);
-            consensus::shielded::CommitmentTree tree;consensus::shielded::AnchorHistory anchors;
-            const auto frontier=tree.SerializeFrontier();const auto history=anchors.SerializePersistenceBytes();
-            raw.put(shielded_store_fixture::shielded,"Mshielded_frontier",{frontier.begin(),frontier.end()});
-            raw.put(shielded_store_fixture::shielded,"Mshielded_anchor_history",{history.begin(),history.end()});
+            if(separated) {
+                raw.put("meta","storage_layout_v1",shielded_store_fixture::ready);
+                consensus::shielded::CommitmentTree tree;consensus::shielded::AnchorHistory anchors;
+                const auto frontier=tree.SerializeFrontier();const auto history=anchors.SerializePersistenceBytes();
+                raw.put(shielded_store_fixture::shielded,"Mshielded_frontier",{frontier.begin(),frontier.end()});
+                raw.put(shielded_store_fixture::shielded,"Mshielded_anchor_history",{history.begin(),history.end()});
+            }
             raw.put("meta","shielded_tip",std::string(84,'\0'));
         }
         Require(db.init(path)==Status::Ok);
@@ -80,7 +82,7 @@ public:
     }
     auto Read() {return ShieldedStateStartupTestAccess::Boundary(service);}
     void CheckUnpublished() {
-        ASSERT_EQ(db.getLegacyRetirementState().status(),Status::NotFound);
+        ASSERT_EQ(db.getLegacyRetirementState().status(),db.hasSeparatedShieldedState()?Status::NotFound:Status::Invalid);
         ASSERT_TRUE(db.getTip().ok());EXPECT_EQ(db.getTip()->hash,tip.hash);
     }
 };
@@ -123,6 +125,14 @@ TEST(OrchardParentService, RawAndRecursiveOwnersRefuseBeforeCapture) {
     raw.CheckUnpublished(); owned.CheckUnpublished();
 }
 
+TEST(OrchardParentService, LegacyStorageRefusesPreparationBeforeBuildingBoundaryCache) {
+    OwnedSelectedParentFixture f(3,false,false);
+    ASSERT_FALSE(f.db.hasSeparatedShieldedState());
+    EXPECT_EQ(f.db.getOrchardState().status(),Status::Invalid);
+    EXPECT_FALSE(f.service.PrepareSelectedOrchardParent());
+    EXPECT_FALSE(ShieldedStateStartupTestAccess::HasBoundaryCache(f.service));
+    f.CheckUnpublished();
+}
 TEST(OrchardParentService, CompletedBoundaryCacheSharesOnlyFrozenEvidenceAcrossThreads) {
     OwnedSelectedParentFixture f;
     auto first=f.service.PrepareSelectedOrchardParent();ASSERT_TRUE(first);
@@ -251,9 +261,10 @@ TEST(OrchardParentService, CapturedBranchCannotOverrideChangedSelectedState) {
     EXPECT_FALSE(f.service.CheckPreparedOrchardParent(*prepared));
     ShieldedStateStartupTestAccess::BoundaryState(f.service,f.tip,*f.replay);
     ASSERT_EQ(f.db.putHeightIndex(f.token,1,f.blocks.front().GetHash()),Status::Ok);
-    auto by_hash=f.service.PrepareSelectedOrchardParent(); ASSERT_TRUE(by_hash);
-    EXPECT_EQ(by_hash->Record(),prepared->Record());
-    EXPECT_FALSE(f.service.CheckPreparedOrchardParent(*by_hash));
+    // Selected-prefix preparation audits the canonical index while detached.
+    // An existing proof must also refuse the changed selected index.
+    EXPECT_FALSE(f.service.PrepareSelectedOrchardParent());
+    EXPECT_FALSE(f.service.CheckPreparedOrchardParent(*prepared));
     ASSERT_EQ(f.db.putHeightIndex(f.token,1,f.blocks[1].GetHash()),Status::Ok);
     EXPECT_EQ(f.service.CheckPreparedOrchardParent(*prepared),expected);
     const auto marker=f.db.getForestTipMarker(); ASSERT_TRUE(marker.ok());

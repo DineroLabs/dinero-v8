@@ -1,4 +1,7 @@
 #include "consensus/active_chain_ancestry.h"
+#include "rocksdb/perf_context.h"
+#include "rocksdb/perf_level.h"
+#include <optional>
 #pragma once
 namespace dinero {
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
@@ -8,6 +11,7 @@ struct TypedForkNotices final:RuntimeBlockNotifications {
     std::array<Event,32> events{};size_t event_count=0;
     std::array<std::shared_ptr<const RuntimeReorgPlan>,8> plans{};
     std::array<RuntimeReorgProgress,8> progress{};size_t plan_count=0;
+    bool measure_reads=false;std::optional<uint64_t> first_prepare_gets;
     struct Block final:PreparedRuntimeBlockNotifications {
         TypedForkNotices& owner;Event event;
         Block(TypedForkNotices& value,Event next):owner(value),event(next){}
@@ -21,6 +25,7 @@ struct TypedForkNotices final:RuntimeBlockNotifications {
     std::unique_ptr<PreparedRuntimeBlockNotifications> Prepare(
         const RuntimeBlockBody& body,uint32_t height,RuntimeBlockDirection direction)override {
         OrchardAdmissionFixture::Require(body.IsOrchardProfile() && height>=102 && event_count<events.size());
+        if(measure_reads && !first_prepare_gets)first_prepare_gets=rocksdb::get_perf_context()->get_from_memtable_count;
         return std::make_unique<Block>(*this,Event{body.Orchard().Header().GetHash(),height,direction});
     }
     std::unique_ptr<PreparedRuntimeReorgNotifications> PrepareReorg(std::shared_ptr<const RuntimeReorgPlan> plan)override {
@@ -47,7 +52,17 @@ TEST(OrchardTypedFork, RetainedSuccessorsShareSelectedBoundaryProofBeforeFullBra
     auto plan=ShieldedStateStartupTestAccess::CaptureActivationPlan(*f.f.service);
     ASSERT_TRUE(ShieldedStateStartupTestAccess::CompleteActivationPlan(*f.f.service,plan));
     EXPECT_EQ(ShieldedStateStartupTestAccess::ActivationParentRecord(plan),&shared->Record());
+    struct RestorePerf {rocksdb::PerfLevel before=rocksdb::GetPerfLevel();~RestorePerf(){rocksdb::SetPerfLevel(before);}} restore_perf;
+    rocksdb::SetPerfLevel(rocksdb::PerfLevel::kEnableCount);rocksdb::get_perf_context()->Reset();
+    observer->measure_reads=true;
     ShieldedStateStartupTestAccess::ApplyActivationPlan(*f.f.service,plan);
+    ASSERT_TRUE(observer->first_prepare_gets);
+    const auto gets=*observer->first_prepare_gets;
+    std::cout<<"Selected forward activation precommit memtable gets: "<<gets<<'\n';
+    // Measure actual database work, not elapsed time. Re-reading header, work
+    // and height for every old block alone exceeds this bound. The detached
+    // canonical audit and all final live/durable checks remain required.
+    EXPECT_LT(gets,3*f.f.blocks.size());
     EXPECT_EQ(f.f.service->GetActiveTip(),a103);
     EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*f.f.service));
     const auto first_stored=ReadRuntimeBlockUnderLock(f.f.db,f.files.get(),a102->hash,102);

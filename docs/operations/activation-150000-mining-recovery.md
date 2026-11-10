@@ -44,6 +44,29 @@ byte limit. Replacement, historical and snapshot plans retain their own proof
 owners. Refusal diagnostics distinguish unavailable preparation from a failed
 coin, forest, shielded or historical comparison.
 
+The selected-prefix builder audits the canonical height index during detached
+preparation, then binds that audit to the unchanged storage owner, selected tip
+and historical revision. Forward catch-up can consume this audit without reading
+the entire historical prefix again under the selected lock. Every use still
+checks live and durable state, and every incoming Orchard block remains rebound
+and validated. A replacement that disconnects or reconnects historical blocks
+retains the full historical header and body comparisons.
+
+## Storage preflight
+
+Check `getnetworkinfo.storage_upgrade_refused` before waiting for activation
+preparation. Orchard requires the separated ten-column-family storage layout.
+A legacy nine-column-family database refuses boundary preparation immediately;
+repeated genesis replay cannot repair its layout.
+
+The storage upgrader deliberately refuses source SST files with hardlinks outside
+its controlled migration pair. Old backup clones can cause this refusal. Retiring
+their links changes backup retention and needs the owner's approval and a guarded
+maintenance procedure; do not weaken the upgrader's alias checks. Preserve wallet
+files, unique backup data, live chain data and the H149999 capture. The upgrader's
+own `chaindb.legacy-v1` rollback database and its paired SST links are expected and
+must remain intact.
+
 ## Snapshot preservation
 
 EU1 and NA independently captured H149999, block
