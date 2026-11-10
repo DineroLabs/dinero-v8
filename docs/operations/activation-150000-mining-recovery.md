@@ -18,6 +18,15 @@ represent the same accepted result. A submission generation fences delayed job
 responses, and CPU/GPU winners are checked against current work before taking
 the submission slot. No consensus rule or activation height changes.
 
+Root activation attempts also use a nonblocking guard through capture, detached
+proof completion and selected binding. Peer handlers and scheduler ticks defer
+while one root owns that workflow, preventing concurrent construction of the
+same expensive branch catalog. Recursive callers that already hold the selected
+transition lock retain their existing consume-only path. A concurrency test uses
+a genuinely mined retained Orchard block and verifies that competing callers
+defer, the selected state remains unpublished while held, and one activation
+commits and passes the independent state audit after release.
+
 The live canary also exposed cold empty-wallet recovery replaying the same
 historical prefix under the selected lock. It now uses the shared detached
 preparation before taking the snapshot and selected locks. Legacy shielded-tree

@@ -1,5 +1,46 @@
 #pragma once
+#include <condition_variable>
+#include <future>
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
+TEST(OrchardParentPlan, ConcurrentRootCallersDeferAndOneStoredActivationCommits) {
+    CanonicalPoolFixture f(true);const auto built=f.Build();ASSERT_TRUE(built);
+    auto header=built->Header();arith_uint256 work_target;work_target.SetCompact(header.difficulty);
+    const auto target=uint256::FromHexUnsafe(work_target.GetHex());
+    for(header.nonce=0;header.nonce<100000 && target<header.GetHash();++header.nonce){}
+    ASSERT_FALSE(target<header.GetHash());
+    auto* next=RetainActivationCandidate(f,*built,header.nonce);
+    // Hold a genuine selected-state publication interval while concurrent
+    // network/tick callers arrive. One root may wait for the selected view;
+    // the others must defer before making another detached activation owner.
+    auto selected=f.f.service->AcquireBlockIngressActivationLock();
+    constexpr size_t callers=6;
+    std::promise<void> start;auto started=start.get_future().share();
+    std::mutex completed_mutex;std::condition_variable completed_cv;
+    size_t completed=0;
+    std::vector<std::future<void>> pending;
+    for(size_t i=0;i<callers;++i)pending.push_back(std::async(std::launch::async,[&] {
+        started.wait();f.f.service->ActivateBestChain();
+        {std::lock_guard lock(completed_mutex);++completed;}
+        completed_cv.notify_one();
+    }));
+    start.set_value();
+    bool deferred=false;
+    {
+        std::unique_lock lock(completed_mutex);
+        deferred=completed_cv.wait_for(lock,std::chrono::seconds(5),[&]{return completed>=callers-1;});
+        EXPECT_EQ(completed,callers-1);
+    }
+    EXPECT_TRUE(deferred);
+    EXPECT_EQ(f.f.service->GetActiveTip(),f.parent);EXPECT_EQ(f.notices->published,0u);
+    EXPECT_EQ(next->status&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD),0u);
+    f.f.CheckUnpublished();
+    selected.unlock();
+    for(auto& call:pending)EXPECT_NO_THROW(call.get());
+    EXPECT_EQ(f.f.service->GetActiveTip(),next);EXPECT_EQ(f.notices->published,1u);
+    EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*f.f.service));
+    f.f.service->ActivateBestChain();
+    EXPECT_EQ(f.f.service->GetActiveTip(),next);EXPECT_EQ(f.notices->published,1u);
+}
 TEST(OrchardParentPlan, UnchangedCapturedPlanCommitsThroughActualSecondPass) {
     CanonicalPoolFixture f;const auto built=f.Build();ASSERT_TRUE(built);
     auto* next=RetainActivationCandidate(f,*built);

@@ -2134,7 +2134,11 @@ private:
     // and then write block failure flags MUST hold this, and AssertHeld turns
     // that from a comment into an enforced invariant. Satisfies Lockable, so
     // every existing lock_guard/unique_lock site is unchanged.
-    mutable AnnotatedRecursiveMutex activation_mutex_;  // Protects ActivateBestChain from concurrent entry
+    mutable AnnotatedRecursiveMutex activation_mutex_;  // Protects selected transitions and activation binding
+    // One root owns detached activation through capture, proof completion and
+    // selected binding. Competing roots defer; recursive selected-lock calls
+    // retain their existing consume-only path without acquiring this mutex.
+    std::mutex activation_prepare_mutex_;
     // Keep exclusive ownership, but install destruction only in the real
     // runtime factory. Backend-OFF services retain an empty owner and do not
     // reference a destructor whose implementation is absent from that build.

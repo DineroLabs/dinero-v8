@@ -11598,6 +11598,11 @@ void ChainstateService::ActivateBestChain() {
     // an already prepared exact parent, but may not release somebody else's
     // lock to validate a new fork. A root activation pass performs that work.
     const bool may_prepare=!activation_mutex_.HeldByCurrentThread();
+    // The historical parent is shared, but each detached branch owns a private
+    // catalog. Keep peer handlers and scheduler ticks from rebuilding that
+    // catalog concurrently while another root is still completing/binding it.
+    std::unique_lock<std::mutex> preparation(activation_prepare_mutex_,std::defer_lock);
+    if(may_prepare && !preparation.try_lock())return;
     // Compact entry audits need a completed selected inverse even before the
     // replacement planner has captured its independently verified old branch.
     // Capture/proof completion remains outside the selected transition lock.
