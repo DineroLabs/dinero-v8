@@ -7347,45 +7347,14 @@ std::vector<PeerInfo> P2PManager::get_connected_peers() const {
 
     for (const auto& pair : connected_peers_) {
         if (pair.second->is_connected) {
-            // Ring 3 Phase 4c: Manual construction because lifetime_state is atomic (non-copyable/non-movable)
-            // Note: We skip copying lifetime_state - it's an internal implementation detail
+            // Snapshot = one memberwise copy of the shared state: a field
+            // added to PeerSharedState is carried automatically, so the
+            // snapshot can never silently drop one. Connection-local
+            // machinery (atomics, mutexes, inbox, QUIC session) is not part
+            // of the base and stays at defaults — lifetime_state in
+            // particular remains ALLOCATED (internal detail, not exposed).
             PeerInfo info;
-            info.address = pair.second->address;
-            info.port = pair.second->port;
-            info.user_agent = pair.second->user_agent;
-            info.protocol_version = pair.second->protocol_version;
-            info.service_flags = pair.second->service_flags;
-            info.start_height = pair.second->start_height;
-            info.best_known_height = pair.second->best_known_height;
-            info.validated_height = pair.second->validated_height;
-            info.validated_height_reported = pair.second->validated_height_reported;
-            info.synced_headers = pair.second->synced_headers;
-            info.best_height = pair.second->best_height;
-            info.synced_blocks = pair.second->synced_blocks;
-            info.compact_blocks_enabled = pair.second->compact_blocks_enabled;
-            info.compact_blocks_announce = pair.second->compact_blocks_announce;
-            info.compact_blocks_version = pair.second->compact_blocks_version;
-            info.bytes_recv = pair.second->bytes_recv;
-            info.bytes_sent = pair.second->bytes_sent;
-            info.connected_since = pair.second->connected_since;
-            info.last_message_at = pair.second->last_message_at;
-            info.last_seen = pair.second->last_seen;
-            info.is_feeler = pair.second->is_feeler;
-            info.last_ping_sent = pair.second->last_ping_sent;
-            info.is_outbound = pair.second->is_outbound;
-            info.is_connected = pair.second->is_connected;
-            info.socket_fd = pair.second->socket_fd;
-            info.last_seen_unix = pair.second->last_seen_unix;
-            info.avg_latency_ms = pair.second->avg_latency_ms;
-            info.via_relay = pair.second->via_relay;
-            info.quic_direct = pair.second->quic_direct;
-            info.quic_remote = pair.second->quic_remote;
-            info.punched = pair.second->punched;
-            info.punch_expected_id = pair.second->punch_expected_id;
-            info.identity_proven = pair.second->identity_proven;
-            info.their_node_id = pair.second->their_node_id;
-            info.is_our_relay = pair.second->is_our_relay;
-            // lifetime_state remains at default ALLOCATED (internal detail, not exposed in API)
+            static_cast<PeerSharedState&>(info) = *pair.second;
             seed_peer_sync_telemetry(&info, local_height);
 
             result.emplace_back(std::move(info));

@@ -114,9 +114,18 @@ if(NOT PROJECT_IS_TOP_LEVEL)
   set(_DEFAULT_DINERO_SOLO_MINER_SOURCE_ROOT "${CMAKE_SOURCE_DIR}/miner")
   set(DINERO_QT_RELEASE_REPO "dinero-v8")
 else()
-  # Standalone qt-only build (the original mode).
+  # Standalone qt-only invocation (cmake -S qt). When qt/ still sits inside
+  # the monorepo — the common case: building the GUI directly from a
+  # dinero-v8 checkout or worktree — the vendored miner/ beside qt/ is the
+  # current source. The external-sibling dinero-solo-miner checkout is the
+  # ARCHIVED pre-monorepo repo (frozen 2026-06; stale API) and remains only
+  # as the fallback for a true standalone qt checkout.
   set(_DEFAULT_DINERO_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../dinero")
-  set(_DEFAULT_DINERO_SOLO_MINER_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../dinero-solo-miner")
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../miner/CMakeLists.txt")
+    set(_DEFAULT_DINERO_SOLO_MINER_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../miner")
+  else()
+    set(_DEFAULT_DINERO_SOLO_MINER_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../dinero-solo-miner")
+  endif()
   set(DINERO_QT_RELEASE_REPO "dinero-qt")
 endif()
 
