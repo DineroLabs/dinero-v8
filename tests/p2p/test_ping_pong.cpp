@@ -190,6 +190,86 @@ void test_connection_stability() {
 }
 
 //=============================================================================
+// Test 4: Extended ping carries the sender's validated height
+//=============================================================================
+
+void test_ping_validated_height_format() {
+    std::cout << "\n[Test 4] Extended ping payload format" << std::endl;
+
+    // Legacy ping stays exactly 8 bytes — older peers depend on this shape.
+    P2PMessage legacy = P2PMessage::create_ping(0x1122334455667788ULL);
+    require(legacy.payload.size() == 8, "Legacy ping payload must stay 8 bytes");
+
+    // Extended ping appends a 4-byte LE validated height after the nonce.
+    const uint64_t nonce = 0x1122334455667788ULL;
+    const uint32_t height = 150002;
+    P2PMessage extended = P2PMessage::create_ping(nonce, height);
+    require(extended.payload.size() == 12, "Extended ping payload must be 12 bytes");
+    for (int i = 0; i < 8; i++) {
+        require(extended.payload[i] == legacy.payload[i],
+                "Extended ping nonce bytes must match legacy encoding");
+    }
+    uint32_t decoded = static_cast<uint32_t>(extended.payload[8]) |
+                       (static_cast<uint32_t>(extended.payload[9]) << 8) |
+                       (static_cast<uint32_t>(extended.payload[10]) << 16) |
+                       (static_cast<uint32_t>(extended.payload[11]) << 24);
+    require(decoded == height, "Validated height must round-trip as LE32");
+
+    std::cout << "  [✓] Extended ping format verified" << std::endl;
+}
+
+void test_ping_reports_validated_height() {
+    std::cout << "\n[Test 5] Peer validated height via extended ping" << std::endl;
+
+    TestNetwork network;
+    TestNode* alice = network.add_node("Alice", 22030);
+    TestNode* bob = network.add_node("Bob", 22031);
+
+    require(network.start_all(), "Nodes should start");
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    require(alice->connect_to(*bob), "Alice should connect to Bob");
+    require(alice->wait_for_peer_count(1, std::chrono::seconds(3)), "Connection should establish");
+    require(bob->wait_for_peer_count(1, std::chrono::seconds(3)), "Bob should see Alice");
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    // CONTROL: before any extended ping, Bob must not claim a validated
+    // height for Alice. A legacy 8-byte ping must not set it either.
+    auto bob_view = bob->get_connected_peers();
+    require(!bob_view.empty(), "Bob should have a peer record for Alice");
+    require(!bob_view[0].validated_height_reported,
+            "Validated height must be unreported before an extended ping");
+
+    auto alice_peers = alice->get_connected_peers();
+    require(!alice_peers.empty(), "Alice should have peers");
+    const std::string alice_peer_addr = alice_peers[0].to_string();
+
+    require(alice->send_message(alice_peer_addr, P2PMessage::create_ping(777)),
+            "Legacy ping should send");
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    bob_view = bob->get_connected_peers();
+    require(!bob_view.empty() && !bob_view[0].validated_height_reported,
+            "Legacy 8-byte ping must leave validated height unreported");
+
+    // Extended ping: Bob should record Alice's self-reported validated height.
+    const uint32_t reported = 424242;
+    require(alice->send_message(alice_peer_addr, P2PMessage::create_ping(778, reported)),
+            "Extended ping should send");
+
+    bool recorded = false;
+    for (int i = 0; i < 20 && !recorded; i++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        bob_view = bob->get_connected_peers();
+        recorded = !bob_view.empty() && bob_view[0].validated_height_reported &&
+                   bob_view[0].validated_height == reported;
+    }
+    require(recorded, "Bob must record Alice's reported validated height from the extended ping");
+    std::cout << "  [✓] Validated height " << reported << " recorded on Bob's peer entry" << std::endl;
+
+    network.stop_all();
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+}
+
+//=============================================================================
 // Main Test Runner
 //=============================================================================
 
@@ -208,6 +288,10 @@ int main() {
 
         // Test 3: Connection stability
         test_connection_stability();
+
+        // Test 4/5: Extended ping validated-height field
+        test_ping_validated_height_format();
+        test_ping_reports_validated_height();
 
         std::cout << "\n========================================" << std::endl;
         std::cout << "✅ All Ping/Pong Tests Passed!" << std::endl;

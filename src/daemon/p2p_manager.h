@@ -64,6 +64,13 @@ struct PeerInfo {
     uint64_t service_flags{0};
     uint32_t start_height{0};
     uint32_t best_known_height{0};
+    // Peer-reported VALIDATED chain height, carried by the extended ping
+    // payload. Distinct from best_known_height, which tracks the peer's
+    // announce/relay tip and can run ahead of what the peer has actually
+    // validated during catch-up or recovery. Peers on older protocol builds
+    // never report it (validated_height_reported stays false).
+    uint32_t validated_height{0};
+    bool validated_height_reported{false};
     uint32_t synced_headers{0};
     uint32_t best_height{0};
     uint32_t synced_blocks{0};
@@ -203,6 +210,8 @@ struct PeerInfo {
           service_flags(other.service_flags),
           start_height(other.start_height),
           best_known_height(other.best_known_height),
+          validated_height(other.validated_height),
+          validated_height_reported(other.validated_height_reported),
           synced_headers(other.synced_headers),
           best_height(other.best_height),
           synced_blocks(other.synced_blocks),
@@ -369,6 +378,10 @@ struct P2PMessage {
     static P2PMessage create_punch_go(uint64_t nonce);
 
     static P2PMessage create_ping(uint64_t nonce);
+    // Extended ping: appends the sender's validated chain height (4 bytes LE)
+    // after the nonce. Legacy receivers read only the first 8 bytes, so the
+    // extra field is wire-compatible with older peers.
+    static P2PMessage create_ping(uint64_t nonce, uint32_t validated_height);
     static P2PMessage create_pong(uint64_t nonce);
     static P2PMessage create_getaddr();
     static P2PMessage create_addr(const std::vector<PeerInfo>& peers);

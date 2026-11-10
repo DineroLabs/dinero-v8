@@ -3562,12 +3562,24 @@ P2PMessage P2PMessage::create_dineroid(const dinero::daemon::NodeIdentity& ident
 P2PMessage P2PMessage::create_ping(uint64_t nonce) {
     P2PMessage msg;
     msg.command = "ping";
-    
+
     // 8-byte nonce
     for (int i = 0; i < 8; i++) {
         msg.payload.push_back((nonce >> (i * 8)) & 0xFF);
     }
-    
+
+    return msg;
+}
+
+P2PMessage P2PMessage::create_ping(uint64_t nonce, uint32_t validated_height) {
+    P2PMessage msg = create_ping(nonce);
+
+    // Extended field: sender's validated chain height (4 bytes LE). Legacy
+    // peers parse only the leading 8-byte nonce and ignore the extra bytes.
+    for (int i = 0; i < 4; i++) {
+        msg.payload.push_back((validated_height >> (i * 8)) & 0xFF);
+    }
+
     return msg;
 }
 
@@ -6306,9 +6318,11 @@ void P2PManager::connection_manager_loop() {
             }
 
             // Send pings outside the lock to avoid deadlock
+            const uint32_t our_validated_height =
+                height_provider_ ? height_provider_() : 0;
             for (const auto& peer_key : peers_to_ping) {
                 uint64_t nonce = SecureRandom::GetUInt64();
-                auto ping_msg = P2PMessage::create_ping(nonce);
+                auto ping_msg = P2PMessage::create_ping(nonce, our_validated_height);
                 send_to_peer(peer_key, ping_msg);
             }
         }
@@ -7343,6 +7357,8 @@ std::vector<PeerInfo> P2PManager::get_connected_peers() const {
             info.service_flags = pair.second->service_flags;
             info.start_height = pair.second->start_height;
             info.best_known_height = pair.second->best_known_height;
+            info.validated_height = pair.second->validated_height;
+            info.validated_height_reported = pair.second->validated_height_reported;
             info.synced_headers = pair.second->synced_headers;
             info.best_height = pair.second->best_height;
             info.synced_blocks = pair.second->synced_blocks;
@@ -7838,9 +7854,28 @@ void P2PManager::handle_ping(const std::string& peer_address, const P2PMessage& 
         for (int i = 0; i < 8; i++) {
             nonce |= (static_cast<uint64_t>(message.payload[i]) << (i * 8));
         }
-        
+
         auto pong = P2PMessage::create_pong(nonce);
         send_to_peer(peer_address, pong);
+    }
+
+    // Extended ping: bytes 8..11 carry the sender's self-reported VALIDATED
+    // chain height (LE). Legacy 8-byte pings never set it, so the peer's
+    // validated height stays "unreported" rather than guessed from the
+    // announce tip.
+    if (message.payload.size() >= 12) {
+        const uint32_t reported_validated =
+            static_cast<uint32_t>(message.payload[8]) |
+            (static_cast<uint32_t>(message.payload[9]) << 8) |
+            (static_cast<uint32_t>(message.payload[10]) << 16) |
+            (static_cast<uint32_t>(message.payload[11]) << 24);
+
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(peer_address);
+        if (it != connected_peers_.end()) {
+            it->second->validated_height = reported_validated;
+            it->second->validated_height_reported = true;
+        }
     }
 }
 
@@ -10663,9 +10698,11 @@ void P2PManager::keepalive_loop() {
             }
         }
 
+        const uint32_t our_validated_height =
+            height_provider_ ? height_provider_() : 0;
         for (const auto& peer_addr : peer_addresses) {
             uint64_t nonce = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
-            auto ping_msg = P2PMessage::create_ping(nonce);
+            auto ping_msg = P2PMessage::create_ping(nonce, our_validated_height);
             send_to_peer(peer_addr, ping_msg);
 
             // Update last_ping_sent timestamp
