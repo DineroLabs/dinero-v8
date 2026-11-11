@@ -15248,9 +15248,23 @@ std::optional<uint32_t> ChainstateService::RescanWalletFromSelectedHistory(
 
 std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
         WalletManager& wallet,std::string* error,uint64_t expected_session,
-        bool v6_partial_base_for_tests){
+        bool v6_partial_base_for_tests,SnapshotRecoveryOutcome* outcome){
     if(error)error->clear();
-    const auto fail=[&](const std::string& why)->std::optional<uint32_t>{if(error)*error=why;return {};};
+    if(outcome)*outcome={};
+    const auto fail=[&](const std::string& why)->std::optional<uint32_t>{
+        if(error)*error=why;
+        if(outcome)outcome->refusal=SnapshotRecoveryOutcome::Refusal::Transient;
+        return {};
+    };
+    // The capability refusal is permanent only when the capability is truly
+    // absent: an Orchard-active tip with NO configured V5 source. Everything
+    // else (no tip yet, safe mode, downloads pending, source churn) can clear
+    // and must stay retryable for the phones' 15-second loop.
+    const auto refuse_capability=[&]()->std::optional<uint32_t>{
+        const auto result=fail("transparent snapshot recovery requires a pre-Orchard selected source");
+        if(outcome)outcome->refusal=SnapshotRecoveryOutcome::Refusal::PermanentCapability;
+        return result;
+    };
     if(activation_mutex_.HeldByCurrentThread())return fail("snapshot recovery requires unowned selected source");
     try{
         auto index=AcquireWalletIndexUse(shared_from_this());
@@ -15290,9 +15304,9 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
                 // carries a client-visible scope.
                 const std::string v5=config_?config_->GetString("wallet_recovery_v5_source",""):"";
                 if(v5.empty())
-                    return fail("transparent snapshot recovery requires a pre-Orchard selected source");
+                    return refuse_capability();
                 if(Params().orchard_activation_height==0||Params().orchard_activation_height==UINT32_MAX)
-                    return fail("transparent snapshot recovery requires a pre-Orchard selected source");
+                    return refuse_capability();
                 v5_parent_mode=true;path=v5;
                 recovery_base=Params().orchard_activation_height-1;
             }
@@ -15430,6 +15444,7 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
             return fail("authenticated snapshot wallet application failed");
         // Partial mode reports the base it actually recovered to, never the
         // Orchard-era tip it has not accounted for.
+        if(outcome)outcome->composed_v6=v5_parent_mode&&!partial_base;
         return partial_base?recovery_base:target;
     }catch(const std::exception& e){return fail(e.what());}
 }

@@ -280,9 +280,11 @@ TEST(SnapshotWalletRecovery, OrchardActiveSelectedSourceIsRefusedFailClosed){
     // this pins the behavior and the exact string the RPC classifies on.
     SnapshotWalletRecoveryFixture f;
     OrchardActiveOverride orchard_active;
-    std::string refused;
-    EXPECT_FALSE(f.source->RecoverTransparentSnapshotWallet(f.wallet,&refused));
+    std::string refused;ChainstateService::SnapshotRecoveryOutcome outcome;
+    EXPECT_FALSE(f.source->RecoverTransparentSnapshotWallet(f.wallet,&refused,0,false,&outcome));
     EXPECT_EQ(refused,"transparent snapshot recovery requires a pre-Orchard selected source");
+    EXPECT_EQ(outcome.refusal,ChainstateService::SnapshotRecoveryOutcome::Refusal::PermanentCapability);
+    EXPECT_FALSE(outcome.composed_v6);
     EXPECT_EQ(f.Count("SELECT COUNT(*) FROM utxos"),0);
 }
 
@@ -314,6 +316,12 @@ TEST(SnapshotWalletRecovery, RpcMarksPermanentCapabilityRefusalNonRetryable){
     ASSERT_TRUE(transient.isMember("error"))<<transient.toStyledString();
     ASSERT_TRUE(transient.isMember("retryable"));
     EXPECT_TRUE(transient["retryable"].asBool());
+    // Pre-Orchard success reports the LEGACY scope; the v6 scope is reserved
+    // for the composed typed-tail recovery (stage-D harness evidence).
+    ASSERT_EQ(f.db.putBlock(ChainWriteToken::CreateForTesting(),f.chain[109].GetHash(),f.chain[109]),Status::Ok);
+    const auto success=rpc_context_wallet_recoversnapshot(request,params);
+    ASSERT_TRUE(success.isMember("success"))<<success.toStyledString();
+    EXPECT_EQ(success["scope"].asString(),"transparent-current-coins-and-post-snapshot-history");
     service->Stop();f.context.wallet.reset();
 }
 
@@ -334,9 +342,10 @@ TEST(SnapshotWalletRecovery, V5ActivationParentModeRecoversBaseSetOnlyAndStaysIn
     // composition the verified replay is unavailable, so the refusal is the
     // TRANSIENT waiting one — not the permanent capability refusal — and no
     // partial state is published.
-    std::string refused;
-    EXPECT_FALSE(f.source->RecoverTransparentSnapshotWallet(f.wallet,&refused));
+    std::string refused;ChainstateService::SnapshotRecoveryOutcome outcome;
+    EXPECT_FALSE(f.source->RecoverTransparentSnapshotWallet(f.wallet,&refused,0,false,&outcome));
     EXPECT_EQ(refused,"waiting for verified post-snapshot typed history");
+    EXPECT_EQ(outcome.refusal,ChainstateService::SnapshotRecoveryOutcome::Refusal::Transient);
     EXPECT_EQ(f.Count("SELECT COUNT(*) FROM utxos"),0);
     // With the flag: the base set lands, bounded at the activation parent.
     std::string error;

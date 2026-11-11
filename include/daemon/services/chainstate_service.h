@@ -290,9 +290,18 @@ public:
     // harness-only (no RPC sets it): it skips the typed tail, recovers ONLY
     // the PARTIAL base set (coins spent after activation still counted) and
     // reports the activation parent, never a client-visible scope.
+    // Typed recovery outcome for the RPC layer (stage C step 4): the refusal
+    // class drives retryable classification instead of a string match, and
+    // composed_v6 marks the typed-tail composed recovery whose success scope
+    // is transparent-current-coins-and-post-snapshot-history-v6.
+    struct SnapshotRecoveryOutcome {
+        enum class Refusal { None, Transient, PermanentCapability };
+        Refusal refusal=Refusal::None;
+        bool composed_v6=false;
+    };
     std::optional<uint32_t> RecoverTransparentSnapshotWallet(
         WalletManager&,std::string* error=nullptr,uint64_t expected_session=0,
-        bool v6_partial_base_for_tests=false);
+        bool v6_partial_base_for_tests=false,SnapshotRecoveryOutcome* outcome=nullptr);
     // Exact fresh imported activation parent only. Checked source/seed-bound
     // candidate discovery, NOT wallet history/index completion or coin authority.
     // Caller retains WalletUse/WalletIndexUse and holds no SQLite/selected owner.
