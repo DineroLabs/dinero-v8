@@ -2563,7 +2563,10 @@ TEST(OrchardSnapshotRuntime, QueuedDownloadedHeaderIsRevalidatedWithoutSelectedP
     metadata.file_number=position->file_number;metadata.data_pos=position->offset;metadata.data_size=position->size;
     ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,metadata),Status::Ok);
     ASSERT_EQ(source.f.db.getHeader(hash).status(),Status::NotFound);
-    const auto seed=[&]{HeaderChainSelector checked;Access::Seed(source.f.db,checked,store);
+    const auto seed=[&]{HeaderChainSelector checked;
+        for(const auto& block:source.f.blocks)if(!checked.AddHeader(block.header))
+            throw std::runtime_error("genuine retained parent header refused");
+        Access::Seed(source.f.db,checked,store);
         const auto value=checked.GetHeaderValue(hash);if(!value||value->height!=pending.height||
             value->chainwork!=pending.chainwork)throw std::runtime_error("queued header was not independently derived");};
     EXPECT_NO_THROW(seed());
@@ -2574,8 +2577,8 @@ TEST(OrchardSnapshotRuntime, QueuedDownloadedHeaderIsRevalidatedWithoutSelectedP
 
     auto bad=metadata;bad.parent_hash=uint256{};
     ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,bad),Status::Ok);EXPECT_ANY_THROW(seed());
-    bad=metadata;++bad.chainwork;
-    auto bad_entry=pending;++bad_entry.chainwork;ASSERT_TRUE(store.StoreHeader(bad_entry));
+    bad=metadata;bad.chainwork+=arith_uint256{1};
+    auto bad_entry=pending;bad_entry.chainwork+=arith_uint256{1};ASSERT_TRUE(store.StoreHeader(bad_entry));
     ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,bad),Status::Ok);
     EXPECT_ANY_THROW(seed()); // Even two agreeing stored claims cannot replace derived work.
     ASSERT_TRUE(store.StoreHeader(pending));
