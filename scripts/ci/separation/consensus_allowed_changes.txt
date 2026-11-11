@@ -52,3 +52,8 @@
 6 insert src/consensus/shielded/commitment_tree.cpp@186 ^    cached_root_ = current;$
 6 insert src/consensus/shielded/commitment_tree.cpp@232 ^    cached_root_\.reset\(\);$
 6 insert src/consensus/shielded/commitment_tree.cpp@272 ^    cached_root_\.reset\(\);$
+
+# Compact-v6 cold-start recovery: exact reviewed ASERT ancestry memo only.
+# Every header still runs ValidateHistoricalHeader; no open-ended file allowance.
+6 sha256 include/consensus/header_chain.h 15e2cb6d067b2dc2e12146f6f5afe5418e4ca9dd22eb681d60b9e833fa8b25f0
+6 sha256 src/consensus/header_chain.cpp c193782dced05534570741b39ac9413355deafd39031989982a3f0cfb70b9317
