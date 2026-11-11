@@ -735,7 +735,6 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
     // worker owns argv AND every receipt through closed-store selection and
     // replacement teardown. The root guard stays in State until joined.
     struct Startup {
-        std::atomic<bool> initialized{false},started{false};
         std::atomic<int32_t> result{std::numeric_limits<int32_t>::max()};
     };
     auto startup=std::make_shared<Startup>();
@@ -784,10 +783,10 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
             if(cancelled())throw std::runtime_error("SDK initialization cancelled by public Stop");
             std::vector<char*> argv;for(auto& a:args)argv.push_back(a.data());
             if(!s.app->Init(int(argv.size()),argv.data()))throw std::runtime_error("SDK App Init refused");
-            ConfigureEmbeddedRuntime(*s.app);startup->initialized=true;failure=NODECORE_ERROR_START_FAILED;
+            ConfigureEmbeddedRuntime(*s.app);failure=NODECORE_ERROR_START_FAILED;
             if(cancelled())throw std::runtime_error("SDK start cancelled by public Stop");
             if(!s.app->Start())throw std::runtime_error("SDK App Start refused");
-            startup->started=true;ConfigureEmbeddedNotifier(*s.app);
+            ConfigureEmbeddedNotifier(*s.app);
             if(pending)s.app->PrepareReadmissionAfterInternalReopen(*s.datadir_guard,*pending);
             if(cancelled())throw std::runtime_error("SDK readmission cancelled by public Stop");
             // Initial App is already in State and the startup caller holds the
@@ -815,7 +814,6 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
             if(s.app)s.app->Stop();
             int32_t expected=std::numeric_limits<int32_t>::max();
             startup->result.compare_exchange_strong(expected,failure);
-            startup->initialized=true;
             Json::Value event;event["reason"]="node_thread_exception";event["error"]=error.what();
             fprintf(stderr,"[nodecore_ffi] worker stopped: %s\n",error.what());
             emit_event_json(NODECORE_EVENT_SHUTDOWN,event);
@@ -823,24 +821,18 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
             s.running=false;s.shutdown_requested=true;
             if(s.app)s.app->Stop();
             int32_t expected=std::numeric_limits<int32_t>::max();
-            startup->result.compare_exchange_strong(expected,failure);startup->initialized=true;
+            startup->result.compare_exchange_strong(expected,failure);
             emit_event(NODECORE_EVENT_SHUTDOWN,"{\"reason\":\"node_thread_exception\",\"error\":\"unknown\"}");
         }
     });
 
-    // Init was previously synchronous/unbounded; it now runs on its receipt's
-    // owning worker. Preserve the existing 30s App Start confirmation window.
-    // New journal/readmission work is separate from that window; explicit Stop
-    // cancels it, and existing per-record/corpus bounds remain unchanged.
+    // Cold v6 Start authenticates the retained catalog and selected undo proof;
+    // that real mainnet work can exceed thirty seconds. A wall-clock deadline
+    // must not impersonate public Stop or cancel a valid audit. Only the worker's
+    // final result can publish success, after every audit/readmission check.
+    // Explicit public Stop still cancels through the same epoch/flag and the
+    // failure path below joins the owner before releasing its datadir guard.
     const auto begin=std::chrono::steady_clock::now();
-    while(!startup->initialized.load()&&startup->result.load()==std::numeric_limits<int32_t>::max()&&
-          !Cancelled(s,stop_epoch))std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    const auto start_begin=std::chrono::steady_clock::now();
-    while(!startup->started.load()&&startup->result.load()==std::numeric_limits<int32_t>::max()&&
-          !Cancelled(s,stop_epoch)){
-        if(std::chrono::steady_clock::now()-start_begin>std::chrono::seconds(30)){s.shutdown_requested=true;break;}
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
     while(startup->result.load()==std::numeric_limits<int32_t>::max()&&!Cancelled(s,stop_epoch))
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     const auto result=startup->result.load();

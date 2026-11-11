@@ -9523,8 +9523,11 @@ void ChainstateService::setHeaderChainSelector(std::shared_ptr<dinero::consensus
         }
     }
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
-    if(orchard_snapshot_startup_&&header_chain&&chain_db_)
-        OrchardSnapshotStore::SeedRetainedHeaders(*chain_db_,*header_chain);
+    if(orchard_snapshot_startup_&&header_chain&&chain_db_) {
+        const auto* context=DaemonContext::instance();
+        OrchardSnapshotStore::SeedRetainedHeaders(*chain_db_,*header_chain,
+            context?context->header_store.get():nullptr);
+    }
 #endif
     // A repeated binding still has to seed any retained Orchard headers.
     // That was the existing idempotent startup behavior.
@@ -14311,7 +14314,9 @@ bool ChainstateService::InitOrchardSnapshotStorage() {
         if(!base||GetConfig().utreexo_stateless!=(base->profile==uint8_t(consensus::OrchardSnapshotProfile::Compact)))
             throw std::runtime_error("v6 startup storage profile mismatch");
         auto verification=std::make_shared<consensus::HeaderChainSelector>();
-        OrchardSnapshotStore::SeedRetainedHeaders(*chain_db_,*verification);
+        const auto* startup_context=DaemonContext::instance();
+        OrchardSnapshotStore::SeedRetainedHeaders(*chain_db_,*verification,
+            startup_context?startup_context->header_store.get():nullptr);
         ChainWriteToken recovery_token;
         (void)OrchardSnapshotStore::RecoverBaseMarkers(activation_mutex_,*chain_db_,recovery_token,*verification);
         auto publication=OrchardSnapshotStore::Restore(activation_mutex_,*chain_db_,*verification);

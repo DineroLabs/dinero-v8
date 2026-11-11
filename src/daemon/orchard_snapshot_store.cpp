@@ -603,7 +603,7 @@ std::shared_ptr<consensus::HeaderChainSelector> OrchardSnapshotStore::CompletedA
     }));
     auto retained=std::make_shared<consensus::HeaderChainSelector>();
     retained->ReplaceFailedHeaderHashes(failed_roots);
-    SeedRetainedHeaders(db,*retained);
+    SeedRetainedHeaders(db,*retained,&store);
     const auto best=retained->GetBestHeaderValue();Require(best.has_value());
     std::vector<consensus::HeaderIndexEntry> ancestry;ancestry.reserve(uint64_t(best->height)+1);
     for(uint64_t h=0;h<=best->height;++h){consensus::HeaderIndexEntry value;Require(retained->GetHeaderAtHeightCopy(uint32_t(h),value));ancestry.push_back(value);}
@@ -1521,7 +1521,8 @@ void OrchardSnapshotStore::CreateFreshStore(const std::filesystem::path& destina
         if(owned){std::error_code ignored;fs::remove_all(temporary,ignored);}throw;
     }
 }
-void OrchardSnapshotStore::SeedRetainedHeaders(const ChainDB& db,consensus::HeaderChainSelector& headers) {
+void OrchardSnapshotStore::SeedRetainedHeaders(const ChainDB& db,consensus::HeaderChainSelector& headers,
+    consensus::HeaderStore* pending_headers) {
     struct RetainedHeader {
         int32_t height;
         uint256 hash;
@@ -1538,6 +1539,7 @@ void OrchardSnapshotStore::SeedRetainedHeaders(const ChainDB& db,consensus::Head
     std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b){
         return std::tie(a.height,a.hash)<std::tie(b.height,b.hash);
     });
+    const auto selected_tip=db.getTip();
     for(const auto& row:ordered) {
         const auto stored=db.getHeader(row.hash);
         if (!stored.ok()) {
@@ -1552,6 +1554,32 @@ void OrchardSnapshotStore::SeedRetainedHeaders(const ChainDB& db,consensus::Head
                 !(row.status_flags & (BLOCK_HAVE_DATA|BLOCK_HAVE_UNDO)) &&
                 !row.has_locator;
             if (pruned_failed_header_only) continue;
+            // Ordinary P2P download can persist a future body/metadata before
+            // connect writes its raw ChainDB header. HeaderStore already owns
+            // that header. Revalidate it with this selector, matching every
+            // identity/work field, without accepting the queued body or moving
+            // selected state. Missing selected/executed/undo rows still refuse.
+            const bool queued_header = stored.status()==Status::NotFound && pending_headers &&
+                selected_tip.ok() && row.height>selected_tip->height &&
+                (row.status_flags&BLOCK_VALID_HEADER) &&
+                !(row.status_flags&(BLOCK_VALID_TREE|BLOCK_VALID_TRANSACTIONS|BLOCK_VALID_SCRIPTS)) &&
+                !(row.status_flags&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD|BLOCK_HAVE_UNDO));
+            if (queued_header) {
+                consensus::HeaderIndexEntry pending;
+                const auto metadata=Need(db.getHeaderMetadata(row.hash));
+                Require(pending_headers->LoadHeader(row.hash,pending));
+                Require(pending.hash==row.hash && pending.header.GetHash()==row.hash &&
+                    pending.height==uint32_t(row.height) && pending.height==uint32_t(metadata.height) &&
+                    pending.prev_hash==metadata.parent_hash && pending.header.prev_block_hash==metadata.parent_hash &&
+                    pending.chainwork==metadata.chainwork);
+                Require(headers.AddHeader(pending.header));
+                const auto checked=headers.GetHeaderValue(row.hash);
+                Require(checked && checked->height==pending.height && checked->chainwork==pending.chainwork);
+                continue;
+            }
+            throw std::runtime_error("Retained Orchard header unavailable at height "+
+                std::to_string(row.height)+" hash="+row.hash.GetHex()+
+                " status="+std::to_string(static_cast<int>(stored.status())));
         }
         const auto header=Need(std::move(stored));
         // Only genuinely validated headers enter the selector. Invalid or

@@ -30,6 +30,8 @@ std::string EncodeHead(const RuntimeOutboxCursor&);
 }
 struct OrchardSnapshotStoreTestAccess {
     using ActivationPublication=OrchardSnapshotStore::ActivationPublication;
+    static void Seed(const ChainDB& db,consensus::HeaderChainSelector& headers,
+        consensus::HeaderStore& store){OrchardSnapshotStore::SeedRetainedHeaders(db,headers,&store);}
     static auto RowsDigest(const ChainDB& db){return OrchardSnapshotStore::HandoffStoreDigest(db,{});}
     static auto AuditStore(AnnotatedRecursiveMutex& mutex,const ChainDB& original,const ChainDB& db,
         const ChainWriteToken& token,const BlockStorage& files,const uint256& parent,
@@ -2536,6 +2538,60 @@ TEST(OrchardSnapshotRuntime, DeferredV5WaitsForBurialBeforeLoaderAttempt) {
         EXPECT_EQ(std::filesystem::file_size(snapshot),68u);
     }
 }
+TEST(OrchardSnapshotRuntime, QueuedDownloadedHeaderIsRevalidatedWithoutSelectedPublication) {
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
+    OrchardCycleFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    HeaderChainSelector ancestry;
+    for(const auto& block:source.f.blocks)ASSERT_TRUE(ancestry.AddHeader(block.header));
+    BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+    const auto body=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(body);
+    const auto tip=source.f.db.getTip();ASSERT_TRUE(tip.ok());
+    const auto parent=ancestry.GetHeaderValue(tip->hash);ASSERT_TRUE(parent);
+    HeaderIndexEntry pending(body->Header(),&*parent);const auto hash=pending.hash;
+    ASSERT_EQ(pending.height,uint32_t(tip->height)+1);
+    shielded_store_fixture::TempDir directory;
+    HeaderStore store((directory.path/"headers").string());ASSERT_TRUE(store.Open());
+    ASSERT_TRUE(store.StoreHeader(pending));
+    BlockStorage files;ASSERT_EQ(files.init(directory.path/"files"),Status::Ok);
+    const auto& wire=body->WireBytes();
+    const auto position=files.writeBlockBytes(hash,std::string(wire.begin(),wire.end()));ASSERT_TRUE(position.ok());
+    ChainDB::PersistedHeaderMetadata metadata;
+    metadata.height=int32_t(pending.height);metadata.parent_hash=pending.prev_hash;metadata.chainwork=pending.chainwork;
+    // AddBlockIndex's CHAIN bit records graph connectivity here, not execution.
+    metadata.status_flags=uint32_t(BLOCK_VALID_HEADER)|uint32_t(BLOCK_VALID_CHAIN)|uint32_t(BLOCK_HAVE_DATA);
+    metadata.file_number=position->file_number;metadata.data_pos=position->offset;metadata.data_size=position->size;
+    ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,metadata),Status::Ok);
+    ASSERT_EQ(source.f.db.getHeader(hash).status(),Status::NotFound);
+    const auto seed=[&]{HeaderChainSelector checked;
+        for(const auto& block:source.f.blocks)if(!checked.AddHeader(block.header))
+            throw std::runtime_error("genuine retained parent header refused");
+        Access::Seed(source.f.db,checked,store);
+        const auto value=checked.GetHeaderValue(hash);if(!value||value->height!=pending.height||
+            value->chainwork!=pending.chainwork)throw std::runtime_error("queued header was not independently derived");};
+    EXPECT_NO_THROW(seed());
+    EXPECT_EQ(source.f.db.getHeader(hash).status(),Status::NotFound); // No database repair or publication.
+    EXPECT_EQ(source.f.db.getTip()->hash,tip->hash);
+    EXPECT_EQ(source.f.db.getValidatedTip()->hash,tip->hash);
+    EXPECT_EQ(source.f.db.getOrchardState().status(),Status::NotFound);
+
+    auto bad=metadata;bad.parent_hash=uint256{};
+    ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,bad),Status::Ok);EXPECT_ANY_THROW(seed());
+    bad=metadata;bad.chainwork+=arith_uint256{1};
+    auto bad_entry=pending;bad_entry.chainwork+=arith_uint256{1};ASSERT_TRUE(store.StoreHeader(bad_entry));
+    ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,bad),Status::Ok);
+    EXPECT_ANY_THROW(seed()); // Even two agreeing stored claims cannot replace derived work.
+    ASSERT_TRUE(store.StoreHeader(pending));
+    bad=metadata;bad.height=tip->height;
+    ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,bad),Status::Ok);EXPECT_ANY_THROW(seed());
+    bad=metadata;bad.status_flags|=uint32_t(BLOCK_HAVE_UNDO);
+    ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,bad),Status::Ok);EXPECT_ANY_THROW(seed());
+    bad=metadata;bad.status_flags|=uint32_t(BLOCK_VALID_SCRIPTS);
+    ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,bad),Status::Ok);EXPECT_ANY_THROW(seed());
+    ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,metadata),Status::Ok);
+    EXPECT_NO_THROW(seed());
+}
+
 TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles) {
     using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
     OrchardCycleFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
