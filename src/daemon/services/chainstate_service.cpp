@@ -15293,8 +15293,12 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
         std::vector<std::pair<uint256,uint32_t>> ancestry;
         {
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+            // Transient: the selected source exists but is not serviceable yet
+            // (startup, safe mode). Never reuse the permanent capability
+            // message here — phones poll on retryable and operators read the
+            // string.
             if(!active_tip_||safe_mode_active_)
-                return fail("transparent snapshot recovery requires a pre-Orchard selected source");
+                return fail("selected source is not ready for wallet recovery");
             if(consensus::OrchardActiveForHeight(Params(),active_tip_->height)){
                 // Native v6 recovery (stages B+C of the design): the base coin
                 // set comes from a configured V5 container at the activation
