@@ -106,6 +106,21 @@ Why not the others (recorded, not silent):
   route was rejected.
 - **D: end-to-end harness test** (the §4 fixture) + serve the preserved V5 on the private phone
   channel (Codex-coordinated: EU1 serving config only, no publisher changes).
+  **Harness DONE (2026-11-11): `tests/integration/test_nodecore_late_phone_wallet_recovery.py`
+  (ctest `NodeCoreLatePhoneWalletRecovery`).** A genuinely new SDK root on an authenticated v6
+  floor (102) syncs, restores the funded wallet, completes the typed phone-history download
+  through the real account-0 recovery, then drives `wallet.recovertransparentfromsnapshot`
+  against the preserved V5 activation parent. Covered rows, each with exact-value assertions:
+  composed recovery to the tip with the v6 scope; full-balance equality (the funded base coin);
+  tail-created owned IMMATURE coinbase after the chain extends past the download target
+  (re-recovery follows the extended verified tail in one attempt); base coin SPENT in the tail
+  by a real shield (native source re-derives the wallet's BIP86/TapTweak key) with owned change
+  to the first change leaf — recovered balance excludes the spent base coin exactly (the
+  overstatement a partial base set would cause); idempotent reruns; retryable-vs-permanent
+  refusal discipline (the permanent message never rides a retryable reply); encrypted offline
+  cold reopen with no peer, no rewind, no row rewrites. Remaining in stage D: serve the
+  preserved V5 on the private channel (Codex-coordinated EU1 config; key:
+  `wallet_recovery_v5_source`).
 - **E: phone qualification** — iOS/DPI lane app updates (scope string, non-retryable handling),
   owner's physical runs, release decision.
 

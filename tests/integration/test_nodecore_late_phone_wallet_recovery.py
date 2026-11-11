@@ -43,6 +43,7 @@ def double_sha(data):return hashlib.sha256(hashlib.sha256(data).digest()).digest
 legacy_bodies={double_sha(Path(path).read_bytes()[:128])[::-1]:Path(path).read_bytes()
     for path in fixture.get('funding_bodies',{}).values()}
 stop=threading.Event();packets=[];requests=[];failures=[];connections=[];history_phase=False
+announced=set();initial_headers=None
 listener=socket.socket();listener.bind(('127.0.0.1',0));listener.listen(4);listener.settimeout(.5)
 port=listener.getsockname()[1]
 def record(direction,command,payload):
@@ -86,7 +87,7 @@ def serve():
                     command=command.rstrip(b'\0').decode('ascii');record('in',command,payload)
                     if command=='version':send(conn,'version',version());send(conn,'verack')
                     elif command=='ping':send(conn,'pong',payload)
-                    elif command=='getheaders':send(conn,'headers',bytes([104])+b''.join(h+b'\0' for h in headers))
+                    elif command=='getheaders':send(conn,'headers',bytes([len(headers)])+b''.join(h+b'\0' for h in headers))
                     elif command=='getocat':
                         assert history_phase,'history must be explicitly requested by a bound recovered wallet'
                         assert len(payload)==151 and payload[:6]==b'DNOCT\x01'
@@ -107,8 +108,14 @@ def serve():
                                 send(conn,'block',bodies[key])
                             elif key in legacy_bodies:
                                 send(conn,'block',legacy_bodies[key])
+                    # Announce tail extensions: the SDK polls headers only once,
+                    # so push the grown chain unsolicited (deduped per peer).
+                    if initial_headers and len(headers)>initial_headers and (id(conn),len(headers)) not in announced:
+                        announced.add((id(conn),len(headers)))
+                        send(conn,'headers',bytes([len(headers)])+b''.join(h+b'\0' for h in headers))
     except BaseException:
         if not stop.is_set():failures.append(traceback.format_exc())
+initial_headers=len(headers)
 thread=threading.Thread(target=serve);thread.start()
 (datadir/'dinero.conf').write_text('listen=0\nrpc.port=0\nwallet.socket.enable=0\nassumeutxo_bg_stall_timeout=3600\n'
     +f'wallet_recovery_v5_source={v5_source}\n')
@@ -128,6 +135,20 @@ def call(op,**args):
         assert process.poll() is None,(op,process.returncode);time.sleep(.05)
     raise AssertionError(('SDK call timed out',op))
 FUNDED_UNA=fixture['funding_amount_una'];assert FUNDED_UNA==1000000
+native_lock=threading.Lock()
+def native_call(op,**args):
+    with native_lock:
+        native.stdin.write(json.dumps(dict(op=op,**args))+'\n');native.stdin.flush()
+        deadline=time.monotonic()+60
+        while time.monotonic()<deadline:
+            line=native_read.readline()
+            if line:return json.loads(line)
+            assert native.poll() is None,('native source died',native.returncode)
+            time.sleep(.05)
+        raise AssertionError(('native call timed out',op))
+def extend_chain(mined):
+    headers.append(bytes.fromhex(mined['header']))
+    bodies[bytes.fromhex(mined['hash'])[::-1]]=bytes.fromhex(mined['body'])
 owner=dict(walletname='stage-d-owner',expected_first_address=fixture['funding_address'])
 def wallet_utxos():
     with sqlite3.connect(f'file:{datadir}/wallets/wallet_stage-d-owner.db?mode=ro',uri=True) as db:
@@ -200,6 +221,77 @@ try:
     again=call('rpc',method='wallet.recovertransparentfromsnapshot',params=owner)
     assert again.get('success') is True and again['recovered_height']==103 and again['scope']==recovered['scope'],again
     assert wallet_utxos()==rows,'repeat recovery must not change wallet rows'
+    # Tail activity T1: the chain advances past the download target with a
+    # block-104 coinbase paying the funded wallet (an owned IMMATURE
+    # tail-created coin). Recovery must follow the longer verified tail.
+    with sqlite3.connect(f'file:{datadir}/wallets/wallet_stage-d-owner.db?mode=ro',uri=True) as db:
+        funding_script=db.execute('SELECT script_pubkey FROM utxos WHERE txid=? AND vout=0',(fixture['funding_txid'],)).fetchone()[0]
+    assert native_call('advance')['height']==103
+    mined5=native_call('mine_next',address=fixture['funding_address'],script=funding_script)
+    assert mined5['height']==104 and mined5['amount_una']>0,mined5
+    extend_chain(mined5)
+    deadline=time.monotonic()+60
+    while time.monotonic()<deadline:
+        assert not failures,failures
+        if call('rpc',method='getblockcount',params=[])==104:break
+        time.sleep(.25)
+    else:raise AssertionError('late phone did not follow the extended tail to 104')
+    tail_recoveries=[];deadline=time.monotonic()+90
+    while time.monotonic()<deadline:
+        assert not failures,failures
+        tail_recovered=call('rpc',method='wallet.recovertransparentfromsnapshot',params=owner)
+        tail_recoveries.append(tail_recovered)
+        (root/'tail-recoveries.json').write_text(json.dumps(tail_recoveries,indent=2)+'\n')
+        if tail_recovered.get('success'):break
+        check_refusal(tail_recovered)
+        time.sleep(.5)
+    else:raise AssertionError(('tail recovery did not complete',tail_recoveries))
+    assert tail_recovered['recovered_height']==104 and tail_recovered['scope']==recovered['scope'],tail_recovered
+    tail_balance=call('rpc',method='wallet.getbalance',params=[])
+    (root/'tail-balance.json').write_text(json.dumps(tail_balance,indent=2)+'\n')
+    assert 'error' not in tail_balance,tail_balance
+    assert tail_balance['confirmed']==FUNDED_UNA/1e8,tail_balance
+    assert tail_balance['immature']==mined5['amount_una']/1e8,tail_balance
+    rows=wallet_utxos();(root/'tail-wallet-rows.json').write_text(json.dumps(rows,indent=2)+'\n')
+    assert len(rows['live'])==2 and not rows['spent'],rows
+    coinbase_rows=[r for r in rows['live'] if r[4]]
+    assert len(coinbase_rows)==1 and coinbase_rows[0][0]==mined5['coinbase_txid'] and coinbase_rows[0][3]==104,rows
+    # Tail activity T2: the native source spends the funded BASE coin inside a
+    # real shield at 105, with change to the wallet's own first change script.
+    # Recovery must mark the base coin spent (never overstate) and account the
+    # owned change — the exact overstatement the partial base set would cause.
+    spend=native_call('shield_funding')
+    assert spend['height']==105 and spend['change_una']>0,spend
+    extend_chain(spend)
+    deadline=time.monotonic()+60
+    while time.monotonic()<deadline:
+        assert not failures,failures
+        if call('rpc',method='getblockcount',params=[])==105:break
+        time.sleep(.25)
+    else:raise AssertionError('late phone did not follow the spend tail to 105')
+    spend_recoveries=[];deadline=time.monotonic()+90
+    while time.monotonic()<deadline:
+        assert not failures,failures
+        spend_recovered=call('rpc',method='wallet.recovertransparentfromsnapshot',params=owner)
+        spend_recoveries.append(spend_recovered)
+        (root/'spend-recoveries.json').write_text(json.dumps(spend_recoveries,indent=2)+'\n')
+        if spend_recovered.get('success'):break
+        check_refusal(spend_recovered)
+        time.sleep(.5)
+    else:raise AssertionError(('spend-tail recovery did not complete',spend_recoveries))
+    assert spend_recovered['recovered_height']==105 and spend_recovered['scope']==recovered['scope'],spend_recovered
+    final_confirmed=spend['change_una']/1e8;final_immature=mined5['amount_una']/1e8
+    spend_balance=call('rpc',method='wallet.getbalance',params=[])
+    (root/'spend-balance.json').write_text(json.dumps(spend_balance,indent=2)+'\n')
+    assert 'error' not in spend_balance,spend_balance
+    assert spend_balance['confirmed']==final_confirmed,spend_balance
+    assert spend_balance['immature']==final_immature,spend_balance
+    rows=wallet_utxos();(root/'spend-wallet-rows.json').write_text(json.dumps(rows,indent=2)+'\n')
+    assert len(rows['live'])==2,rows
+    spent_rows=[r for r in rows['spent'] if r[0]==fixture['funding_txid']]
+    assert len(spent_rows)==1 and spent_rows[0][2]==105,rows
+    change_rows=[r for r in rows['live'] if r[0]==spend['spend_txid']]
+    assert len(change_rows)==1 and change_rows[0][2]==spend['change_una'] and change_rows[0][3]==105 and not change_rows[0][4],rows
     assert call('rpc',method='wallet.encrypt',params=['stage-d-retention-password'])['success'] is True
     assert call('stop')==0;finish_driver()
     # Fresh offline process: the recovered wallet state must survive a cold
@@ -222,7 +314,8 @@ try:
     assert call('rpc',method='wallet.unlock',params=['stage-d-retention-password',0])['success'] is True
     cold_balance=call('rpc',method='wallet.getbalance',params=[])
     assert 'error' not in cold_balance,cold_balance
-    assert cold_balance['utxo_count']==1 and cold_balance['confirmed']==FUNDED_UNA/1e8,cold_balance
+    assert cold_balance['confirmed']==final_confirmed,cold_balance
+    assert cold_balance['immature']==final_immature,cold_balance
     assert wallet_utxos()==rows,'cold restart must not rewrite recovered wallet rows'
     assert len(packets)==packet_count,'offline reopen must not require a peer'
     assert call('stop')==0;finish_driver()
