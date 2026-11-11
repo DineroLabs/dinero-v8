@@ -53,6 +53,12 @@ inline din::Json BuildPeerInfoJson(const ::PeerInfo& peer_info) {
     peer["synced_headers"] = static_cast<int>(peer_info.synced_headers);
     peer["synced_blocks"] = static_cast<int>(peer_info.synced_blocks);
     peer["observed_sync_height"] = static_cast<int>(observed_sync_height);
+    // Peer-reported validated chain height from the extended ping field.
+    // -1 = peer has not reported it (older protocol build); distinct from the
+    // announce/relay tip in best_known_height, which can run ahead of what
+    // the peer has actually validated during catch-up.
+    peer["validated_height"] = peer_info.validated_height_reported
+        ? static_cast<int>(peer_info.validated_height) : -1;
 
     peer["bytessent"] = static_cast<Json::UInt64>(peer_info.bytes_sent);
     peer["bytesrecv"] = static_cast<Json::UInt64>(peer_info.bytes_recv);

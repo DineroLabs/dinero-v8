@@ -3562,12 +3562,24 @@ P2PMessage P2PMessage::create_dineroid(const dinero::daemon::NodeIdentity& ident
 P2PMessage P2PMessage::create_ping(uint64_t nonce) {
     P2PMessage msg;
     msg.command = "ping";
-    
+
     // 8-byte nonce
     for (int i = 0; i < 8; i++) {
         msg.payload.push_back((nonce >> (i * 8)) & 0xFF);
     }
-    
+
+    return msg;
+}
+
+P2PMessage P2PMessage::create_ping(uint64_t nonce, uint32_t validated_height) {
+    P2PMessage msg = create_ping(nonce);
+
+    // Extended field: sender's validated chain height (4 bytes LE). Legacy
+    // peers parse only the leading 8-byte nonce and ignore the extra bytes.
+    for (int i = 0; i < 4; i++) {
+        msg.payload.push_back((validated_height >> (i * 8)) & 0xFF);
+    }
+
     return msg;
 }
 
@@ -6306,9 +6318,11 @@ void P2PManager::connection_manager_loop() {
             }
 
             // Send pings outside the lock to avoid deadlock
+            const uint32_t our_validated_height =
+                height_provider_ ? height_provider_() : 0;
             for (const auto& peer_key : peers_to_ping) {
                 uint64_t nonce = SecureRandom::GetUInt64();
-                auto ping_msg = P2PMessage::create_ping(nonce);
+                auto ping_msg = P2PMessage::create_ping(nonce, our_validated_height);
                 send_to_peer(peer_key, ping_msg);
             }
         }
@@ -7333,43 +7347,14 @@ std::vector<PeerInfo> P2PManager::get_connected_peers() const {
 
     for (const auto& pair : connected_peers_) {
         if (pair.second->is_connected) {
-            // Ring 3 Phase 4c: Manual construction because lifetime_state is atomic (non-copyable/non-movable)
-            // Note: We skip copying lifetime_state - it's an internal implementation detail
+            // Snapshot = one memberwise copy of the shared state: a field
+            // added to PeerSharedState is carried automatically, so the
+            // snapshot can never silently drop one. Connection-local
+            // machinery (atomics, mutexes, inbox, QUIC session) is not part
+            // of the base and stays at defaults — lifetime_state in
+            // particular remains ALLOCATED (internal detail, not exposed).
             PeerInfo info;
-            info.address = pair.second->address;
-            info.port = pair.second->port;
-            info.user_agent = pair.second->user_agent;
-            info.protocol_version = pair.second->protocol_version;
-            info.service_flags = pair.second->service_flags;
-            info.start_height = pair.second->start_height;
-            info.best_known_height = pair.second->best_known_height;
-            info.synced_headers = pair.second->synced_headers;
-            info.best_height = pair.second->best_height;
-            info.synced_blocks = pair.second->synced_blocks;
-            info.compact_blocks_enabled = pair.second->compact_blocks_enabled;
-            info.compact_blocks_announce = pair.second->compact_blocks_announce;
-            info.compact_blocks_version = pair.second->compact_blocks_version;
-            info.bytes_recv = pair.second->bytes_recv;
-            info.bytes_sent = pair.second->bytes_sent;
-            info.connected_since = pair.second->connected_since;
-            info.last_message_at = pair.second->last_message_at;
-            info.last_seen = pair.second->last_seen;
-            info.is_feeler = pair.second->is_feeler;
-            info.last_ping_sent = pair.second->last_ping_sent;
-            info.is_outbound = pair.second->is_outbound;
-            info.is_connected = pair.second->is_connected;
-            info.socket_fd = pair.second->socket_fd;
-            info.last_seen_unix = pair.second->last_seen_unix;
-            info.avg_latency_ms = pair.second->avg_latency_ms;
-            info.via_relay = pair.second->via_relay;
-            info.quic_direct = pair.second->quic_direct;
-            info.quic_remote = pair.second->quic_remote;
-            info.punched = pair.second->punched;
-            info.punch_expected_id = pair.second->punch_expected_id;
-            info.identity_proven = pair.second->identity_proven;
-            info.their_node_id = pair.second->their_node_id;
-            info.is_our_relay = pair.second->is_our_relay;
-            // lifetime_state remains at default ALLOCATED (internal detail, not exposed in API)
+            static_cast<PeerSharedState&>(info) = *pair.second;
             seed_peer_sync_telemetry(&info, local_height);
 
             result.emplace_back(std::move(info));
@@ -7838,9 +7823,28 @@ void P2PManager::handle_ping(const std::string& peer_address, const P2PMessage& 
         for (int i = 0; i < 8; i++) {
             nonce |= (static_cast<uint64_t>(message.payload[i]) << (i * 8));
         }
-        
+
         auto pong = P2PMessage::create_pong(nonce);
         send_to_peer(peer_address, pong);
+    }
+
+    // Extended ping: bytes 8..11 carry the sender's self-reported VALIDATED
+    // chain height (LE). Legacy 8-byte pings never set it, so the peer's
+    // validated height stays "unreported" rather than guessed from the
+    // announce tip.
+    if (message.payload.size() >= 12) {
+        const uint32_t reported_validated =
+            static_cast<uint32_t>(message.payload[8]) |
+            (static_cast<uint32_t>(message.payload[9]) << 8) |
+            (static_cast<uint32_t>(message.payload[10]) << 16) |
+            (static_cast<uint32_t>(message.payload[11]) << 24);
+
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = connected_peers_.find(peer_address);
+        if (it != connected_peers_.end()) {
+            it->second->validated_height = reported_validated;
+            it->second->validated_height_reported = true;
+        }
     }
 }
 
@@ -10663,9 +10667,11 @@ void P2PManager::keepalive_loop() {
             }
         }
 
+        const uint32_t our_validated_height =
+            height_provider_ ? height_provider_() : 0;
         for (const auto& peer_addr : peer_addresses) {
             uint64_t nonce = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
-            auto ping_msg = P2PMessage::create_ping(nonce);
+            auto ping_msg = P2PMessage::create_ping(nonce, our_validated_height);
             send_to_peer(peer_addr, ping_msg);
 
             // Update last_ping_sent timestamp

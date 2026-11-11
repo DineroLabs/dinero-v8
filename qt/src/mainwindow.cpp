@@ -1274,7 +1274,7 @@ QString peerHeightDisplayText(int peerHeight, int localTip) {
     return QStringLiteral("N/A");
   }
   if (localTip > 0 && peerHeight + 2 < localTip) {
-    return QString("%1 seen").arg(peerHeight);
+    return QString("%1 adv.").arg(peerHeight);
   }
   return QString::number(peerHeight);
 }
@@ -1298,10 +1298,31 @@ QString peerSeenHeightTooltip(const QString& kind,
                                                 bestKnown,
                                                 localTip);
   tooltip.prepend(
-      QString("%1 seen through local P2P telemetry: %2\n"
+      QString("%1 advertised through local P2P telemetry: %2\n"
               "This does not prove the remote node's active validated tip.\n"
               "Use that node's authenticated blockchain RPC for validation.\n\n")
           .arg(kind, value >= 0 ? QString::number(value) : QStringLiteral("N/A")));
+  return tooltip;
+}
+
+QString peerValidatedHeightTooltip(int validatedHeight, int localTip) {
+  QString tooltip;
+  if (validatedHeight >= 0) {
+    tooltip = QString("Validated height self-reported by the peer: %1\n").arg(validatedHeight);
+  } else {
+    tooltip = QStringLiteral(
+        "This peer has not reported a validated height.\n"
+        "Peers on older builds do not send the field.\n");
+  }
+  tooltip += QStringLiteral(
+      "\nCarried by the extended P2P ping. Unlike Blocks/Headers Seen it\n"
+      "reflects how far the peer says it has actually VALIDATED — the\n"
+      "announce tip can run ahead of this during catch-up or recovery.\n"
+      "Self-reported and unauthenticated; for proof use that node's\n"
+      "authenticated blockchain RPC.");
+  if (localTip > 0) {
+    tooltip += QString("\nlocal node tip: %1").arg(localTip);
+  }
   return tooltip;
 }
 
@@ -1315,7 +1336,7 @@ QString peerHeightBreakdownTooltip(int startHeight,
   };
 
   QString tooltip =
-      QString("Last-seen peer height from local P2P telemetry.\n"
+      QString("Peer-advertised height from local P2P telemetry.\n"
               "This is not a live RPC query to that server.\n\n"
               "Breakdown\n"
               "startingheight: %1\n"
@@ -2860,9 +2881,9 @@ void MainWindow::setupUI() {
     lblPeersStatus_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     peersLayout->addLayout(peersSummary);
 
-    tblPeersOverview_ = new QTableWidget(0, 6);
+    tblPeersOverview_ = new QTableWidget(0, 7);
     tblPeersOverview_->setHorizontalHeaderLabels(
-        {"Location", "Activity", "Last Seen", "Blocks Seen", "Headers Seen", "Client"});
+        {"Location", "Activity", "Last Seen", "Blocks Adv.", "Headers Adv.", "Validated", "Client"});
     for (int column : {3, 4}) {
       if (auto* seenHeader = tblPeersOverview_->horizontalHeaderItem(column)) {
         seenHeader->setToolTip(
@@ -2870,6 +2891,11 @@ void MainWindow::setupUI() {
             "This is not the remote node's active validated tip.\n"
             "Validation requires that node's authenticated blockchain RPC.");
       }
+    }
+    if (auto* validatedHeader = tblPeersOverview_->horizontalHeaderItem(5)) {
+      validatedHeader->setToolTip(
+          "Validated chain height self-reported by the peer (extended ping).\n"
+          "Shows — for peers on older builds that do not report it.");
     }
     tblPeersOverview_->horizontalHeader()->setStretchLastSection(true);
     tblPeersOverview_->verticalHeader()->setVisible(false);
@@ -5263,9 +5289,9 @@ void MainWindow::setupUI() {
     layout->addWidget(statusGroup);
 
     // Peer table
-    tblPeers_ = new QTableWidget(0, 7);
+    tblPeers_ = new QTableWidget(0, 8);
     tblPeers_->setHorizontalHeaderLabels(
-        {"ID", "Location", "Type", "Client", "Blocks Seen", "Headers Seen", "Direction"});
+        {"ID", "Location", "Type", "Client", "Blocks Adv.", "Headers Adv.", "Validated", "Direction"});
     for (int column : {4, 5}) {
       if (auto* seenHeader = tblPeers_->horizontalHeaderItem(column)) {
         seenHeader->setToolTip(
@@ -5273,6 +5299,11 @@ void MainWindow::setupUI() {
             "This is not the remote node's active validated tip.\n"
             "Validation requires that node's authenticated blockchain RPC.");
       }
+    }
+    if (auto* validatedHeader = tblPeers_->horizontalHeaderItem(6)) {
+      validatedHeader->setToolTip(
+          "Validated chain height self-reported by the peer (extended ping).\n"
+          "Shows — for peers on older builds that do not report it.");
     }
     tblPeers_->horizontalHeader()->setStretchLastSection(true);
     tblPeers_->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -7838,11 +7869,23 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         }
         tblPeersOverview_->setItem(row, 4, headersItem);
 
+        // Validated: the peer's self-reported validated height (extended
+        // ping). — when the peer runs an older build that never reports it.
+        const int validatedHeight = peer["validated_height"].toInt(-1);
+        auto* validatedItem = new QTableWidgetItem(
+            validatedHeight >= 0 ? QString::number(validatedHeight)
+                                 : QStringLiteral("—"));
+        validatedItem->setToolTip(peerValidatedHeightTooltip(validatedHeight, cachedHeight_));
+        if (cachedHeight_ > 0 && validatedHeight >= 0 && validatedHeight + 2 < cachedHeight_) {
+          validatedItem->setForeground(QColor("#d9b36a"));
+        }
+        tblPeersOverview_->setItem(row, 5, validatedItem);
+
         // Client
         const QString rawClient = peer["subver"].toString();
         auto* clientItem = new QTableWidgetItem(peerClientLabel(rawClient));
         clientItem->setToolTip(peerClientTooltip(rawClient));
-        tblPeersOverview_->setItem(row, 5, clientItem);
+        tblPeersOverview_->setItem(row, 6, clientItem);
       }
       
       tblPeersOverview_->setSortingEnabled(true);
@@ -16878,7 +16921,8 @@ QString MainWindow::networkDiagnosticsText() const {
       peer["client"] = tblPeers_->item(row, 3) ? tblPeers_->item(row, 3)->text() : "";
       peer["blocks_seen"] = tblPeers_->item(row, 4) ? tblPeers_->item(row, 4)->text() : "";
       peer["headers_seen"] = tblPeers_->item(row, 5) ? tblPeers_->item(row, 5)->text() : "";
-      peer["direction"] = tblPeers_->item(row, 6) ? tblPeers_->item(row, 6)->text() : "";
+      peer["validated"] = tblPeers_->item(row, 6) ? tblPeers_->item(row, 6)->text() : "";
+      peer["direction"] = tblPeers_->item(row, 7) ? tblPeers_->item(row, 7)->text() : "";
       peers.append(peer);
     }
   }
@@ -16939,7 +16983,17 @@ void MainWindow::updatePeerTable(const QJsonArray& peers) {
       headersItem->setForeground(QColor("#d9b36a"));
     }
     tblPeers_->setItem(row, 5, headersItem);
-    tblPeers_->setItem(row, 6, new QTableWidgetItem(inbound ? "Inbound" : "Outbound"));
+    // Validated: the peer's self-reported validated height (extended ping).
+    const int validatedHeight = peer["validated_height"].toInt(-1);
+    auto* validatedItem = new QTableWidgetItem(
+        validatedHeight >= 0 ? QString::number(validatedHeight)
+                             : QStringLiteral("—"));
+    validatedItem->setToolTip(peerValidatedHeightTooltip(validatedHeight, cachedHeight_));
+    if (cachedHeight_ > 0 && validatedHeight >= 0 && validatedHeight + 2 < cachedHeight_) {
+      validatedItem->setForeground(QColor("#d9b36a"));
+    }
+    tblPeers_->setItem(row, 6, validatedItem);
+    tblPeers_->setItem(row, 7, new QTableWidgetItem(inbound ? "Inbound" : "Outbound"));
   }
 }
 
@@ -17046,7 +17100,8 @@ void MainWindow::onExportMetrics() {
       peer["uptime"] = tblPeersOverview_->item(i, 2) ? tblPeersOverview_->item(i, 2)->text() : "";
       peer["blocks_seen"] = tblPeersOverview_->item(i, 3) ? tblPeersOverview_->item(i, 3)->text() : "";
       peer["headers_seen"] = tblPeersOverview_->item(i, 4) ? tblPeersOverview_->item(i, 4)->text() : "";
-      peer["client"] = tblPeersOverview_->item(i, 5) ? tblPeersOverview_->item(i, 5)->text() : "";
+      peer["validated"] = tblPeersOverview_->item(i, 5) ? tblPeersOverview_->item(i, 5)->text() : "";
+      peer["client"] = tblPeersOverview_->item(i, 6) ? tblPeersOverview_->item(i, 6)->text() : "";
       peers.append(peer);
     }
   }
@@ -17113,7 +17168,7 @@ void MainWindow::onExportMetrics() {
     
     // Add peers
     out << "\nPeers\n";
-    out << "Location,Endpoint,Activity,Uptime,Blocks Seen,Headers Seen,Client\n";
+    out << "Location,Endpoint,Activity,Uptime,Blocks Advertised,Headers Advertised,Validated,Client\n";
     for (const QJsonValue& peerVal : peers) {
       QJsonObject peer = peerVal.toObject();
       out << peer["location"].toString() << ","
@@ -17122,6 +17177,7 @@ void MainWindow::onExportMetrics() {
           << peer["uptime"].toString() << ","
           << peer["blocks_seen"].toString() << ","
           << peer["headers_seen"].toString() << ","
+          << peer["validated"].toString() << ","
           << peer["client"].toString() << "\n";
     }
     
