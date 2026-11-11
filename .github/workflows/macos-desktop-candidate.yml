@@ -26,7 +26,7 @@ concurrency:
   group: macos-desktop-candidate-${{ inputs.candidate_source || github.ref }}
   cancel-in-progress: false
 env:
-  SV2_REF: fa7538d85a22dfbb345c508354a9e4dc2eeebc7b
+  SV2_REF: 0a3127d511989f99e753ce7bcfe618067183b3c8
 jobs:
   contract:
     runs-on: ubuntu-24.04

@@ -43,7 +43,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SV2_REF: fa7538d85a22dfbb345c508354a9e4dc2eeebc7b
+  SV2_REF: 0a3127d511989f99e753ce7bcfe618067183b3c8
   LINUXDEPLOY_TAG: 1-alpha-20251107-1
   LINUXDEPLOY_SHA256: c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
   LINUXDEPLOY_QT_TAG: 1-alpha-20250213-1
