@@ -26,8 +26,8 @@
 set -eu
 
 DATADIR="${DINERO_DATADIR:-/data}"
-SNAPSHOT="${DINERO_SNAPSHOT:-/opt/dinero/dinero-assumeutxo-84131-v4.dat}"
-SNAPSHOT_FALLBACKS="${DINERO_SNAPSHOT_FALLBACKS:-/opt/dinero/dinero-assumeutxo-73035-v4.dat}"
+SNAPSHOT="${DINERO_SNAPSHOT:-/opt/dinero/dinero-assumeutxo-150521-v6-full.dat}"
+SNAPSHOT_FALLBACKS="${DINERO_SNAPSHOT_FALLBACKS:-/opt/dinero/dinero-assumeutxo-148375-v5.dat;/opt/dinero/dinero-assumeutxo-99677-v4.dat;/opt/dinero/dinero-assumeutxo-73035-v4.dat;/opt/dinero/utxo-snapshot-65300.dat}"
 
 # RPC listens on loopback INSIDE the container only. Binding 0.0.0.0 would expose the
 # RPC port to every other container on the same Docker network no matter which ports
@@ -79,13 +79,30 @@ set -- \
     -rpcport=20998 \
     "$@"
 
-if [ -f "$SNAPSHOT" ]; then
-    set -- "$@" "--assumeutxo_snapshot=$SNAPSHOT" "--assumeutxo_forward_connect=1"
-    if [ -n "$SNAPSHOT_FALLBACKS" ] && [ -f "$SNAPSHOT_FALLBACKS" ]; then
-        set -- "$@" "--assumeutxo_snapshot_fallbacks=$SNAPSHOT_FALLBACKS"
-    elif [ -n "$SNAPSHOT_FALLBACKS" ]; then
-        echo "[entrypoint] configured AssumeUTXO fallback not found; continuing without it" >&2
-    fi
+if [ ! -f "$SNAPSHOT" ]; then
+    echo "[entrypoint] bundled primary AssumeUTXO snapshot not found: $SNAPSHOT" >&2
+    exit 1
+fi
+set -- "$@" "--assumeutxo_snapshot=$SNAPSHOT" "--assumeutxo_forward_connect=1"
+if [ -n "$SNAPSHOT_FALLBACKS" ]; then
+    case "$SNAPSHOT_FALLBACKS" in
+        ';'*|*';;'*|*';')
+            echo "[entrypoint] empty AssumeUTXO fallback path" >&2
+            exit 1 ;;
+    esac
+    remaining=$SNAPSHOT_FALLBACKS
+    while :; do
+        case "$remaining" in
+            *';'*) fallback=${remaining%%;*}; remaining=${remaining#*;} ;;
+            *)     fallback=$remaining; remaining= ;;
+        esac
+        if [ -z "$fallback" ] || [ ! -f "$fallback" ]; then
+            echo "[entrypoint] configured AssumeUTXO fallback not found: $fallback" >&2
+            exit 1
+        fi
+        [ -n "$remaining" ] || break
+    done
+    set -- "$@" "--assumeutxo_snapshot_fallbacks=$SNAPSHOT_FALLBACKS"
 fi
 
 # NEVER echo "$@": a user-supplied -rpcpassword=... (or any other secret flag) would be
@@ -111,8 +128,5 @@ done
 # user-supplied -rpcbind= would override. The two assumeutxo fields are derived from the
 # final argv and cannot disagree with it; this one deliberately does not claim to be.
 echo "[entrypoint] datadir=$DATADIR rpcbind_default=$RPCBIND assumeutxo_snapshot=$snapshot_armed assumeutxo_fallbacks=$fallbacks_armed assumeutxo_forward_connect=$forward_connect"
-if [ "$snapshot_armed" = no ]; then
-    echo "[entrypoint] no snapshot armed (looked for $SNAPSHOT) — a fresh datadir syncs from genesis; an already-synced one just continues"
-fi
 echo "[entrypoint] starting dinerod (arguments not logged — they may contain secrets)"
 exec dinerod "$@"

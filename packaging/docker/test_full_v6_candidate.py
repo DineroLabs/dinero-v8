@@ -13,6 +13,7 @@ from check_recovery_manifests import verify
 
 
 HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[1]
 
 
 class FullV6DockerCandidateTest(unittest.TestCase):
@@ -38,7 +39,7 @@ class FullV6DockerCandidateTest(unittest.TestCase):
             "ARGUMENTS_FILE": str(arguments),
             "PATH": str(self.root) + os.pathsep + os.environ["PATH"],
         }
-        result = subprocess.run(["sh", str(HERE / "entrypoint-full-v6.sh"),
+        result = subprocess.run(["sh", str(ROOT / "docker-entrypoint.sh"),
                                  "-rpcpassword=CANARY_SECRET"],
                                 env=env, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -61,7 +62,7 @@ class FullV6DockerCandidateTest(unittest.TestCase):
                     "DINERO_SNAPSHOT": str(primary),
                     "DINERO_SNAPSHOT_FALLBACKS": fallback_list,
                 }
-                result = subprocess.run(["sh", str(HERE / "entrypoint-full-v6.sh")],
+                result = subprocess.run(["sh", str(ROOT / "docker-entrypoint.sh")],
                                         env=env, text=True, capture_output=True)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("fallback", result.stderr)
@@ -103,6 +104,16 @@ class FullV6DockerCandidateTest(unittest.TestCase):
         (self.root / names[3]).unlink()
         with self.assertRaises(FileNotFoundError):
             verify(self.root, catalog, pins[2])
+
+    def test_live_image_uses_reviewed_full_v6_sources(self):
+        self.assertEqual((ROOT / "Dockerfile").read_bytes(),
+                         (HERE / "Dockerfile.full-v6").read_bytes())
+        self.assertEqual((ROOT / "docker-entrypoint.sh").read_bytes(),
+                         (HERE / "entrypoint-full-v6.sh").read_bytes())
+        workflow = (ROOT / ".github/workflows/docker-publish.yml").read_text()
+        self.assertIn('test "$count" -eq 4', workflow)
+        self.assertIn('packaging/docker/test_full_v6_candidate.py', workflow)
+        self.assertIn("steps.v.outputs.dry_run == 'false'", workflow)
 
 
 if __name__ == "__main__":
