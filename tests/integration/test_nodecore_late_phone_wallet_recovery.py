@@ -117,8 +117,10 @@ def serve():
         if not stop.is_set():failures.append(traceback.format_exc())
 initial_headers=len(headers)
 thread=threading.Thread(target=serve);thread.start()
-(datadir/'dinero.conf').write_text('listen=0\nrpc.port=0\nwallet.socket.enable=0\nassumeutxo_bg_stall_timeout=3600\n'
-    +f'wallet_recovery_v5_source={v5_source}\n')
+# The first start forwards the V5 source through the nodecore_start JSON
+# whitelist (the path the apps use); the key is deliberately NOT in this conf,
+# so a broken forwarding surfaces as the permanent capability refusal below.
+(datadir/'dinero.conf').write_text('listen=0\nrpc.port=0\nwallet.socket.enable=0\nassumeutxo_bg_stall_timeout=3600\n')
 replies=root/'replies.jsonl';replies.touch();reply=replies.open();output=(root/'nodecore.log').open('xb')
 process=subprocess.Popen([str(driver),str(replies)],stdin=subprocess.PIPE,text=True,stdout=output,stderr=subprocess.STDOUT)
 original_pid=process.pid
@@ -159,7 +161,8 @@ def wallet_utxos():
 success=False
 try:
     assert call('start',datadir=str(datadir),config=dict(network='regtest',sync_profile='ios_utreexo',
-        addnode=f'127.0.0.1:{port}',max_peers=1,verbose_logging=True))==0
+        addnode=f'127.0.0.1:{port}',max_peers=1,verbose_logging=True,
+        wallet_recovery_v5_source=str(v5_source)))==0
     deadline=time.monotonic()+70
     while time.monotonic()<deadline:
         assert not failures,failures
