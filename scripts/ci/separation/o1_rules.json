@@ -1,0 +1,33 @@
+{
+  "_comment": [
+    "GATE O1 rules (2026-11-11-consensus-orchard-separation-design.md §4).",
+    "gated_archives: the symbol-level free-standing Orchard validity clusters",
+    "(stage-0 inventory: 0 dinero_core symbols, 0 dinero_chainstate symbols).",
+    "definer_archives: archives whose symbols the gated set must not need.",
+    "forbidden_header_prefixes: substring-matched against each built object's",
+    "ninja dependency paths (repo-relative)."
+  ],
+  "gated_archives": [
+    "libdinero_orchard_transparent.a",
+    "libdinero_orchard_block_coins.a",
+    "libdinero_orchard_state_root.a",
+    "libdinero_orchard_block_context.a",
+    "libdinero_orchard_block_reader.a",
+    "libdinero_transaction_reader.a"
+  ],
+  "definer_archives": [
+    "libdinero_core.a",
+    "libdinero_chainstate.a",
+    "libdinero_shielded.a"
+  ],
+  "forbidden_header_prefixes": [
+    "include/storage/",
+    "src/storage/",
+    "include/daemon/",
+    "src/daemon/",
+    "include/wallet/",
+    "src/wallet/",
+    "include/mempool/",
+    "src/mempool/"
+  ]
+}
