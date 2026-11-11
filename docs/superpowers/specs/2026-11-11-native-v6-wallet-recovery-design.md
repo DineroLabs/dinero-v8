@@ -158,6 +158,15 @@ recovered-blocks stamps extended over the delta heights.
    non-retryable, transient (download pending) retryable with progress.
 5. Refusal matrix per §4; the 15 pre-Orchard recovery cases stay byte-identical.
 
+**Status (2026-11-11):** steps 1-4 implemented and neuter-proven on this branch (extractor
+7a7e155e6, writer fa569273e, composed arm 7924d810e, typed outcome + v6 scope 3b1e645d2). The
+composed arm's positive end-to-end — full-balance equality on a real activation-crossing
+composition — is stage D, which also discharges step 5's remaining matrix rows. One deliberate
+refinement over stage A: a missing tip or safe mode is now classified Transient (retryable), not
+permanent; only the unconfigured-V5/broken-profile case is a permanent capability refusal. The
+V5 digest-pin note from the original step-3 sketch is dropped: the reader's root binding
+authenticates the in-memory coin set, and nothing re-reads the file after authentication.
+
 **Open questions (owner/Codex):** who arms the phone-history download for recovery (reuse
 `recoverOrchardAccount0`'s request path vs. the recovery RPC arming
 `RequestRetainedPhoneHistoryData` itself); extractor event cap vs. `ReadPostBaseFunding`'s 4096 on
