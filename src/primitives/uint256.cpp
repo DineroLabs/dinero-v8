@@ -1,8 +1,5 @@
 #include "primitives/uint256.h"
-#include <algorithm>
-#include <iomanip>
-#include <sstream>
-#include <cctype>
+#include <string_view>
 
 namespace dinero {
 
@@ -20,12 +17,14 @@ bool uint256::operator<(const uint256& other) const {
 }
 
 std::string uint256::ToString() const {
-    std::ostringstream oss;
-    oss << std::hex << std::setfill('0');
-    for (int i = 31; i >= 0; --i) {  // Output in big-endian order
-        oss << std::setw(2) << static_cast<unsigned>(data[i]);
+    static constexpr char digits[] = "0123456789abcdef";
+    std::string result(64, '0');
+    for (size_t i = 0; i < 32; ++i) {
+        const auto byte = data[31 - i];
+        result[2 * i] = digits[byte >> 4];
+        result[2 * i + 1] = digits[byte & 15];
     }
-    return oss.str();
+    return result;
 }
 
 bool uint256::IsNull() const {
@@ -40,48 +39,30 @@ void uint256::SetNull() {
 }
 
 bool uint256::FromHex(const std::string& hex, uint256& out) {
-    std::string clean_hex = hex;
-
-    // Remove "0x" prefix if present
-    if (clean_hex.size() >= 2 && clean_hex[0] == '0' && (clean_hex[1] == 'x' || clean_hex[1] == 'X')) {
-        clean_hex = clean_hex.substr(2);
+    std::string_view input(hex);
+    if (input.size() >= 2 && input[0] == '0' && (input[1] == 'x' || input[1] == 'X')) {
+        input.remove_prefix(2);
     }
+    out.SetNull();
+    if (input.size() > 64) return false;
 
-    // Pad with leading zeros if needed
-    if (clean_hex.size() < 64) {
-        clean_hex = std::string(64 - clean_hex.size(), '0') + clean_hex;
-    }
-
-    // Check length
-    if (clean_hex.size() != 64) {
-        out.SetNull();
-        return false;
-    }
-
-    // Validate and parse hex string (big-endian input)
-    for (size_t i = 0; i < 32; ++i) {
-        size_t idx = (31 - i) * 2;
-        char high = clean_hex[idx];
-        char low = clean_hex[idx + 1];
-
-        // Validate hex characters
-        if (!std::isxdigit(static_cast<unsigned char>(high)) ||
-            !std::isxdigit(static_cast<unsigned char>(low))) {
+    // Preserve short/odd/empty input, optional prefix, display endianness and
+    // null-on-error semantics without constructing 32 locale-aware streams
+    // for every persisted header hash read during cold startup.
+    const auto nibble = [](unsigned char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    for (size_t i = 0; i < input.size(); ++i) {
+        const int value = nibble(static_cast<unsigned char>(input[input.size() - 1 - i]));
+        if (value < 0) {
             out.SetNull();
             return false;
         }
-
-        // Parse byte
-        std::string byte_str = clean_hex.substr(idx, 2);
-        unsigned int byte_val;
-        std::istringstream iss(byte_str);
-        if (!(iss >> std::hex >> byte_val)) {
-            out.SetNull();
-            return false;
-        }
-        out.data[i] = static_cast<uint8_t>(byte_val);
+        out.data[i / 2] |= static_cast<uint8_t>(value << ((i % 2) * 4));
     }
-
     return true;
 }
 
