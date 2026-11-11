@@ -279,13 +279,17 @@ public:
     // snapshot's complete live leaf coverage and selected post-base bodies,
     // then applies owned coins/history under one wallet transaction. Does not
     // replace keys or certify pre-base spent history/other wallet consumers.
-    // v6_partial_base_for_tests (stage B of the native v6 recovery design,
+    // Native v6 recovery (stages B+C of the design,
     // 2026-11-11-native-v6-wallet-recovery-design.md): with an Orchard-active
     // selected tip AND a configured wallet_recovery_v5_source (a V5 container
-    // at exactly the activation parent), recover ONLY the authenticated base
-    // coin set. The result is PARTIAL (coins spent after activation are still
-    // counted) and must never be exposed as recovery to clients: no RPC sets
-    // this flag; stage C adds the verified typed tail and the real scope.
+    // at exactly the activation parent), the base coin set comes from that
+    // container and the activation..tip transparent effects from the verified
+    // composed account replay (typed tail); reports the tip. While the replay
+    // is not yet available the refusal is transient (retryable), unlike the
+    // permanent no-source capability refusal. v6_partial_base_for_tests is
+    // harness-only (no RPC sets it): it skips the typed tail, recovers ONLY
+    // the PARTIAL base set (coins spent after activation still counted) and
+    // reports the activation parent, never a client-visible scope.
     std::optional<uint32_t> RecoverTransparentSnapshotWallet(
         WalletManager&,std::string* error=nullptr,uint64_t expected_session=0,
         bool v6_partial_base_for_tests=false);

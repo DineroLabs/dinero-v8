@@ -34,6 +34,7 @@
 #include "daemon/runtime_reorg_store.h"
 #include "daemon/runtime_block_outbox.h"
 #include "wallet/runtime_account_replay.h"
+#include "wallet/recovery_tail_effects.h"
 #include "wallet/orchard_account_catalog.h"
 #include "wallet/runtime_wallet_recovery.h"
 #include "daemon/orchard_chainstate_write.h"
@@ -15281,13 +15282,14 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
             if(!active_tip_||safe_mode_active_)
                 return fail("transparent snapshot recovery requires a pre-Orchard selected source");
             if(consensus::OrchardActiveForHeight(Params(),active_tip_->height)){
-                // Stage B of the native v6 recovery design: the PARTIAL base-set
-                // path exists for the harness only (no RPC sets the flag). It
-                // recovers the authenticated coin set at the activation parent
-                // from a configured V5 container; the typed tail (stage C)
-                // completes the balance before any client-visible scope exists.
+                // Native v6 recovery (stages B+C of the design): the base coin
+                // set comes from a configured V5 container at the activation
+                // parent; the balance above it comes from the verified typed
+                // tail (composed account replay). The PARTIAL base-set path
+                // exists for the harness only (no RPC sets the flag) and never
+                // carries a client-visible scope.
                 const std::string v5=config_?config_->GetString("wallet_recovery_v5_source",""):"";
-                if(!v6_partial_base_for_tests||v5.empty())
+                if(v5.empty())
                     return fail("transparent snapshot recovery requires a pre-Orchard selected source");
                 if(Params().orchard_activation_height==0||Params().orchard_activation_height==UINT32_MAX)
                     return fail("transparent snapshot recovery requires a pre-Orchard selected source");
@@ -15325,10 +15327,31 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
             return fail("compiled genesis transaction unavailable");
         genesis.vtx.push_back(generation);
         auto snapshot_data=ReadSnapshotWalletSourceFile(path,base_header,recovery_base,genesis);
-        // Partial v5-parent mode carries no post-base bodies (they are typed
-        // Orchard candidates): the history's captured tip IS the base header.
+        const bool partial_base=v5_parent_mode&&v6_partial_base_for_tests;
+        // The composed tail (stage C): post-base blocks are typed Orchard
+        // candidates, so their transparent effects come from the verified
+        // account replay (activation prefix + outbox), not raw bodies. The
+        // replay is immutable; capture and extraction stay outside the final
+        // locks, and the tip binding is rechecked under them below.
+        std::vector<RecoveryTailBlock> typed_tail;
+        if(v5_parent_mode&&!partial_base){
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            const auto replay=getRuntimeAccountReplay();
+            if(!replay.ok())return fail("waiting for verified post-snapshot typed history");
+            auto effects=ReadRecoveryTailEffects(**replay);
+            if(effects.base_height!=recovery_base||effects.base_hash!=base_header.GetHash())
+                return fail("typed history base does not match the configured V5 source");
+            if(effects.blocks.empty()||effects.blocks.back().hash!=tip||effects.blocks.back().height!=target)
+                return fail("waiting for verified post-snapshot typed history");
+            typed_tail=std::move(effects.blocks);
+#else
+            return fail("waiting for verified post-snapshot typed history");
+#endif
+        }
+        // Partial v5-parent mode carries no post-base bodies: the history's
+        // captured tip IS the base header. The composed mode binds the real tip.
         SelectedWalletHistory::Builder builder(network,genesis_hash,
-            v5_parent_mode?base_header.GetHash():tip);
+            partial_base?base_header.GetHash():tip);
         std::reverse(ancestry.begin(),ancestry.end());size_t material=0,missing=0;
         const auto* daemon=DaemonContext::instance();
         const auto peers=daemon&&daemon->chainstate.get()==this?std::dynamic_pointer_cast<P2PService>(daemon->p2p):nullptr;
@@ -15388,21 +15411,26 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
            GetSnapshotWalletRecoveryBaseHeight()!=base_height||
            config_->GetString(v5_parent_mode?"wallet_recovery_v5_source":"assumeutxo_snapshot","")!=path)
             return fail("selected wallet recovery source changed; retry");
-        // The v5-parent source is a static preserved file, not the live
-        // snapshot: only the non-partial mode pins the snapshot lifecycle.
-        // Stage C revisits pinning for the composed recovery.
+        // The v5-parent source is a static preserved file whose coin set is
+        // root-bound to the base header at read time (no re-read happens after
+        // authentication), and the typed tail is an immutable verified replay:
+        // neither needs the live snapshot lifecycle pin, which remains the
+        // non-v5 mode's concern.
         decltype(assumeutxo_lifecycle_->AcquireSnapshotUse(base_header.GetHash(),base_height)) lifetime{};
         if(!v5_parent_mode){
             lifetime=assumeutxo_lifecycle_->AcquireSnapshotUse(base_header.GetHash(),base_height);
             if(!lifetime)return fail("snapshot lifecycle changed before wallet recovery");
         }
         builder.SetSnapshot(recovery_base+1,std::move(snapshot_data),std::move(scripts));
+        // Under the final locks the captured tip is unchanged, so a composed
+        // tail that ends exactly at that tip is the live selected chain.
+        if(!typed_tail.empty())builder.SetTypedTail(std::move(typed_tail));
         const auto immutable=builder.Build();
         if(!wallet.RescanFromSelectedHistory(int(recovery_base+1),0,*immutable,session))
             return fail("authenticated snapshot wallet application failed");
         // Partial mode reports the base it actually recovered to, never the
         // Orchard-era tip it has not accounted for.
-        return v5_parent_mode?recovery_base:target;
+        return partial_base?recovery_base:target;
     }catch(const std::exception& e){return fail(e.what());}
 }
 

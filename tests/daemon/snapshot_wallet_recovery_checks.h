@@ -330,10 +330,13 @@ TEST(SnapshotWalletRecovery, V5ActivationParentModeRecoversBaseSetOnlyAndStaysIn
      std::ofstream output(v5path,std::ios::binary);output.write(bytes.data(),bytes.size());}
     std::dynamic_pointer_cast<ConfigService>(f.context.config)->Set("wallet_recovery_v5_source",v5path.string());
     OrchardActiveOverride orchard_active(100); // recovery_base = 99 < chain base 105
-    // Without the internal flag the refusal is byte-identical (no client path).
+    // Without the internal flag the composed arm engages (stage C): on this
+    // composition the verified replay is unavailable, so the refusal is the
+    // TRANSIENT waiting one — not the permanent capability refusal — and no
+    // partial state is published.
     std::string refused;
     EXPECT_FALSE(f.source->RecoverTransparentSnapshotWallet(f.wallet,&refused));
-    EXPECT_EQ(refused,"transparent snapshot recovery requires a pre-Orchard selected source");
+    EXPECT_EQ(refused,"waiting for verified post-snapshot typed history");
     EXPECT_EQ(f.Count("SELECT COUNT(*) FROM utxos"),0);
     // With the flag: the base set lands, bounded at the activation parent.
     std::string error;
