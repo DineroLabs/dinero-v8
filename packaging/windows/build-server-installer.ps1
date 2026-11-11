@@ -25,7 +25,7 @@ param(
     [string]$SnapshotPath       = '',
     [string]$SnapshotManifestPath = '',
     [string]$SnapshotAssetName  = '',
-    [string]$SnapshotFileName   = 'dinero-assumeutxo-150200-v6-full.dat',
+    [string]$SnapshotFileName   = 'dinero-assumeutxo-150521-v6-full.dat',
     [string]$SnapshotReleaseTag = 'v8.2.3',
     [switch]$SkipBuild,
     [switch]$CiOrchardQualification
@@ -197,7 +197,7 @@ function Resolve-Snapshot {
     #   2. Cached copy at $DistDir\$SnapshotAssetName
     #   3. Download $SnapshotAssetName from the v8 release tagged by -SnapshotReleaseTag.
     #
-    # Default is the height-150200 full-v6 snapshot. The daemon
+    # Default is the height-150521 full-v6 snapshot. The daemon
     # verifies its checksum, selected header-chain commitment and burial.
     # Existing installs keep their prior dinero.conf and datadir snapshot, so an
     # in-progress older lifecycle is not rewritten by an installer upgrade. When
@@ -403,7 +403,10 @@ Copy-Item $snapshot (Join-Path $Stage $SnapshotFileName)
 Write-Host "  $SnapshotFileName"
 $snapshotManifest = Resolve-SnapshotManifest $snapshot
 Assert-SnapshotManifest $snapshot $snapshotManifest
-if ($SnapshotFileName -eq 'dinero-assumeutxo-150200-v6-full.dat') {
+# Qualify any full-v6 primary by its profile suffix, then let the exact catalog
+# pin reject a stale or unexpected height. An exact-name guard can silently
+# skip verification when the primary is retargeted for the next release.
+if ($SnapshotFileName -match '-v6-full\.dat$') {
     $publisherManifest = Resolve-PrimaryPublisherAsset $snapshot "$SnapshotFileName.publisher.manifest.json"
     $publisherSignature = Resolve-PrimaryPublisherAsset $snapshot "$SnapshotFileName.publisher.manifest.sig"
     & python (Join-Path $ProjectRoot 'packaging\snapshot\check_desktop_primary.py') --payload $snapshot --manifest $snapshotManifest --expected-name $SnapshotFileName --publisher-manifest $publisherManifest --publisher-signature $publisherSignature

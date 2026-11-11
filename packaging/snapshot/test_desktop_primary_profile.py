@@ -15,7 +15,7 @@ from fetch_desktop_primary import fetch
 
 
 class DesktopPrimaryProfileTest(unittest.TestCase):
-    name = "dinero-assumeutxo-150200-v6-full.dat"
+    name = "dinero-assumeutxo-150521-v6-full.dat"
     block_hash = "ab" * 32
 
     def setUp(self):
@@ -32,11 +32,11 @@ class DesktopPrimaryProfileTest(unittest.TestCase):
         header[:4] = b"UXTO"
         struct.pack_into("<I", header, 4, 6)
         header[8:40] = bytes.fromhex(self.block_hash)[::-1]
-        struct.pack_into("<I", header, 40, 150200)
+        struct.pack_into("<I", header, 40, 150521)
         section = b"ORCH" + struct.pack("<I", 1) + bytes([profile])
         body = bytes(header) + struct.pack("<Q", len(section)) + section
         self.payload.write_bytes(body + hashlib.sha256(body).digest())
-        identity = {"snapshot_file": self.name, "height": 150200,
+        identity = {"snapshot_file": self.name, "height": 150521,
                     "block_hash": self.block_hash, "bytes": self.payload.stat().st_size,
                     "sha256": hashlib.sha256(self.payload.read_bytes()).hexdigest()}
         self.manifest.write_text(json.dumps({"network": "mainnet", "format_version": 6,
@@ -79,7 +79,7 @@ class DesktopPrimaryProfileTest(unittest.TestCase):
 
     def test_wrong_height_catalog_cannot_authorize_primary(self):
         data = json.loads(self.catalog.read_text())
-        data["primary"]["height"] = 150521
+        data["primary"]["height"] = 150520
         self.catalog.write_text(json.dumps(data))
         with self.assertRaisesRegex(ValueError, "not the expected full-v6"):
             verify(self.payload, self.manifest, self.catalog, self.name)
@@ -116,7 +116,7 @@ class DesktopPrimaryProfileTest(unittest.TestCase):
         catalog["primary"]["format_version"] = 5
         self.catalog.write_text(json.dumps(catalog))
         destination = self.root / "refused"
-        with self.assertRaisesRegex(ValueError, "qualified H150200"):
+        with self.assertRaisesRegex(ValueError, "qualified H150521"):
             fetch(self.payload.as_uri(), self.manifest.as_uri(), self.catalog,
                   destination, allow_file=True)
         self.assertFalse(destination.exists())

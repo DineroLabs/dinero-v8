@@ -131,7 +131,7 @@ jobs:
             echo 'variant=${{ matrix.variant }}'
             echo 'qt_version=${{ matrix.qt }}'
             echo 'deployment_target=13.0'
-            echo 'snapshot_inputs=provisional H150200 full-v6 primary from pinned HTTPS inputs; H148375/H99677/H65300 recovery bases'
+            echo 'snapshot_inputs=provisional H150521 full-v6 primary from pinned HTTPS inputs; H148375/H99677/H65300 recovery bases'
             echo "source_commit=$SOURCE_HEAD"
             echo "tooling_commit=$TOOLING_HEAD"
             echo "sv2_commit=$SV2_HEAD"
@@ -240,8 +240,8 @@ jobs:
             --pattern utxo-snapshot-65300.dat.manifest.json \
             --dir release-inputs
           {
-            echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-150200-v6-full.dat"
-            echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-150200-v6-full.dat.manifest.json"
+            echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-150521-v6-full.dat"
+            echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-150521-v6-full.dat.manifest.json"
             echo "DINERO_SNAPSHOT_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat"
             echo "DINERO_SNAPSHOT_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat.manifest.json"
             echo "DINERO_SNAPSHOT_LEGACY_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-99677-v4.dat"

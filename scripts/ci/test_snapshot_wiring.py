@@ -11,10 +11,10 @@ class SnapshotWiring(unittest.TestCase):
     def setUp(self):
         catalog = json.loads((ROOT / 'packaging/snapshot/desktop-inputs-candidate.json').read_text())
         pinned = [catalog['primary']['filename'], *(e['filename'] for e in catalog['fallbacks'])]
-        # The public catalog remains at v5 until the H150200 full-v6 export is
+        # The public catalog remains at v5 until the H150521 full-v6 export is
         # natively qualified. Wiring is tested against the provisional name;
         # package admission still refuses an unpinned primary.
-        self.names = (["dinero-assumeutxo-150200-v6-full.dat", *pinned]
+        self.names = (["dinero-assumeutxo-150521-v6-full.dat", *pinned]
                       if catalog['primary']['format_version'] == 5 else pinned)
         self.assertEqual(len(self.names), 4)
 
@@ -50,6 +50,7 @@ class SnapshotWiring(unittest.TestCase):
         self.assertEqual(re.search(r"\$SnapshotFileName\s*=\s*'([^']+)'", builder)[1], self.names[0])
         self.assertEqual(re.search(r'!define SNAPSHOT_FILE "([^"]+)"', nsis)[1], self.names[0])
         self.assertIn('check_desktop_primary.py', builder)
+        self.assertIn("if ($SnapshotFileName -match '-v6-full\\.dat$')", builder)
 
     def test_release_workflows_fetch_and_pass_the_new_primary(self):
         for path in ['windows-release.yml', 'desktop-release.yml', 'macos-desktop-candidate.yml']:

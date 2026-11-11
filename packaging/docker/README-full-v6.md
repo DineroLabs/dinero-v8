@@ -5,7 +5,7 @@ The live root `Dockerfile`, `docker-entrypoint.sh`, and `docker-publish.yml`
 still publish the old image. This candidate refuses to build while
 `desktop-inputs-candidate.json` names the v5 primary.
 
-The new image takes the exact H150200 full-v6 payload and original publisher
+The new image takes the exact H150521 full-v6 payload and original publisher
 manifest from the release, plus its detached signature. The fetch
 helper requires and verifies that signature and creates the normalized runtime
 manifest. It independently checks the payload profile, internal checksum,
@@ -22,7 +22,7 @@ original signature if published, and check the catalog pin. This avoids asking
 an unpublished GitHub release for its own assets. The final release must carry
 the `.dat`, normalized `.dat.manifest.json`, original
 `.dat.publisher.manifest.json`, `.dat.publisher.manifest.sig`, and
-qualification receipt. Its exact H150200 payload SHA-256 and length must come
+qualification receipt. Its exact H150521 payload SHA-256 and length must come
 from a successful native export, import, and restart at the frozen source SHA.
 
 After that source and payload qualify, bump the release version together,
