@@ -79,7 +79,7 @@ TEST_F(
         spend, 0, inputs, error, flags))
         << error;
     EXPECT_EQ(
-        ValidateSpend(spend, 0, inputs[0], 20, inputs),
+        ValidateSpend(spend, 0, inputs[0], 20, dinero::Params(), inputs),
         ScriptValidationResult::OK)
         << "the wallet artifact must pass the production mempool/block "
            "validation entry point, not only the Taproot verifier";
@@ -98,7 +98,7 @@ TEST_F(
         wire_roundtrip, 0, inputs, error, flags))
         << error;
     EXPECT_EQ(
-        ValidateSpend(wire_roundtrip, 0, inputs[0], 20, inputs),
+        ValidateSpend(wire_roundtrip, 0, inputs[0], 20, dinero::Params(), inputs),
         ScriptValidationResult::OK)
         << "RPC wire serialization must preserve a valid covenant witness";
 
@@ -249,7 +249,7 @@ TEST_F(
         transition.tx, 0, inputs, error, flags))
         << error;
     EXPECT_EQ(
-        ValidateSpend(transition.tx, 0, inputs[0], 20, inputs),
+        ValidateSpend(transition.tx, 0, inputs[0], 20, dinero::Params(), inputs),
         ScriptValidationResult::OK)
         << "the CCV artifact must pass the canonical validation entry point";
     const auto wire =
@@ -264,7 +264,7 @@ TEST_F(
         wire_roundtrip.vin[0].witness,
         transition.tx.vin[0].witness);
     EXPECT_EQ(
-        ValidateSpend(wire_roundtrip, 0, inputs[0], 20, inputs),
+        ValidateSpend(wire_roundtrip, 0, inputs[0], 20, dinero::Params(), inputs),
         ScriptValidationResult::OK)
         << "CCV RPC wire serialization must preserve its script-path witness";
 
@@ -408,6 +408,7 @@ TEST_F(
             0,
             validationInputs[0],
             20,
+            dinero::Params(),
             validationInputs),
         ScriptValidationResult::OK);
 

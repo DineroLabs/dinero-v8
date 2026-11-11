@@ -23,6 +23,7 @@
 #include <cstdint>
 
 namespace dinero {
+struct ChainParams;  // callers select the chain; validators read only the argument
 namespace consensus {
 
 class PrecomputedTransactionData;
@@ -91,6 +92,7 @@ ScriptValidationResult ValidateSpend(
     size_t input_index,
     const UTXOEntry& utxo,
     uint32_t block_height,
+    const ChainParams& params,
     const std::vector<UTXOEntry>& all_utxos = {},
     const PrecomputedTransactionData*
         covenant_precomputed = nullptr
@@ -148,6 +150,7 @@ ScriptValidationResult ValidateTaprootSpend(
     size_t input_index,
     const UTXOEntry& utxo,
     uint32_t block_height,
+    const ChainParams& params,
     const std::vector<UTXOEntry>& all_utxos,
     const PrecomputedTransactionData*
         covenant_precomputed = nullptr

@@ -3752,7 +3752,7 @@ bool Mempool::validateTransaction(
     for (size_t i = 0; i < tx.vin.size(); i++) {
         const consensus::ScriptValidationResult result = consensus::ValidateSpend(
             tx, i, utxo_entries[i], next_block_height_for_scripts,
-            utxo_entries, &covenant_precomputed);
+            Params(), utxo_entries, &covenant_precomputed);
 
         if (result != consensus::ScriptValidationResult::OK) {
             const char* reason = "unknown";

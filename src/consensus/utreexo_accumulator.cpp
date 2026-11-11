@@ -2488,7 +2488,7 @@ bool UtreexoForest::validateLeafIndexConsistency() const {
     return true;
 }
 
-std::vector<uint8_t> UtreexoForest::serialize() const {
+std::vector<uint8_t> UtreexoForest::serialize(bool inject_legacy_v2) const {
     std::vector<uint8_t> data;
 
     // Version 3: option-aware serialization + canonical_empty_roots_ flag.
@@ -2506,22 +2506,12 @@ std::vector<uint8_t> UtreexoForest::serialize() const {
     // remain readable (flag defaults to false, which is the pre-fork
     // mode they were written under).
     //
-    // Audit gap #10 — debug-only injection knob. With the env var
-    //   DINERO_FOREST_SERIALIZE_LEGACY_V2=1
-    // set at the moment of this call, the function emits the v2
-    // layout (no flag byte) so a regtest fixture or unit test
-    // can synthesize the exact pre-a72053a9a failure shape from
-    // the LA 2026-04-28 audit. Test-only; production daemons
-    // never set this var.
-    //
-    // Read per call (not cached as a static) so unit tests that
-    // setenv()/unsetenv() mid-test can flip the knob between
-    // serialize() calls in the same process. Cost: one getenv()
-    // per per-block forest checkpoint write — negligible at
-    // mainnet block cadence.
-    const char* legacy_env = std::getenv("DINERO_FOREST_SERIALIZE_LEGACY_V2");
-    const bool inject_legacy_v2 =
-        legacy_env != nullptr && *legacy_env != '\0' && *legacy_env != '0';
+    // Audit gap #10 — debug-only injection knob, now an explicit argument
+    // (sep3 stage C; formerly the DINERO_FOREST_SERIALIZE_LEGACY_V2 env
+    // var). When true, emit the v2 layout (no flag byte) so a regtest
+    // fixture or unit test can synthesize the exact pre-a72053a9a failure
+    // shape from the LA 2026-04-28 audit. Test-only; production callers
+    // never pass true.
     if (inject_legacy_v2) {
         data.push_back(2);  // Force the pre-fix v2 layout.
     } else {

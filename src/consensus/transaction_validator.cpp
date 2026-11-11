@@ -374,7 +374,7 @@ TransactionValidator::InputVerificationResult TransactionValidator::VerifyInput(
 
         const consensus::ScriptValidationResult script_result =
             consensus::ValidateSpend(tx, input_index, all_utxos[input_index],
-                                     height, all_utxos,
+                                     height, Params(), all_utxos,
                                      covenant_precomputed);
 
         if (consensus::g_script_cache) {

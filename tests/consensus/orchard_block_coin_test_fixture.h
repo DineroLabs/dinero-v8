@@ -1,4 +1,5 @@
 #pragma once
+#include "consensus/chainparams.h"
 #include "orchard_block_test_fixture.h"
 #include "consensus/script_interpreter.h"
 #include "consensus/script_validation.h"
@@ -16,7 +17,7 @@ static Transaction Child(const OutPoint& point,const UTXOEntry& coin,const Fixtu
     Bytes signature(64);Hash aux{};
     Require(secp256k1_schnorrsig_sign32(keys.ctx.get(),signature.data(),digest.data(),&pair,aux.data()));
     tx.vin[0].witness={signature};
-    Require(ValidateSpend(tx,0,coin,20001,{coin})==ScriptValidationResult::OK);
+    Require(ValidateSpend(tx,0,coin,20001,dinero::Params(),{coin})==ScriptValidationResult::OK);
     return tx;
 }
 static Bytes Wire(const Transaction& tx) {return tx.Serialize(TxSerializationMode::WithWitness);}

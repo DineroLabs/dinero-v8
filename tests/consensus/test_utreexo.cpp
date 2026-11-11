@@ -564,14 +564,12 @@ void testCanonicalEmptyRootsLegacyV2Recovery() {
 
     UtreexoHash original_commitment = forest.getCommitment();
 
-    // Force v2 serialization (the audit gap #10 debug knob).
-    setenv("DINERO_FOREST_SERIALIZE_LEGACY_V2", "1", /*overwrite=*/1);
-    auto v2_blob = forest.serialize();
-    unsetenv("DINERO_FOREST_SERIALIZE_LEGACY_V2");
+    // Force v2 serialization (the audit gap #10 debug knob, explicit arg).
+    auto v2_blob = forest.serialize(/*inject_legacy_v2=*/true);
 
     // First byte of the payload is the version byte.
     assert(!v2_blob.empty());
-    assert(v2_blob[0] == 2 && "DINERO_FOREST_SERIALIZE_LEGACY_V2 should produce v2");
+    assert(v2_blob[0] == 2 && "inject_legacy_v2 should produce v2");
     std::cout << "  ✅ v2 payload produced via debug knob (" << v2_blob.size()
               << " bytes, version byte = " << static_cast<int>(v2_blob[0]) << ")"
               << std::endl;
@@ -707,10 +705,8 @@ void testCanonicalEmptyRootsLegacyV2RecoveryShapes() {
         const UtreexoHash original_commitment = forest.getCommitment();
         const uint64_t original_num_leaves = forest.getNumLeaves();
 
-        // v2-serialize via the audit gap #10 debug knob.
-        setenv("DINERO_FOREST_SERIALIZE_LEGACY_V2", "1", /*overwrite=*/1);
-        const auto v2_blob = forest.serialize();
-        unsetenv("DINERO_FOREST_SERIALIZE_LEGACY_V2");
+        // v2-serialize via the audit gap #10 debug knob (explicit arg).
+        const auto v2_blob = forest.serialize(/*inject_legacy_v2=*/true);
         if (v2_blob.empty() || v2_blob[0] != 2) {
             throw std::runtime_error(shape.name +
                 ": v2 knob did not produce v2 payload");
