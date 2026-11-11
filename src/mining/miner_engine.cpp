@@ -442,6 +442,7 @@ bool BlockSubmissionValidator::validateCoinbase(
     // Validate coinbase transaction
     consensus::TxValidationContext ctx;
     ctx.block_height = expected_height;
+    ctx.params = &Params();
     ctx.median_time_past = block.header.timestamp;
 
     consensus::TxValidationOutput result = consensus::validateCoinbase(coinbase, ctx);
@@ -514,6 +515,7 @@ bool BlockSubmissionValidator::validateTransactions(
     // Phase 23.3: Create TxValidationContext with BIP68 MTP lookup
     consensus::TxValidationContext ctx;
     ctx.block_height = expected_height;
+    ctx.params = &Params();
     ctx.median_time_past = block.header.timestamp;
     ctx.check_sequence_locks = true;
 

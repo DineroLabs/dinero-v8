@@ -7,6 +7,7 @@
 #include <cstdint>
 
 namespace dinero {
+struct ChainParams;
 namespace consensus {
 
 // Forward declaration
@@ -30,7 +31,8 @@ public:
     static ValidationResult ValidateTransaction(
         const Transaction& tx,
         consensus::IUTXOProvider* utxo_provider,
-        uint32_t current_height
+        uint32_t current_height,
+        const ChainParams& params
     );
 
     // F.8.5: Per-input signature verification (for parallel validation)
@@ -49,6 +51,7 @@ public:
         uint32_t script_flags,
         uint32_t height,
         uint64_t median_time_past,  // BIP113: For time-based CHECKLOCKTIMEVERIFY
+        const ChainParams& params,  // sep3 stage D: callers select the chain
         // BIP341: Full UTXO context required for Taproot sighash (all inputs' amounts and scripts)
         const std::vector<uint64_t>& all_input_amounts = {},
         const std::vector<std::vector<uint8_t>>& all_input_scriptpubkeys = {},
@@ -66,6 +69,7 @@ private:
     static bool VerifySignatures(const Transaction& tx,
                                  consensus::IUTXOProvider* utxo_provider,
                                  uint32_t validation_height,
+                                 const ChainParams& params,
                                  std::string& error);
     // Phase M.6.1: fee parameter changed to AmountUna&
     static bool CheckFees(const Transaction& tx, consensus::IUTXOProvider* utxo_provider, AmountUna& fee, std::string& error);

@@ -201,7 +201,9 @@ PreparedOrchardBlockCoins PrepareOrchardBlockCoinsUnderChainstateLock(
         context.height, context.parent_hash, context.activation_height, context.domain};
     auto checked = CheckSequence(block.Transactions(), transaction_context, parent, mtp, true);
     if (!reward_detail::CheckCoinbaseReward(block.Transactions().front().Historical(),
-                                            context.height, checked.fees, error))
+                                            context.height,
+                                            dinero::Params().sixty_second_activation_height,
+                                            checked.fees, error))
         Reject(Error::Reward);
     return PreparedOrchardBlockCoins(context.block_hash, context.parent_hash, context.height,
         std::move(checked.transactions), std::move(checked.changes),

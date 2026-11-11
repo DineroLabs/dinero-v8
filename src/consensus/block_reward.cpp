@@ -74,9 +74,10 @@ bool SumRewardOutputs(const Transaction& tx, uint64_t& total, std::string& error
 }
 
 bool CheckCoinbaseReward(const Transaction& coinbase, uint32_t height,
+                         uint32_t sixty_second_activation_height,
                          uint64_t total_fees, std::string& error) {
     uint64_t expected_reward = ConsensusSubsidy::GetBlockSubsidy(
-        height, Params().sixty_second_activation_height).GetUna();
+        height, sixty_second_activation_height).GetUna();
     if (!AddRewardAmount(total_fees, expected_reward,
                          "block-reward-subsidy-fee-overflow", error)) {
         return false;
@@ -102,6 +103,7 @@ using reward_detail::SumRewardOutputs;
 
 bool CheckBlockRewardFromSpentOutputs(
     const Block& block, uint32_t height,
+    uint32_t sixty_second_activation_height,
     const std::vector<SpentOutputData>* spent_outputs, std::string& error) {
     if (block.vtx.empty()) {
         error = "Block has no transactions (missing coinbase)";
@@ -156,7 +158,9 @@ bool CheckBlockRewardFromSpentOutputs(
         error = "block-reward-spent-outputs-surplus";
         return false;
     }
-    return CheckCoinbaseReward(block.vtx.front(), height, total_fees, error);
+    return CheckCoinbaseReward(block.vtx.front(), height,
+                               sixty_second_activation_height,
+                               total_fees, error);
 }
 
 } // namespace dinero::consensus

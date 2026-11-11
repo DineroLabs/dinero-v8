@@ -21,6 +21,7 @@ namespace dinero::consensus {
  */
 bool CheckBlockRewardFromSpentOutputs(
     const Block& block, uint32_t height,
+    uint32_t sixty_second_activation_height,
     const std::vector<SpentOutputData>* spent_outputs, std::string& error);
 
 // Shared implementation primitives for ordinary ConnectBlock and proof-based
@@ -35,7 +36,10 @@ bool ComputeValidatedTransactionFee(const Transaction& tx,
     uint64_t& fee, std::string& error);
 bool AddRewardAmount(uint64_t value, uint64_t& total,
     const char* overflow_error, std::string& error);
+// sixty_second_activation_height: the caller's chain parameters' value
+// (sep3 stage D: no ambient Params() read in the library tier).
 bool CheckCoinbaseReward(const Transaction& coinbase, uint32_t height,
+    uint32_t sixty_second_activation_height,
     uint64_t total_fees, std::string& error);
 } // namespace reward_detail
 

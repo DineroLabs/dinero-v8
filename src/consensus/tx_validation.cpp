@@ -148,6 +148,11 @@ TxValidationResult validateInputs(
             all_input_commitments.push_back(utxo.commitment);
         }
 
+        if (ctx.params == nullptr) {
+            // sep3 stage D: fail closed, like a missing MTP lookup — script
+            // activation rules need the caller's chain parameters.
+            return TxValidationResult::SCRIPT_VERIFY_FAILED;
+        }
         const PrecomputedTransactionData
             covenant_precomputed(tx, input_utxos);
         for (size_t i = 0; i < tx.vin.size(); ++i) {
@@ -165,6 +170,7 @@ TxValidationResult validateInputs(
                 all_input_confidential_flags,
                 all_input_commitments,
                 ctx.block_height,
+                *ctx.params,
                 &covenant_precomputed
             );
 
@@ -279,6 +285,7 @@ bool verifyScript(
     const std::vector<uint8_t>& all_input_confidential_flags,
     const std::vector<std::vector<uint8_t>>& all_input_commitments,
     uint32_t block_height,
+    const ChainParams& params,
     const PrecomputedTransactionData* covenant_precomputed
 ) {
     // ========================================================================
@@ -296,7 +303,7 @@ bool verifyScript(
     Script pubkey_script(scriptPubKey);
 
     const uint32_t flags = CovenantActivationParams::StandardFlags(
-        block_height, dinero::Params());
+        block_height, params);
 
     // Route Taproot through the verifier that authenticates the control block
     // and output-key tweak. The generic legacy interpreter's historical v1
@@ -318,7 +325,7 @@ bool verifyScript(
         }
         if (effective_items != 1 &&
             !CovenantActivationParams::IsScriptPathActive(
-                block_height, dinero::Params())) {
+                block_height, params)) {
             return false;
         }
 
