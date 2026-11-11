@@ -1691,6 +1691,10 @@ private:
         std::unique_ptr<PreparedOrchardExtension> extension;
         std::string extension_wire;
     };
+    // Test access only: split capture, detached completion and exact rebind so
+    // a candidate can be staged deterministically between the proof and the
+    // commit without adding a callback to the production replay hot loop.
+    friend struct OrchardActivationParentTestAccess;
     // Retains startup lifetime without opening ordinary read admission. Proof
     // work runs outside the activation lock; binding never publishes a tip.
     struct PreparedCompactStartupAudit {

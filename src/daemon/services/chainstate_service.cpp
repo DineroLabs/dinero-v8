@@ -12229,6 +12229,37 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
     // Retry eligibility belongs to the candidate selected from the queue, not
     // that temporary target (which might not itself be queued).
     CBlockIndex* const queued_candidate = best_candidate;
+    bool selected_prepared_prefix = false;
+
+    // Detached Orchard preparation can take longer than the arrival interval
+    // of a mined block. If the only change is that the best branch grew beyond
+    // the exact prefix we proved, activate that prefix first. It is an ancestor
+    // of the current best. AddCandidate intentionally replaces a parent with
+    // its child, so the proved prefix need not itself remain in candidates_.
+    // A competing best candidate, invalidation, changed prefix entry or
+    // operator decision keeps the ordinary exact-snapshot refusal below.
+    // Replaying the enlarged branch from genesis for every new child leaves a
+    // fully available fork unselected until block arrivals stop.
+    if (prepared && prepared->parent && prepared->outgoing &&
+        !prepared->snapshot.disconnects.empty() && best_candidate &&
+        best_candidate->hash != std::get<0>(prepared->snapshot.best)) {
+        std::lock_guard<std::recursive_mutex> graph(dinero::g_block_index_mutex);
+        CBlockIndex* prefix = dinero::FindBlockIndex(
+            std::get<0>(prepared->snapshot.best));
+        if (prefix && prefix->height < best_candidate->height &&
+            ActivationParentPlan::Capture(*prefix) == prepared->snapshot.best) {
+            CBlockIndex* ancestor = best_candidate;
+            while (ancestor && ancestor->height > prefix->height)
+                ancestor = ancestor->pprev;
+            if (ancestor == prefix && IsReorgCandidateEligible(prefix) &&
+                !HasInvalidAncestor(prefix) &&
+                activation_retries_.IsReady(prefix->hash,
+                    std::chrono::steady_clock::now())) {
+                best_candidate = prefix;
+                selected_prepared_prefix = true;
+            }
+        }
+    }
 
     std::cout << "🔍 [ActivateBestChain] best_candidate=" << (best_candidate ? "EXISTS" : "NULL") << std::endl;
     if (best_candidate) {
@@ -13793,7 +13824,11 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
 
     // Update active tip (already done by ConnectTip, but ensure consistency)
     PublishActiveTipLocked(best_candidate, TipPublishReason::kSelfHealRealign);
-    activation_retries_.Clear(queued_candidate->hash);
+    // The newer descendant remains a separate pending activation when this
+    // pass committed only its proved ancestor. Do not clear its retry state
+    // as though it were already selected.
+    activation_retries_.Clear(
+        selected_prepared_prefix ? best_candidate->hash : queued_candidate->hash);
 
     // Read-only observability, recorded only once the reorg has actually
     // COMPLETED.

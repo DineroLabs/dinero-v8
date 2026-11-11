@@ -5,10 +5,24 @@
 #pragma once
 namespace dinero {
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
+struct OrchardActivationParentTestAccess {
+    std::unique_ptr<ChainstateService::ActivationParentPlan> request;
+    bool Capture(ChainstateService& service) {
+        service.ActivateBestChainPass(nullptr,request,true,nullptr);
+        return bool(request);
+    }
+    bool Complete(ChainstateService& service) {
+        return request && service.CompleteActivationParentPlan(*request);
+    }
+    void Apply(ChainstateService& service) {
+        std::unique_ptr<ChainstateService::ActivationParentPlan> unused;
+        service.ActivateBestChainPass(request.get(),unused,false,nullptr);
+    }
+};
 namespace {
 struct TypedForkNotices final:RuntimeBlockNotifications {
     struct Event {uint256 hash;uint32_t height;RuntimeBlockDirection direction;};
-    std::array<Event,32> events{};size_t event_count=0;
+    std::array<Event,128> events{};size_t event_count=0;
     std::array<std::shared_ptr<const RuntimeReorgPlan>,8> plans{};
     std::array<RuntimeReorgProgress,8> progress{};size_t plan_count=0;
     bool measure_reads=false;std::optional<uint64_t> first_prepare_gets;
@@ -339,6 +353,177 @@ TEST(OrchardTypedFork, HeaderSelectedSchedulerRetainsThenAcknowledgesActualFork)
     EXPECT_EQ(f.queue->getMetrics().blocks_connected.load(),connected);
     EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*f.f.service));
     const auto tip=f.f.db.getTip();ASSERT_TRUE(tip.ok());EXPECT_EQ(tip->hash,a103->hash);
+}
+// Mac v8.2.2: the active branch ended at an Orchard sibling while the
+// replacement branch's bodies arrived. This reduced fixture exercises the
+// same replacement planning with a short pre-Orchard history. It proves the
+// cost of repeated detached preparation, not the cause of the live stall.
+TEST(OrchardTypedFork, DescendantArrivalsBeforeRebindDoNotStarveForkActivation) {
+    NetworkRoutingFixture f;
+    f.f.service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
+    // Retain the transition parent's archival position. Older bodies are
+    // available through the fixture database fallback, so this is not a
+    // missing-history test.
+    {
+        auto selected=f.f.service->AcquireBlockIngressActivationLock();
+        std::lock_guard<std::recursive_mutex> graph(g_block_index_mutex);
+        const auto& parent=f.f.blocks.back();
+        auto* index=dinero::FindBlockIndex(parent.GetHash());ASSERT_NE(index,nullptr);
+        const auto position=f.files->writeBlock(parent.GetHash(),parent);ASSERT_TRUE(position.ok());
+        CBlockIndex recorded=*index;recorded.file_number=position->file_number;
+        recorded.data_pos=position->offset;recorded.data_size=position->size;
+        rocksdb::WriteBatch batch;
+        ASSERT_EQ(f.f.db.updateBlockIndex(f.f.token,&recorded,&batch),Status::Ok);
+        ASSERT_EQ(f.f.db.writeBatch(f.f.token,std::move(batch),true),Status::Ok);
+        index->file_number=recorded.file_number;index->data_pos=recorded.data_pos;
+        index->data_size=recorded.data_size;
+    }
+    const auto first=f.Build();ASSERT_TRUE(first);
+    ASSERT_TRUE(f.Submit(first->WireBytes()).connected);
+    auto* a102=f.f.service->GetActiveTip();ASSERT_EQ(a102->height,102u);
+    BlockAssembler assembler(&f.f.db);WireOrchardAssembler(assembler,f.f);
+    const auto second=assembler.CreateOrchardBlock(OrchardMiningPayout);ASSERT_TRUE(second);
+    ASSERT_EQ(second->Height(),103u);
+    ASSERT_TRUE(f.Submit(second->WireBytes()).connected);
+    auto* a103=f.f.service->GetActiveTip();ASSERT_EQ(a103->pprev,a102);
+    const auto third=assembler.CreateOrchardBlock(OrchardMiningPayout);ASSERT_TRUE(third);
+    ASSERT_EQ(third->Height(),104u);
+    ASSERT_TRUE(f.Submit(third->WireBytes()).connected);
+    auto* a104=f.f.service->GetActiveTip();ASSERT_EQ(a104->pprev,a103);
+    std::vector<CBlockIndex*> arrivals{a104};
+    std::vector<std::vector<uint8_t>> arrival_wires{third->WireBytes()};
+    // Twenty-five replacement-branch bodies, the count observed on the Mac.
+    // The first two are already available when activation starts; the other
+    // twenty-three appear one at a time during detached parent replay.
+    for(uint32_t height=105;height<=126;++height) {
+        const auto next=assembler.CreateOrchardBlock(OrchardMiningPayout);ASSERT_TRUE(next);
+        ASSERT_EQ(next->Height(),height);
+        arrival_wires.push_back(next->WireBytes());
+        ASSERT_TRUE(f.Submit(arrival_wires.back()).connected);
+        arrivals.push_back(f.f.service->GetActiveTip());
+        ASSERT_EQ(arrivals.back()->height,height);
+    }
+
+    std::string error;
+    ASSERT_TRUE(f.f.service->InvalidateBlock(a102->hash,error))<<error;
+    ASSERT_EQ(f.f.service->GetActiveTip(),f.parent);
+    const auto [bheader,bbytes]=ForkSibling(*first);
+    ASSERT_TRUE(f.Submit(bbytes).connected);
+    auto* b102=f.f.service->GetActiveTip();ASSERT_EQ(b102->hash,bheader.GetHash());
+    ASSERT_TRUE(f.f.service->ReconsiderBlock(a102->hash,error))<<error;
+    ASSERT_EQ(f.f.service->GetActiveTip(),b102);
+
+    // The real Mac's replacement branch had readable bodies but only
+    // BLOCK_VALID_HEADER|BLOCK_HAVE_DATA (129), not prior transaction or undo
+    // validation. The fixture built these bodies on an active branch to obtain
+    // honest Orchard proofs, so reset their metadata to the observed incoming
+    // state before exercising recovery. Later bodies remain header-only until
+    // each one is staged by the replay hook.
+    {
+        auto selected=f.f.service->AcquireBlockIngressActivationLock();
+        std::lock_guard<std::recursive_mutex> graph(g_block_index_mutex);
+        std::vector<CBlockIndex*> branch{a102,a103};
+        branch.insert(branch.end(),arrivals.begin(),arrivals.end());
+        for(auto* index:branch) {
+            auto metadata=f.f.db.getHeaderMetadata(index->hash);ASSERT_TRUE(metadata.ok());
+            auto staged=*metadata;
+            const bool arrival=index!=a102 && index!=a103;
+            staged.status_flags=uint32_t(BLOCK_VALID_HEADER)|
+                (arrival?0u:uint32_t(BLOCK_HAVE_DATA));
+            if(arrival)staged.file_number=staged.data_pos=staged.data_size=0;
+            staged.undo_file=staged.undo_pos=staged.undo_size=0;
+            f.f.service->RemoveCandidate(index);
+            ASSERT_EQ(f.f.db.putHeaderMetadata(f.f.token,index->hash,staged),Status::Ok);
+            index->status=staged.status_flags;
+            index->file_number=staged.file_number;
+            index->data_pos=staged.data_pos;
+            index->data_size=staged.data_size;
+            index->undo_file=index->undo_pos=index->undo_size=0;
+            ASSERT_EQ(index->status,arrival?1u:129u);
+        }
+        f.f.service->AddCandidate(a103);
+    }
+
+    consensus::HeaderChainSelector headers;
+    for(const auto& block:f.f.blocks)ASSERT_TRUE(headers.AddHeader(block.header));
+    ASSERT_TRUE(headers.AddHeader(first->Header()));
+    ASSERT_TRUE(headers.AddHeader(second->Header()));
+    consensus::BlockDownloadScheduler scheduler(&headers,f.files.get());
+    scheduler.SetLocalTipHeight(102);
+    scheduler.SetGetTipHeightCallback([&] {
+        auto selected=f.f.service->AcquireBlockIngressActivationLock();
+        return f.f.service->GetActiveTip()->height;
+    });
+    scheduler.SetGetBlockHashAtHeightCallback([&](uint32_t height,uint256& hash) {
+        auto selected=f.f.service->AcquireBlockIngressActivationLock();
+        return consensus::GetActiveChainHashAtHeight(f.f.service->GetActiveTip(),height,hash);
+    });
+    scheduler.SetSendGetDataCallback([](const uint256&,uint32_t){});
+    scheduler.SetConnectBlockBytesCallback([&](const auto& bytes,const auto& hash,uint32_t height,const auto&) {
+        const auto result=SubmitDownloadedOrchardBlock(f.f.service,f.owner,f.parallel,bytes,hash,height);
+        if(result==OrchardNetworkDisposition::Connected)return consensus::ConnectBlockResult::CONNECTED;
+        if(result==OrchardNetworkDisposition::Stored)return consensus::ConnectBlockResult::ACCEPTED_NOT_ACTIVE;
+        return consensus::ConnectBlockResult::TEMPORARY_FAIL;
+    });
+    scheduler.OnHeadersProcessed();scheduler.Tick();
+    ASSERT_TRUE(scheduler.OnOrchardBlockReceived(first->WireBytes()));
+    ASSERT_TRUE(scheduler.OnOrchardBlockReceived(second->WireBytes()));
+    ASSERT_EQ(scheduler.GetInFlightCount(),0u);
+    ASSERT_EQ(f.f.service->GetActiveTip(),b102);
+    size_t next_arrival=0;
+    const auto stage_next_body=[&] {
+        if(next_arrival==arrivals.size())return;
+        const auto slot=next_arrival++;
+        auto* index=arrivals[slot];
+        auto selected=f.f.service->AcquireBlockIngressActivationLock();
+        std::lock_guard<std::recursive_mutex> graph(g_block_index_mutex);
+        const auto& bytes=arrival_wires[slot];
+        const std::string wire(bytes.begin(),bytes.end());
+        const auto position=f.files->writeBlockBytes(index->hash,wire);
+        OrchardAdmissionFixture::Require(position.ok());
+        auto metadata=f.f.db.getHeaderMetadata(index->hash);
+        OrchardAdmissionFixture::Require(metadata.ok());
+        auto staged=*metadata;staged.status_flags=129;
+        staged.file_number=position->file_number;staged.data_pos=position->offset;staged.data_size=position->size;
+        OrchardAdmissionFixture::Require(f.f.db.putHeaderMetadata(f.f.token,index->hash,staged)==Status::Ok);
+        index->status=staged.status_flags;index->file_number=staged.file_number;
+        index->data_pos=staged.data_pos;index->data_size=staged.data_size;
+        f.f.service->AddCandidate(index);
+    };
+    // Split the actual planner into capture, detached proof, and rebind.
+    // A104 and A105 arrive after the A103 proof completed but before it can
+    // bind. This is the deterministic state produced by arrivals during the
+    // detached replay, with no callback in production code.
+    OrchardActivationParentTestAccess prepared;
+    ASSERT_TRUE(prepared.Capture(*f.f.service));
+    ASSERT_TRUE(prepared.Complete(*f.f.service));
+    stage_next_body();stage_next_body();
+    ASSERT_EQ(next_arrival,2u);
+    prepared.Apply(*f.f.service);
+    ASSERT_EQ(f.f.service->GetActiveTip(),a103);
+
+    // Stage the remaining descendants, as if they arrived while the daemon
+    // can activate the completed continuation from the new selected prefix.
+    while(next_arrival<arrivals.size())stage_next_body();
+    ASSERT_EQ(next_arrival,arrivals.size());
+
+    // An operator invalidation/reconsideration decision made after capture
+    // must still stale the plan. The prefix rule never relaxes the exact
+    // generation comparison used by the bind.
+    OrchardActivationParentTestAccess stale;
+    ASSERT_TRUE(stale.Capture(*f.f.service));
+    ASSERT_TRUE(stale.Complete(*f.f.service));
+    {
+        auto selected=f.f.service->AcquireBlockIngressActivationLock();
+        rocksdb::WriteBatch batch;
+        ASSERT_TRUE(f.f.service->StageNextBlockStatusGeneration(f.f.token,batch).has_value());
+        ASSERT_EQ(f.f.db.writeBatch(f.f.token,std::move(batch),true),Status::Ok);
+    }
+    stale.Apply(*f.f.service);
+    ASSERT_EQ(f.f.service->GetActiveTip(),a103);
+
+    f.f.service->ActivateBestChain();
+    const auto tip=f.f.db.getTip();ASSERT_TRUE(tip.ok());EXPECT_EQ(tip->hash,arrivals.back()->hash);
 }
 namespace {
 void BranchReplayHistory(CanonicalPoolFixture& f) {
