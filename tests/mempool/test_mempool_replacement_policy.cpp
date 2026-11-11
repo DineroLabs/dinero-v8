@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign patched-path policy invariants. No unsafe-original execution.
 #include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
@@ -38,7 +39,7 @@ protected:
     }
 };
 TEST_F(MempoolReplacementPolicy, FeePolicyRefusalPreservesExistingPool) {
-    const auto out=fund(1);Mempool pool(&db,&coins);pool.setRBFEnabled(true);const auto first=spend(out,1000000,10000);ASSERT_TRUE(pool.submitTransaction(first,"fixture",false).accepted());
+    const auto out=fund(1);dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins);pool.setRBFEnabled(true);const auto first=spend(out,1000000,10000);ASSERT_TRUE(pool.submitTransaction(first,"fixture",false).accepted());
     const auto replacement=spend(out,1000000,20000);int callbacks=0;pool.setTxAcceptedCallback([&](const Transaction&){++callbacks;});pool.setMinFeeRate(100000);
     const auto before=pool.getTransactionIds();const auto preflight=pool.submitTransactionTestOnly(replacement,"fixture");EXPECT_EQ(preflight.code,TxRejectCode::INSUFFICIENT_FEE);
     const auto result=pool.submitTransaction(replacement,"fixture",false);EXPECT_EQ(result.code,TxRejectCode::INSUFFICIENT_FEE);EXPECT_EQ(pool.getTransactionIds(),before);EXPECT_TRUE(pool.isOutputSpentInMempool(out));EXPECT_EQ(callbacks,0);
@@ -46,7 +47,7 @@ TEST_F(MempoolReplacementPolicy, FeePolicyRefusalPreservesExistingPool) {
     pool.setMinFeeRate(1);ASSERT_TRUE(pool.submitTransaction(replacement,"fixture",false).accepted());EXPECT_FALSE(pool.hasTransaction(first.GetTxid().AsUint256()));EXPECT_TRUE(pool.hasTransaction(replacement.GetTxid().AsUint256()));EXPECT_EQ(callbacks,1);
 }
 TEST_F(MempoolReplacementPolicy, PreflightAndAdmissionUseSurvivingDescendants) {
-    Mempool pool(&db,&coins);pool.setRBFEnabled(true);const auto parent=spend(fund(2),1000000,1000);ASSERT_TRUE(pool.submitTransaction(parent,"fixture",false).accepted());
+    dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins);pool.setRBFEnabled(true);const auto parent=spend(fund(2),1000000,1000);ASSERT_TRUE(pool.submitTransaction(parent,"fixture",false).accepted());
     Transaction last=parent;uint64_t value=999000;std::vector<uint256> removed;
     for(unsigned i=0;i<25;++i){auto child=spend({last.GetTxid(),0},value,1000);const auto result=pool.submitTransaction(child,"fixture",false);ASSERT_TRUE(result.accepted())<<i<<": "<<result.message;removed.push_back(child.GetTxid().AsUint256());last=std::move(child);value-=1000;}
     const auto unrelated=spend(fund(3),1000000,1000);ASSERT_TRUE(pool.submitTransaction(unrelated,"fixture",false).accepted());
@@ -56,7 +57,7 @@ TEST_F(MempoolReplacementPolicy, PreflightAndAdmissionUseSurvivingDescendants) {
     const auto child=spend({replacement.GetTxid(),0},949000,1000);ASSERT_TRUE(pool.submitTransaction(child,"fixture",false).accepted());
 }
 TEST_F(MempoolReplacementPolicy, ExistingRbfFeeRulesRemainRequired) {
-    const auto out=fund(4);Mempool pool(&db,&coins);pool.setRBFEnabled(true);const auto first=spend(out,1000000,10000);ASSERT_TRUE(pool.submitTransaction(first,"fixture",false).accepted());
+    const auto out=fund(4);dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins);pool.setRBFEnabled(true);const auto first=spend(out,1000000,10000);ASSERT_TRUE(pool.submitTransaction(first,"fixture",false).accepted());
     const auto cheaper=spend(out,1000000,9000);const auto before=pool.getTransactionIds();EXPECT_EQ(pool.submitTransactionTestOnly(cheaper,"fixture").code,TxRejectCode::RBF_REJECTED);EXPECT_EQ(pool.submitTransaction(cheaper,"fixture",false).code,TxRejectCode::RBF_REJECTED);EXPECT_EQ(pool.getTransactionIds(),before);EXPECT_TRUE(pool.isOutputSpentInMempool(out));
 }
 }

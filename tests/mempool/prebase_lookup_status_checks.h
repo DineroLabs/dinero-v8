@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 #pragma once
 #include "wallet/taproot_keys.h"
 #include "wallet/taproot_tx_signer.h"
@@ -85,7 +86,7 @@ TEST_F(PreBaseLookupStatus, CanonicalAdmissionKeepsMissingAndUnavailableDistinct
     const auto bytes=TaprootTxSigner::ComputeTaprootSighash(tx,0,{input});ASSERT_EQ(bytes.size(),32U);
     std::array<uint8_t,32> hash{};std::copy(bytes.begin(),bytes.end(),hash.begin());std::array<uint8_t,64> signature{};
     ASSERT_TRUE(TaprootKeys::SignSchnorrWithInternalKey(signature,hash,secret,internal));tx.vin[0].witness.emplace_back(signature.begin(),signature.end());
-    Mempool pool(&db,&coins);unsigned reads=0;
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins);unsigned reads=0;
     pool.setPreBaseCoinStatusResolver([&](const OutPoint& point){++reads;return service.ResolveLivePreBaseCoinChecked(point);});
     pool.setPreBaseCoinResolver([](const OutPoint&)->std::optional<consensus::UTXOEntry>{ADD_FAILURE()<<"checked result must not fall back";return std::nullopt;});
     auto result=pool.submitTransaction(tx,"checked fixture",false);

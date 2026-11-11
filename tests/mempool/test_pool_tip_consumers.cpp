@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign patched-path policy invariants. No unsafe-original execution.
 #include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
@@ -59,7 +60,7 @@ std::shared_ptr<network::BridgeNode> MakeBridge(consensus::ConsensusUTXOSet& coi
 }
 void Cooldown() { std::this_thread::sleep_for(std::chrono::milliseconds(550)); }
 TEST_F(PoolTipConsumers, AbandonAndPublishPreserveAllConsumerOwners) {
-    Mempool pool(&db,&coins);const auto funding=fund(1);const auto tx=spend(funding,1000000,1000);const auto id=tx.GetTxid().AsUint256();
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins);const auto funding=fund(1);const auto tx=spend(funding,1000000,1000);const auto id=tx.GetTxid().AsUint256();
     coins.MutateForestGuarded([&](consensus::UtreexoForest& forest){forest.add(consensus::HashUTXOForCreationHeight(funding.txid.AsUint256(),0,1000000,script,1,false));});
     ASSERT_TRUE(pool.submitTransaction(tx,"fixture",false).accepted());ASSERT_TRUE(pool.refreshProof(id,{1},110));
     auto bridge=MakeBridge(coins);ASSERT_TRUE(bridge->GenerateProofsForTransaction(tx));
@@ -75,7 +76,7 @@ TEST_F(PoolTipConsumers, AbandonAndPublishPreserveAllConsumerOwners) {
     prepared->RequestRefresh();EXPECT_EQ(sent,2U);EXPECT_THROW(prepared->RequestRefresh(),std::logic_error);
 }
 TEST_F(PoolTipConsumers, PreparationFailureAndAbsentConsumersRetainExistingPolicy) {
-    PublicationLogger logger;Mempool pool(&db,&coins);pool.setLogger(&logger);const auto funding=fund(2);const auto tx=spend(funding,1000000,1000);const auto id=tx.GetTxid().AsUint256();
+    PublicationLogger logger;dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins);pool.setLogger(&logger);const auto funding=fund(2);const auto tx=spend(funding,1000000,1000);const auto id=tx.GetTxid().AsUint256();
     coins.MutateForestGuarded([&](consensus::UtreexoForest& forest){forest.add(consensus::HashUTXOForCreationHeight(funding.txid.AsUint256(),0,1000000,script,1,false));});
     ASSERT_TRUE(pool.submitTransaction(tx,"fixture",false).accepted());ASSERT_TRUE(pool.refreshProof(id,{1},1));
     auto bridge=MakeBridge(coins);ASSERT_TRUE(bridge->GenerateProofsForTransaction(tx));auto relay=std::make_shared<TxRelayManager>(nullptr);relay->SetCsnMode(true);
@@ -88,7 +89,7 @@ TEST_F(PoolTipConsumers, PreparationFailureAndAbsentConsumersRetainExistingPolic
     EXPECT_EQ(pool.size(),1U);EXPECT_EQ(pool.getStaleCount(),1U);EXPECT_EQ(pool.getStats().stale_evicted_total,0U);EXPECT_EQ(pool.getStats().refresh_attempted_total,0U);
 }
 TEST_F(PoolTipConsumers, DisconnectPublishesBeforeAmbiguousExternalRefresh) {
-    Mempool pool(&db,&coins);const auto funding=fund(3);const auto tx=spend(funding,1000000,1000);const auto id=tx.GetTxid().AsUint256();
+    dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins);const auto funding=fund(3);const auto tx=spend(funding,1000000,1000);const auto id=tx.GetTxid().AsUint256();
     coins.MutateForestGuarded([&](consensus::UtreexoForest& forest){forest.add(consensus::HashUTXOForCreationHeight(funding.txid.AsUint256(),0,1000000,script,1,false));});
     ASSERT_TRUE(pool.submitTransaction(tx,"fixture",false).accepted());ASSERT_TRUE(pool.refreshProof(id,{1},109));
     auto bridge=MakeBridge(coins);ASSERT_TRUE(bridge->GenerateProofsForTransaction(tx));auto relay=std::make_shared<TxRelayManager>(nullptr);relay->SetCsnMode(true);size_t attempts=0;

@@ -365,10 +365,22 @@ create_fat_lib() {
         fi
     }
 
+    add_required() {
+        local candidate=$1
+        if [ ! -f "${candidate}" ]; then
+            echo "  ERROR: required production archive missing: ${candidate}" >&2
+            return 1
+        fi
+        ALL_LIBS+=("${candidate}")
+    }
+
     # NodeCore + production dependency closure (ordered)
     add_if_exists "${BUILD_DIR}/lib/libnodecore_ffi.a"
     add_if_exists "${BUILD_DIR}/libnodecore_ffi.a"
     add_if_exists "${BUILD_DIR}/libdinero_core.a"
+    # Mempool objects moved out of dinero_core. Every Apple slice needs this
+    # archive; silently omitting it leaves unresolved symbols in the SDK.
+    add_required "${BUILD_DIR}/libdinero_mempool.a" || return 1
     add_if_exists "${BUILD_DIR}/libdinero_rpc_handlers.a"
     add_if_exists "${BUILD_DIR}/libdinerod_proto.a"
     add_if_exists "${BUILD_DIR}/src/storage/libdinero_chainstate.a"

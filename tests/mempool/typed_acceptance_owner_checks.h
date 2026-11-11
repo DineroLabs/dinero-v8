@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Patched-path immutable observer ownership only. No unsafe-original controls.
 namespace {
 class TypedAcceptanceOwner : public MempoolTypedPackage {
@@ -10,7 +11,7 @@ protected:
 };
 TEST_F(TypedAcceptanceOwner, SignedAdmissionRetainsTypedBodyAfterLocksAndReplacement) {
     auto tx=spend(fund(71),1000000,1000);const auto expected=tx.Serialize();const auto id=tx.GetTxid();
-    Mempool pool(&db,&coins);bool held=false;pool.setChainstateReadGuardFactory([&]{return std::make_unique<Guard>(held);});
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins);bool held=false;pool.setChainstateReadGuardFactory([&]{return std::make_unique<Guard>(held);});
     unsigned accepted=0,broadcast=0;MempoolTransaction retained;
     auto capture=std::make_shared<int>(19);std::weak_ptr<int> weak=capture;
     pool.setTxBodyAcceptedCallback([&,capture](const MempoolTransaction& body){
@@ -22,7 +23,7 @@ TEST_F(TypedAcceptanceOwner, SignedAdmissionRetainsTypedBodyAfterLocksAndReplace
     const auto entry=pool.getMempoolEntry(id.AsUint256());ASSERT_TRUE(entry);EXPECT_EQ(entry->tx.Serialize(),expected);ASSERT_TRUE(pool.removeTransaction(id.AsUint256()));EXPECT_EQ(retained.Serialize(),expected);
 }
 TEST_F(TypedAcceptanceOwner, PreflightAndObserverFailureKeepActualAdmissionOutcome) {
-    const auto tx=spend(fund(72),1000000,1000);Mempool pool(&db,&coins);bool held=false;pool.setChainstateReadGuardFactory([&]{return std::make_unique<Guard>(held);});
+    const auto tx=spend(fund(72),1000000,1000);dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins);bool held=false;pool.setChainstateReadGuardFactory([&]{return std::make_unique<Guard>(held);});
     unsigned calls=0,broadcasts=0;MempoolTransaction retained;
     pool.setTxBodyAcceptedCallback([&](const MempoolTransaction& body){EXPECT_FALSE(held);++calls;retained=body;throw std::runtime_error("fixture ambiguous observer outcome");});
     pool.setTxBroadcastCallback([&](const uint256&){++broadcasts;});
@@ -36,7 +37,7 @@ TEST_F(TypedAcceptanceOwner, CaptureFailureAndLegacyCompatibilityPreserveBoundar
         CopyRefusal(const CopyRefusal& other):armed(other.armed),calls(other.calls){if(*armed)throw std::runtime_error("fixture observer copy refusal");}
         void operator()(const MempoolTransaction&) const {++*calls;}
     };
-    const auto tx=spend(fund(73),1000000,1000);Mempool pool(&db,&coins);auto armed=std::make_shared<bool>(false);unsigned typed=0,legacy=0;
+    const auto tx=spend(fund(73),1000000,1000);dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins);auto armed=std::make_shared<bool>(false);unsigned typed=0,legacy=0;
     pool.setTxBodyAcceptedCallback(CopyRefusal(armed,&typed));*armed=true;
     EXPECT_THROW(pool.submitTransaction(tx,"typed-observer",false),std::runtime_error);EXPECT_EQ(pool.size(),0U);EXPECT_EQ(typed,0U);EXPECT_FALSE(pool.isOutputSpentInMempool({tx.vin[0].prevout.txid,tx.vin[0].prevout.vout}));*armed=false;
     pool.setTxAcceptedCallback([&](const Transaction& body){++legacy;EXPECT_EQ(body.Serialize(),tx.Serialize());});

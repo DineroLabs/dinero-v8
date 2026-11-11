@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign ancestor-preserving selection checks on the patched implementation only.
 #include "consensus/chainparams.h"
 #include "consensus/genesis_canonical.h"
@@ -69,7 +70,7 @@ protected:
     }
 };
 TEST_F(MiningPackageSelection, RankedChildRetainsParentAndExactWeight) {
-    Mempool pool(&db,&coins);const auto parent=payment(31,1000),descendant=child(parent,0,10000);
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins);const auto parent=payment(31,1000),descendant=child(parent,0,10000);
     ASSERT_TRUE(pool.submitTransaction(parent,"fixture",false).accepted());
     ASSERT_TRUE(pool.submitTransaction(descendant,"fixture",false).accepted());
     BlockAssembler assembler(&db);wire(assembler);assembler.setMempool(&pool);
@@ -83,7 +84,7 @@ TEST_F(MiningPackageSelection, RankedChildRetainsParentAndExactWeight) {
     EXPECT_LE(weight,bound);EXPECT_EQ(pool.size(),2U);
 }
 TEST_F(MiningPackageSelection, SharedParentIncludedExactlyOnce) {
-    Mempool pool(&db,&coins);const auto parent=payment(32,1000,1),first=child(parent,0,5000),second=child(parent,1,1000);
+    dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins);const auto parent=payment(32,1000,1),first=child(parent,0,5000),second=child(parent,1,1000);
     for(const auto& tx:{parent,first,second})ASSERT_TRUE(pool.submitTransaction(tx,"fixture",false).accepted());
     BlockAssembler assembler(&db);wire(assembler);assembler.setMempool(&pool);
     BlockRelayManager relay(nullptr);assembler.SetBlockRelayManager(&relay);assembler.SetIntelligentSelection(true);
@@ -93,7 +94,7 @@ TEST_F(MiningPackageSelection, SharedParentIncludedExactlyOnce) {
     EXPECT_EQ(ids.size(),3U);EXPECT_EQ(assembler.getBlockTemplateStats().total_fees,7000U);
 }
 TEST_F(MiningPackageSelection, RejectedParentCannotLeaveSelectedChild) {
-    Mempool pool(&db,&coins);const auto parent=payment(33,10000,20),descendant=child(parent,0,50000);
+    dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins);const auto parent=payment(33,10000,20),descendant=child(parent,0,50000);
     ASSERT_TRUE(pool.submitTransaction(parent,"fixture",false).accepted());
     ASSERT_TRUE(pool.submitTransaction(descendant,"fixture",false).accepted());
     const auto captured=pool.CaptureBlockSelection(1000000,4000000,1);

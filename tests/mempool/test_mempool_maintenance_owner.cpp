@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign patched-path policy invariants. No unsafe-original execution.
 #include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
@@ -38,7 +39,7 @@ protected:
     }
 };
 TEST_F(MempoolMaintenanceOwner, ConfirmationRetainsChildrenAndCoherentOverlay) {
-    Mempool pool(&db,&coins);const auto funding=fund(1);const auto parent=spend(funding,1000000,1000);
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins);const auto funding=fund(1);const auto parent=spend(funding,1000000,1000);
     const auto child=spend({parent.GetTxid(),0},999000,1000);
     ASSERT_TRUE(pool.submitTransaction(parent,"fixture",false).accepted());ASSERT_TRUE(pool.submitTransaction(child,"fixture",false).accepted());
     ASSERT_TRUE(coins.SpendCoin(funding));ASSERT_TRUE(coins.AddCoin({parent.GetTxid(),0},{parent.vout[0].value,script,110,false}));
@@ -51,14 +52,14 @@ TEST_F(MempoolMaintenanceOwner, ConfirmationRetainsChildrenAndCoherentOverlay) {
     pool.removeConfirmedTransactions({parent.GetTxid().AsUint256()});EXPECT_EQ(pool.size(),2U);
 }
 TEST_F(MempoolMaintenanceOwner, ExpiryRebuildsAndAllowsFreshAdmission) {
-    Mempool pool(&db,&coins);const auto funding=fund(2);const auto tx=spend(funding,1000000,1000);
+    dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins);const auto funding=fund(2);const auto tx=spend(funding,1000000,1000);
     ASSERT_TRUE(pool.submitTransaction(tx,"fixture",false).accepted());pool.setMaxAge(std::chrono::hours(0));pool.removeExpiredTransactions();
     EXPECT_EQ(pool.size(),0U);EXPECT_FALSE(pool.isOutputSpentInMempool(funding));EXPECT_EQ(pool.getCoinsView().getCoin(funding).status(),Status::Ok);
     EXPECT_EQ(pool.getCoinsView().getCoin({tx.GetTxid(),0}).status(),Status::NotFound);
     pool.setMaxAge(std::chrono::hours(24));EXPECT_TRUE(pool.submitTransaction(tx,"fixture",false).accepted());pool.removeExpiredTransactions();EXPECT_EQ(pool.size(),1U);
 }
 TEST_F(MempoolMaintenanceOwner, SizeMaintenanceAndClearPermitCoherentRefill) {
-    Mempool pool(&db,&coins);const auto funding=fund(3);const auto parent=spend(funding,1000000,1000);const auto child=spend({parent.GetTxid(),0},999000,5000);
+    dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins);const auto funding=fund(3);const auto parent=spend(funding,1000000,1000);const auto child=spend({parent.GetTxid(),0},999000,5000);
     ASSERT_TRUE(pool.submitTransaction(parent,"fixture",false).accepted());ASSERT_TRUE(pool.submitTransaction(child,"fixture",false).accepted());pool.limitMempoolSize();EXPECT_EQ(pool.size(),2U);
     const auto child_entry=pool.getMempoolEntry(child.GetTxid().AsUint256());ASSERT_TRUE(child_entry.has_value());
     pool.setMaxSize(child_entry->tx_size);pool.limitMempoolSize();EXPECT_EQ(pool.size(),0U);EXPECT_FALSE(pool.isOutputSpentInMempool(funding));EXPECT_EQ(pool.getCoinsView().createdCount(),0U);

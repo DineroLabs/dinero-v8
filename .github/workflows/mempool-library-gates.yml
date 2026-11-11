@@ -1,0 +1,285 @@
+name: Mempool library gates
+
+on:
+  pull_request:
+    paths:
+      - 'CMakeLists.txt'
+      - 'cmake/Mempool*.cmake'
+      - 'include/daemon/mempool*.h'
+      - 'include/daemon/scanner_mempool_sink.h'
+      - 'include/daemon/relay_transaction_reader.h'
+      - 'include/storage/chain_db_mempool_view.h'
+      - 'include/storage/chain_db.h'
+      - 'src/storage/chain_db.cpp'
+      - 'include/mempool/**'
+      - 'include/policy/**'
+      - 'include/mining/ct_selection_policy.h'
+      - 'include/mining/address_validator.h'
+      - 'src/daemon/mempool.cpp'
+      - 'src/daemon/relay_transaction_reader.cpp'
+      - 'src/daemon/tx_relay_manager.cpp'
+      - 'include/daemon/tx_relay_manager.h'
+      - 'src/daemon/CMakeLists.txt'
+      - 'src/daemon/services/mempool_service.cpp'
+      - 'include/daemon/services/mempool_service.h'
+      - 'src/daemon/services/chainstate_service.cpp'
+      - 'src/nodecore/CMakeLists.txt'
+      - 'build_nodecore_xcframework.sh'
+      - 'rust/orchard_backend/CMakeLists.txt'
+      - 'src/mempool/**'
+      - 'src/policy/**'
+      - 'src/mining/ct_selection_policy.cpp'
+      - 'src/mining/address_validator.cpp'
+      - 'tests/CMakeLists.txt'
+      - 'tests/mining/CMakeLists.txt'
+      - 'tests/mempool/**'
+      - 'tests/mempool_separation/**'
+      - 'scripts/ci/mempool-separation/**'
+      - '.github/workflows/mempool-library-gates.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mempool-library-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  MP_CMAKE_VERSION: '4.3.4'
+  MP_NINJA_VERSION: '1.13.2'
+  MP_PYTEST_VERSION: '9.2.0'
+
+jobs:
+  scripts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Install pinned test tools
+        run: python -m pip install "cmake==${MP_CMAKE_VERSION}" "ninja==${MP_NINJA_VERSION}" "pytest==${MP_PYTEST_VERSION}"
+      - name: Exercise gate positive and negative controls
+        run: python -m pytest -o addopts='' scripts/ci/mempool-separation/tests -v
+
+  native:
+    name: mempool ${{ matrix.os }} orchard=${{ matrix.orchard }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04, macos-15, windows-2022]
+        orchard: ['OFF', 'ON']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Install pinned build tools
+        shell: bash
+        run: python -m pip install "cmake==${MP_CMAKE_VERSION}" "ninja==${MP_NINJA_VERSION}"
+      - name: Linux prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config perl libcurl4-openssl-dev libudev-dev libusb-1.0-0-dev
+      - name: Select qualified macOS toolchain
+        if: runner.os == 'macOS'
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app
+      - name: Set up MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        with:
+          arch: x64
+      - name: Keep the pinned CMake ahead of Visual Studio's copy
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $scripts = python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
+          "$scripts" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          $env:PATH = $scripts + [IO.Path]::PathSeparator + $env:PATH
+          if (@(cmake --version)[0] -ne "cmake version $env:MP_CMAKE_VERSION") {
+            throw 'Windows runner did not select the pinned CMake'
+          }
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: stable
+      - name: Install source-pinned Orchard compiler
+        shell: bash
+        run: |
+          pin="$(python -c "import tomllib; print(tomllib.load(open('rust/orchard_backend/rust-toolchain.toml','rb'))['toolchain']['channel'])")"
+          rustup toolchain install "$pin" --profile minimal
+      - name: Build vendored OpenSSL on POSIX
+        if: runner.os != 'Windows'
+        shell: bash
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+      - name: Build Windows OpenSSL and curl
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $env:OPENSSL_VERSION = '3.5.7'
+          .\scripts\build-openssl-vendored.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\scripts\build-curl-vendored.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Provision Windows curl for CMake discovery
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install curl:x64-windows --no-print-usage
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build Windows reachability dependencies
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          cmake -S depends -B depends\build-msvc -G Ninja `
+            -DCMAKE_TOOLCHAIN_FILE="$PWD\depends\toolchains\windows-msvc-x64.cmake" `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL `
+            -DDINERO_DEPENDS_HOST=windows-AMD64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build depends\build-msvc --parallel 4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $prefix = (Select-String -Path 'depends\current-prefix.env' `
+              -Pattern '^DINERO_DEPENDS_PREFIX=(.*)$').Matches[0].Groups[1].Value
+          "DINERO_DEPENDS_PREFIX=$prefix" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+      - name: Build POSIX reachability dependencies
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cmake -S depends -B depends/build -G Ninja
+          cmake --build depends/build --parallel 4
+          cat depends/current-prefix.env >> "$GITHUB_ENV"
+      - name: Configure the real library and gates on POSIX
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          MP_ORCHARD: ${{ matrix.orchard }}
+        run: |
+          mkdir -p build-mempool/.cmake/api/v1/query
+          touch build-mempool/.cmake/api/v1/query/codemodel-v2
+          cmake -S . -B build-mempool -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DDINERO_USE_VENDORED_DEPS=ON -DENABLE_GRPC=OFF \
+            -DBUILD_NODECORE=ON -DENABLE_TESTS=ON \
+            -DDINERO_BUILD_ORCHARD_BACKEND="$MP_ORCHARD" \
+            -DDINERO_MEMPOOL_SEPARATION_GATES=ON
+      - name: Configure the real library and gates on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MP_ORCHARD: ${{ matrix.orchard }}
+        run: |
+          New-Item -ItemType Directory -Force 'build-mempool/.cmake/api/v1/query' | Out-Null
+          New-Item -ItemType File -Force 'build-mempool/.cmake/api/v1/query/codemodel-v2' | Out-Null
+          $configureArgs = @(
+            '-S', '.', '-B', 'build-mempool', '-G', 'Ninja',
+            '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON',
+            '-DCMAKE_C_COMPILER=cl', '-DCMAKE_CXX_COMPILER=cl',
+            '-DDINERO_USE_VENDORED_DEPS=ON', '-DENABLE_GRPC=OFF',
+            '-DBUILD_NODECORE=ON', '-DENABLE_TESTS=ON',
+            '-DDINERO_WINDOWS_SERVER_BUILD=ON', '-DDINERO_BUILD_MINER=OFF',
+            '-DDINERO_MEMPOOL_SEPARATION_GATES=ON',
+            "-DDINERO_BUILD_ORCHARD_BACKEND=$env:MP_ORCHARD",
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake"
+          )
+          if ($env:MP_ORCHARD -eq 'ON') { $configureArgs += '-DDINERO_ORCHARD_WINDOWS_QUALIFICATION=ON' }
+          & cmake @configureArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build daemon, NodeCore and focused consumers on POSIX
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          MP_ORCHARD: ${{ matrix.orchard }}
+        run: |
+          targets=(dinerod sep_mempool_forced_link sep_mempool_standalone
+            test_chain_db_mempool_view test_mempool_retained_load test_mempool_transaction_body
+            test_tx_relay_g3 test_relay_refresh_owner test_csn_proof_refresh)
+          targets+=(nodecore_link_smoke)
+          if [ "$MP_ORCHARD" = ON ]; then targets+=(test_mempool_orchard_scan_sink); fi
+          cmake --build build-mempool --target "${targets[@]}" --parallel 4
+          ./build-mempool/nodecore_link_smoke
+      - name: Build daemon and focused consumers on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MP_ORCHARD: ${{ matrix.orchard }}
+        run: |
+          # Git Bash puts its own /usr/bin/link.exe ahead of MSVC's linker.
+          # Build through PowerShell and place cl.exe's directory first so
+          # Cargo build scripts also inherit the real MSVC link.exe.
+          $msvcBin = Split-Path (Get-Command cl.exe).Source
+          $env:PATH = $msvcBin + [IO.Path]::PathSeparator + $env:PATH
+          $linker = (Get-Command link.exe).Source
+          if (-not $linker.StartsWith($msvcBin, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "MSVC linker was shadowed: $linker"
+          }
+          $targets = @('dinerod', 'sep_mempool_forced_link', 'sep_mempool_standalone',
+                       'test_chain_db_mempool_view', 'test_mempool_retained_load',
+                       'test_mempool_transaction_body', 'test_tx_relay_g3',
+                       'test_relay_refresh_owner', 'test_csn_proof_refresh')
+          if ($env:MP_ORCHARD -eq 'ON') { $targets += 'test_mempool_orchard_scan_sink' }
+          $buildArgs = @('--build', 'build-mempool', '--target') + $targets + @('--parallel', '4')
+          & cmake @buildArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Enforce the owned boundary and report inherited shielded debt
+        shell: bash
+        run: python scripts/ci/mempool-separation/library_boundary.py --build build-mempool --owned-only
+      - name: Execute exact non-floor contracts
+        shell: bash
+        env:
+          MP_ORCHARD: ${{ matrix.orchard }}
+        run: |
+          python - <<'PY'
+          import os
+          import json
+          import pathlib
+          import re
+          import subprocess
+          names = ['SepMempoolForcedLink', 'SepMempoolStandalone', 'ChainDbMempoolView',
+                   'MempoolRetainedLoad', 'MempoolTransactionBody',
+                   'TxRelayG3Verification', 'RelayRefreshOwner', 'CsnProofRefresh']
+          if os.environ['MP_ORCHARD'] == 'ON':
+              names.append('MempoolScanSinkOrchardAdmission')
+          floor = pathlib.Path('scripts/ci/separation/never_run_floor.txt')
+          forbidden = {s.strip() for s in floor.read_text().splitlines() if s.strip() and not s.startswith('#')}
+          assert forbidden and not set(names) & forbidden
+          listed = json.loads(subprocess.check_output([
+              'ctest', '--test-dir', 'build-mempool', '--show-only=json-v1'], text=True))
+          available = {test['name'] for test in listed['tests']}
+          missing = sorted(set(names) - available)
+          if missing:
+              raise SystemExit('required mempool contracts not registered: ' + ', '.join(missing))
+          subprocess.run(['ctest', '--test-dir', 'build-mempool', '--no-tests=error',
+                          '-R', '^(' + '|'.join(map(re.escape, names)) + ')$',
+                          '--verbose', '--output-on-failure'], check=True)
+          PY
+      - name: Compare regtest mempool RPC, restart and reorg transcript
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          MP_ORCHARD: ${{ matrix.orchard }}
+        run: |
+          config="$(echo "$MP_ORCHARD" | tr '[:upper:]' '[:lower:]')"
+          python tests/mempool_separation/mempool_transcript.py check \
+            --dinerod "$(pwd)/build-mempool/dinerod" --config "$config" \
+            --out "tests/mempool_separation/transcripts/$config.json"
+      - name: Compare Windows regtest mempool RPC, restart and reorg transcript
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MP_ORCHARD: ${{ matrix.orchard }}
+        run: |
+          $daemons = @(Get-ChildItem -Path 'build-mempool' -Recurse -Filter 'dinerod.exe')
+          if ($daemons.Count -ne 1) { throw "Expected one built dinerod.exe, found $($daemons.Count)" }
+          $cfg = $env:MP_ORCHARD.ToLowerInvariant()
+          python tests/mempool_separation/mempool_transcript.py check `
+            --dinerod $daemons[0].FullName --config $cfg `
+            --out "tests/mempool_separation/transcripts/$cfg.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

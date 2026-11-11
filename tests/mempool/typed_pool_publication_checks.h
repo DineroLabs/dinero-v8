@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Patched-path publication and replacement policy checks. Orchard rows below
 // are structural policy fixtures, not authorized or admitted transactions.
 #include "policy/rbf_policy.h"
@@ -34,7 +35,7 @@ protected:
 #endif
 };
 TEST_F(TypedPoolPublication, SignedPublicationKeepsExactOverlayAndAncestorOwners) {
-    const auto parent=split(fund(81));Mempool pool(&db,&coins);pool.setRBFEnabled(true);
+    const auto parent=split(fund(81));dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins);pool.setRBFEnabled(true);
     ASSERT_TRUE(pool.submitTransaction(parent,"typed-publication",false).accepted());
     const auto child=spend({parent.GetTxid(),0},499500,1000);
     ASSERT_TRUE(pool.submitTransaction(child,"typed-publication",false).accepted());
@@ -55,7 +56,7 @@ TEST_F(TypedPoolPublication, SignedPublicationKeepsExactOverlayAndAncestorOwners
 }
 TEST_F(TypedPoolPublication, PublicationFailureRestoresReplacementAndAllowsRetry) {
     const auto out=fund(82);const auto original=spend(out,1000000,1000);const auto replacement=spend(out,1000000,10000);
-    RefusingLogger logger;Mempool pool(&db,&coins);pool.setRBFEnabled(true);pool.setLogger(&logger);
+    RefusingLogger logger;dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins);pool.setRBFEnabled(true);pool.setLogger(&logger);
     ASSERT_TRUE(pool.submitTransaction(original,"typed-publication",false).accepted());const auto before=pool.getTransactionIds();const auto fees=pool.getTotalFees();unsigned observed=0;
     pool.setTxBodyAcceptedCallback([&](const MempoolTransaction&){++observed;});logger.refuse=true;
     EXPECT_THROW(pool.submitTransaction(replacement,"typed-publication",false),std::runtime_error);logger.refuse=false;
@@ -79,7 +80,7 @@ TEST_F(TypedPoolPublication, MixedConflictInventoryRefusesDirectAndDescendantFam
     EXPECT_TRUE(direct_set.contains_unsupported_family);EXPECT_EQ(direct_set.direct_conflicts,std::unordered_set<uint256>{child.GetTxid().AsUint256()});
     EXPECT_EQ(policy.validateReplacement(direct,1000000,direct_set,{}, {},{rows[1]},error),policy::RBFValidationResult::UNSUPPORTED_FAMILY);
     // Exercise the actual preflight/admission refusal with the structural graph.
-    Mempool pool(&db,&coins);pool.setRBFEnabled(true);MempoolOrchardConflictTestPeer::Install(pool,{MempoolTransaction(original),child,MempoolTransaction(grandchild)});
+    dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins);pool.setRBFEnabled(true);MempoolOrchardConflictTestPeer::Install(pool,{MempoolTransaction(original),child,MempoolTransaction(grandchild)});
     const auto before=pool.getTransactionIds();const auto fees=pool.getTotalFees();unsigned observed=0;pool.setTxBodyAcceptedCallback([&](const MempoolTransaction&){++observed;});
     EXPECT_EQ(pool.submitTransactionTestOnly(replacement,"typed-policy").code,TxRejectCode::RBF_REJECTED);
     const auto result=pool.submitTransaction(replacement,"typed-policy",false);EXPECT_EQ(result.code,TxRejectCode::RBF_REJECTED);EXPECT_NE(result.message.find("family without replacement policy"),std::string::npos);
@@ -87,7 +88,7 @@ TEST_F(TypedPoolPublication, MixedConflictInventoryRefusesDirectAndDescendantFam
 }
 TEST_F(TypedPoolPublication, SignedReplacementPreservesUnrelatedTypedBody) {
     const auto orchard=MempoolTransaction::FromOrchard(orchard::TransactionEnvelope::DecodeExact(fixture("candidate-envelope.bin")));
-    Mempool pool(&db,&coins);pool.setRBFEnabled(true);MempoolOrchardConflictTestPeer::Install(pool,{orchard});
+    dinero::ChainDbMempoolView mempool_chain_view_4{&db}; Mempool pool(&mempool_chain_view_4,&coins);pool.setRBFEnabled(true);MempoolOrchardConflictTestPeer::Install(pool,{orchard});
     const auto out=fund(84);const auto original=spend(out,1000000,1000);const auto replacement=spend(out,1000000,10000);
     ASSERT_TRUE(pool.submitTransaction(original,"typed-policy",false).accepted());
     const auto conflicts=policy::RBFPolicy::buildConflictSet(replacement,{*pool.getMempoolEntry(orchard.GetTxid().AsUint256()),*pool.getMempoolEntry(original.GetTxid().AsUint256())},{});

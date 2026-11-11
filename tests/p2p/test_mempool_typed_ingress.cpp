@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign patched-path policy invariants. No unsafe-original execution.
 #include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
@@ -83,7 +84,7 @@ protected:
 };
 TEST_F(MempoolTypedIngress, CapturedHistoricalAdmissionAndCallbackReplacement) {
     auto tx=spend(fund(11),1000000,1000); const auto original=tx;
-    Mempool pool(&db,&coins); TxRelayManager relay(nullptr);size_t submitted=0,replacement=0;
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins); TxRelayManager relay(nullptr);size_t submitted=0,replacement=0;
     relay.SetSendMessageCallback([](const auto&,const auto&,const auto&){});
     relay.SetSubmitBodyCallback([&](const MempoolTransaction& body,const auto& peer) {
         ++submitted;EXPECT_EQ(body.Serialize(),original.Serialize());
@@ -102,7 +103,7 @@ TEST_F(MempoolTypedIngress, MissingSecondParentRemainsRetryable) {
     const auto first=spend(fund(12),1000000,1000);
     const auto second=spend(fund(13),1000000,1000);
     const auto child=join(first,second);const auto child_id=child.GetTxid().AsUint256();
-    Mempool pool(&db,&coins);TxOrphanPool orphans;TxRelayManager relay(nullptr);
+    dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins);TxOrphanPool orphans;TxRelayManager relay(nullptr);
     relay.SetOrphanPool(&orphans);relay.SetSendMessageCallback([](const auto&,const auto&,const auto&){});
     relay.SetSubmitBodyCallback([&](const MempoolTransaction& body,const auto& peer){return pool.submitTransaction(body.Historical(),peer,false);});
     const auto preflight=pool.submitTransactionTestOnly(child,"fixture-preflight");
@@ -131,7 +132,7 @@ TEST_F(MempoolTypedIngress, HistoricalAdapterSharesCallbackOwner) {
     const auto parent=spend(fund(16),1000000,1000);
     const auto child=spend(OutPoint(parent.GetTxid(),0),999000,1000);
     const auto child_id=child.GetTxid().AsUint256();
-    Mempool pool(&db,&coins);TxOrphanPool orphans;relay.SetOrphanPool(&orphans);
+    dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins);TxOrphanPool orphans;relay.SetOrphanPool(&orphans);
     ASSERT_TRUE(orphans.addOrphan(child,"retained-owner"));
     relay.SetSubmitBodyCallback([&](const MempoolTransaction& body,const auto& peer){
         if(body.GetTxid()==child.GetTxid())return TxAcceptResult::Rejected(TxRejectCode::UNAVAILABLE,"temporary validator outage",child_id);
@@ -151,14 +152,14 @@ TEST_F(MempoolTypedIngress, HistoricalAdapterSharesCallbackOwner) {
         bool hasCoin(const OutPoint&) const override { return false; }
         uint32_t getHeight() const override { return 110; }
     };
-    Mempool unavailable_pool(&db,&coins);
+    dinero::ChainDbMempoolView mempool_chain_view_4{&db}; Mempool unavailable_pool(&mempool_chain_view_4,&coins);
     MempoolTypedIngressTestPeer::SetEmptyView(unavailable_pool,std::make_unique<UnavailableView>());
     EXPECT_EQ(unavailable_pool.submitTransactionTestOnly(tx,"backend-refusal").code,TxRejectCode::UNAVAILABLE);
     EXPECT_EQ(unavailable_pool.size(),0U);
     Mempool no_chain(nullptr);
     EXPECT_EQ(no_chain.submitTransactionTestOnly(tx,"unavailable-fixture").code,TxRejectCode::UNAVAILABLE);
     EXPECT_EQ(no_chain.size(),0U);
-    Mempool no_guard(&db,&coins);
+    dinero::ChainDbMempoolView mempool_chain_view_5{&db}; Mempool no_guard(&mempool_chain_view_5,&coins);
     no_guard.setChainstateReadGuardFactory([]{return std::unique_ptr<Mempool::ChainstateReadGuard>{};});
     EXPECT_EQ(no_guard.submitTransactionTestOnly(tx,"unavailable-fixture").code,TxRejectCode::UNAVAILABLE);
     EXPECT_EQ(no_guard.size(),0U);
