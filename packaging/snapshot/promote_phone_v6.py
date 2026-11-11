@@ -24,20 +24,25 @@ import urllib.request
 from snapshot_transport import inspect
 
 PUBLIC_KEY = base64.b64decode('lFOdW71hOC7Q5Y0bYRLDvyFtv8ddU9Tf4a8dbr1Y4Yw=')
-CORE_SHA = '435c081946305fc483116463cf23c3c954517d08'
+CORE_SHA = 'fec279d2ad044fd7cf06330590f7d59841065abb'
 # These are the frozen arm64 inputs for the fixed phone builds, independently
 # hashed from the SDK archive and packaged native library and run on physical
 # devices. The build wrappers inject
 # a version header after the CMake "nodecore" default. This minimal hotfix
 # defers activation while compact bootstrap waits for headers, bounds ASERT
 # ancestry work, revalidates queued headers and awaits completed startup audits.
+# This cold-start revision reuses authenticated catalog data, bounds private
+# disk scans and preserves the released hexadecimal parser/formatter behavior.
+# Core435 passed correctness but needed 8-13 minutes; its captured identity and
+# immutable publication receipts are retained separately. No live promotion
+# or installed-tool change follows from updating these candidate SDK pins.
 # Earlier 87ef0f46c/07aa35e2d inputs failed real fresh/cold phone paths.
 # Actual device VERSION rows are retained in phone_core_identity_v822.json.
 CORE_ARTIFACTS = {
     'ios': {'kind': 'ios-arm64-nodecore-archive',
-            'sha256': 'f5cb8ec6442caec7ff2403b8da16696f0bfa710d6493f367888a51da07306920'},
+            'sha256': '1e50ea8a3a92bf5fd1c4b47a815e83f24ec394cfd2821c32528e3764f7370458'},
     'android': {'kind': 'android-arm64-v8a-nodecore-shared-library',
-                'sha256': 'fb8f93a9e44f96fc620cda593e5ce2a0c715937d2e863c67012dc97190248cb5'},
+                'sha256': '394ce59bbe33458ee08a8cf91a6dbc4396596bf4554408118eb5c88a2d78b15b'},
 }
 MIRRORS = ('https://seed3.dinerolabs.org/snapshot/compact-v6',
            'https://seed.dinerolabs.org/snapshot/compact-v6',
