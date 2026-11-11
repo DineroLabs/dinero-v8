@@ -1133,6 +1133,7 @@ int main(int argc, char** argv) {
 #include "orchard_detached_catalog_checks.h"
 
 #include "orchard_detached_coverage_checks.h"
+#include "recovery_tail_effects_checks.h"
 #include "orchard_detached_recovery_checks.h"
 #include "orchard_detached_issuance_checks.h"
 #include "orchard_issuance_retry_checks.h"
