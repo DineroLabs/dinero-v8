@@ -11654,6 +11654,12 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
     // corruption, self-heal it, or activate against it. The normal tick retries
     // after publication; any still-invalid view then takes the ORIGINAL guard.
     if(snapshot_import_publishing_)return;
+    // A configured compact v6 bootstrap has only a genesis header while its
+    // authenticated base and burial headers arrive. It intentionally has no
+    // full UTXO owner, so ordinary alignment/recovery below cannot run yet.
+    // Only a successful LoadOrchardSnapshot clears this pending flag. Rejected
+    // imports keep their original safe-mode refusal and never gain a fallback.
+    if(orchard_compact_bootstrap_pending_.load())return;
     std::unique_ptr<ParentPreparationScope> entry_scope;
     if(selected_inverse) {
         // A stale detached entry proof is an operational deferral, not durable
