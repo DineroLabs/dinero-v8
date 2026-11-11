@@ -7209,7 +7209,20 @@ din::Json rpc_context_wallet_recoversnapshot(const ExecutionContext& ctx,const d
             result["error"]="Active wallet differs from requested recovery wallet";return result;
          }session=lease->Session();}
         std::string error;const auto recovered=source->RecoverTransparentSnapshotWallet(wallet,&error,session);
-        if(!recovered){result["error"]=error;result["retryable"]=true;return result;}
+        if(!recovered){
+            result["error"]=error;
+            // Permanent capability refusals must not be hot-retried: both
+            // phone apps retry any retryable error every 15 seconds, and the
+            // post-Orchard refusal cannot clear until the native v6 recovery
+            // path ships (2026-11-11-native-v6-wallet-recovery-design.md).
+            // Transient refusals (locks, sessions, missing bodies still
+            // downloading) stay retryable. Stage C replaces this string
+            // match with a typed signal from the recovery function.
+            const bool permanent_capability_refusal =
+                error=="transparent snapshot recovery requires a pre-Orchard selected source";
+            result["retryable"]=!permanent_capability_refusal;
+            return result;
+        }
         result["success"]=true;result["recovered_height"]=Json::UInt64(*recovered);
         result["scope"]="transparent-current-coins-and-post-snapshot-history";
         result["whole_wallet_certified"]=false;
