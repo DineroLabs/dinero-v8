@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Promote one exact compact v6 generation after both native phone qualifications.
 
-Run on EU1. Mirrors pull independently; trigger their existing mirror services
+Run on EU1. Mirrors pull independently; trigger their compact-v6 mirror services
 from the operator host while this command verifies the three public endpoints.
 A mirror failure AFTER the atomic local swap is reported as incomplete rollout;
 the verified generation remains installed. Rerunning safely retries verification.
@@ -24,20 +24,26 @@ import urllib.request
 from snapshot_transport import inspect
 
 PUBLIC_KEY = base64.b64decode('lFOdW71hOC7Q5Y0bYRLDvyFtv8ddU9Tf4a8dbr1Y4Yw=')
-CORE_SHA = '87ef0f46c5ad90f35b7c83b4a91b3edf7cc679fa'
-# These are the exact arm64 inputs used by the updated physical-phone builds,
-# independently hashed from the distributed SDK/APK. The build wrappers inject
-# a version header after the CMake "nodecore" default; captures of the actual
-# device VERSION rows are retained in phone_core_identity_v822.json.
+CORE_SHA = '435c081946305fc483116463cf23c3c954517d08'
+# These are the frozen arm64 inputs for the fixed phone builds, independently
+# hashed from the SDK archive and packaged native library and run on physical
+# devices. The build wrappers inject
+# a version header after the CMake "nodecore" default. This minimal hotfix
+# defers activation while compact bootstrap waits for headers, bounds ASERT
+# ancestry work, revalidates queued headers and awaits completed startup audits.
+# Earlier 87ef0f46c/07aa35e2d inputs failed real fresh/cold phone paths.
+# Actual device VERSION rows are retained in phone_core_identity_v822.json.
 CORE_ARTIFACTS = {
     'ios': {'kind': 'ios-arm64-nodecore-archive',
-            'sha256': '38cba8889ec1ca1058ebeed3ec5d165d5be8eccda7a830afb5ec96e2bf81e86a'},
+            'sha256': 'f5cb8ec6442caec7ff2403b8da16696f0bfa710d6493f367888a51da07306920'},
     'android': {'kind': 'android-arm64-v8a-nodecore-shared-library',
-                'sha256': '7f99699f3c657345538849053cc0be9e40a7f16e99a68631979bec2c491b49a9'},
+                'sha256': 'fb8f93a9e44f96fc620cda593e5ce2a0c715937d2e863c67012dc97190248cb5'},
 }
-MIRRORS = ('https://seed3.dinerolabs.org/snapshot',
-           'https://seed.dinerolabs.org/snapshot',
-           'https://seed2.dinerolabs.org/snapshot')
+MIRRORS = ('https://seed3.dinerolabs.org/snapshot/compact-v6',
+           'https://seed.dinerolabs.org/snapshot/compact-v6',
+           'https://seed2.dinerolabs.org/snapshot/compact-v6')
+LEGACY_PUBROOT = Path('/var/www/dinero-snapshots')
+PHONE_PUBROOT = LEGACY_PUBROOT/'compact-v6'
 HEX = re.compile(r'^[0-9a-f]{64}$')
 CHECKS = ('fleet_signature_verified', 'payload_hash_verified', 'transport_profile_verified',
           'native_import_verified', 'forward_selected_tip_and_accumulator_verified',
@@ -259,6 +265,9 @@ def install_generation(root, generation, staging, phone_hashes, chain_check, on_
                     'refusing to replace a non-phone endpoint')
             require(current['snapshot']['height'] <= staging['snapshot']['height'], 'refusing snapshot height rollback')
         archive = root/'archive'; archive.mkdir(exist_ok=True)
+        # A new versioned endpoint may be initialized under root's 0077 umask.
+        # The HTTP worker must traverse the public archive as well as its set.
+        archive.chmod(0o755)
         name = 'compact-v6-h%d-%s' % (staging['snapshot']['height'], staging['manifest_sha256'])
         destination = archive/name
         if destination.exists():
@@ -352,7 +361,7 @@ def main():
     parser.add_argument('--staging-receipt', type=Path, required=True)
     parser.add_argument('--ios-receipt', type=Path, required=True)
     parser.add_argument('--android-receipt', type=Path, required=True)
-    parser.add_argument('--pubroot', type=Path, default=Path('/var/www/dinero-snapshots'))
+    parser.add_argument('--pubroot', type=Path, default=PHONE_PUBROOT)
     parser.add_argument('--datadir', type=Path, default=Path('/var/lib/dinero'))
     parser.add_argument('--cli', default='/usr/bin/dinero-cli')
     parser.add_argument('--report', type=Path, required=True)
@@ -365,6 +374,8 @@ def main():
               'started_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
               'public_promotion_performed': False}
     try:
+        require(args.pubroot.resolve() != LEGACY_PUBROOT.resolve(),
+                'compact v6 requires the versioned phone root; the shared legacy endpoint must be preserved')
         staging = read_json(args.staging_receipt)
         require(staging.get('state') == 'SERVER_NATIVE_IMPORT_PASSED_PHONE_QUALIFICATION_REQUIRED',
                 'missing server native import staging receipt')

@@ -1,0 +1,29 @@
+{
+  "schema": "dinero.phone-core-identity-evidence.v1",
+  "scope": "Physical-device version observations and exact fixed SDK app inputs; NOT a compact v6 qualification receipt or an app-store release",
+  "captured_utc_date": "2026-11-11",
+  "native_source_sha": "07aa35e2de7445648a3b920262b5643e3e79c97d",
+  "historical_identity": "phone_core_identity_v822_87ef0f46c.json",
+  "ios": {
+    "observed_probe_row": "NCPROBE\tVERSION\tdinerod 8.2.2-07aa35e2de7445648a3b920262b5643e3e79c97d",
+    "device_model": "iPhone 15 Pro Max",
+    "app_version": "1.3.10",
+    "app_build": "2026111003",
+    "app_package_state": "fixed app input staged; package verification and release remain separate",
+    "artifact_kind": "ios-arm64-nodecore-archive",
+    "artifact_sha256": "435aeabbe4e1879355884a17f1255a61890d8ed45bbec21bc1da58db739077e1",
+    "provenance": "Clean minimal Core hotfix SDK; exact app input bytes exercised by the physical-device qualification host",
+    "version_override": "Recorded build wrapper force-includes the identified Core git SHA for MOBILE_NODECORE_BUILD"
+  },
+  "android": {
+    "observed_probe_row": "NCPROBE\tVERSION\tdinerod 8.2.2-07aa35e2de7445648a3b920262b5643e3e79c97d",
+    "device_model": "Samsung SM-A176U",
+    "app_version": "0.4.8",
+    "app_build": 14,
+    "app_package_state": "fixed app input staged; package verification and release remain separate",
+    "artifact_kind": "android-arm64-v8a-nodecore-shared-library",
+    "artifact_sha256": "44ca25020bcdb55d295827d842f96d64c5415e6e0335013eba2f9a942ad79700",
+    "provenance": "Clean minimal Core hotfix SDK; exact app input bytes exercised by the physical-device qualification host",
+    "version_override": "Recorded build wrapper force-includes the identified Core git SHA for MOBILE_NODECORE_BUILD"
+  }
+}

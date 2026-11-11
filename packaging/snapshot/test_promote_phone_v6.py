@@ -133,6 +133,25 @@ class Promotion(unittest.TestCase):
         self.assertEqual(before, sorted(str(p.relative_to(self.public)) for p in self.public.rglob('*')))
         self.assertEqual((self.public/'latest').readlink(), Path('archive/old'))
 
+    def test_shared_legacy_endpoint_is_refused_without_a_swap(self):
+        with patch.object(promote, 'LEGACY_PUBROOT', self.public):
+            self.assert_refused()
+
+    def test_alias_of_shared_legacy_endpoint_is_also_refused(self):
+        legacy = self.public
+        alias = self.root/'legacy-alias'; alias.symlink_to(legacy, target_is_directory=True)
+        self.public = alias
+        with patch.object(promote, 'LEGACY_PUBROOT', legacy):
+            self.assert_refused()
+
+    def test_new_archive_is_traversable_under_restrictive_umask(self):
+        self.public = self.root/'versioned-phone'; self.public.mkdir()
+        previous = os.umask(0o077)
+        try: self.assertEqual(self.run_main(), 0)
+        finally: os.umask(previous)
+        self.assertEqual((self.public/'archive').stat().st_mode & 0o777, 0o755)
+        self.assertEqual((self.public/'latest').resolve().stat().st_mode & 0o777, 0o755)
+
     def test_summary_is_readable_even_under_restrictive_umask(self):
         previous = os.umask(0o077)
         try: self.assertEqual(self.run_main(), 0)
@@ -313,6 +332,12 @@ class CapturedPhoneIdentity(unittest.TestCase):
         observed = json.loads(Path(__file__).with_name('phone_core_identity_v822.json').read_text())
         with self.assertRaises(ValueError):
             promote.verify_native_version(observed['ios']['observed_probe_row']+'\nNCPROBE\tVERSION\tdinerod nodecore\n')
+
+    def test_prior_phone_core_observations_are_preserved_and_no_longer_eligible(self):
+        observed = json.loads(Path(__file__).with_name('phone_core_identity_v822_87ef0f46c.json').read_text())
+        for platform in ('ios', 'android'):
+            with self.subTest(platform=platform), self.assertRaises(ValueError):
+                promote.verify_native_version(observed[platform]['observed_probe_row']+'\n')
 
 
 if __name__ == '__main__': unittest.main()

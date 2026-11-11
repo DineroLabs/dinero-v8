@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh the compact v6 phone snapshot mirror
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=3min
+Unit=dinero-snapshot-compact-v6-mirror.service
+
+[Install]
+WantedBy=timers.target

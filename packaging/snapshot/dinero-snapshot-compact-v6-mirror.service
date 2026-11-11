@@ -1,0 +1,11 @@
+[Unit]
+Description=Mirror the qualified compact v6 phone snapshot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+UMask=0022
+Environment=SRC=https://seed3.dinerolabs.org/snapshot/compact-v6
+Environment=PUBROOT=/var/www/dinero-snapshots/compact-v6
+ExecStart=/usr/local/bin/dinero-snapshot-mirror.sh
