@@ -444,6 +444,13 @@ if(TARGET dinero_chainstate)
     set_tests_properties(OrchardHistoricalController PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
     dinero_add_compact_cases("orchard_outgoing_handoff_checks.h" "daemon;orchard;storage;mandatory")
     dinero_add_compact_cases("orchard_compact_transition_checks.h" "daemon;orchard;storage;mandatory")
+    # These continuous two-edge recovery cases pass in 102-106 seconds on
+    # Linux alone, but compete for the prover and durable-store I/O when
+    # scheduled together. Preserve their full history and 180-second limits.
+    set_tests_properties(
+      OrchardOutgoingHandoff.HistoricalRangeWriterTwoEdgesRoundTripAndAbandonment
+      OrchardCompactTransition.HistoricalCommittedPrefixReopensAndRetriesRemainingEdge
+      PROPERTIES RUN_SERIAL TRUE)
     dinero_add_compact_cases("orchard_compact_network_checks.h" "daemon;orchard;p2p;storage;mandatory")
     dinero_add_compact_cases("orchard_compact_queued_ingress_checks.h" "daemon;orchard;storage;mandatory")
     add_test(NAME OrchardCompactHeaderRestore COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactHeaderRestore.*)
