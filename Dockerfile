@@ -7,6 +7,11 @@ ARG RECOVERY_SNAPSHOT_RELEASE=v8.2.2
 ARG PRIMARY_SNAPSHOT_PAYLOAD_URL=
 ARG PRIMARY_SNAPSHOT_MANIFEST_URL=
 ARG PRIMARY_SNAPSHOT_SIGNATURE_URL=
+ARG BINARY_TARBALL_URL=
+ARG BINARY_SUMS_URL=
+ARG BINARY_TARBALL_SHA256=
+ARG BINARY_SUMS_SHA256=
+ARG EXPECTED_SOURCE_SHA=
 
 FROM debian:13-slim AS fetch
 ARG DINERO_VERSION
@@ -15,6 +20,11 @@ ARG RECOVERY_SNAPSHOT_RELEASE
 ARG PRIMARY_SNAPSHOT_PAYLOAD_URL
 ARG PRIMARY_SNAPSHOT_MANIFEST_URL
 ARG PRIMARY_SNAPSHOT_SIGNATURE_URL
+ARG BINARY_TARBALL_URL
+ARG BINARY_SUMS_URL
+ARG BINARY_TARBALL_SHA256
+ARG BINARY_SUMS_SHA256
+ARG EXPECTED_SOURCE_SHA
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl openssl python3 \
  && rm -rf /var/lib/apt/lists/*
 COPY packaging/snapshot/check_desktop_primary.py /verify/check_desktop_primary.py
@@ -36,8 +46,18 @@ RUN set -eux; \
       PRIMARY_SNAPSHOT_MANIFEST_URL="${PRIMARY}/dinero-assumeutxo-150521-v6-full.dat.publisher.manifest.json"; \
       PRIMARY_SNAPSHOT_SIGNATURE_URL="${PRIMARY}/dinero-assumeutxo-150521-v6-full.dat.publisher.manifest.sig"; \
     fi; \
-    curl -fsSL -O "${BASE}/dinero-linux-x86_64-${DINERO_VERSION}.tar.gz"; \
-    curl -fsSL -O "${BASE}/SHA256SUMS-linux-x86_64-${DINERO_VERSION}"; \
+    if [ -n "${BINARY_TARBALL_URL}${BINARY_SUMS_URL}${BINARY_TARBALL_SHA256}${BINARY_SUMS_SHA256}" ]; then \
+      test -n "${BINARY_TARBALL_URL}" && test -n "${BINARY_SUMS_URL}" && test -n "${BINARY_TARBALL_SHA256}" && test -n "${BINARY_SUMS_SHA256}" || { echo 'all exact candidate binary URLs and hashes are required'; exit 1; }; \
+      case "${BINARY_TARBALL_URL}" in https://*) ;; *) echo 'binary tarball URL must use HTTPS'; exit 1 ;; esac; \
+      case "${BINARY_SUMS_URL}" in https://*) ;; *) echo 'binary checksums URL must use HTTPS'; exit 1 ;; esac; \
+      curl -fsSL -o "dinero-linux-x86_64-${DINERO_VERSION}.tar.gz" "${BINARY_TARBALL_URL}"; \
+      curl -fsSL -o "SHA256SUMS-linux-x86_64-${DINERO_VERSION}" "${BINARY_SUMS_URL}"; \
+      printf '%s  %s\n' "${BINARY_TARBALL_SHA256}" "dinero-linux-x86_64-${DINERO_VERSION}.tar.gz" | sha256sum -c -; \
+      printf '%s  %s\n' "${BINARY_SUMS_SHA256}" "SHA256SUMS-linux-x86_64-${DINERO_VERSION}" | sha256sum -c -; \
+    else \
+      curl -fsSL -O "${BASE}/dinero-linux-x86_64-${DINERO_VERSION}.tar.gz"; \
+      curl -fsSL -O "${BASE}/SHA256SUMS-linux-x86_64-${DINERO_VERSION}"; \
+    fi; \
     python3 /verify/fetch_desktop_primary.py \
       --payload-url "${PRIMARY_SNAPSHOT_PAYLOAD_URL}" \
       --manifest-url "${PRIMARY_SNAPSHOT_MANIFEST_URL}" \
@@ -55,6 +75,8 @@ RUN set -eux; \
     cp dinero-assumeutxo-73035-v4.manifest.json dinero-assumeutxo-73035-v4.dat.manifest.json; \
     tar xzf "dinero-linux-x86_64-${DINERO_VERSION}.tar.gz"; \
     sha256sum -c "SHA256SUMS-linux-x86_64-${DINERO_VERSION}"; \
+    test -n "${EXPECTED_SOURCE_SHA}" && test -f "dinero-linux-x86_64-${DINERO_VERSION}/SOURCE_SHA" && \
+      test "$(cat "dinero-linux-x86_64-${DINERO_VERSION}/SOURCE_SHA")" = "${EXPECTED_SOURCE_SHA}" || { echo 'Linux archive source SHA differs from the qualified checkout'; exit 1; }; \
     python3 /verify/check_recovery_manifests.py \
       --directory /tmp/dl --catalog /verify/desktop-inputs-candidate.json; \
     mkdir -p /out; \
@@ -69,6 +91,7 @@ RUN set -eux; \
 
 FROM debian:13-slim
 ARG DINERO_VERSION
+ARG EXPECTED_SOURCE_SHA
 LABEL org.opencontainers.image.title="Dinero Full Node"
 LABEL org.opencontainers.image.description="Post-quantum, Utreexo-native proof-of-work full node"
 LABEL org.opencontainers.image.source="https://github.com/DineroLabs/dinero-v8"
@@ -78,6 +101,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends libudev1 ca-cer
  && useradd --system --uid 10001 --create-home --home-dir /data dinero
 COPY --from=fetch /out/dinerod /usr/local/bin/dinerod
 COPY --from=fetch /out/dinero-cli /usr/local/bin/dinero-cli
+# A receipt inside the archive can self-label. Check the independently
+# compiled daemon identity too before the image can pass a build.
+COPY packaging/docker/check_binary_source.sh /verify/check_binary_source.sh
+RUN sh /verify/check_binary_source.sh /usr/local/bin/dinerod "${EXPECTED_SOURCE_SHA}" "${DINERO_VERSION}"
 COPY --from=fetch /out/dinero-assumeutxo-150521-v6-full.dat* /opt/dinero/
 COPY --from=fetch /out/dinero-assumeutxo-148375-v5.dat* /opt/dinero/
 COPY --from=fetch /out/dinero-assumeutxo-99677-v4.dat* /opt/dinero/

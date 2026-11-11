@@ -18,15 +18,24 @@ lineage beyond the three desktop fallbacks.
 
 Before a release tag exists, the desktop candidate workflows and Docker manual
 dry-run can take the exact snapshot, publisher manifest, and signature HTTPS
-URLs as inputs. Signature verification and the catalog pin are mandatory.
-Manual runs with URL overrides cannot publish an image. The final release must carry
+URLs as inputs. The Docker dry-run also needs the exact Linux 8.2.3 archive
+and SHA256SUMS from the qualified `linux-release.yml` candidate run, staged at
+HTTPS URLs with reviewed SHA-256 hashes for both files. Supply the full
+`candidate_source` SHA matching this workflow's checkout. The archive includes
+`SOURCE_SHA`; Docker checks it and the compiled daemon's `--version` commit
+against that same SHA. Signature verification and the snapshot catalog pin
+remain mandatory. Manual runs with URL overrides cannot publish an image.
+The final release must carry
 the `.dat`, normalized `.dat.manifest.json`, original
 `.dat.publisher.manifest.json`, `.dat.publisher.manifest.sig`, and
 qualification receipt. Its exact H150521 payload SHA-256 and length must come
 from a successful native export, import, and restart at the frozen source SHA.
-Before v8.2.3 binaries are public, a manual dry-run can use v8.2.2 binaries to
-check the image transport and entrypoint, but that is not the final-source
-image smoke.
+Pull-request CI runs source contracts only and explicitly reports that no
+image was qualified. It does not pair old 8.2.2 binaries with the new snapshot
+or fetch an unpublished v8.2.3 release URL. After the exact-source manual
+dry-run passes the real daemon fresh-volume and same-volume restart smoke,
+the release event repeats that smoke against the published assets before
+pushing an image to GHCR.
 
 After native source and payload qualification, update the catalog with the
 exact H150521 payload hash, bytes, block hash, and profile, then run a hosted

@@ -13,6 +13,7 @@
 !packaging/snapshot/desktop-inputs-candidate.json
 !packaging/docker/
 !packaging/docker/check_recovery_manifests.py
+!packaging/docker/check_binary_source.sh
 !scripts/
 !scripts/ci/
 !scripts/ci/check_snapshot_freshness.py

@@ -6,8 +6,11 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Dinero version to build (e.g. 8.1.3)"
+        description: "Exact Dinero version to build (8.2.3 for this candidate)"
         required: true
+      candidate_source:
+        description: "Full source SHA for pre-publication exact-binary dry run"
+        required: false
       publish_latest:
         description: "Also update latest (allowed only for GitHub's current latest stable release)"
         required: false
@@ -27,8 +30,21 @@ on:
       snapshot_signature_url:
         description: "Optional publisher signature URL for dry-run bootstrap"
         required: false
-  # PRs run the admission tests and image build but never push. Before the
-  # H150521 catalog is natively qualified, the fetch step refuses the image.
+      binary_tarball_url:
+        description: "Staged exact-source Linux archive HTTPS URL for dry run"
+        required: false
+      binary_sums_url:
+        description: "Staged exact-source Linux SHA256SUMS HTTPS URL for dry run"
+        required: false
+      binary_tarball_sha256:
+        description: "Reviewed SHA-256 of staged Linux archive"
+        required: false
+      binary_sums_sha256:
+        description: "Reviewed SHA-256 of staged SHA256SUMS"
+        required: false
+  # PRs run source contracts only and say so explicitly. They cannot fetch
+  # unpublished v8.2.3 assets, and an 8.2.2 binary transport smoke would not
+  # qualify the final source. Manual dry-run and release events build the image.
   #
   # Path-filtered because the image is assembled from PUBLISHED release artifacts, not
   # from this tree's source (see Dockerfile stage 1) — a source-only PR cannot change
@@ -73,7 +89,13 @@ jobs:
       - name: Check full-v6 primary and four recovery fallback contracts
         run: python3 -B packaging/docker/test_full_v6_candidate.py -v
 
+      - name: PR result is contract-only, not image-qualified
+        if: github.event_name == 'pull_request'
+        run: |
+          echo 'Docker source contracts passed. Exact v8.2.3 image build, signed snapshot fetch, and fresh-volume/restart smoke remain required before publication.' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Admit exact full-v6 catalog primary
+        if: github.event_name != 'pull_request'
         run: |
           python3 - <<'PY'
           import json
@@ -91,9 +113,11 @@ jobs:
           PY
 
       - name: Resolve version
+        if: github.event_name != 'pull_request'
         id: v
         env:
           INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_CANDIDATE_SOURCE: ${{ github.event.inputs.candidate_source }}
           INPUT_PUBLISH_LATEST: ${{ github.event.inputs.publish_latest }}
           RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
           RELEASE_DRAFT: ${{ github.event.release.draft }}
@@ -101,45 +125,47 @@ jobs:
           INPUT_SNAPSHOT_PAYLOAD_URL: ${{ github.event.inputs.snapshot_payload_url }}
           INPUT_SNAPSHOT_MANIFEST_URL: ${{ github.event.inputs.snapshot_manifest_url }}
           INPUT_SNAPSHOT_SIGNATURE_URL: ${{ github.event.inputs.snapshot_signature_url }}
+          INPUT_BINARY_TARBALL_URL: ${{ github.event.inputs.binary_tarball_url }}
+          INPUT_BINARY_SUMS_URL: ${{ github.event.inputs.binary_sums_url }}
+          INPUT_BINARY_TARBALL_SHA256: ${{ github.event.inputs.binary_tarball_sha256 }}
+          INPUT_BINARY_SUMS_SHA256: ${{ github.event.inputs.binary_sums_sha256 }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            # A release-preparation PR intentionally names an artifact version that
-            # does not exist yet. Building that default would always 404 before the
-            # release can be merged. Validate the complete image/runtime path against
-            # the latest published v8 artifact here; the release event below rebuilds
-            # and runs the exact newly published version before pushing it.
-            CANDIDATE="$(sed -n 's/^ARG DINERO_VERSION=//p' Dockerfile | head -1)"
-            case "$CANDIDATE" in
-              8.*) ;;
-              *) echo "::error::Dockerfile has invalid candidate version '$CANDIDATE'"; exit 1 ;;
-            esac
-            PUBLISHED_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-              --jq '[.[] | select(.draft == false and .prerelease == false and (.tag_name | startswith("v8.")))][0].tag_name')"
-            test -n "$PUBLISHED_TAG" || { echo "::error::no published v8 release found for PR validation"; exit 1; }
-            V="${PUBLISHED_TAG#v}"
-          elif [ -n "$INPUT_VERSION" ]; then
+          if [ -n "$INPUT_VERSION" ]; then
             V="$INPUT_VERSION"
           else
             V="${GITHUB_REF_NAME#v}"
           fi
-          case "$V" in
-            8.*) ;;
-            *) echo "::error::refusing to build '$V' — this image is built from v8.* release assets only"; exit 1 ;;
-          esac
+          [[ "$V" =~ ^8\.[0-9]+\.[0-9]+$ ]] || { echo "::error::invalid image version '$V'"; exit 1; }
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          SOURCE_VERSION="$(sed -nE 's/^project\(dinero VERSION ([0-9]+\.[0-9]+\.[0-9]+) LANGUAGES.*$/\1/p' CMakeLists.txt)"
+          test "$V" = "$SOURCE_VERSION" || { echo "::error::image version $V differs from source version $SOURCE_VERSION"; exit 1; }
           echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
-          if [ -n "${INPUT_SNAPSHOT_PAYLOAD_URL}${INPUT_SNAPSHOT_MANIFEST_URL}${INPUT_SNAPSHOT_SIGNATURE_URL}" ]; then
-            if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || [ "$INPUT_DRY_RUN" != true ]; then
-              echo '::error::private mirror URLs are permitted only in manual dry runs'; exit 1
-            fi
-            test -n "$INPUT_SNAPSHOT_PAYLOAD_URL" && test -n "$INPUT_SNAPSHOT_MANIFEST_URL" && test -n "$INPUT_SNAPSHOT_SIGNATURE_URL" || {
-              echo '::error::all three signed mirror URLs are required'; exit 1;
+          override="${INPUT_SNAPSHOT_PAYLOAD_URL}${INPUT_SNAPSHOT_MANIFEST_URL}${INPUT_SNAPSHOT_SIGNATURE_URL}${INPUT_BINARY_TARBALL_URL}${INPUT_BINARY_SUMS_URL}${INPUT_BINARY_TARBALL_SHA256}${INPUT_BINARY_SUMS_SHA256}${INPUT_CANDIDATE_SOURCE}"
+          if [ -n "$override" ]; then
+            test "$GITHUB_EVENT_NAME" = workflow_dispatch && test "$INPUT_DRY_RUN" = true || {
+              echo '::error::candidate inputs are allowed only in manual dry runs'; exit 1;
             }
+            test "$V" = 8.2.3 || { echo '::error::candidate input version must be 8.2.3'; exit 1; }
+            [[ "$INPUT_CANDIDATE_SOURCE" =~ ^[0-9a-f]{40}$ ]] && test "$SOURCE_SHA" = "$INPUT_CANDIDATE_SOURCE" || {
+              echo '::error::candidate source SHA does not match the checked-out source'; exit 1;
+            }
+            for url in "$INPUT_SNAPSHOT_PAYLOAD_URL" "$INPUT_SNAPSHOT_MANIFEST_URL" "$INPUT_SNAPSHOT_SIGNATURE_URL" "$INPUT_BINARY_TARBALL_URL" "$INPUT_BINARY_SUMS_URL"; do
+              [[ "$url" =~ ^https://[^[:space:]]+$ ]] || { echo '::error::all five immutable candidate URLs must use HTTPS'; exit 1; }
+            done
+            for digest in "$INPUT_BINARY_TARBALL_SHA256" "$INPUT_BINARY_SUMS_SHA256"; do
+              [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || { echo '::error::both candidate binary SHA-256 pins are required'; exit 1; }
+            done
           fi
           echo "snapshot_payload_url=$INPUT_SNAPSHOT_PAYLOAD_URL" >> "$GITHUB_OUTPUT"
           echo "snapshot_manifest_url=$INPUT_SNAPSHOT_MANIFEST_URL" >> "$GITHUB_OUTPUT"
           echo "snapshot_signature_url=$INPUT_SNAPSHOT_SIGNATURE_URL" >> "$GITHUB_OUTPUT"
+          echo "binary_tarball_url=$INPUT_BINARY_TARBALL_URL" >> "$GITHUB_OUTPUT"
+          echo "binary_sums_url=$INPUT_BINARY_SUMS_URL" >> "$GITHUB_OUTPUT"
+          echo "binary_tarball_sha256=$INPUT_BINARY_TARBALL_SHA256" >> "$GITHUB_OUTPUT"
+          echo "binary_sums_sha256=$INPUT_BINARY_SUMS_SHA256" >> "$GITHUB_OUTPUT"
 
           # `latest` must only ever move forward. Release events update it normally.
           # A manual repair may update it only when the requested version is still
@@ -166,6 +192,7 @@ jobs:
           echo "Building Dinero $V (tag latest: $LATEST)"
 
       - uses: docker/setup-buildx-action@v3
+        if: github.event_name != 'pull_request'
 
       # Every registry-touching step from here down is gated off on pull_request, so a
       # PR run never authenticates to any registry and never reads a secret.
@@ -182,6 +209,7 @@ jobs:
       # runtime one (the daemon built fine and then could not start for want of a
       # shared library). The runner is native amd64, so this costs seconds.
       - name: Build and load
+        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -193,9 +221,15 @@ jobs:
             PRIMARY_SNAPSHOT_PAYLOAD_URL=${{ steps.v.outputs.snapshot_payload_url }}
             PRIMARY_SNAPSHOT_MANIFEST_URL=${{ steps.v.outputs.snapshot_manifest_url }}
             PRIMARY_SNAPSHOT_SIGNATURE_URL=${{ steps.v.outputs.snapshot_signature_url }}
+            BINARY_TARBALL_URL=${{ steps.v.outputs.binary_tarball_url }}
+            BINARY_SUMS_URL=${{ steps.v.outputs.binary_sums_url }}
+            BINARY_TARBALL_SHA256=${{ steps.v.outputs.binary_tarball_sha256 }}
+            BINARY_SUMS_SHA256=${{ steps.v.outputs.binary_sums_sha256 }}
+            EXPECTED_SOURCE_SHA=${{ steps.v.outputs.source_sha }}
           tags: dinerod:ci
 
       - name: Run check — the image must actually start
+        if: github.event_name != 'pull_request'
         run: |
           set -x
           docker run --rm --entrypoint /usr/local/bin/dinerod dinerod:ci --version
@@ -225,6 +259,7 @@ jobs:
       # captures it), not on a log line, so it cannot be satisfied by logging alone. No
       # sync, no daemon, no network: milliseconds.
       - name: Restart-regression check — snapshot stays armed when /data/blocks exists
+        if: github.event_name != 'pull_request'
         run: |
           set -x
           docker run --rm --entrypoint /bin/sh dinerod:ci -c '
@@ -268,6 +303,10 @@ jobs:
             *) echo "no argument leak in entrypoint output" ;;
           esac
 
+      - name: Real daemon fresh-volume and restart smoke
+        if: github.event_name != 'pull_request'
+        run: bash packaging/docker/smoke_fresh_restart.sh dinerod:ci
+
       # Same context and build-args, so this reuses the layers built above.
       - name: Build and push
         if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && steps.v.outputs.dry_run == 'false')
@@ -281,6 +320,11 @@ jobs:
             PRIMARY_SNAPSHOT_PAYLOAD_URL=${{ steps.v.outputs.snapshot_payload_url }}
             PRIMARY_SNAPSHOT_MANIFEST_URL=${{ steps.v.outputs.snapshot_manifest_url }}
             PRIMARY_SNAPSHOT_SIGNATURE_URL=${{ steps.v.outputs.snapshot_signature_url }}
+            BINARY_TARBALL_URL=${{ steps.v.outputs.binary_tarball_url }}
+            BINARY_SUMS_URL=${{ steps.v.outputs.binary_sums_url }}
+            BINARY_TARBALL_SHA256=${{ steps.v.outputs.binary_tarball_sha256 }}
+            BINARY_SUMS_SHA256=${{ steps.v.outputs.binary_sums_sha256 }}
+            EXPECTED_SOURCE_SHA=${{ steps.v.outputs.source_sha }}
           tags: |
             ghcr.io/dinerolabs/dinero-v8:${{ steps.v.outputs.version }}
             ${{ steps.v.outputs.latest == 'true' && 'ghcr.io/dinerolabs/dinero-v8:latest' || '' }}

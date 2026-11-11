@@ -17,6 +17,18 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 
 
+def workflow_run_script(workflow: str, step_name: str) -> str:
+    lines = workflow.splitlines()
+    start = lines.index('      - name: ' + step_name)
+    run = next(i for i in range(start + 1, len(lines)) if lines[i] == '        run: |')
+    body = []
+    for line in lines[run + 1:]:
+        if line.startswith('      - ') or line.startswith('      #'):
+            break
+        body.append(line[10:] if line.startswith('          ') else '')
+    return '\n'.join(body).rstrip() + '\n'
+
+
 class FullV6DockerCandidateTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -115,6 +127,145 @@ class FullV6DockerCandidateTest(unittest.TestCase):
         self.assertIn('packaging/docker/check_image_layout.sh', workflow)
         self.assertIn('packaging/docker/test_full_v6_candidate.py', workflow)
         self.assertIn("steps.v.outputs.dry_run == 'false'", workflow)
+        self.assertLess(workflow.index('Real daemon fresh-volume and restart smoke'),
+                        workflow.index('      - name: Build and push'))
+        self.assertIn("- name: PR result is contract-only, not image-qualified", workflow)
+        self.assertIn("- name: Build and load\n        if: github.event_name != 'pull_request'", workflow)
+        self.assertIn("- name: Admit exact full-v6 catalog primary\n        if: github.event_name != 'pull_request'", workflow)
+
+    def test_compiled_daemon_identity_is_checked_separately_from_archive_receipt(self):
+        expected_sha = 'a' * 40
+        stub = self.root / 'dinerod'
+        stub.write_text('#!/bin/sh\nprintf "dinerod 8.2.3\\ncomponent: dinerod\\ncommit: %s\\n" "$TEST_BINARY_SHA"\n')
+        stub.chmod(0o755)
+        checker = HERE / 'check_binary_source.sh'
+
+        def run_check(binary_sha: str, version: str = '8.2.3'):
+            return subprocess.run(['sh', str(checker), str(stub), expected_sha, version],
+                                  env=os.environ | {'TEST_BINARY_SHA': binary_sha},
+                                  text=True, capture_output=True)
+
+        self.assertEqual(run_check(expected_sha).returncode, 0)
+        self.assertNotEqual(run_check('b' * 40).returncode, 0)
+        self.assertNotEqual(run_check(expected_sha, '8.2.2').returncode, 0)
+
+    def test_image_admission_refuses_current_unqualified_catalog(self):
+        workflow = (ROOT / '.github/workflows/docker-publish.yml').read_text()
+        script = workflow_run_script(workflow, 'Admit exact full-v6 catalog primary')
+        current = subprocess.run(['bash', '-e', '-c', script], cwd=ROOT,
+                                 text=True, capture_output=True)
+        self.assertNotEqual(current.returncode, 0)
+        self.assertIn('native-qualified catalog pin is unavailable', current.stderr)
+
+        catalog_dir = self.root / 'packaging/snapshot'
+        catalog_dir.mkdir(parents=True)
+        catalog_dir.joinpath('desktop-inputs-candidate.json').write_text(json.dumps({
+            'primary': {'filename': 'dinero-assumeutxo-150521-v6-full.dat',
+                        'height': 150521, 'format_version': 6,
+                        'snapshot_profile': 'full', 'bytes': 4096,
+                        'sha256': 'a' * 64, 'block_hash': 'b' * 64}}))
+        qualified_shape = subprocess.run(['bash', '-e', '-c', script], cwd=self.root,
+                                         text=True, capture_output=True)
+        self.assertEqual(qualified_shape.returncode, 0, qualified_shape.stderr)
+
+    def test_manual_candidate_requires_exact_source_hashes_and_dry_run(self):
+        workflow = (ROOT / '.github/workflows/docker-publish.yml').read_text()
+        script = workflow_run_script(workflow, 'Resolve version')
+        source_sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT,
+                                             text=True).strip()
+        output = self.root / 'github-output'
+        base = os.environ | {
+            'GITHUB_OUTPUT': str(output), 'GITHUB_EVENT_NAME': 'workflow_dispatch',
+            'GITHUB_REF_NAME': 'codex/v823-desktop-full-v6-packaging',
+            'INPUT_VERSION': '8.2.3', 'INPUT_CANDIDATE_SOURCE': source_sha,
+            'INPUT_PUBLISH_LATEST': 'false', 'INPUT_DRY_RUN': 'true',
+            'RELEASE_PRERELEASE': 'false', 'RELEASE_DRAFT': 'false',
+            'INPUT_SNAPSHOT_PAYLOAD_URL': 'https://example.org/snapshot.dat',
+            'INPUT_SNAPSHOT_MANIFEST_URL': 'https://example.org/manifest.json',
+            'INPUT_SNAPSHOT_SIGNATURE_URL': 'https://example.org/manifest.sig',
+            'INPUT_BINARY_TARBALL_URL': 'https://example.org/dinero-linux-x86_64-8.2.3.tar.gz',
+            'INPUT_BINARY_SUMS_URL': 'https://example.org/SHA256SUMS-linux-x86_64-8.2.3',
+            'INPUT_BINARY_TARBALL_SHA256': 'a' * 64,
+            'INPUT_BINARY_SUMS_SHA256': 'b' * 64,
+        }
+
+        def run_case(**changes):
+            output.write_text('')
+            return subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', script],
+                                  cwd=ROOT, env=base | changes, text=True,
+                                  capture_output=True)
+
+        result = run_case()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('source_sha=' + source_sha, output.read_text())
+        for changes in (
+            {'INPUT_CANDIDATE_SOURCE': 'c' * 40},
+            {'INPUT_BINARY_TARBALL_SHA256': ''},
+            {'INPUT_DRY_RUN': 'false'},
+            {'INPUT_SNAPSHOT_SIGNATURE_URL': 'http://example.org/manifest.sig'},
+            {'INPUT_BINARY_SUMS_URL': 'https://example.org/sums\nINJECT=1'},
+        ):
+            with self.subTest(changes=changes):
+                self.assertNotEqual(run_case(**changes).returncode, 0)
+        release = run_case(GITHUB_EVENT_NAME='release', GITHUB_REF_NAME='v8.2.3',
+                           INPUT_CANDIDATE_SOURCE='', INPUT_SNAPSHOT_PAYLOAD_URL='',
+                           INPUT_SNAPSHOT_MANIFEST_URL='', INPUT_SNAPSHOT_SIGNATURE_URL='',
+                           INPUT_BINARY_TARBALL_URL='', INPUT_BINARY_SUMS_URL='',
+                           INPUT_BINARY_TARBALL_SHA256='', INPUT_BINARY_SUMS_SHA256='',
+                           INPUT_VERSION='', INPUT_DRY_RUN='')
+        self.assertEqual(release.returncode, 0, release.stderr)
+
+    def test_fresh_volume_smoke_restarts_same_volume_and_requires_armed_snapshot(self):
+        docker = self.root / 'docker'
+        docker.write_text('''#!/bin/sh
+printf '%s\\n' "$*" >> "$DOCKER_CALLS"
+case "$1" in
+  volume|stop|rm) exit 0 ;;
+  run) echo container-id; exit 0 ;;
+  inspect)
+    case "$*" in
+      *State.Running*) echo true ;;
+      *State.ExitCode*) echo "${DOCKER_STOP_EXIT_CODE:-0}" ;;
+      *) exit 1 ;;
+    esac
+    exit 0 ;;
+  exec) exit 0 ;;
+  logs)
+    if [ "$DOCKER_MISSING_SNAPSHOT_LOG" != 1 ]; then
+      echo '[entrypoint] assumeutxo_snapshot=yes assumeutxo_fallbacks=yes assumeutxo_forward_connect=yes'
+    fi
+    exit 0 ;;
+esac
+exit 1
+''')
+        docker.chmod(0o755)
+        calls = self.root / 'docker-calls'
+        env = os.environ | {'DOCKER_CALLS': str(calls),
+                            'DOCKER_MISSING_SNAPSHOT_LOG': '0',
+                            'PATH': str(self.root) + os.pathsep + os.environ['PATH']}
+        command = ['bash', str(HERE / 'smoke_fresh_restart.sh'), 'dinerod:ci']
+        result = subprocess.run(command, env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Docker fresh daemon reached RPC readiness', result.stdout)
+        self.assertIn('Docker restart daemon reached RPC readiness', result.stdout)
+        starts = [line for line in calls.read_text().splitlines() if line.startswith('run -d ')]
+        self.assertEqual(len(starts), 2)
+        self.assertEqual(starts[0].split('--mount ')[1].split(' ')[0],
+                         starts[1].split('--mount ')[1].split(' ')[0])
+
+        calls.write_text('')
+        result = subprocess.run(command, env=env | {'DOCKER_MISSING_SNAPSHOT_LOG': '1'},
+                                text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('did not arm the primary and recovery snapshots', result.stderr)
+        self.assertEqual(sum(line.startswith('run -d ') for line in calls.read_text().splitlines()), 1)
+
+        calls.write_text('')
+        result = subprocess.run(command, env=env | {'DOCKER_STOP_EXIT_CODE': '137'},
+                                text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('did not stop cleanly', result.stderr)
+        self.assertEqual(sum(line.startswith('run -d ') for line in calls.read_text().splitlines()), 1)
 
     def test_workflow_docker_c_argument_executes_every_layout_check(self):
         workflow = (ROOT / ".github/workflows/docker-publish.yml").read_text()
