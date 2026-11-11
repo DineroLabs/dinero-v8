@@ -1,7 +1,8 @@
 # Chainstate and storage ownership
 
 Status: staged separation plan. Stage 1 moves restart metadata into the existing
-`dinero_chainstate` target; later stages need their own review and qualification.
+`dinero_chainstate` target. Stage 2 records the shared block graph's current
+owners and raw consumers. Later stages need their own review and qualification.
 
 ## Present boundary
 
@@ -25,17 +26,19 @@ existing atomic batch and rollback semantics.
    `dinero_chainstate`. Its live consumer is `HeaderSyncManager`; the disk
    format and call sites stay unchanged. Qualify restart metadata, daemon
    linking, and header-sync restart with Orchard on and off.
-2. Inventory every compiled owner and direct compile of `block_index.cpp` and
-   `block_lifecycle.cpp`, including standalone consensus and test targets.
-   Separate pure index-record operations from mutable graph operations before
+2. Record every CMake compile of `block_index.cpp` and `block_lifecycle.cpp`,
+   including standalone consensus and tests, plus direct raw-global uses.
+   Ratchet those counts so a new owner or consumer fails locally. This is an
+   inventory guard, not proof that chainstate already owns the graph.
+3. Separate pure index-record operations from mutable graph operations before
    changing the library owner. Preserve the existing lock order and the
-   equal-work candidate ordering. Add a link/ownership gate only when the
-   final graph owner is defined.
-3. Put graph mutation and active-tip publication behind a chainstate-owned
+   equal-work candidate ordering. Prove the standalone consensus link and
+   daemon link after the split.
+4. Put graph mutation and active-tip publication behind a chainstate-owned
    interface. Move consumers incrementally, with restart, invalid-candidate,
    equal-work, and deep-reorg regressions at each step. Do not replace one
    shared global with another singleton.
-4. Move the activation/reorg coordinator only after its wallet, mempool, pool,
+5. Move the activation/reorg coordinator only after its wallet, mempool, pool,
    network, and RPC callbacks are explicit dependencies. Keep block connect,
    coins, checkpoints, undo, and selected-tip publication atomic. Qualify
    full-node and CSN parity, crash/restart, snapshot recovery, and real daemon
