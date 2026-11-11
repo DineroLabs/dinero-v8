@@ -34,6 +34,16 @@ endif()
 # Tests (only if we have working test files)
 enable_testing()
 
+# Header metadata cold startup parses millions of hexadecimal hash bytes.
+# Compare the optimized codec with the released implementation, including
+# malformed input and the exact historical null-on-error behavior.
+add_executable(test_uint256_hex
+  tests/primitives/test_uint256_hex.cpp src/primitives/uint256.cpp)
+target_include_directories(test_uint256_hex PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME Uint256HexCompatibility COMMAND test_uint256_hex)
+set_tests_properties(Uint256HexCompatibility PROPERTIES
+  LABELS "unit;serialization;mandatory" TIMEOUT 30)
+
 if(TARGET dinero-cli)
   add_test(NAME CliRpcTimeout
     COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_cli_rpc_timeout.py $<TARGET_FILE:dinero-cli>)
