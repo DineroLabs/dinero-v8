@@ -133,6 +133,20 @@ struct HeaderAsertContext {
     std::optional<dinero::AsertAnchor> timing_anchor;
 };
 
+// A bounded memo of immutable ancestry facts, not of header acceptance. The
+// caller owns immutable, fully linked entries and serializes access. No entry
+// pointer survives a call, so pruning cannot leave a dangling cache reference.
+class HeaderAsertAncestryCache {
+public:
+    HeaderAsertContext ForParent(const HeaderIndexEntry& parent,
+                                std::optional<uint32_t> timing_anchor_height);
+private:
+    bool populated_{false};
+    uint256 parent_hash_;
+    HeaderAsertContext context_;
+    std::optional<uint32_t> timing_anchor_height_;
+};
+
 // Existing legacy header rules using an owning caller's value-only ancestry.
 // A missing parent context means genesis; callers must bind its selected identity
 // and enforce contiguous parent linkage. This is neither branch selection nor
@@ -550,6 +564,9 @@ private:
 
     // Guards header_index_, best_header_, and header store interactions.
     mutable std::mutex mutex_;
+
+    // Protected by mutex_, just like the immutable parent ancestry it reads.
+    HeaderAsertAncestryCache asert_ancestry_cache_;
 
     // Header storage (hash -> HeaderIndexEntry)
     std::map<uint256, std::unique_ptr<HeaderIndexEntry>> header_index_;
