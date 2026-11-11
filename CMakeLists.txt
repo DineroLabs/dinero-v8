@@ -1167,6 +1167,7 @@ add_library(dinero_core STATIC
   src/consensus/validation_queue.cpp
   src/consensus/block_validation.cpp
   src/consensus/block_index.cpp
+  src/consensus/block_index_record.cpp
   src/consensus/block_lifecycle.cpp
   src/consensus/orphan_manager.cpp
   src/consensus/genesis_canonical.cpp  # Phase 3: Genesis hash self-test
