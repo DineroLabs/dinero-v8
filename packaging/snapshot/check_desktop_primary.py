@@ -37,8 +37,11 @@ def verify(payload: Path, manifest_path: Path, catalog_path: Path, expected_name
         raise ValueError("desktop primary payload is not the pinned full-v6 base")
     if payload.stat().st_size != pin["bytes"]:
         raise ValueError("desktop primary payload length differs from pin")
+    full_digest = hashlib.sha256()
     with payload.open("rb") as stream:
-        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            full_digest.update(chunk)
+    digest = full_digest.hexdigest()
     if digest != pin["sha256"]:
         raise ValueError("desktop primary payload checksum differs from pin")
     # The transport pin binds the exact bytes; check the format's own trailer

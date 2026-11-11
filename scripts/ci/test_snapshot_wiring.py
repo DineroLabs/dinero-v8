@@ -67,7 +67,11 @@ class SnapshotWiring(unittest.TestCase):
                     self.assertGreaterEqual(source.count(self.names[0] + '.publisher.manifest.json'), expected_count)
                     self.assertGreaterEqual(source.count(self.names[0] + '.publisher.manifest.sig'), expected_count)
                 self.assertIn(self.names[0] + '.manifest.json', source)
-                if not path.startswith('windows'):
+                if path.startswith('windows'):
+                    # The hosted Windows runner exposes Python as `python`;
+                    # no setup-python step provides a `python3` executable.
+                    self.assertNotRegex(source, r'\bpython3\b')
+                else:
                     self.assertIn('DINERO_SNAPSHOT_LEGACY_FALLBACK_DAT=', source)
                     self.assertIn('DINERO_SNAPSHOT_LEGACY_FALLBACK_MANIFEST=', source)
                     self.assertIn('DINERO_SNAPSHOT_OLDEST_FALLBACK_DAT=', source)

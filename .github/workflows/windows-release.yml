@@ -78,8 +78,8 @@ jobs:
       - name: Check full-v6 snapshot wiring and profile admission
         shell: bash
         run: |
-          python3 -B scripts/ci/test_snapshot_wiring.py -v
-          python3 -B packaging/snapshot/test_desktop_primary_profile.py -v
+          python -B scripts/ci/test_snapshot_wiring.py -v
+          python -B packaging/snapshot/test_desktop_primary_profile.py -v
 
       # Strip the leading "v" from the tag; fall back to the dispatch input,
       # else a dev marker so an unflagged run never embeds an empty version.
@@ -143,7 +143,7 @@ jobs:
               --pattern 'dinero-assumeutxo-150521-v6-full.dat.publisher.manifest.sig' \
               --dir packaging/windows/dist --clobber
           else
-            python3 packaging/snapshot/fetch_desktop_primary.py \
+            python packaging/snapshot/fetch_desktop_primary.py \
               --payload-url "$SNAPSHOT_PAYLOAD_URL" \
               --manifest-url "$SNAPSHOT_MANIFEST_URL" \
               --destination packaging/windows/dist
@@ -160,7 +160,7 @@ jobs:
             --pattern 'utxo-snapshot-65300.dat' \
             --pattern 'utxo-snapshot-65300.dat.manifest.json' \
             --dir packaging/windows/dist --clobber
-          python3 packaging/snapshot/check_desktop_primary.py \
+          python packaging/snapshot/check_desktop_primary.py \
             --payload packaging/windows/dist/dinero-assumeutxo-150521-v6-full.dat \
             --manifest packaging/windows/dist/dinero-assumeutxo-150521-v6-full.dat.manifest.json \
             --publisher-manifest packaging/windows/dist/dinero-assumeutxo-150521-v6-full.dat.publisher.manifest.json \

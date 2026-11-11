@@ -9,9 +9,11 @@ import struct
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
+import sys
 
 from check_desktop_primary import verify, verify_publisher
-from fetch_desktop_primary import fetch
+from fetch_desktop_primary import fetch, helper_dirs
 
 
 class DesktopPrimaryProfileTest(unittest.TestCase):
@@ -50,6 +52,24 @@ class DesktopPrimaryProfileTest(unittest.TestCase):
 
     def test_exact_full_v6_transport_pin_passes(self):
         self.assertEqual(verify(self.payload, self.manifest, self.catalog, self.name)["profile"], "full")
+
+    def test_transport_hash_works_without_python_311_file_digest(self):
+        # Ubuntu 22.04's system Python is 3.10; package admission must work there.
+        with mock.patch.object(hashlib, "file_digest", side_effect=AssertionError("requires Python 3.11"), create=True):
+            self.assertEqual(verify(self.payload, self.manifest, self.catalog, self.name)["profile"], "full")
+
+    def test_docker_shallow_verify_layout_imports(self):
+        self.assertEqual(helper_dirs(Path("/verify/fetch_desktop_primary.py"))[0], Path("/verify"))
+        verify_dir = self.root / "verify"
+        verify_dir.mkdir()
+        source_dir = Path(__file__).resolve().parent
+        for name in ("fetch_desktop_primary.py", "check_desktop_primary.py", "snapshot_transport.py"):
+            shutil.copy2(source_dir / name, verify_dir / name)
+        shutil.copy2(source_dir.parent.parent / "scripts/ci/check_snapshot_freshness.py",
+                     verify_dir / "check_snapshot_freshness.py")
+        process = subprocess.run([sys.executable, str(verify_dir / "fetch_desktop_primary.py"), "--help"],
+                                 capture_output=True, text=True, check=False)
+        self.assertEqual(process.returncode, 0, process.stderr)
 
     def test_compact_v6_payload_refused(self):
         self.write_fixture(profile=2)

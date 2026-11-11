@@ -23,8 +23,15 @@ from urllib.request import urlopen
 
 # Source checkouts keep the freshness helper under scripts/ci; the prepared
 # Docker fetch stage copies it beside this script under /verify.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/ci"))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+def helper_dirs(script_path: Path) -> tuple[Path, Path]:
+    script_dir = script_path.parent
+    return script_dir, script_dir.parent.parent / "scripts/ci"
+
+
+script_dir, source_helpers = helper_dirs(Path(__file__).resolve())
+sys.path.insert(0, str(script_dir))
+if source_helpers.is_dir():
+    sys.path.insert(0, str(source_helpers))
 from check_snapshot_freshness import validate as check_freshness
 from check_desktop_primary import verify
 
