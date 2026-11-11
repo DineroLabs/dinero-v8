@@ -212,24 +212,7 @@ jobs:
           # the bundled snapshot must be installed under the name its manifest
           # declares, with the manifest as its sibling, or the daemon's trust gate
           # silently downgrades to a warning
-          docker run --rm --entrypoint /bin/sh dinerod:ci -c '
-            set -eu
-            test -f "$DINERO_SNAPSHOT" && test -f "$DINERO_SNAPSHOT.manifest.json"
-            test -f "$DINERO_SNAPSHOT.publisher.manifest.json"
-            test -f "$DINERO_SNAPSHOT.publisher.manifest.sig"
-            grep -q '"publisher_signature_verified": true' "$DINERO_SNAPSHOT.publisher.receipt.json"
-            count=0; remaining=$DINERO_SNAPSHOT_FALLBACKS
-            while :; do
-              case "$remaining" in
-                *";"*) fallback=${remaining%%;*}; remaining=${remaining#*;} ;;
-                *) fallback=$remaining; remaining= ;;
-              esac
-              test -n "$fallback" && test -f "$fallback" && test -f "$fallback.manifest.json"
-              count=$((count + 1))
-              test -n "$remaining" || break
-            done
-            test "$count" -eq 4
-          '
+          docker run --rm --entrypoint /bin/sh dinerod:ci -c "$(cat packaging/docker/check_image_layout.sh)"
 
       # Regression guard for the bug that bricked volumes: the daemon creates
       # /data/blocks and /data/blockchain seconds into startup, MINUTES before the

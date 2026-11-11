@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import struct
 import subprocess
 import tempfile
@@ -111,9 +112,61 @@ class FullV6DockerCandidateTest(unittest.TestCase):
         self.assertEqual((ROOT / "docker-entrypoint.sh").read_bytes(),
                          (HERE / "entrypoint-full-v6.sh").read_bytes())
         workflow = (ROOT / ".github/workflows/docker-publish.yml").read_text()
-        self.assertIn('test "$count" -eq 4', workflow)
+        self.assertIn('packaging/docker/check_image_layout.sh', workflow)
         self.assertIn('packaging/docker/test_full_v6_candidate.py', workflow)
         self.assertIn("steps.v.outputs.dry_run == 'false'", workflow)
+
+    def test_workflow_docker_c_argument_executes_every_layout_check(self):
+        workflow = (ROOT / ".github/workflows/docker-publish.yml").read_text()
+        match = re.search(r'^\s+(docker run --rm --entrypoint /bin/sh dinerod:ci -c "\$\(cat packaging/docker/check_image_layout\.sh\)")$',
+                          workflow, re.MULTILINE)
+        self.assertIsNotNone(match, 'workflow must pass one complete script to docker -c')
+        docker = self.root / 'docker'
+        docker.write_text('#!/bin/sh\nprintf "%s\\0" "$@" > "$DOCKER_ARGV_FILE"\n')
+        docker.chmod(0o755)
+        captured = self.root / 'docker-argv'
+        env = os.environ | {'DOCKER_ARGV_FILE': str(captured),
+                            'PATH': str(self.root) + os.pathsep + os.environ['PATH']}
+        result = subprocess.run(['/bin/sh', '-c', match.group(1)], cwd=ROOT,
+                                env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        argv = [item.decode() for item in captured.read_bytes().split(b'\0') if item]
+        self.assertEqual(argv[:-1], ['run', '--rm', '--entrypoint', '/bin/sh', 'dinerod:ci', '-c'])
+        script = (HERE / 'check_image_layout.sh').read_text()
+        self.assertEqual(argv[-1], script.rstrip('\n'))
+
+        primary = self.root / 'primary with spaces.dat'
+        primary.touch()
+        primary_sidecars = [Path(str(primary) + suffix) for suffix in
+                            ('.manifest.json', '.publisher.manifest.json',
+                             '.publisher.manifest.sig', '.publisher.receipt.json')]
+        for path in primary_sidecars:
+            path.touch()
+        primary_sidecars[-1].write_text('{"publisher_signature_verified": true}\n')
+        fallbacks = [self.root / f'fallback {i}.dat' for i in range(4)]
+        for path in fallbacks:
+            path.touch()
+            Path(str(path) + '.manifest.json').touch()
+        check_env = os.environ | {'DINERO_SNAPSHOT': str(primary),
+                                  'DINERO_SNAPSHOT_FALLBACKS': ';'.join(map(str, fallbacks))}
+
+        def run_check():
+            return subprocess.run(['/bin/sh', '-c', argv[-1]], env=check_env,
+                                  text=True, capture_output=True)
+
+        self.assertEqual(run_check().returncode, 0)
+        for path in [*primary_sidecars, *(p for fallback in fallbacks
+                                          for p in (fallback, Path(str(fallback) + '.manifest.json')))]:
+            with self.subTest(missing=path.name):
+                data = path.read_bytes()
+                path.unlink()
+                self.assertNotEqual(run_check().returncode, 0)
+                path.write_bytes(data)
+        primary_sidecars[-1].write_text('{"publisher_signature_verified": false}\n')
+        self.assertNotEqual(run_check().returncode, 0)
+        primary_sidecars[-1].write_text('{"publisher_signature_verified": true}\n')
+        check_env['DINERO_SNAPSHOT_FALLBACKS'] = ';'.join(map(str, fallbacks[:3]))
+        self.assertNotEqual(run_check().returncode, 0)
 
 
 if __name__ == "__main__":
