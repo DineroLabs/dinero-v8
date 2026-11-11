@@ -15246,7 +15246,8 @@ std::optional<uint32_t> ChainstateService::RescanWalletFromSelectedHistory(
 
 
 std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
-        WalletManager& wallet,std::string* error,uint64_t expected_session){
+        WalletManager& wallet,std::string* error,uint64_t expected_session,
+        bool v6_partial_base_for_tests){
     if(error)error->clear();
     const auto fail=[&](const std::string& why)->std::optional<uint32_t>{if(error)*error=why;return {};};
     if(activation_mutex_.HeldByCurrentThread())return fail("snapshot recovery requires unowned selected source");
@@ -15272,17 +15273,37 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
         }
         const std::string network=Params().network_id;
         const uint256 genesis_hash=uint256::FromHexUnsafe(Params().genesis_hash);
-        uint256 tip;uint32_t base_height=0,target=0;BlockHeader base_header;std::string path;
+        uint256 tip;uint32_t base_height=0,target=0,recovery_base=0;BlockHeader base_header;std::string path;
+        bool v5_parent_mode=false;
         std::vector<std::pair<uint256,uint32_t>> ancestry;
         {
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
-            if(!active_tip_||safe_mode_active_||consensus::OrchardActiveForHeight(Params(),active_tip_->height))
+            if(!active_tip_||safe_mode_active_)
                 return fail("transparent snapshot recovery requires a pre-Orchard selected source");
+            if(consensus::OrchardActiveForHeight(Params(),active_tip_->height)){
+                // Stage B of the native v6 recovery design: the PARTIAL base-set
+                // path exists for the harness only (no RPC sets the flag). It
+                // recovers the authenticated coin set at the activation parent
+                // from a configured V5 container; the typed tail (stage C)
+                // completes the balance before any client-visible scope exists.
+                const std::string v5=config_?config_->GetString("wallet_recovery_v5_source",""):"";
+                if(!v6_partial_base_for_tests||v5.empty())
+                    return fail("transparent snapshot recovery requires a pre-Orchard selected source");
+                if(Params().orchard_activation_height==0||Params().orchard_activation_height==UINT32_MAX)
+                    return fail("transparent snapshot recovery requires a pre-Orchard selected source");
+                v5_parent_mode=true;path=v5;
+                recovery_base=Params().orchard_activation_height-1;
+            }
             const auto current=UtreexoRpcSnapshotUnderLock();if(!current.ok())return fail("selected accumulator is unavailable for wallet recovery");
             base_height=GetSnapshotWalletRecoveryBaseHeight();target=active_tip_->height;
             if(!base_height||base_height>target||target-base_height>20000||!assumeutxo_lifecycle_)
                 return fail("snapshot recovery base/range unavailable or over capacity");
-            path=config_?config_->GetString("assumeutxo_snapshot",""):"";
+            if(!v5_parent_mode){
+                recovery_base=base_height;
+                path=config_?config_->GetString("assumeutxo_snapshot",""):"";
+            }else if(recovery_base>=base_height||base_height-recovery_base>20000||target-recovery_base>20000){
+                return fail("v5 activation-parent source out of range for this base");
+            }
             if(path.empty())return fail("retained snapshot file is unavailable");
             tip=active_tip_->hash;
             auto expected=tip;
@@ -15290,7 +15311,7 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
                 const auto header=chain_db_->getHeader(expected);const auto stored_height=chain_db_->getBlockHeight(expected);
                 if(!header.ok()||header->GetHash()!=expected||!stored_height.ok()||*stored_height<0||uint32_t(*stored_height)!=height)
                     return fail("selected snapshot recovery ancestry unavailable");
-                if(height==base_height){base_header=*header;break;}
+                if(height==recovery_base){base_header=*header;break;}
                 ancestry.emplace_back(expected,height);expected=header->prev_block_hash;
             }
         }
@@ -15303,8 +15324,11 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
         Transaction generation;if(!TransactionSerializer::Deserialize(generation,Params().genesis.genesisCoinbaseHex))
             return fail("compiled genesis transaction unavailable");
         genesis.vtx.push_back(generation);
-        auto snapshot_data=ReadSnapshotWalletSourceFile(path,base_header,base_height,genesis);
-        SelectedWalletHistory::Builder builder(network,genesis_hash,tip);
+        auto snapshot_data=ReadSnapshotWalletSourceFile(path,base_header,recovery_base,genesis);
+        // Partial v5-parent mode carries no post-base bodies (they are typed
+        // Orchard candidates): the history's captured tip IS the base header.
+        SelectedWalletHistory::Builder builder(network,genesis_hash,
+            v5_parent_mode?base_header.GetHash():tip);
         std::reverse(ancestry.begin(),ancestry.end());size_t material=0,missing=0;
         const auto* daemon=DaemonContext::instance();
         const auto peers=daemon&&daemon->chainstate.get()==this?std::dynamic_pointer_cast<P2PService>(daemon->p2p):nullptr;
@@ -15316,6 +15340,7 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
             if(!bytes)return {};return Block::Deserialize(*bytes);
         };
         for(const auto& [hash,height]:ancestry){
+            if(v5_parent_mode)break; // typed tail is stage C; linkage already checked
             const auto body=read_body(hash);
             if(!body){++missing;if(missing>=8)break;continue;}
             bool mutated=false;
@@ -15330,7 +15355,7 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
         // Follow hash-linked stored headers from this captured base; the live
         // header selector need not retain a second in-memory copy of the prefix.
         std::map<uint32_t,uint256> legacy_ancestry;
-        legacy_ancestry.emplace(base_height,base_header.GetHash());
+        legacy_ancestry.emplace(recovery_base,base_header.GetHash());
         for(const auto& coin:snapshot_data.coins){
             if(coin.maturity_bound||!scripts.contains(coin.script))continue;
             while(legacy_ancestry.begin()->first>coin.height){
@@ -15361,15 +15386,23 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
         const auto current=UtreexoRpcSnapshotUnderLock();
         if(!current.ok()||current->block_hash!=tip||current->height!=target||
            GetSnapshotWalletRecoveryBaseHeight()!=base_height||
-           config_->GetString("assumeutxo_snapshot","")!=path)
+           config_->GetString(v5_parent_mode?"wallet_recovery_v5_source":"assumeutxo_snapshot","")!=path)
             return fail("selected wallet recovery source changed; retry");
-        auto lifetime=assumeutxo_lifecycle_->AcquireSnapshotUse(base_header.GetHash(),base_height);
-        if(!lifetime)return fail("snapshot lifecycle changed before wallet recovery");
-        builder.SetSnapshot(base_height+1,std::move(snapshot_data),std::move(scripts));
+        // The v5-parent source is a static preserved file, not the live
+        // snapshot: only the non-partial mode pins the snapshot lifecycle.
+        // Stage C revisits pinning for the composed recovery.
+        decltype(assumeutxo_lifecycle_->AcquireSnapshotUse(base_header.GetHash(),base_height)) lifetime{};
+        if(!v5_parent_mode){
+            lifetime=assumeutxo_lifecycle_->AcquireSnapshotUse(base_header.GetHash(),base_height);
+            if(!lifetime)return fail("snapshot lifecycle changed before wallet recovery");
+        }
+        builder.SetSnapshot(recovery_base+1,std::move(snapshot_data),std::move(scripts));
         const auto immutable=builder.Build();
-        if(!wallet.RescanFromSelectedHistory(int(base_height+1),0,*immutable,session))
+        if(!wallet.RescanFromSelectedHistory(int(recovery_base+1),0,*immutable,session))
             return fail("authenticated snapshot wallet application failed");
-        return target;
+        // Partial mode reports the base it actually recovered to, never the
+        // Orchard-era tip it has not accounted for.
+        return v5_parent_mode?recovery_base:target;
     }catch(const std::exception& e){return fail(e.what());}
 }
 

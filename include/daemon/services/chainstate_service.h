@@ -279,8 +279,16 @@ public:
     // snapshot's complete live leaf coverage and selected post-base bodies,
     // then applies owned coins/history under one wallet transaction. Does not
     // replace keys or certify pre-base spent history/other wallet consumers.
+    // v6_partial_base_for_tests (stage B of the native v6 recovery design,
+    // 2026-11-11-native-v6-wallet-recovery-design.md): with an Orchard-active
+    // selected tip AND a configured wallet_recovery_v5_source (a V5 container
+    // at exactly the activation parent), recover ONLY the authenticated base
+    // coin set. The result is PARTIAL (coins spent after activation are still
+    // counted) and must never be exposed as recovery to clients: no RPC sets
+    // this flag; stage C adds the verified typed tail and the real scope.
     std::optional<uint32_t> RecoverTransparentSnapshotWallet(
-        WalletManager&,std::string* error=nullptr,uint64_t expected_session=0);
+        WalletManager&,std::string* error=nullptr,uint64_t expected_session=0,
+        bool v6_partial_base_for_tests=false);
     // Exact fresh imported activation parent only. Checked source/seed-bound
     // candidate discovery, NOT wallet history/index completion or coin authority.
     // Caller retains WalletUse/WalletIndexUse and holds no SQLite/selected owner.

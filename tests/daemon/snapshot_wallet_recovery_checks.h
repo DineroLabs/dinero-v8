@@ -262,8 +262,8 @@ namespace {
 struct OrchardActiveOverride {
     uint32_t old_height=MutableParams().orchard_activation_height;
     uint32_t old_branch=MutableParams().orchard_branch_id;
-    OrchardActiveOverride(){
-        MutableParams().orchard_activation_height=120;
+    explicit OrchardActiveOverride(uint32_t activation=120){
+        MutableParams().orchard_activation_height=activation;
         if(!MutableParams().orchard_branch_id)MutableParams().orchard_branch_id=1;
     }
     ~OrchardActiveOverride(){
@@ -314,6 +314,45 @@ TEST(SnapshotWalletRecovery, RpcMarksPermanentCapabilityRefusalNonRetryable){
     ASSERT_TRUE(transient.isMember("retryable"));
     EXPECT_TRUE(transient["retryable"].asBool());
     service->Stop();f.context.wallet.reset();
+}
+
+TEST(SnapshotWalletRecovery, V5ActivationParentModeRecoversBaseSetOnlyAndStaysInternal){
+    // Stage B of 2026-11-11-native-v6-wallet-recovery-design.md: with an
+    // Orchard-active tip, a configured V5 container at exactly the activation
+    // parent recovers ONLY the authenticated base coin set, reports the base
+    // height (never the unaccounted Orchard-era tip), and stays refused
+    // without the internal test flag.
+    SnapshotWalletRecoveryFixture f;
+    SnapshotWalletSourceFixture parent{99};
+    const auto v5path=f.root/"v5-parent.dat";
+    {const auto bytes=parent.Bytes(parent.coins);
+     std::ofstream output(v5path,std::ios::binary);output.write(bytes.data(),bytes.size());}
+    std::dynamic_pointer_cast<ConfigService>(f.context.config)->Set("wallet_recovery_v5_source",v5path.string());
+    OrchardActiveOverride orchard_active(100); // recovery_base = 99 < chain base 105
+    // Without the internal flag the refusal is byte-identical (no client path).
+    std::string refused;
+    EXPECT_FALSE(f.source->RecoverTransparentSnapshotWallet(f.wallet,&refused));
+    EXPECT_EQ(refused,"transparent snapshot recovery requires a pre-Orchard selected source");
+    EXPECT_EQ(f.Count("SELECT COUNT(*) FROM utxos"),0);
+    // With the flag: the base set lands, bounded at the activation parent.
+    std::string error;
+    ASSERT_EQ(f.source->RecoverTransparentSnapshotWallet(f.wallet,&error,0,true),
+              std::optional<uint32_t>(99))<<error;
+    // The watched h25 coinbase is in the base set (immature at height 99);
+    // the watched h110 coin is Orchard-era and must NOT appear.
+    EXPECT_EQ(f.Count("SELECT COUNT(*) FROM utxos WHERE is_spent=0"),1);
+    EXPECT_EQ(f.Count("SELECT COUNT(*) FROM utxos WHERE height>99"),0);
+    const auto balance=f.wallet.getBalance();
+    EXPECT_GT(balance.confirmed+balance.immature,0);
+}
+
+TEST(SnapshotWalletRecovery, V5ParentModeWithoutConfiguredSourceKeepsRefusal){
+    SnapshotWalletRecoveryFixture f;
+    OrchardActiveOverride orchard_active(100);
+    std::string refused;
+    EXPECT_FALSE(f.source->RecoverTransparentSnapshotWallet(f.wallet,&refused,0,true));
+    EXPECT_EQ(refused,"transparent snapshot recovery requires a pre-Orchard selected source");
+    EXPECT_EQ(f.Count("SELECT COUNT(*) FROM utxos"),0);
 }
 
 }
