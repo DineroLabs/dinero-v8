@@ -274,6 +274,7 @@ ScriptValidationResult ValidateTaprootSpend(
     size_t input_index,
     const UTXOEntry& utxo,
     uint32_t block_height,
+    const ChainParams& params,
     const std::vector<UTXOEntry>& all_utxos,
     const PrecomputedTransactionData* covenant_precomputed
 ) {
@@ -299,7 +300,7 @@ ScriptValidationResult ValidateTaprootSpend(
     const bool is_script_path = effective_items != 1;
     if (is_script_path &&
         !consensus::CovenantActivationParams::IsScriptPathActive(
-            block_height, dinero::Params())) {
+            block_height, params)) {
         return ScriptValidationResult::UNSUPPORTED_SCRIPT;
     }
 
@@ -316,7 +317,7 @@ ScriptValidationResult ValidateTaprootSpend(
     std::string script_error;
     const uint32_t flags =
         consensus::CovenantActivationParams::StandardFlags(
-            block_height, dinero::Params());
+            block_height, params);
     const bool valid = consensus::ScriptVerifier::VerifyTaproot(
         tx, input_index, *prevouts, script_error, flags,
         covenant_precomputed);
@@ -502,6 +503,7 @@ ScriptValidationResult ValidateSpend(
     size_t input_index,
     const UTXOEntry& utxo,
     uint32_t block_height,
+    const ChainParams& params,
     const std::vector<UTXOEntry>& all_utxos,
     const PrecomputedTransactionData* covenant_precomputed
 ) {
@@ -513,7 +515,7 @@ ScriptValidationResult ValidateSpend(
 
         case ScriptType::P2TR:
             return ValidateTaprootSpend(
-                tx, input_index, utxo, block_height, all_utxos,
+                tx, input_index, utxo, block_height, params, all_utxos,
                 covenant_precomputed);
 
         case ScriptType::P2WPKH:

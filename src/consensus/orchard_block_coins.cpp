@@ -153,7 +153,7 @@ CheckedSequence CheckSequence(std::span<const ParsedTransaction> transactions,
                     Reject(Error::Locks);
                 const PrecomputedTransactionData precomputed(tx, coins);
                 for (size_t i = 0; i < tx.vin.size(); ++i) {
-                    if (ValidateSpend(tx, i, coins[i], context.height, coins, &precomputed) != ScriptValidationResult::OK)
+                    if (ValidateSpend(tx, i, coins[i], context.height, dinero::Params(), coins, &precomputed) != ScriptValidationResult::OK)
                         Reject(Error::Script);
                     record.spent.emplace_back(OutPoint(tx.vin[i].prevout.txid, tx.vin[i].prevout.vout), coins[i]);
                 }

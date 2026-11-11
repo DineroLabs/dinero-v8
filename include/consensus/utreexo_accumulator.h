@@ -673,8 +673,14 @@ public:
      * @brief Serialize accumulator state to bytes
      *
      * Format: numLeaves (8 bytes) || root1 (32 bytes) || root2 || ...
+     *
+     * inject_legacy_v2 (test-only, default off): emit the pre-a72053a9a v2
+     * layout so fixtures can synthesize the LA 2026-04-28 audit failure
+     * shape. Explicit argument replaces the former
+     * DINERO_FOREST_SERIALIZE_LEGACY_V2 env knob (sep3 stage C: the kernel
+     * reads no ambient state). Production callers never pass true.
      */
-    std::vector<uint8_t> serialize() const;
+    std::vector<uint8_t> serialize(bool inject_legacy_v2 = false) const;
 
     /**
      * @brief Deserialize accumulator state from bytes
