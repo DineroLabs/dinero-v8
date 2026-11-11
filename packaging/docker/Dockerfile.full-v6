@@ -1,0 +1,81 @@
+# syntax=docker/dockerfile:1
+# Prepared full-v6 image lane. Do not switch docker-publish.yml to this file
+# until the H150200 full-profile catalog pin and public release asset exist.
+# The source version remains 8.2.2 until the coordinated release freeze.
+ARG DINERO_VERSION=8.2.2
+ARG PRIMARY_SNAPSHOT_RELEASE=v8.2.3
+ARG RECOVERY_SNAPSHOT_RELEASE=v8.2.2
+
+FROM debian:13-slim AS fetch
+ARG DINERO_VERSION
+ARG PRIMARY_SNAPSHOT_RELEASE
+ARG RECOVERY_SNAPSHOT_RELEASE
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl openssl python3 \
+ && rm -rf /var/lib/apt/lists/*
+COPY packaging/snapshot/check_desktop_primary.py /verify/check_desktop_primary.py
+COPY packaging/snapshot/fetch_desktop_primary.py /verify/fetch_desktop_primary.py
+COPY packaging/snapshot/snapshot_transport.py /verify/snapshot_transport.py
+COPY packaging/snapshot/fleet-publisher-ed25519.pub.pem /verify/fleet-publisher-ed25519.pub.pem
+COPY packaging/snapshot/desktop-inputs-candidate.json /verify/desktop-inputs-candidate.json
+COPY packaging/docker/check_recovery_manifests.py /verify/check_recovery_manifests.py
+COPY scripts/ci/check_snapshot_freshness.py /verify/check_snapshot_freshness.py
+WORKDIR /tmp/dl
+RUN set -eux; \
+    BASE="https://github.com/DineroLabs/dinero-v8/releases/download/v${DINERO_VERSION}"; \
+    PRIMARY="https://github.com/DineroLabs/dinero-v8/releases/download/${PRIMARY_SNAPSHOT_RELEASE}"; \
+    RECOVERY="https://github.com/DineroLabs/dinero-v8/releases/download/${RECOVERY_SNAPSHOT_RELEASE}"; \
+    curl -fsSL -O "${BASE}/dinero-linux-x86_64-${DINERO_VERSION}.tar.gz"; \
+    curl -fsSL -O "${BASE}/SHA256SUMS-linux-x86_64-${DINERO_VERSION}"; \
+    python3 /verify/fetch_desktop_primary.py \
+      --payload-url "${PRIMARY}/dinero-assumeutxo-150200-v6-full.dat" \
+      --manifest-url "${PRIMARY}/dinero-assumeutxo-150200-v6-full.dat.publisher.manifest.json" \
+      --destination /tmp/dl --catalog /verify/desktop-inputs-candidate.json; \
+    curl -fsSL -O "${RECOVERY}/dinero-assumeutxo-148375-v5.dat"; \
+    curl -fsSL -O "${RECOVERY}/dinero-assumeutxo-148375-v5.dat.manifest.json"; \
+    curl -fsSL -O "${RECOVERY}/dinero-assumeutxo-99677-v4.dat"; \
+    curl -fsSL -O "${RECOVERY}/dinero-assumeutxo-99677-v4.manifest.json"; \
+    curl -fsSL -O "${RECOVERY}/dinero-assumeutxo-73035-v4.dat"; \
+    curl -fsSL -O "${RECOVERY}/dinero-assumeutxo-73035-v4.manifest.json"; \
+    curl -fsSL -O "${RECOVERY}/utxo-snapshot-65300.dat"; \
+    curl -fsSL -O "${RECOVERY}/utxo-snapshot-65300.dat.manifest.json"; \
+    cp dinero-assumeutxo-99677-v4.manifest.json dinero-assumeutxo-99677-v4.dat.manifest.json; \
+    cp dinero-assumeutxo-73035-v4.manifest.json dinero-assumeutxo-73035-v4.dat.manifest.json; \
+    tar xzf "dinero-linux-x86_64-${DINERO_VERSION}.tar.gz"; \
+    sha256sum -c "SHA256SUMS-linux-x86_64-${DINERO_VERSION}"; \
+    python3 /verify/check_recovery_manifests.py \
+      --directory /tmp/dl --catalog /verify/desktop-inputs-candidate.json; \
+    mkdir -p /out; \
+    cp "dinero-linux-x86_64-${DINERO_VERSION}/dinerod" /out/dinerod; \
+    cp "dinero-linux-x86_64-${DINERO_VERSION}/dinero-cli" /out/dinero-cli; \
+    cp dinero-assumeutxo-150200-v6-full.dat* \
+       dinero-assumeutxo-148375-v5.dat* \
+       dinero-assumeutxo-99677-v4.dat* \
+       dinero-assumeutxo-73035-v4.dat* \
+       utxo-snapshot-65300.dat* /out/; \
+    chmod +x /out/dinerod /out/dinero-cli
+
+FROM debian:13-slim
+ARG DINERO_VERSION
+LABEL org.opencontainers.image.title="Dinero Full Node"
+LABEL org.opencontainers.image.description="Post-quantum, Utreexo-native proof-of-work full node"
+LABEL org.opencontainers.image.source="https://github.com/DineroLabs/dinero-v8"
+LABEL org.opencontainers.image.version="${DINERO_VERSION}"
+RUN apt-get update && apt-get install -y --no-install-recommends libudev1 ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --system --uid 10001 --create-home --home-dir /data dinero
+COPY --from=fetch /out/dinerod /usr/local/bin/dinerod
+COPY --from=fetch /out/dinero-cli /usr/local/bin/dinero-cli
+COPY --from=fetch /out/dinero-assumeutxo-150200-v6-full.dat* /opt/dinero/
+COPY --from=fetch /out/dinero-assumeutxo-148375-v5.dat* /opt/dinero/
+COPY --from=fetch /out/dinero-assumeutxo-99677-v4.dat* /opt/dinero/
+COPY --from=fetch /out/dinero-assumeutxo-73035-v4.dat* /opt/dinero/
+COPY --from=fetch /out/utxo-snapshot-65300.dat* /opt/dinero/
+COPY packaging/docker/entrypoint-full-v6.sh /usr/local/bin/docker-entrypoint-full-v6.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint-full-v6.sh
+ENV DINERO_SNAPSHOT=/opt/dinero/dinero-assumeutxo-150200-v6-full.dat
+ENV DINERO_SNAPSHOT_FALLBACKS="/opt/dinero/dinero-assumeutxo-148375-v5.dat;/opt/dinero/dinero-assumeutxo-99677-v4.dat;/opt/dinero/dinero-assumeutxo-73035-v4.dat;/opt/dinero/utxo-snapshot-65300.dat"
+VOLUME /data
+EXPOSE 20999/tcp
+USER dinero
+WORKDIR /data
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint-full-v6.sh"]
