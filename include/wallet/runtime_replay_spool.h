@@ -32,8 +32,11 @@ public:
     static constexpr size_t MaximumRecordBytes=32*1024*1024;
     static constexpr size_t MaximumKeyBytes=64;
     static constexpr int PagerCacheKiB=1024;
-    explicit RuntimeReplaySpool(const std::filesystem::path& work_directory={},bool cache_statements=false)
+    static constexpr int MaximumPagerCacheKiB=16*1024;
+    explicit RuntimeReplaySpool(const std::filesystem::path& work_directory={},bool cache_statements=false,
+        int pager_cache_kib=PagerCacheKiB)
         :temporary_(work_directory),cache_statements_(cache_statements) {
+        Check(pager_cache_kib>=PagerCacheKiB&&pager_cache_kib<=MaximumPagerCacheKiB);
         algorithm_.reset(EVP_MAC_fetch(nullptr,"HMAC",nullptr));Check(bool(algorithm_));
         mac_.reset(EVP_MAC_CTX_new(algorithm_.get()));Check(bool(mac_));
         char digest[]="SHA256";OSSL_PARAM parameters[]={OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST,digest,0),OSSL_PARAM_construct_end()};
@@ -48,7 +51,7 @@ public:
         // No mmap or in-memory temp database; dirty pages may spill to the
         // SQLite-owned temporary file as a transaction grows.
         Exec("PRAGMA page_size=4096");
-        Exec("PRAGMA cache_size=-1024");
+        Exec(("PRAGMA cache_size=-"+std::to_string(pager_cache_kib)).c_str());
         Exec("PRAGMA mmap_size=0");
         Exec("PRAGMA temp_store=FILE");
         Exec("PRAGMA cache_spill=ON");
@@ -73,6 +76,22 @@ public:
         void Commit(){Check(active_);owner_.Exec("COMMIT");active_=false;}
     private:
         RuntimeReplaySpool& owner_;std::unique_lock<std::recursive_mutex> lock_;bool active_=false;
+    };
+    // A short-lived, read-only view of an already frozen private spool. Keep
+    // SQLite from reopening its read transaction/locks for every tree node.
+    // Only internal reads belong in this scope; never call service callbacks
+    // while holding it. Ending the view releases the snapshot so the next view
+    // observes committed disk changes and still verifies every record MAC.
+    class ReadBatch {
+    public:
+        explicit ReadBatch(const RuntimeReplaySpool& owner):owner_(owner),lock_(owner.mutex_) {
+            Check(owner_.frozen_&&sqlite3_get_autocommit(owner_.db_.get()));
+            Check(sqlite3_exec(owner_.db_.get(),"BEGIN",nullptr,nullptr,nullptr)==SQLITE_OK);
+        }
+        ~ReadBatch(){sqlite3_exec(owner_.db_.get(),"ROLLBACK",nullptr,nullptr,nullptr);}
+        ReadBatch(const ReadBatch&)=delete;ReadBatch& operator=(const ReadBatch&)=delete;
+    private:
+        const RuntimeReplaySpool& owner_;std::unique_lock<std::recursive_mutex> lock_;
     };
     void Insert(std::span<const uint8_t> key,std::span<const uint8_t> value) {
         std::lock_guard guard(mutex_);Check(!frozen_&&!sqlite3_get_autocommit(db_.get()));
@@ -101,6 +120,29 @@ public:
         const auto* raw=static_cast<const uint8_t*>(sqlite3_column_blob(stmt.get(),0));Check(raw);
         Bytes key(raw,raw+size);Check(key[0]==space);auto value=Value(stmt.get(),1,key);
         Check(sqlite3_step(stmt.get())==SQLITE_DONE);return std::pair{std::move(key),std::move(value)};
+    }
+    // A bounded owned-copy page for immutable scans. One SQL cursor advances
+    // through at most 256 rows, rather than restarting a B-tree seek per row.
+    // No cursor, borrowed blob or caller callback escapes the private mutex.
+    std::vector<std::pair<Bytes,Bytes>> NextBatch(uint8_t space,std::span<const uint8_t> after) const {
+        std::lock_guard guard(mutex_);
+        Check(frozen_&&space<255&&!after.empty()&&after[0]==space&&after.size()<=MaximumKeyBytes);
+        Query stmt(db_.get(),next_statement_,
+            "SELECT k,v,tag FROM records WHERE k>?1 AND k<?2 ORDER BY k LIMIT 256",false);
+        stmt.Blob(1,after);const Bytes upper{uint8_t(space+1)};stmt.Blob(2,upper);
+        std::vector<std::pair<Bytes,Bytes>> rows;rows.reserve(256);size_t bytes=0;
+        for(;;) {
+            const int rc=sqlite3_step(stmt.get());if(rc==SQLITE_DONE)break;
+            Check(rc==SQLITE_ROW&&sqlite3_column_type(stmt.get(),0)==SQLITE_BLOB);
+            const int size=sqlite3_column_bytes(stmt.get(),0);Check(size>0&&size_t(size)<=MaximumKeyBytes);
+            const auto* raw=static_cast<const uint8_t*>(sqlite3_column_blob(stmt.get(),0));Check(raw);
+            Bytes key(raw,raw+size);Check(key[0]==space);auto value=Value(stmt.get(),1,key);
+            bytes+=key.size()+value.size();rows.emplace_back(std::move(key),std::move(value));
+            // At most 1 MiB plus a single bounded record. Snapshot catalog
+            // records are <=90 bytes, so its 256-row pages stay below 32 KiB.
+            if(bytes>=1024*1024)break;
+        }
+        return rows;
     }
     void Freeze() {
         std::lock_guard guard(mutex_);Check(!frozen_&&sqlite3_get_autocommit(db_.get()));

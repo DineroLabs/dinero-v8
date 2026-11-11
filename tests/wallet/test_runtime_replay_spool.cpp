@@ -89,6 +89,68 @@ TEST(RuntimeReplaySpool,ReadAndCommitFailuresReturnNoInventedData) {
     {RuntimeReplaySpool::Batch batch(spool);spool.Insert(Bytes{3},Bytes{4});batch.Commit();}
     EXPECT_EQ(*spool.Get(Bytes{3}),Bytes{4});
 }
+TEST(RuntimeReplaySpool,FrozenReadViewsReleaseOnRefusalAndException) {
+    RuntimeReplaySpool spool({},true);auto* db=RuntimeReplaySpoolTestAccess::Handle(spool);
+    EXPECT_THROW((RuntimeReplaySpool::ReadBatch(spool)),std::runtime_error);
+    {RuntimeReplaySpool::Batch batch(spool);spool.Insert(Bytes{1},Bytes{2});batch.Commit();}
+    spool.Freeze();
+    {
+        RuntimeReplaySpool::ReadBatch view(spool);
+        EXPECT_EQ(sqlite3_get_autocommit(db),0);EXPECT_EQ(*spool.Get(Bytes{1}),Bytes{2});
+        EXPECT_THROW((RuntimeReplaySpool::ReadBatch(spool)),std::runtime_error);
+        EXPECT_THROW(spool.Insert(Bytes{3},Bytes{4}),std::runtime_error);
+    }
+    EXPECT_EQ(sqlite3_get_autocommit(db),1);
+    EXPECT_THROW(([&]{RuntimeReplaySpool::ReadBatch view(spool);throw std::runtime_error("caller refused");}()),std::runtime_error);
+    EXPECT_EQ(sqlite3_get_autocommit(db),1);
+    sqlite3_set_authorizer(db,[](void*,int action,const char*,const char*,const char*,const char*){
+        return action==SQLITE_TRANSACTION?SQLITE_DENY:SQLITE_OK;
+    },nullptr);
+    EXPECT_THROW((RuntimeReplaySpool::ReadBatch(spool)),std::runtime_error);
+    sqlite3_set_authorizer(db,nullptr,nullptr);
+    EXPECT_EQ(sqlite3_get_autocommit(db),1);
+    {RuntimeReplaySpool::ReadBatch view(spool);EXPECT_EQ(*spool.Get(Bytes{1}),Bytes{2});}
+    EXPECT_EQ(sqlite3_get_autocommit(db),1);
+}
+TEST(RuntimeReplaySpool,ExplicitPagerBudgetIsBoundedAndLeavesDefaultUnchanged) {
+    EXPECT_THROW((RuntimeReplaySpool({},false,0)),std::runtime_error);
+    EXPECT_THROW((RuntimeReplaySpool({},false,RuntimeReplaySpool::MaximumPagerCacheKiB+1)),std::runtime_error);
+    for(const int budget:{RuntimeReplaySpool::PagerCacheKiB,RuntimeReplaySpool::MaximumPagerCacheKiB}) {
+        RuntimeReplaySpool spool({},true,budget);auto* db=RuntimeReplaySpoolTestAccess::Handle(spool);
+        sqlite3_stmt* statement=nullptr;
+        ASSERT_EQ(sqlite3_prepare_v2(db,"PRAGMA cache_size",-1,&statement,nullptr),SQLITE_OK);
+        ASSERT_EQ(sqlite3_step(statement),SQLITE_ROW);EXPECT_EQ(sqlite3_column_int(statement,0),-budget);
+        ASSERT_EQ(sqlite3_finalize(statement),SQLITE_OK);
+        {RuntimeReplaySpool::Batch batch(spool);spool.Insert(Bytes{1},Bytes{2});batch.Commit();}
+        spool.Freeze();EXPECT_EQ(*spool.Get(Bytes{1}),Bytes{2});
+    }
+}
+TEST(RuntimeReplaySpool,BoundedScanPagesKeepExactCoverageAndReturnNoInterruptedPrefix) {
+    RuntimeReplaySpool spool({},true);auto* db=RuntimeReplaySpoolTestAccess::Handle(spool);
+    EXPECT_THROW(spool.NextBatch('m',Bytes{'m'}),std::runtime_error);
+    {
+        RuntimeReplaySpool::Batch batch(spool);
+        for(unsigned i=0;i<600;++i)spool.Insert(Bytes{'m',uint8_t(i>>8),uint8_t(i)},Bytes{uint8_t(i)});
+        spool.Insert(Bytes{'n',0},Bytes{1});batch.Commit();
+    }
+    spool.Freeze();Bytes after{'m'};unsigned count=0,pages=0;
+    for(;;) {
+        const auto rows=spool.NextBatch('m',after);if(rows.empty())break;
+        EXPECT_LE(rows.size(),256u);++pages;
+        for(const auto& [key,value]:rows) {
+            EXPECT_EQ(key,(Bytes{'m',uint8_t(count>>8),uint8_t(count)}));
+            EXPECT_EQ(value,Bytes{uint8_t(count)});after=key;++count;
+        }
+    }
+    EXPECT_EQ(count,600u);EXPECT_EQ(pages,3u);
+    sqlite3_trace_v2(db,SQLITE_TRACE_ROW,[](unsigned kind,void* context,void*,void*) {
+        if(kind==SQLITE_TRACE_ROW)sqlite3_interrupt(static_cast<sqlite3*>(context));return 0;
+    },db);
+    EXPECT_THROW(spool.NextBatch('m',Bytes{'m'}),std::runtime_error);
+    sqlite3_trace_v2(db,0,nullptr,nullptr);
+    EXPECT_EQ(spool.NextBatch('m',Bytes{'m'}).size(),256u);
+    EXPECT_EQ(sqlite3_get_autocommit(db),1);
+}
 TEST(RuntimeReplaySpool,MalformedStorageAndInterruptedReadRefuse) {
     RuntimeReplaySpool spool;sqlite3* db=RuntimeReplaySpoolTestAccess::Handle(spool);
     {RuntimeReplaySpool::Batch batch(spool);spool.Insert(Bytes{1},Bytes{0,2,0,3});batch.Commit();}

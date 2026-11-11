@@ -1108,6 +1108,7 @@ struct ChainstateService::CompactStartupState {
 };
 struct ChainstateService::OrchardSnapshotStartupState {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    OrchardSnapshotStore::StartupReads reads;
     storage::OrchardSnapshotBase base;
     storage::OrchardStoredState state;
     storage::LegacyRetirementState retirement;
@@ -14237,8 +14238,9 @@ bool ChainstateService::InitOrchardSnapshotStorage() {
         ChainWriteToken recovery_token;
         (void)OrchardSnapshotStore::RecoverBaseMarkers(activation_mutex_,*chain_db_,recovery_token,*verification);
         auto publication=OrchardSnapshotStore::Restore(activation_mutex_,*chain_db_,*verification);
-        const auto proof=OrchardSnapshotStore::ReadBaseline(*chain_db_);
+        const auto& proof=*publication.reads.baseline;
         auto saved=std::make_unique<OrchardSnapshotStartupState>();saved->base=*base;saved->state=proof.state;
+        saved->reads=std::move(publication.reads);
         saved->retirement=proof.retirement;saved->sets=consensus::ComputeOrchardSnapshotSets(proof);
         saved->catalog=proof.base_catalog;saved->profile=consensus::ValidatedOrchardBlock::CaptureProfile();
         const auto tip=chain_db_->getTip();if(!tip.ok()||tip->height<0)throw std::runtime_error("v6 selected tip unavailable");
@@ -14335,7 +14337,8 @@ bool ChainstateService::StartOrchardSnapshotStorage() {
         // header selector, rather than enrolling from Init's local metadata.
         {
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
-            auto checked=OrchardSnapshotStore::Restore(activation_mutex_,*chain_db_,*header_chain_selector_);
+            auto checked=OrchardSnapshotStore::Restore(activation_mutex_,*chain_db_,*header_chain_selector_,
+                orchard_snapshot_startup_->reads);
             if(bool(checked.compact)!=bool(compact_startup_))return false;
         }
         if(compact_startup_) {
@@ -14365,6 +14368,7 @@ bool ChainstateService::StartOrchardSnapshotStorage() {
             std::lock_guard<std::mutex> lifetime(wallet_index_use_mutex_);
             if(wallet_index_stopping_||selected_read_uses_||wallet_index_uses_||compact_startup_uses_||active_tip_)return false;
             BlockAcceptor::SetContext(DaemonContext::instance());p2p_orphan_pool_=std::move(orphans);
+            orchard_snapshot_startup_->reads={}; // Startup-only DATA, never a running-state certificate.
             PublishActiveTipLocked(orchard_snapshot_startup_->tip,TipPublishReason::kStartupLoad);
             wallet_index_accepting_=true;selected_read_accepting_=true;started_=true;started_flag_.store(true);
         }
