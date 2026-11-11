@@ -2248,7 +2248,7 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
         if (height > 0) {
             const auto expected = GetNextWorkRequiredWithChainDB(
                 static_cast<int32_t>(height), static_cast<int64_t>(block.header.timestamp),
-                GetConsensusForCurrentNetwork(), chain_db_);
+                GetConsensusForNetwork(dinero::Params()), chain_db_);
             if (expected == 0 || block.header.difficulty != expected) {
                 g_logger.error("[reindex] bad-diffbits in PoW profile at height " + std::to_string(height));
                 return Status::Invalid;

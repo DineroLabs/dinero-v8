@@ -116,7 +116,7 @@ bool OriginalReplayHeaderRule(
     // startup and block_acceptor remains the backstop. Compact bits are compared
     // for equality against the canonical encoding (never ordered numerically).
     if (prev != nullptr && !Params().SkipProofOfWork()) {
-        const Consensus consensus = GetConsensusForCurrentNetwork();
+        const Consensus consensus = GetConsensusForNetwork(dinero::Params());
         const uint32_t expected_bits = GetNextWorkRequiredForCandidate(
             static_cast<int32_t>(prev->height) + 1,
             static_cast<int64_t>(header.timestamp),
@@ -211,7 +211,7 @@ TEST(ReplayHeaderHistory, HistoricalWorkAndTimingRulesRemainExact) {
     auto header=SelectedGenesis().header;
     ASSERT_TRUE(consensus::OriginalReplayHeaderRule(header,nullptr));
     ASSERT_TRUE(owner.Validate(header));ReplayAccess::Append(owner,header,0);reference.emplace_back(header,nullptr);
-    const auto params=GetConsensusForCurrentNetwork();
+    const auto params=GetConsensusForNetwork(dinero::Params());
     for(uint32_t height=1;height<=7;++height) {
         auto child=header;child.prev_block_hash=header.GetHash();
         child.timestamp+=height<4?120:60;

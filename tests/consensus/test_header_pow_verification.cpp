@@ -105,7 +105,7 @@ int main() {
     CHECK(ConsensusChecksum(Params()) != original_checksum);
     HeaderChainSelector enforced;
     CHECK(enforced.AddHeader(BuildCanonicalGenesis(Params()).header));
-    const auto consensus = GetConsensusForCurrentNetwork();
+    const auto consensus = GetConsensusForNetwork(dinero::Params());
     std::vector<std::unique_ptr<HeaderIndexEntry>> ancestry;
     ancestry.push_back(std::make_unique<HeaderIndexEntry>(genesis, nullptr));
     const auto solve = [](BlockHeader header, bool valid) {

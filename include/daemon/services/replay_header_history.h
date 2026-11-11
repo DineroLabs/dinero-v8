@@ -32,7 +32,7 @@ public:
         // Legacy header MTP narrows each timestamp to uint32 BEFORE sorting.
         context.parent_mtp = Median<uint32_t>(height_);
         if (height_ >= 1) context.block1_time = static_cast<int64_t>(HeaderAt(1).timestamp);
-        const auto consensus = GetConsensusForCurrentNetwork();
+        const auto consensus = GetConsensusForNetwork(dinero::Params());
         if (const auto anchor = TimingUpgradeAnchorHeight(int32_t(height_) + 1, consensus)) {
             const auto header = HeaderAt(*anchor);
             context.timing_anchor = AsertAnchor{static_cast<int32_t>(*anchor),

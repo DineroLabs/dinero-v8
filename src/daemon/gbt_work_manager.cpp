@@ -333,7 +333,7 @@ GBTWorkManager::BlockCandidate GBTWorkManager::BuildBlockCandidate() {
     candidate.header.difficulty = GetNextWorkRequiredWithChainDB(
         static_cast<int32_t>(candidate.height),
         static_cast<int64_t>(candidate.header.timestamp),
-        GetConsensusForCurrentNetwork(),
+        GetConsensusForNetwork(dinero::Params()),
         chain_db,
         m_context ? m_context->block_storage.get() : nullptr);
     if (candidate.header.difficulty == 0) {

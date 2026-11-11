@@ -47,13 +47,8 @@ inline uint32_t GetNextWorkRequired(
     (void)getBlockTime;
 
     // Regtest: easy difficulty from block 1+
-    try {
-        const auto& params = dinero::Params();
-        if (params.SkipProofOfWork() && height >= 1) {
-            return c.powLimitBits;
-        }
-    } catch (...) {
-        // Continue with normal logic
+    if (c.skipProofOfWork && height >= 1) {
+        return c.powLimitBits;
     }
 
     // Genesis: fixed difficulty
@@ -102,12 +97,8 @@ inline uint32_t GetNextWorkRequiredWithChainDB(
     const Consensus& c,
     ChainDBType* chain_db)
 {
-    try {
-        const auto& params = dinero::Params();
-        if (params.SkipProofOfWork() && height >= 1) {
-            return c.powLimitBits;
-        }
-    } catch (...) {
+    if (c.skipProofOfWork && height >= 1) {
+        return c.powLimitBits;
     }
 
     if (height == 0) {
@@ -132,12 +123,8 @@ inline uint32_t GetNextWorkRequiredWithChainDB(
     ChainDB* chain_db,
     BlockStorage* block_storage)
 {
-    try {
-        const auto& params = dinero::Params();
-        if (params.SkipProofOfWork() && height >= 1) {
-            return c.powLimitBits;
-        }
-    } catch (...) {
+    if (c.skipProofOfWork && height >= 1) {
+        return c.powLimitBits;
     }
 
     if (height == 0) {
@@ -219,12 +206,8 @@ inline uint32_t GetNextWorkRequiredForCandidate(
     // Validation path wrapper: derive reference/anchor context from the candidate
     // chain ancestry, then delegate into the pure helper. No alternate anchor policy
     // is allowed here.
-    try {
-        const auto& params = dinero::Params();
-        if (params.SkipProofOfWork() && target_height >= 1) {
-            return c.powLimitBits;
-        }
-    } catch (...) {
+    if (c.skipProofOfWork && target_height >= 1) {
+        return c.powLimitBits;
     }
 
     if (target_height == 0) {

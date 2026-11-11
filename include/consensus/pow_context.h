@@ -14,12 +14,18 @@
 
 namespace dinero {
 
-inline Consensus GetConsensusForCurrentNetwork() {
+// Builds the threaded Consensus view of one network's chain parameters.
+// Callers own the chain selection (typically GetConsensusForNetwork(Params()));
+// the kernel below reads network facts only from the Consensus argument.
+inline Consensus GetConsensusForNetwork(const ChainParams& params) {
     Consensus consensus;
-    consensus.targetSpacingSec = dinero::Params().target_spacing;
-    consensus.sixtySecondActivationHeight = dinero::Params().sixty_second_activation_height;
-    if (dinero::Params().name != "mainnet") {
-        const uint32_t network_pow_limit = dinero::Params().pow_limit_bits;
+    consensus.targetSpacingSec = params.target_spacing;
+    consensus.sixtySecondActivationHeight = params.sixty_second_activation_height;
+    consensus.genesisTime = static_cast<int64_t>(params.genesis.nTime);
+    consensus.isMainnet = (params.name == "mainnet");
+    consensus.skipProofOfWork = params.SkipProofOfWork();
+    if (!consensus.isMainnet) {
+        const uint32_t network_pow_limit = params.pow_limit_bits;
         consensus.genesisBits = network_pow_limit;
         consensus.asertAnchorBits = network_pow_limit;
         consensus.powLimitBits = network_pow_limit;
@@ -259,23 +265,24 @@ inline int64_t GetKnownAncestryTimestamp(
 // -> solo blocks rejected bad-diffbits, while validation (which resolves block 1
 // via the in-memory header ancestry) uses the correct time. Return block 1's
 // verified timestamp here so template == validation regardless of backfill state.
-inline int64_t CanonicalAsertAnchorTimeFallback() {
+inline int64_t CanonicalAsertAnchorTimeFallback(const Consensus& consensus) {
     // Block 1 (000000194ff6bff58b929bc41978ef1b329a1d3737598eac86a57ec481c4d643)
     // mainnet timestamp = the time anchor the live network's ASERT runs on.
     static constexpr int64_t kMainnetAsertAnchorTime = 1776518061;
-    if (dinero::Params().name == "mainnet") {
+    if (consensus.isMainnet) {
         return kMainnetAsertAnchorTime;
     }
-    return static_cast<int64_t>(dinero::Params().genesis.nTime);
+    return consensus.genesisTime;
 }
 
 template <typename ChainDBType>
 inline int64_t GetCanonicalAsertAnchorTime(
     ChainDBType* chain_db,
-    int32_t target_height)
+    int32_t target_height,
+    const Consensus& consensus)
 {
     if (target_height <= 1) {
-        return static_cast<int64_t>(dinero::Params().genesis.nTime);
+        return consensus.genesisTime;
     }
 
     const int64_t block1_time = GetChainTimestampAtHeight(chain_db, 1);
@@ -283,16 +290,17 @@ inline int64_t GetCanonicalAsertAnchorTime(
         return block1_time;
     }
 
-    return CanonicalAsertAnchorTimeFallback();  // #314: not genesis.nTime
+    return CanonicalAsertAnchorTimeFallback(consensus);  // #314: not genesisTime
 }
 
 inline int64_t GetCanonicalAsertAnchorTime(
     ChainDB* chain_db,
     BlockStorage* block_storage,
-    int32_t target_height)
+    int32_t target_height,
+    const Consensus& consensus)
 {
     if (target_height <= 1) {
-        return static_cast<int64_t>(dinero::Params().genesis.nTime);
+        return consensus.genesisTime;
     }
 
     const int64_t block1_time = GetChainTimestampAtHeight(chain_db, block_storage, 1);
@@ -300,7 +308,7 @@ inline int64_t GetCanonicalAsertAnchorTime(
         return block1_time;
     }
 
-    return CanonicalAsertAnchorTimeFallback();  // #314: not genesis.nTime
+    return CanonicalAsertAnchorTimeFallback(consensus);  // #314: not genesisTime
 }
 
 template <typename ChainDBType>
@@ -315,7 +323,7 @@ inline std::optional<AsertInput> BuildAsertInputForNextBlockOnChainDB(
     }
 
     const int64_t parent_mtp = (target_height == 1)
-        ? static_cast<int64_t>(dinero::Params().genesis.nTime)
+        ? consensus.genesisTime
         : GetMedianTimePastAtHeight(chain_db, static_cast<uint32_t>(target_height - 1));
 
     if (target_height > 1 && parent_mtp == 0) {
@@ -327,7 +335,7 @@ inline std::optional<AsertInput> BuildAsertInputForNextBlockOnChainDB(
     input.reference_time = GetConsensusReferenceTime(target_height, parent_mtp, candidate_timestamp);
     input.anchor = GetCanonicalAsertAnchor(
         consensus,
-        GetCanonicalAsertAnchorTime(chain_db, target_height));
+        GetCanonicalAsertAnchorTime(chain_db, target_height, consensus));
     input.params = GetAsertParams(consensus);
     if (const auto height = TimingUpgradeAnchorHeight(target_height, consensus)) {
         const auto anchor = GetTimingAnchorOnChainDB(chain_db, *height);
@@ -349,7 +357,7 @@ inline std::optional<AsertInput> BuildAsertInputForNextBlockOnChainDB(
     }
 
     const int64_t parent_mtp = (target_height == 1)
-        ? static_cast<int64_t>(dinero::Params().genesis.nTime)
+        ? consensus.genesisTime
         : GetMedianTimePastAtHeight(
               chain_db,
               block_storage,
@@ -364,7 +372,7 @@ inline std::optional<AsertInput> BuildAsertInputForNextBlockOnChainDB(
     input.reference_time = GetConsensusReferenceTime(target_height, parent_mtp, candidate_timestamp);
     input.anchor = GetCanonicalAsertAnchor(
         consensus,
-        GetCanonicalAsertAnchorTime(chain_db, block_storage, target_height));
+        GetCanonicalAsertAnchorTime(chain_db, block_storage, target_height, consensus));
     input.params = GetAsertParams(consensus);
     if (const auto height = TimingUpgradeAnchorHeight(target_height, consensus)) {
         const auto anchor = GetTimingAnchorOnChainDB(chain_db, *height);
@@ -390,7 +398,7 @@ inline std::optional<AsertInput> BuildAsertInputForCandidateTimes(
 
     int64_t parent_mtp = 0;
     if (target_height == 1) {
-        parent_mtp = static_cast<int64_t>(dinero::Params().genesis.nTime);
+        parent_mtp = consensus.genesisTime;
     } else if (known_parent_mtp > 0) {
         parent_mtp = known_parent_mtp;
     } else {
@@ -405,10 +413,10 @@ inline std::optional<AsertInput> BuildAsertInputForCandidateTimes(
     input.target_height = target_height;
     input.reference_time = GetConsensusReferenceTime(target_height, parent_mtp, candidate_timestamp);
     const int64_t anchor_time = (target_height <= 1)
-        ? static_cast<int64_t>(dinero::Params().genesis.nTime)
+        ? consensus.genesisTime
         : (known_block1_time > 0
             ? known_block1_time
-            : GetCanonicalAsertAnchorTime(chain_db, target_height));
+            : GetCanonicalAsertAnchorTime(chain_db, target_height, consensus));
     input.anchor = GetCanonicalAsertAnchor(
         consensus,
         anchor_time);

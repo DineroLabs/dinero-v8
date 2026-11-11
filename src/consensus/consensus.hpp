@@ -46,4 +46,12 @@ struct Consensus {
     // GPU mining governance (0 = disabled)
     uint32_t gpuMiningActivationHeight = 0;
     bool     allowGPUMining            = false;
+
+    // Network facts the PoW/ASERT kernel previously read ambiently via
+    // Params() (sep3 stage B). Defaults are mainnet — the same network the
+    // ambient accessor defaulted to before selection — so default-constructed
+    // Consensus keeps its pre-migration behavior.
+    int64_t  genesisTime         = 1'776'384'000; // mainnet genesis nTime (2026-04-17 UTC)
+    bool     isMainnet           = true;
+    bool     skipProofOfWork     = false;         // regtest-style PoW skip from block 1+
 };
