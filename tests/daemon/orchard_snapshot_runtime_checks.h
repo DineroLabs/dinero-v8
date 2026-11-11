@@ -2641,12 +2641,40 @@ TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles)
             if(stateless)EXPECT_EQ(original,nullptr);
             context.logger_interface=source.f.logger.get();auto pool=std::make_shared<MempoolService>();
             ASSERT_TRUE(pool->Init(context));context.mempool=pool;
-            service->setHeaderChainSelector(headers);service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
+            auto import_headers=headers;
+            if(stateless&&run==0) {
+                import_headers=std::make_shared<HeaderChainSelector>();
+                ASSERT_TRUE(import_headers->AddHeader(source.f.blocks.front().header));
+            }
+            service->setHeaderChainSelector(import_headers);service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
             if(stateless) {
                 service->setValidationMode(ValidationMode::STATEFUL);EXPECT_FALSE(service->Start());
                 EXPECT_EQ(service->GetActiveTip(),nullptr);service->setValidationMode(ValidationMode::STATELESS);
             }
             ASSERT_TRUE(service->Start());
+            if(stateless&&run==0) {
+                // A physical phone starts with genesis, then receives header
+                // batches while maintenance and P2P callbacks try activation.
+                // There is deliberately no full coin owner during this wait.
+                ASSERT_TRUE(service->IsSnapshotBootstrapPending());
+                ASSERT_EQ(service->GetActiveTip()->height,0u);
+                for(size_t height=1;height<source.f.blocks.size();++height) {
+                    ASSERT_TRUE(import_headers->AddHeader(source.f.blocks[height].header));
+                    if(height%17==0) {
+                        service->ActivateBestChain();service->TryDeferredSnapshotBootstrap();
+                        ASSERT_FALSE(service->IsInSafeMode())<<service->GetSafeModeReason();
+                        ASSERT_TRUE(service->IsSnapshotBootstrapPending());
+                        ASSERT_EQ(service->GetConsensusUTXOSet(),nullptr);
+                        ASSERT_EQ(service->GetActiveTip()->height,0u);
+                    }
+                }
+                ASSERT_TRUE(import_headers->AddHeader(first->Header()));
+                ASSERT_TRUE(import_headers->AddHeader(second->Header()));
+                ASSERT_TRUE(import_headers->AddHeader(third->Header()));
+                service->TryDeferredSnapshotBootstrap();
+                ASSERT_FALSE(service->IsSnapshotBootstrapPending());
+                ASSERT_FALSE(service->IsInSafeMode())<<service->GetSafeModeReason();
+            }
             if(!stateless&&run==0) {
                 EXPECT_FALSE(context.config->CompactSnapshotBootstrapEnabled());
                 const auto refused_root=service->LoadSnapshot(bad_root_path);
