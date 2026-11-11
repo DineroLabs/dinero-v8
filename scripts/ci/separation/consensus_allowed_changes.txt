@@ -56,7 +56,7 @@
 # Compact-v6 cold-start recovery: exact reviewed ASERT ancestry memo only.
 # Every header still runs ValidateHistoricalHeader; no open-ended file allowance.
 6 sha256 include/consensus/header_chain.h 15e2cb6d067b2dc2e12146f6f5afe5418e4ca9dd22eb681d60b9e833fa8b25f0
-6 sha256 src/consensus/header_chain.cpp c193782dced05534570741b39ac9413355deafd39031989982a3f0cfb70b9317
+6 sha256 src/consensus/header_chain.cpp fbf9a34f7ec9a3d619e49e71c711848f863db048e47094e49b1cdd1aecfa984b
 
 # Compact-v6 cold startup: exact process-local authenticated catalog data reuse.
 # Complete graph, byte-integrity, live-source and selected-state checks remain.
