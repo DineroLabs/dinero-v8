@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign patched-path policy invariants. No unsafe-original execution.
 #include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
@@ -52,7 +53,7 @@ public:
     void warning(const std::string& text) override {log(LogLevel::WARNING,text);} void error(const std::string& text) override {log(LogLevel::ERROR,text);}
 };
 TEST_F(MempoolBlockOwner, ConnectedConflictFailureRestoresPoolAndProofState) {
-    PublicationLogger logger; Mempool pool(&db,&coins); pool.setLogger(&logger);
+    PublicationLogger logger; dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins); pool.setLogger(&logger);
     const auto funding=fund(1); const auto parent=spend(funding,1000000,1000);
     const auto child=spend({parent.GetTxid(),0},999000,1000); const auto survivor=spend(fund(2),1000000,2000);
     ASSERT_TRUE(pool.submitTransaction(parent,"fixture",false).accepted());
@@ -80,7 +81,7 @@ TEST_F(MempoolBlockOwner, ConnectedConflictFailureRestoresPoolAndProofState) {
     EXPECT_EQ(pool.onBlockConnected(effects,111,{4,5,6}),0U); EXPECT_EQ(pool.size(),1U);
 }
 TEST_F(MempoolBlockOwner, ConfirmedParentFailurePreservesChildDependencyAndRetry) {
-    PublicationLogger logger; Mempool pool(&db,&coins); pool.setLogger(&logger);
+    PublicationLogger logger; dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins); pool.setLogger(&logger);
     const auto funding=fund(3); const auto parent=spend(funding,1000000,1000);
     const auto child=spend({parent.GetTxid(),0},999000,1000);
     ASSERT_TRUE(pool.submitTransaction(parent,"fixture",false).accepted());
@@ -99,7 +100,7 @@ TEST_F(MempoolBlockOwner, ConfirmedParentFailurePreservesChildDependencyAndRetry
     const auto grandchild=spend({child.GetTxid(),0},998000,1000); EXPECT_TRUE(pool.submitTransaction(grandchild,"fixture",false).accepted());
 }
 TEST_F(MempoolBlockOwner, DisconnectedFailureRestoresCacheBeforeRetry) {
-    PublicationLogger logger; Mempool pool(&db,&coins); pool.setLogger(&logger);
+    PublicationLogger logger; dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins); pool.setLogger(&logger);
     const auto tx=spend(fund(4),1000000,1000); ASSERT_TRUE(pool.submitTransaction(tx,"fixture",false).accepted());
     const auto id=tx.GetTxid().AsUint256(); ASSERT_TRUE(pool.refreshProof(id,{1,2,3},110)); ASSERT_TRUE(pool.setCachedUtxoTxPayload(id,{4,5,6}));
     logger.fail_at="Block 110 disconnected:"; EXPECT_THROW(pool.onBlockDisconnected(110),std::runtime_error); logger.fail_at.clear();
@@ -110,7 +111,7 @@ TEST_F(MempoolBlockOwner, DisconnectedFailureRestoresCacheBeforeRetry) {
     pool.onBlockDisconnected(110); EXPECT_EQ(pool.size(),1U); EXPECT_EQ(pool.getStaleCount(),1U);
 }
 TEST_F(MempoolBlockOwner, PreparedUpdatesAbandonOrPublishExactlyOnce) {
-    PublicationLogger logger; Mempool pool(&db,&coins); pool.setLogger(&logger);
+    PublicationLogger logger; dinero::ChainDbMempoolView mempool_chain_view_4{&db}; Mempool pool(&mempool_chain_view_4,&coins); pool.setLogger(&logger);
     const auto funding=fund(5); const auto tx=spend(funding,1000000,1000);
     ASSERT_TRUE(pool.submitTransaction(tx,"fixture",false).accepted());
     const auto id=tx.GetTxid().AsUint256(); ASSERT_TRUE(pool.refreshProof(id,{1,2,3},110));

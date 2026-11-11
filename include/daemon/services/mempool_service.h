@@ -274,6 +274,8 @@ private:
     bool reopen_fenced_=false;
     std::thread::id reopen_thread_;
     std::thread::id stopping_thread_;
+    // Constructed before the pool and retired after it; borrows chainstate's DB.
+    std::unique_ptr<IMempoolChainView> chain_view_;
     std::unique_ptr<Mempool> mempool_;
 
     // Logger dependencies (dual pattern during migration):

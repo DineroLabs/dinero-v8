@@ -6,6 +6,8 @@
 #include "daemon/daemon_context.h"
 #include "daemon/config.h"
 #include "common/ilogger.h"  // For ILogger interface dependency injection
+#include "storage/chain_db_mempool_view.h"
+#include "daemon/scanner_mempool_sink.h"
 #include <sstream>
 #include <iostream>
 #include <ctime>
@@ -122,10 +124,12 @@ bool MempoolService::Init(DaemonContext& ctx) {
             return false;
         }
 
+        chain_view_ = std::make_unique<ChainDbMempoolView>(chain_db);
         mempool_ = std::make_unique<Mempool>(
-            chain_db,
+            chain_view_.get(),
             chainstate_->GetConsensusUTXOSet(),
-            GetConfig().utreexo_stateless);
+            GetConfig().utreexo_stateless,
+            std::make_unique<ScannerMempoolSink>());
         mempool_->setLogger(logger_interface_);  // Inject logger for dependency injection
         std::weak_ptr<ChainstateService> weak_chainstate = chainstate_;
         mempool_->setChainstateReadGuardFactory([weak_chainstate]()
@@ -255,6 +259,7 @@ void MempoolService::Stop() {
     }
     // Destroy callbacks and dependency owners outside the service gate.
     retired.reset();
+    chain_view_.reset();
     // Existing daemon order has stopped ingress/P2P before this point.
     tx_relay_manager_.reset();
     p2p_service_.reset();

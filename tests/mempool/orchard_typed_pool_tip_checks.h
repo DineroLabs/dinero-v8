@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Prepared-owner tests; the inherited graph is structural, not admission.
 #include "daemon/prepared_pool_tip.h"
 #include <thread>
@@ -20,7 +21,7 @@ protected:
 TEST_F(OrchardTypedPoolTip, HistoricalAdapterAndEffectsHaveSamePublication) {
     const auto parent=ordinary({},51),child=ordinary({{parent.GetTxid(),0}},52);
     const std::vector<MempoolTransaction> bodies{MempoolTransaction(parent),MempoolTransaction(child)};
-    Mempool historical(&db,&coins),typed(&db,&coins);
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool historical(&mempool_chain_view_1,&coins),typed(&mempool_chain_view_1,&coins);
     MempoolOrchardConflictTestPeer::Install(historical,bodies);MempoolOrchardConflictTestPeer::Install(typed,bodies);
     Block block;block.vtx={parent};ConnectedBlockEffects effects;effects.confirmed_txids={parent.GetTxid().AsUint256()};
     {auto prepared=PreparedPoolTip::ConnectEffects(typed,{}, {},effects,111,{2});EXPECT_THROW(prepared->RequestRefresh(),std::logic_error);}
@@ -36,7 +37,7 @@ TEST_F(OrchardTypedPoolTip, NullifierConflictAbandonsOrPublishesAllCacheOwners) 
     const auto body=MempoolTransaction::FromOrchard(envelope());const auto child=ordinary({{body.GetTxid(),0}},53);
     uint256 funding_id;funding_id.data[0]=203;const OutPoint funding{TxId(funding_id),0};
     const auto survivor=ordinary({funding},54);const auto id=survivor.GetTxid().AsUint256();
-    auto bridge=bridgeFor(funding);Mempool pool(&db,&coins);
+    auto bridge=bridgeFor(funding);dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins);
     MempoolOrchardConflictTestPeer::Install(pool,{body,MempoolTransaction(child),MempoolTransaction(survivor)});
     ASSERT_TRUE(pool.refreshProof(id,{1},110));ASSERT_TRUE(bridge->GenerateProofsForTransaction(survivor));
     ASSERT_EQ(bridge->GetCacheSnapshot().tx_entries,1U);
@@ -60,7 +61,7 @@ TEST_F(OrchardTypedPoolTip, PreparationFailureAndAmbiguousRefreshRetainCorrectSt
     const auto body=MempoolTransaction::FromOrchard(envelope());
     uint256 funding_id;funding_id.data[0]=204;const OutPoint funding{TxId(funding_id),0};
     const auto survivor=ordinary({funding},55);const auto id=survivor.GetTxid().AsUint256();auto bridge=bridgeFor(funding);
-    Logger logger;Mempool pool(&db,&coins);pool.setLogger(&logger);
+    Logger logger;dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins);pool.setLogger(&logger);
     MempoolOrchardConflictTestPeer::Install(pool,{body,MempoolTransaction(survivor)});
     ASSERT_TRUE(pool.refreshProof(id,{1},110));ASSERT_TRUE(bridge->GenerateProofsForTransaction(survivor));
     auto relay=std::make_shared<TxRelayManager>(nullptr);relay->SetCsnMode(true);const auto effects=conflictEffects();const auto before=ids(pool);

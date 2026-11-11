@@ -7,11 +7,10 @@
 #include "daemon/relay_transaction_reader.h"
 #include "dinero/compat/int128.hpp"
 #include "primitives/block.h"  // Block type for onBlockConnected/onBlockDisconnected
-#include "storage/chain_db.h"  // ChainDB - single source of truth for blockchain state
-#include "daemon/p2p_message.h"
+#include "daemon/mempool_chain_view.h"
 #include "daemon/tx_mempool.h"  // For UTXOView interface
 #include "mining/address_validator.h"
-#include "privacy/silent_scanner_manager.h"
+#include "daemon/mempool_scan_sink.h"
 #include "common/ilogger.h"
 #include "policy/rbf_policy.h"  // BIP125 RBF validation
 #include "mempool/mempool_persistence.h"  // v0.13.0.2 - Mempool persistence
@@ -105,44 +104,43 @@ const char* ShieldedValidationErrorToString(
 // ChainDB-backed UTXO view for mempool validation
 // Provides read-only access to chain state for transaction validation
 // Phase M.0: Updated to use uint256 txid
-class ChainDBUTXOView : public UTXOView {
-    ChainDB* chain_db_;  // Non-owning pointer (mempool doesn't own ChainDB)
+class MempoolChainUTXOView : public UTXOView {
+    const IMempoolChainView* chain_view_;  // Non-owning pointer (mempool doesn't own ChainDB)
 public:
-    explicit ChainDBUTXOView(ChainDB* chain_db) : chain_db_(chain_db) {}
+    explicit MempoolChainUTXOView(const IMempoolChainView* chain_db) : chain_view_(chain_db) {}
 
     bool HaveUTXO(const uint256& txid, uint32_t vout) const override {
-        if (!chain_db_) return false;
+        if (!chain_view_) return false;
 
         // Phase M.0: txid is uint256, pass directly
-        auto coin_result = chain_db_->getCoinWithConfidentialFallback(txid, vout);
+        auto coin_result = chain_view_->GetCoinWithConfidentialFallback(txid, vout);
         return coin_result.status() == Status::Ok;
     }
 
     bool GetUTXO(const uint256& txid, uint32_t vout, uint64_t& value, std::string& script) const override {
-        if (!chain_db_) return false;
+        if (!chain_view_) return false;
 
         // Phase M.0: txid is uint256, pass directly
-        auto coin_result = chain_db_->getCoinWithConfidentialFallback(txid, vout);
+        auto coin_result = chain_view_->GetCoinWithConfidentialFallback(txid, vout);
         if (coin_result.status() != Status::Ok) {
             return false;
         }
 
-        const Coin& coin = coin_result.value();
+        const MempoolChainCoin& coin = coin_result.value();
         value = coin.amount;
         script = coin.script_pubkey;
         return true;
     }
 
     bool HaveTransaction(const uint256& txid) const override {
-        if (!chain_db_) return false;
-        auto tx_location = chain_db_->getTxLocation(txid);
-        return tx_location.status() == Status::Ok;
+        if (!chain_view_) return false;
+        return chain_view_->HaveTransaction(txid);
     }
 
     uint32_t GetHeight() const override {
-        if (!chain_db_) return 0;
+        if (!chain_view_) return 0;
 
-        auto tip_result = chain_db_->getTip();
+        auto tip_result = chain_view_->GetTip();
         if (tip_result.status() != Status::Ok) {
             return 0;
         }
@@ -152,55 +150,47 @@ public:
 
     bool GetConfidentialUTXO(const uint256& txid, uint32_t vout,
                             std::vector<uint8_t>& commitment, bool& is_confidential) const override {
-        if (!chain_db_) return false;
+        if (!chain_view_) return false;
 
-        auto coin_result = chain_db_->getCoinWithConfidentialFallback(txid, vout);
+        auto coin_result = chain_view_->GetCoinWithConfidentialFallback(txid, vout);
         if (coin_result.status() != Status::Ok) {
             return false;
         }
 
-        const Coin& coin = coin_result.value();
+        const MempoolChainCoin& coin = coin_result.value();
         is_confidential = coin.is_confidential;
         commitment = coin.commitment;
         return true;
     }
 
     bool HaveCommitment(const std::vector<uint8_t>& commitment) const override {
-        if (!chain_db_ || commitment.empty()) {
+        if (!chain_view_ || commitment.empty()) {
             return false;
         }
 
-        bool found = false;
-        chain_db_->forEachUTXO([&](const uint256&, uint32_t, const Coin& coin) {
-            if (coin.is_confidential && coin.commitment == commitment) {
-                found = true;
-                return false;
-            }
-            return true;
-        });
-        return found;
+        return chain_view_->HaveConfidentialCommitment(commitment);
     }
 };
 
 // ChainDB adapter implementing ChainStateView interface for CoinsViewMemPool
 // Phase M.1: CoinsViewMemPool requires ChainStateView, but we have ChainDB
-class ChainDBStateView : public consensus::ChainStateView {
-    ChainDB* chain_db_;  // Non-owning pointer
+class MempoolChainStateView : public consensus::ChainStateView {
+    const IMempoolChainView* chain_view_;  // Non-owning pointer
 public:
-    explicit ChainDBStateView(ChainDB* chain_db) : chain_db_(chain_db) {}
+    explicit MempoolChainStateView(const IMempoolChainView* chain_db) : chain_view_(chain_db) {}
 
     StatusOr<consensus::UTXOEntry> getCoin(const OutPoint& outpoint) const override {
-        if (!chain_db_) {
+        if (!chain_view_) {
             return Status::Internal;
         }
 
         // ChainDB::getCoin returns StatusOr<Coin>
-        auto coin_result = chain_db_->getCoinWithConfidentialFallback(outpoint.txid.AsUint256(), outpoint.vout);
+        auto coin_result = chain_view_->GetCoinWithConfidentialFallback(outpoint.txid.AsUint256(), outpoint.vout);
         if (coin_result.status() != Status::Ok) {
             return coin_result.status();
         }
 
-        const Coin& coin = coin_result.value();
+        const MempoolChainCoin& coin = coin_result.value();
 
         // Convert Coin to UTXOEntry
         consensus::UTXOEntry entry;
@@ -220,14 +210,14 @@ public:
     }
 
     bool hasCoin(const OutPoint& outpoint) const override {
-        if (!chain_db_) return false;
-        auto coin_result = chain_db_->getCoinWithConfidentialFallback(outpoint.txid.AsUint256(), outpoint.vout);
+        if (!chain_view_) return false;
+        auto coin_result = chain_view_->GetCoinWithConfidentialFallback(outpoint.txid.AsUint256(), outpoint.vout);
         return coin_result.status() == Status::Ok;
     }
 
     uint32_t getHeight() const override {
-        if (!chain_db_) return 0;
-        auto tip_result = chain_db_->getTip();
+        if (!chain_view_) return 0;
+        auto tip_result = chain_view_->GetTip();
         if (tip_result.status() != Status::Ok) {
             return 0;
         }
@@ -242,13 +232,13 @@ public:
 // "not found".
 class ConsensusUTXOStateView : public consensus::ChainStateView {
     const consensus::IConsensusUTXOSet* utxo_set_;
-    std::unique_ptr<ChainDBStateView> chain_db_fallback_;
+    std::unique_ptr<MempoolChainStateView> chain_view_fallback_;
 public:
     explicit ConsensusUTXOStateView(const consensus::IConsensusUTXOSet* utxo_set,
-                                    ChainDB* chain_db_fallback = nullptr)
+                                    const IMempoolChainView* chain_view_fallback = nullptr)
         : utxo_set_(utxo_set)
-        , chain_db_fallback_(chain_db_fallback
-              ? std::make_unique<ChainDBStateView>(chain_db_fallback)
+        , chain_view_fallback_(chain_view_fallback
+              ? std::make_unique<MempoolChainStateView>(chain_view_fallback)
               : nullptr) {}
 
     StatusOr<consensus::UTXOEntry> getCoin(const OutPoint& outpoint) const override {
@@ -257,14 +247,14 @@ public:
                 return *coin;
             }
         }
-        return chain_db_fallback_
-            ? chain_db_fallback_->getCoin(outpoint)
+        return chain_view_fallback_
+            ? chain_view_fallback_->getCoin(outpoint)
             : StatusOr<consensus::UTXOEntry>(Status::NotFound);
     }
 
     bool hasCoin(const OutPoint& outpoint) const override {
         return (utxo_set_ && utxo_set_->HaveCoin(outpoint)) ||
-               (chain_db_fallback_ && chain_db_fallback_->hasCoin(outpoint));
+               (chain_view_fallback_ && chain_view_fallback_->hasCoin(outpoint));
     }
 
     uint32_t getHeight() const override {
@@ -278,14 +268,14 @@ public:
 // Phase M.0: Updated to use uint256 txid
 class MempoolUTXOView : public UTXOView {
     const CoinsViewMemPool* coins_view_;  // Non-owning pointer
-    ChainDB* chain_db_;  // For height queries
+    const IMempoolChainView* chain_view_;  // For height queries
     const std::unordered_map<uint256, MempoolEntry>* mempool_entries_;  // For conflicted mempool prevouts
 public:
     explicit MempoolUTXOView(
         const CoinsViewMemPool* coins_view,
-        ChainDB* chain_db,
+        const IMempoolChainView* chain_db,
         const std::unordered_map<uint256, MempoolEntry>* mempool_entries)
-        : coins_view_(coins_view), chain_db_(chain_db), mempool_entries_(mempool_entries) {}
+        : coins_view_(coins_view), chain_view_(chain_db), mempool_entries_(mempool_entries) {}
 
     bool GetMempoolPrevout(const uint256& txid, uint32_t vout, consensus::UTXOEntry& out) const {
         if (!mempool_entries_) {
@@ -331,14 +321,13 @@ public:
     }
 
     bool HaveTransaction(const uint256& txid) const override {
-        if (!chain_db_) return false;
-        auto tx_location = chain_db_->getTxLocation(txid);
-        return tx_location.status() == Status::Ok;
+        if (!chain_view_) return false;
+        return chain_view_->HaveTransaction(txid);
     }
 
     uint32_t GetHeight() const override {
-        if (!chain_db_) return 0;
-        auto tip_result = chain_db_->getTip();
+        if (!chain_view_) return 0;
+        auto tip_result = chain_view_->GetTip();
         if (tip_result.status() != Status::Ok) {
             return 0;
         }
@@ -363,19 +352,11 @@ public:
             return true;
         }
 
-        if (!chain_db_) {
+        if (!chain_view_) {
             return false;
         }
 
-        bool found = false;
-        chain_db_->forEachUTXO([&](const uint256&, uint32_t, const Coin& coin) {
-            if (coin.is_confidential && coin.commitment == commitment) {
-                found = true;
-                return false;
-            }
-            return true;
-        });
-        return found;
+        return chain_view_->HaveConfidentialCommitment(commitment);
     }
 };
 
@@ -449,23 +430,24 @@ void EraseFeeIndexEntry(std::multimap<double, uint256>& fee_index, const uint256
 
 }  // namespace
 
-Mempool::Mempool(ChainDB* chain_db,
+Mempool::Mempool(const IMempoolChainView* chain_db,
                  const consensus::IConsensusUTXOSet* consensus_utxo_set,
-                 bool allow_chain_db_fallback)
-    : chain_db_(chain_db)
+                 bool allow_chain_view_fallback,
+                 std::unique_ptr<IMempoolScanSink> scan_sink)
+    : chain_view_(chain_db)
     , chain_state_view_(consensus_utxo_set
           ? std::unique_ptr<consensus::ChainStateView>(
                 std::make_unique<ConsensusUTXOStateView>(
                     consensus_utxo_set,
-                    allow_chain_db_fallback ? chain_db : nullptr))
+                    allow_chain_view_fallback ? chain_db : nullptr))
           : std::unique_ptr<consensus::ChainStateView>(
-                std::make_unique<ChainDBStateView>(chain_db)))
+                std::make_unique<MempoolChainStateView>(chain_db)))
     , coins_view_(chain_state_view_.get())  // v0.11.0: Initialize UTXO overlay with ChainStateView adapter
     , m_logger(nullptr)
     , m_max_size(DEFAULT_MAX_SIZE)
     , m_max_age(DEFAULT_MAX_AGE)
     , m_min_fee_rate(DEFAULT_MIN_FEE_RATE)
-    , m_sp_scanner_manager(std::make_unique<din::sp::ScannerManager>()) {
+    , m_scan_sink(std::move(scan_sink)) {
 
     // Initialize BIP125 RBF policy with default configuration
     // RBF default: OFF - preserves payment finality (opt-in via setRBFEnabled)
@@ -790,8 +772,8 @@ TxAcceptResult Mempool::submitOrchardBody(const MempoolTransaction& body,
     const auto id=body.GetTxid().AsUint256();
     const auto fail=[&](TxRejectCode code,const char* text){return TxAcceptResult::Rejected(code,text,id);};
     if(!m_tx_accepted_observer.Supports(body))return fail(TxRejectCode::UNAVAILABLE,"Orchard acceptance observer unavailable");
-    auto scanner=m_sp_scanner_manager?m_sp_scanner_manager->acquireEmptyRegistry():nullptr;
-    if(m_sp_scanner_manager && !scanner)return fail(TxRejectCode::UNAVAILABLE,"Configured scanner cannot consume Orchard body");
+    auto scanner=m_scan_sink?m_scan_sink->AcquireEmptyRegistry():nullptr;
+    if(m_scan_sink && !scanner)return fail(TxRejectCode::UNAVAILABLE,"Configured scanner cannot consume Orchard body");
     const auto notification=m_tx_accepted_observer.Prepare(body);
     const auto broadcast=relay?m_tx_broadcast_callback:TxBroadcastCallback{};
     const auto existing=m_transactions.find(id);
@@ -1022,8 +1004,8 @@ TxAcceptResult Mempool::submitTransactionInternal(
     // These limits prevent mempool DoS attacks via deep transaction chains.
 
     uint64_t package_height = 0;
-    if (chain_db_) {
-        auto tip = chain_db_->getTip();
+    if (chain_view_) {
+        auto tip = chain_view_->GetTip();
         if (tip.status() == Status::Ok) package_height = static_cast<uint64_t>(tip.value().height) + 1;
     }
     const bool auth_packages = consensus::shielded::AuthResourcesActive(package_height,
@@ -1052,8 +1034,8 @@ TxAcceptResult Mempool::submitTransactionInternal(
 
     // Get current blockchain height from ChainDB
     uint32_t current_height = 0;
-    if (chain_db_) {
-        auto tip_result = chain_db_->getTip();
+    if (chain_view_) {
+        auto tip_result = chain_view_->GetTip();
         if (tip_result.status() == Status::Ok) {
             current_height = static_cast<uint32_t>(tip_result.value().height);
         }
@@ -1090,8 +1072,8 @@ TxAcceptResult Mempool::submitTransactionInternal(
     admission_rollback.committed = true;
 
     // v0.13.0.3: Record transaction entry for fee estimation
-    if (fee_estimator_ && chain_db_) {
-        auto tip_result = chain_db_->getTip();
+    if (fee_estimator_ && chain_view_) {
+        auto tip_result = chain_view_->GetTip();
         if (tip_result.status() == Status::Ok) {
             uint32_t tip_height = tip_result.value().height;
             // Record fee rate as una/vbyte (BIP141-aligned).
@@ -1101,9 +1083,9 @@ TxAcceptResult Mempool::submitTransactionInternal(
     }
 
     // Scan for Silent Payments
-    if (m_sp_scanner_manager) {
+    if (m_scan_sink) {
         std::string tx_hex = tx.SerializeHex();
-        m_sp_scanner_manager->scanMempoolTransaction(tx_hex);
+        m_scan_sink->ScanMempoolTransaction(tx_hex);
     }
 
     // Admission and maintenance are published. Later observer errors preserve
@@ -1532,8 +1514,8 @@ TxAcceptResult Mempool::submitTransactionTestOnly(const Transaction& tx, const s
 
     // Get current blockchain height from ChainDB
     uint32_t current_height = 0;
-    if (chain_db_) {
-        auto tip_result = chain_db_->getTip();
+    if (chain_view_) {
+        auto tip_result = chain_view_->GetTip();
         if (tip_result.status() == Status::Ok) {
             current_height = static_cast<uint32_t>(tip_result.value().height);
         }
@@ -2811,7 +2793,7 @@ bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
         set_reason("shielded state unavailable");
         return false;
     }
-    if (!chain_db_) {
+    if (!chain_view_) {
         set_reason("chain state unavailable");
         return false;
     }
@@ -2826,7 +2808,7 @@ bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
     }
 
     uint64_t total_input_value = 0;
-    MempoolUTXOView utxo_view(&coins_view_, chain_db_, &m_transactions);
+    MempoolUTXOView utxo_view(&coins_view_, chain_view_, &m_transactions);
     for (const auto& input : tx.vin) {
         const uint256 input_txid = input.prevout.txid.AsUint256();
         const uint32_t input_vout = input.prevout.vout;
@@ -2939,8 +2921,8 @@ void Mempool::removeConfirmedTransactions(const std::vector<uint256>& confirmed_
 
     // v0.13.0.3: Get current height for fee estimation
     uint32_t confirmation_height = 0;
-    if (chain_db_) {
-        auto tip_result = chain_db_->getTip();
+    if (chain_view_) {
+        auto tip_result = chain_view_->GetTip();
         if (tip_result.status() == Status::Ok) {
             confirmation_height = static_cast<uint32_t>(tip_result.value().height);
         }
@@ -3534,8 +3516,8 @@ bool Mempool::validateTransaction(
     // Serialize() returns bytes, not hex. Use the same byte/weight profile
     // at admission and template selection, with the actual target height.
     uint64_t resource_height = target_height.value_or(0);
-    if (!target_height && chain_db_) {
-        auto tip = chain_db_->getTip();
+    if (!target_height && chain_view_) {
+        auto tip = chain_view_->GetTip();
         if (tip.status() == Status::Ok) resource_height = static_cast<uint64_t>(tip.value().height) + 1;
     }
     if (has_shielded_bundle && resource_height <= UINT32_MAX &&
@@ -3577,7 +3559,7 @@ bool Mempool::validateTransaction(
     uint64_t total_input_value = 0;
 
     // v0.11.0: Use MempoolUTXOView to see both confirmed + mempool UTXOs
-    MempoolUTXOView utxo_view(&coins_view_, chain_db_, &m_transactions);
+    MempoolUTXOView utxo_view(&coins_view_, chain_view_, &m_transactions);
 
     auto read_prebase = [&](const OutPoint& point,
                             std::optional<consensus::UTXOEntry>& captured) {
@@ -3692,12 +3674,12 @@ bool Mempool::validateTransaction(
     if (target_height.has_value()) {
         next_block_height_for_scripts = *target_height;
     } else {
-        if (!chain_db_) {
+        if (!chain_view_) {
             if (failure) *failure = TxRejectCode::UNAVAILABLE;
             error = "Script validation unavailable: ChainDB not initialized";
             return false;
         }
-        auto tip_result = chain_db_->getTip();
+        auto tip_result = chain_view_->GetTip();
         if (tip_result.status() != Status::Ok) {
             if (failure) *failure = TxRejectCode::UNAVAILABLE;
             error = "Script validation unavailable: ChainDB tip not loaded";
@@ -3754,8 +3736,8 @@ bool Mempool::validateTransaction(
         lock_heights.push_back(creation);
     }
     const auto lookup_mtp = [&](uint32_t wanted) -> std::optional<uint64_t> {
-        if (!chain_db_) return std::nullopt;
-        const auto tip = chain_db_->getTip();
+        if (!chain_view_) return std::nullopt;
+        const auto tip = chain_view_->GetTip();
         if (!tip.ok()) return std::nullopt;
         const auto* cursor = FindBlockIndex(tip.value().hash);
         while (cursor && cursor->height > wanted) cursor = cursor->pprev;
@@ -3795,12 +3777,12 @@ bool Mempool::validateTransaction(
             error = "Shielded state unavailable in mempool";
             return false;
         }
-        if (!chain_db_) {
+        if (!chain_view_) {
             error = "Shielded validation unavailable: ChainDB not initialized";
             return false;
         }
 
-        auto tip_result = chain_db_->getTip();
+        auto tip_result = chain_view_->GetTip();
         if (tip_result.status() != Status::Ok) {
             error = "Shielded validation unavailable: ChainDB tip not loaded";
             return false;
@@ -3901,7 +3883,7 @@ uint64_t Mempool::computeVWUForTx(const Transaction& tx) const {
     // byte_weight=1, verify_cost=0). That under-prices malformed P2MR txs
     // but they can't pass validation anyway; this keeps computeVWUForTx
     // deterministic and safe to call on any well-formed tx.
-    MempoolUTXOView utxo_view(&coins_view_, chain_db_, &m_transactions);
+    MempoolUTXOView utxo_view(&coins_view_, chain_view_, &m_transactions);
 
     std::vector<consensus::UTXOEntry> prevouts;
     prevouts.reserve(tx.vin.size());
@@ -4181,7 +4163,7 @@ size_t Mempool::getTotalSizeLocked() const {
 // ═══════════════════════════════════════════════════════════════════════════
 
 std::string Mempool::getDefaultMempoolPath() const {
-    // If chain_db_ is available, use its data directory
+    // If chain_view_ is available, use its data directory
     // Otherwise use current directory
     // Configuration-level path wiring is handled by the daemon layer.
     return "./mempool.dat";

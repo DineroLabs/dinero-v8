@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // ============================================================================
 // UTREEXO SAFETY GATE TEST — BlockAssembler Hardening
 // ============================================================================
@@ -149,11 +150,13 @@ protected:
 
         utxo_set_ = std::make_unique<SafetyGateUTXOSet>();
         validator_ = std::make_unique<BlockValidator>(utxo_set_.get());
-        mempool_ = std::make_unique<Mempool>(chain_db_.get(), utxo_set_.get());
+        mempool_chain_view_ = std::make_unique<ChainDbMempoolView>(chain_db_.get());
+        mempool_ = std::make_unique<Mempool>(mempool_chain_view_.get(), utxo_set_.get());
     }
 
     void TearDown() override {
         mempool_.reset();
+        mempool_chain_view_.reset();
         validator_.reset();
         utxo_set_.reset();
         chain_db_.reset();
@@ -168,6 +171,7 @@ protected:
     std::unique_ptr<ChainDB> chain_db_;
     std::unique_ptr<SafetyGateUTXOSet> utxo_set_;
     std::unique_ptr<BlockValidator> validator_;
+    std::unique_ptr<ChainDbMempoolView> mempool_chain_view_;
     std::unique_ptr<Mempool> mempool_;
     uint256 genesis_hash_;
 };

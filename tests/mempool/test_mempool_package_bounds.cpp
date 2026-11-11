@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign patched-path policy invariants. No unsafe-original execution.
 #include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
@@ -50,7 +51,7 @@ protected:
     }
 };
 TEST_F(MempoolPackageBounds, NonDirectAncestorBoundPreservesPool) {
-    Mempool pool(&db,&coins);const auto parent=split(fund(1));
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins);const auto parent=split(fund(1));
     ASSERT_TRUE(pool.submitTransaction(parent,"fixture",false).accepted());
     Transaction last=parent;uint64_t value=499500;
     for(unsigned i=0;i<24;++i){auto tx=spend({last.GetTxid(),0},value,1000);const auto result=pool.submitTransaction(tx,"fixture",false);ASSERT_TRUE(result.accepted())<<i<<": "<<result.message;last=std::move(tx);value-=1000;}
@@ -63,7 +64,7 @@ TEST_F(MempoolPackageBounds, NonDirectAncestorBoundPreservesPool) {
     const auto unrelated=spend(fund(2),1000000,1000);EXPECT_TRUE(pool.submitTransaction(unrelated,"fixture",false).accepted());
 }
 TEST_F(MempoolPackageBounds, ValidReplacementRestoresAncestorCapacity) {
-    Mempool pool(&db,&coins);pool.setRBFEnabled(true);const auto parent=split(fund(3));ASSERT_TRUE(pool.submitTransaction(parent,"fixture",false).accepted());
+    dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins);pool.setRBFEnabled(true);const auto parent=split(fund(3));ASSERT_TRUE(pool.submitTransaction(parent,"fixture",false).accepted());
     Transaction last=parent;uint64_t value=499500;std::vector<uint256> removed;
     for(unsigned i=0;i<24;++i){auto tx=spend({last.GetTxid(),0},value,1000);const auto result=pool.submitTransaction(tx,"fixture",false);ASSERT_TRUE(result.accepted())<<i<<": "<<result.message;removed.push_back(tx.GetTxid().AsUint256());last=std::move(tx);value-=1000;}
     const auto branch=spend({parent.GetTxid(),1},499500,1000);ASSERT_TRUE(pool.submitTransaction(branch,"fixture",false).accepted());

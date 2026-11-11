@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign patched-path policy invariants. No unsafe-original execution.
 #include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
@@ -78,7 +79,7 @@ TEST_F(MempoolTransactionBody, AdmissionCapturesBeforeChainCallback) {
     const auto replacement = spend(second_input, 1000000, 2000);
     const auto expected = supplied.Serialize(TxSerializationMode::WithWitness);
     const auto expected_id = supplied.GetTxid().AsUint256();
-    Mempool pool(&db, &coins);
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1, &coins);
     struct Guard final : Mempool::ChainstateReadGuard {};
     unsigned acquisitions = 0, notifications = 0;
     pool.setChainstateReadGuardFactory([&] {

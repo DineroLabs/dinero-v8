@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign patched-path policy invariants. No unsafe-original execution.
 #include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
@@ -88,7 +89,7 @@ Transaction structural(const std::vector<OutPoint>& inputs, uint32_t marker, siz
     return tx;
 }
 TEST_F(MempoolTypedPackage, SignedAdmissionUsesCapturedPolicyAncestors) {
-    Mempool pool(&db, &coins); pool.setRBFEnabled(true);
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1, &coins); pool.setRBFEnabled(true);
     const auto parent = split(fund(7));
     ASSERT_TRUE(pool.submitTransaction(parent, "fixture", false).accepted());
     const auto child = spend({parent.GetTxid(), 0}, 499500, 1000);
@@ -109,7 +110,7 @@ TEST_F(MempoolTypedPackage, SignedAdmissionUsesCapturedPolicyAncestors) {
     EXPECT_EQ(pool.size(), 2U);
 }
 TEST_F(MempoolTypedPackage, SharedAncestorsAndReplacementExclusion) {
-    Mempool pool(&db, &coins);
+    dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2, &coins);
     const auto root_tx = structural({}, 1);
     const auto left = structural({{root_tx.GetTxid(), 0}}, 2);
     const auto right = structural({{root_tx.GetTxid(), 1}}, 3);
@@ -124,7 +125,7 @@ TEST_F(MempoolTypedPackage, SharedAncestorsAndReplacementExclusion) {
     EXPECT_EQ(pool.getTransactionIds(), before);
 }
 TEST_F(MempoolTypedPackage, RefusalPreservesPriorAncestorResult) {
-    Mempool pool(&db, &coins);
+    dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3, &coins);
     const auto root_tx = structural({}, 5);
     MempoolTypedPackageTestPeer::InstallGraph(pool, {MempoolTransaction(root_tx)});
     const auto leaf = structural({{root_tx.GetTxid(), 0}}, 6, 101 * 1024);
@@ -145,7 +146,7 @@ TEST_F(MempoolTypedPackage, MixedFamilyGraphKeepsOrdinaryByteProfile) {
     ASSERT_GT(orchard_body.OutputCount(), 0U);
     const auto child = structural({{orchard_body.GetTxid(), 0}}, 7);
     const auto leaf = structural({{child.GetTxid(), 0}}, 8);
-    Mempool pool(&db, &coins);
+    dinero::ChainDbMempoolView mempool_chain_view_4{&db}; Mempool pool(&mempool_chain_view_4, &coins);
     MempoolTypedPackageTestPeer::InstallGraph(pool, {orchard_body, MempoolTransaction(child)});
     const auto before = pool.getTransactionIds(); std::unordered_set<uint256> ancestors;
     ASSERT_TRUE(MempoolTypedPackageTestPeer::Check(pool, MempoolTransaction(leaf), {}, true, ancestors).accepted());

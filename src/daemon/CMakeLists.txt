@@ -55,7 +55,7 @@ if(APPLE)
     ${CMAKE_SOURCE_DIR}/src/daemon/datadir_guard.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/config.cpp  # Phase 8: Node configuration
     ${CMAKE_SOURCE_DIR}/src/daemon/rpc_context_wiring.cpp
-    ${CMAKE_SOURCE_DIR}/src/daemon/mempool.cpp  # Phase G.3: Structured tx ingress
+      # Phase G.3: Structured tx ingress
     ${CMAKE_SOURCE_DIR}/src/daemon/db_repair.cpp  # Database repair utility (--repair-db)
     ${CMAKE_SOURCE_DIR}/src/daemon/genesis_guard.cpp  # Stale chain data detection
 
@@ -130,7 +130,7 @@ else()
     ${DINEROD_SOCKET_SERVER_SOURCES}  # Always enabled (both dev and release)
     # Pool accounting system (PPLNS, PPS, PROP payout modes) - not in dinero_core
     # Daemon-specific mempool (different from src/mempool/mempool.cpp in dinero_core)
-    ${CMAKE_SOURCE_DIR}/src/daemon/mempool.cpp
+
     # HTTP RPC server & auth (server-only, not in dinero_core)
     ${CMAKE_SOURCE_DIR}/src/daemon/http_rpc_server.cpp
     ${CMAKE_SOURCE_DIR}/src/daemon/rpc_auth.cpp

@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Signed benign packages exercise the patched selector and actual assembler.
 // Included in the existing fixture namespace; no alternate ingress or pool seam.
 class MiningTopologicalSelection : public MiningPackageSelection {
@@ -50,7 +51,7 @@ protected:
     }
 };
 TEST_F(MiningTopologicalSelection, ThreeGenerationsRemainParentFirst) {
-    Mempool pool(&db,&coins);const auto root_tx=payment(61,1000);
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins);const auto root_tx=payment(61,1000);
     const auto middle=child(root_tx,0,2000),last=child(middle,0,50000);
     const std::vector<Transaction> package{root_tx,middle,last};
     for(const auto& tx:package)ASSERT_TRUE(pool.submitTransaction(tx,"fixture",false).accepted());
@@ -61,7 +62,7 @@ TEST_F(MiningTopologicalSelection, ThreeGenerationsRemainParentFirst) {
     checkAssembler(pool,package,53000);EXPECT_EQ(pool.size(),3u);
 }
 TEST_F(MiningTopologicalSelection, DiamondUsesOneSharedAncestorAndDeterministicSiblings) {
-    Mempool pool(&db,&coins);const auto root_tx=payment(62,1000,1);
+    dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins);const auto root_tx=payment(62,1000,1);
     const auto left=child(root_tx,0,1000),right=child(root_tx,1,1000),last=join(left,0,right,0,50000);
     const std::vector<Transaction> package{root_tx,left,right,last};
     for(const auto& tx:package)ASSERT_TRUE(pool.submitTransaction(tx,"fixture",false).accepted());
@@ -75,7 +76,7 @@ TEST_F(MiningTopologicalSelection, DiamondUsesOneSharedAncestorAndDeterministicS
     for(size_t i=0;i<capture.transactions.size();++i)EXPECT_EQ(reordered.transactions[i].Serialize(),capture.transactions[i].Serialize());
 }
 TEST_F(MiningTopologicalSelection, SharedParentInputsRespectPackageLimitsAndExclusions) {
-    Mempool pool(&db,&coins);const auto root_tx=payment(63,1000,1);
+    dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins);const auto root_tx=payment(63,1000,1);
     const auto middle=join(root_tx,0,root_tx,1,2000),last=child(middle,0,50000);
     const std::vector<Transaction> package{root_tx,middle,last};
     for(const auto& tx:package)ASSERT_TRUE(pool.submitTransaction(tx,"fixture",false).accepted());

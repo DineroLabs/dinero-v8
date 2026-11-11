@@ -1,0 +1,633 @@
+{
+ "config": "on",
+ "transcript": [
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "bytes": 0,
+     "last_connected_height": 101,
+     "maxmempool": 300000000,
+     "mempoolminfee": 1e-05,
+     "minrelaytxfee": 1e-05,
+     "refresh_attempted_total": 0,
+     "refresh_dropped_budget_total": 0,
+     "refresh_succeeded_total": 0,
+     "rpc_schema": "din.mempool.v1",
+     "size": 0,
+     "stale_evicted_total": 0,
+     "stale_tx_count": 0,
+     "total_fee": 0.0,
+     "unbroadcastcount": 0,
+     "usage": 0
+    }
+   },
+   "http_status": 200,
+   "method": "getmempoolinfo",
+   "node": "m",
+   "params": [],
+   "step": "empty.info"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": []
+   },
+   "http_status": 200,
+   "method": "getrawmempool",
+   "node": "m",
+   "params": [],
+   "step": "empty.ids"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": [
+     {
+      "allowed": true,
+      "txid": "<H#1>"
+     }
+    ]
+   },
+   "http_status": 200,
+   "method": "testmempoolaccept",
+   "node": "m",
+   "params": [
+    "<X#1:len=324>"
+   ],
+   "step": "accept.valid"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "result": "<H#1>"
+    }
+   },
+   "http_status": 200,
+   "method": "sendrawtransaction",
+   "node": "m",
+   "params": [
+    "<X#1:len=324>"
+   ],
+   "step": "sendrawtransaction"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": [
+     {
+      "allowed": false,
+      "reject-reason": "txn-already-in-mempool: Transaction already in mempool",
+      "txid": "<H#1>"
+     }
+    ]
+   },
+   "http_status": 200,
+   "method": "testmempoolaccept",
+   "node": "m",
+   "params": [
+    "<X#1:len=324>"
+   ],
+   "step": "accept.duplicate"
+  },
+  {
+   "body": {
+    "error": {
+     "code": -27,
+     "message": "Transaction already in mempool"
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+   },
+   "http_status": 200,
+   "method": "sendrawtransaction",
+   "node": "m",
+   "params": [
+    "<X#1:len=324>"
+   ],
+   "step": "send.duplicate"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "avg_fee_rate": 61.72839506172839,
+     "bytes": 162,
+     "last_connected_height": 101,
+     "max_fee_rate": 61,
+     "maxmempool": 300000000,
+     "median_fee_rate": 61.72839506172839,
+     "mempoolminfee": 1e-05,
+     "min_fee_rate": 61,
+     "minrelaytxfee": 1e-05,
+     "oldest_tx_age_seconds": "<D:int>",
+     "refresh_attempted_total": 0,
+     "refresh_dropped_budget_total": 0,
+     "refresh_succeeded_total": 0,
+     "rpc_schema": "din.mempool.v1",
+     "size": 1,
+     "stale_evicted_total": 0,
+     "stale_tx_count": 0,
+     "total_fee": 0.0001,
+     "unbroadcastcount": 0,
+     "usage": 162
+    }
+   },
+   "http_status": 200,
+   "method": "getmempoolinfo",
+   "node": "m",
+   "params": [],
+   "step": "pending.info"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": [
+     "<H#1>"
+    ]
+   },
+   "http_status": 200,
+   "method": "getrawmempool",
+   "node": "m",
+   "params": [],
+   "step": "pending.ids"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "<H#1>": {
+      "depends": [],
+      "fee": 0.0001,
+      "height": 101,
+      "modifiedfee": 0.0001,
+      "size": 162,
+      "time": "<T:int>"
+     }
+    }
+   },
+   "http_status": 200,
+   "method": "getrawmempool",
+   "node": "m",
+   "params": [
+    true
+   ],
+   "step": "pending.verbose"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "ancestorcount": 1,
+     "ancestorfees": 0.0001,
+     "ancestorsize": 162,
+     "bip125-replaceable": true,
+     "depends": [],
+     "descendantcount": 1,
+     "descendantfees": 0.0001,
+     "descendantsize": 162,
+     "effectivevsize": 111,
+     "fee": 0.0001,
+     "fees": {
+      "ancestor": 61.72839506172839,
+      "ancestor_effective": 63.29113924050633,
+      "base": 0.0001,
+      "descendant": 61.72839506172839,
+      "effective": 63.29113924050633,
+      "modified": 0.0001
+     },
+     "height": 101,
+     "modifiedfee": 0.0001,
+     "privacy": {
+      "has_confidential_outputs": false,
+      "proof_bytes": 0
+     },
+     "size": 162,
+     "spentby": [],
+     "time": "<T:int>",
+     "vsize": 162,
+     "weight": 648
+    }
+   },
+   "http_status": 200,
+   "method": "getmempoolentry",
+   "node": "m",
+   "params": [
+    "<H#1>"
+   ],
+   "step": "pending.entry"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": []
+   },
+   "http_status": 200,
+   "method": "getmempoolancestors",
+   "node": "m",
+   "params": [
+    "<H#1>"
+   ],
+   "step": "pending.ancestors"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": []
+   },
+   "http_status": 200,
+   "method": "getmempooldescendants",
+   "node": "m",
+   "params": [
+    "<H#1>"
+   ],
+   "step": "pending.descendants"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "blocks": 6,
+     "conf_target": 6,
+     "errors": [
+      "Insufficient data for reliable estimate"
+     ],
+     "estimate_mode": "CONSERVATIVE",
+     "feerate": 0.000679
+    }
+   },
+   "http_status": 200,
+   "method": "estimatesmartfee",
+   "node": "m",
+   "params": [
+    6
+   ],
+   "step": "pending.estimate"
+  },
+  {
+   "body": {
+    "error": {
+     "code": -32603,
+     "message": "Transaction not in mempool"
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+   },
+   "http_status": 200,
+   "method": "getmempoolentry",
+   "node": "m",
+   "params": [
+    "<H#2>"
+   ],
+   "step": "error.unknown_entry"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": [
+     {
+      "allowed": false,
+      "reject-reason": "transaction decode failed",
+      "txid": ""
+     }
+    ]
+   },
+   "http_status": 200,
+   "method": "testmempoolaccept",
+   "node": "m",
+   "params": [
+    "00"
+   ],
+   "step": "error.bad_raw"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": [
+     {
+      "allowed": false,
+      "reject-reason": "txn-rbf-rejected: RBF replacement rejected: Replacement fee must be higher than sum of replaced fees (BIP125 Rule #3)",
+      "txid": "<H#3>"
+     }
+    ]
+   },
+   "http_status": 200,
+   "method": "testmempoolaccept",
+   "node": "m",
+   "params": [
+    "<X#2:len=324>"
+   ],
+   "step": "rbf.reject_lower_fee"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": [
+     {
+      "allowed": true,
+      "txid": "<H#4>"
+     }
+    ]
+   },
+   "http_status": 200,
+   "method": "testmempoolaccept",
+   "node": "m",
+   "params": [
+    "<X#3:len=324>"
+   ],
+   "step": "rbf.accept_higher_fee"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "result": "<H#4>"
+    }
+   },
+   "http_status": 200,
+   "method": "sendrawtransaction",
+   "node": "m",
+   "params": [
+    "<X#3:len=324>"
+   ],
+   "step": "rbf.send_replacement"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "<H#4>": {
+      "depends": [],
+      "fee": 0.0002,
+      "height": 101,
+      "modifiedfee": 0.0002,
+      "size": 162,
+      "time": "<T:int>"
+     }
+    }
+   },
+   "http_status": 200,
+   "method": "getrawmempool",
+   "node": "m",
+   "params": [
+    true
+   ],
+   "step": "rbf.pool"
+  },
+  {
+   "result": {
+    "entries": [
+     {
+      "arrival_time": "<T:int>",
+      "fee": 20000,
+      "height": 101,
+      "transaction_hex": "<X#3:len=324>"
+     }
+    ],
+    "magic": "MEMPOOLV",
+    "version": 1
+   },
+   "step": "persistence.file"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "<H#4>": {
+      "depends": [],
+      "fee": 0.0002,
+      "height": 101,
+      "modifiedfee": 0.0002,
+      "size": 162,
+      "time": "<T:int>"
+     }
+    }
+   },
+   "http_status": 200,
+   "method": "getrawmempool",
+   "node": "m",
+   "params": [
+    true
+   ],
+   "step": "restart.verbose"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": [
+     {
+      "allowed": true,
+      "txid": "<H#5>"
+     }
+    ]
+   },
+   "http_status": 200,
+   "method": "testmempoolaccept",
+   "node": "m",
+   "params": [
+    "<X#4:len=324>"
+   ],
+   "step": "cpfp.accept"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "result": "<H#5>"
+    }
+   },
+   "http_status": 200,
+   "method": "sendrawtransaction",
+   "node": "m",
+   "params": [
+    "<X#4:len=324>"
+   ],
+   "step": "cpfp.submit"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": [
+     "<H#4>"
+    ]
+   },
+   "http_status": 200,
+   "method": "getmempoolancestors",
+   "node": "m",
+   "params": [
+    "<H#5>"
+   ],
+   "step": "cpfp.ancestors"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": [
+     "<H#5>"
+    ]
+   },
+   "http_status": 200,
+   "method": "getmempooldescendants",
+   "node": "m",
+   "params": [
+    "<H#4>"
+   ],
+   "step": "cpfp.descendants"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "<H#4>": {
+      "depends": [],
+      "fee": 0.0002,
+      "height": 101,
+      "modifiedfee": 0.0002,
+      "size": 162,
+      "time": "<T:int>"
+     },
+     "<H#5>": {
+      "depends": [
+       "<H#4>"
+      ],
+      "fee": 0.0003,
+      "height": 101,
+      "modifiedfee": 0.0003,
+      "size": 162,
+      "time": "<T:int>"
+     }
+    }
+   },
+   "http_status": 200,
+   "method": "getrawmempool",
+   "node": "m",
+   "params": [
+    true
+   ],
+   "step": "cpfp.pool"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": []
+   },
+   "http_status": 200,
+   "method": "getrawmempool",
+   "node": "m",
+   "params": [],
+   "step": "confirmed.ids"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": [
+     "<H#4>",
+     "<H#5>"
+    ]
+   },
+   "http_status": 200,
+   "method": "getrawmempool",
+   "node": "m",
+   "params": [],
+   "step": "reorg.ids"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+     "<H#4>": {
+      "depends": [],
+      "fee": 0.0002,
+      "height": 101,
+      "modifiedfee": 0.0002,
+      "size": 162,
+      "time": "<T:int>"
+     },
+     "<H#5>": {
+      "depends": [
+       "<H#4>"
+      ],
+      "fee": 0.0003,
+      "height": 101,
+      "modifiedfee": 0.0003,
+      "size": 162,
+      "time": "<T:int>"
+     }
+    }
+   },
+   "http_status": 200,
+   "method": "getrawmempool",
+   "node": "m",
+   "params": [
+    true
+   ],
+   "step": "reorg.verbose"
+  },
+  {
+   "body": {
+    "error": null,
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": []
+   },
+   "http_status": 200,
+   "method": "getrawmempool",
+   "node": "m",
+   "params": [],
+   "step": "reconsidered.ids"
+  }
+ ]
+}

@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign patched-path policy invariants. No unsafe-original execution.
 #include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
@@ -52,7 +53,7 @@ public:
     void warning(const std::string& text) override {log(LogLevel::WARNING,text);} void error(const std::string& text) override {log(LogLevel::ERROR,text);}
 };
 TEST_F(MempoolPreparedRefresh, ConnectAbandonsOrPublishesBlockAndRefreshTogether) {
-    Mempool pool(&db,&coins);const auto parent=spend(fund(1),1000000,1000);
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins);const auto parent=spend(fund(1),1000000,1000);
     const auto child=spend({parent.GetTxid(),0},999000,1000);const auto independent=spend(fund(2),1000000,2000);
     for(const auto& tx:{parent,child,independent})ASSERT_TRUE(pool.submitTransaction(tx,"fixture",false).accepted());
     ASSERT_TRUE(pool.refreshProof(parent.GetTxid().AsUint256(),{1},1));ASSERT_TRUE(pool.refreshProof(child.GetTxid().AsUint256(),{1},110));ASSERT_TRUE(pool.refreshProof(independent.GetTxid().AsUint256(),{1},110));
@@ -64,7 +65,7 @@ TEST_F(MempoolPreparedRefresh, ConnectAbandonsOrPublishesBlockAndRefreshTogether
     const auto entry=pool.getMempoolEntry(independent.GetTxid().AsUint256());ASSERT_TRUE(entry);EXPECT_EQ(entry->proof_refresh_attempts,1U);EXPECT_TRUE(entry->is_proof_stale);
 }
 TEST_F(MempoolPreparedRefresh, RefreshPreparationFailureRestoresCompleteBlockTransition) {
-    PublicationLogger logger;Mempool pool(&db,&coins);pool.setLogger(&logger);const auto conflict_funding=fund(3);
+    PublicationLogger logger;dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins);pool.setLogger(&logger);const auto conflict_funding=fund(3);
     const auto conflict=spend(conflict_funding,1000000,1000);const auto old=spend(fund(4),1000000,1000);const auto survivor=spend(fund(5),1000000,2000);
     for(const auto& tx:{conflict,old,survivor})ASSERT_TRUE(pool.submitTransaction(tx,"fixture",false).accepted());
     ASSERT_TRUE(pool.refreshProof(old.GetTxid().AsUint256(),{1},1));ASSERT_TRUE(pool.refreshProof(survivor.GetTxid().AsUint256(),{1},110));ASSERT_TRUE(pool.setCachedUtxoTxPayload(survivor.GetTxid().AsUint256(),{8}));
@@ -76,7 +77,7 @@ TEST_F(MempoolPreparedRefresh, RefreshPreparationFailureRestoresCompleteBlockTra
     EXPECT_EQ(pool.size(),1U);EXPECT_EQ(pool.getStats().stale_evicted_total,1U);
 }
 TEST_F(MempoolPreparedRefresh, DisconnectUsesParentHeightAndPreservesAbandonedAttempts) {
-    Mempool pool(&db,&coins);const auto tx=spend(fund(6),1000000,1000);ASSERT_TRUE(pool.submitTransaction(tx,"fixture",false).accepted());const auto id=tx.GetTxid().AsUint256();
+    dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins);const auto tx=spend(fund(6),1000000,1000);ASSERT_TRUE(pool.submitTransaction(tx,"fixture",false).accepted());const auto id=tx.GetTxid().AsUint256();
     ASSERT_TRUE(pool.refreshProof(id,{1},109));Mempool::ProofRefreshPolicy policy;policy.max_age_blocks=0;
     {auto prepared=pool.prepareBlockDisconnected(110,policy);ASSERT_TRUE(prepared);EXPECT_EQ(prepared->RefreshCandidates(),std::vector<uint256>({id}));}
     EXPECT_EQ(pool.getStaleCount(),0U);EXPECT_EQ(pool.getStats().refresh_attempted_total,0U);
@@ -84,7 +85,7 @@ TEST_F(MempoolPreparedRefresh, DisconnectUsesParentHeightAndPreservesAbandonedAt
     EXPECT_EQ(pool.size(),1U);EXPECT_EQ(pool.getStaleCount(),1U);EXPECT_EQ(pool.getStats().stale_evicted_total,0U);EXPECT_EQ(pool.getStats().refresh_attempted_total,1U);
 }
 TEST_F(MempoolPreparedRefresh, ConfirmationPreparedBeforeBaseCommitRetainsChildOverlay) {
-    Mempool pool(&db,&coins);const auto funding=fund(7);const auto parent=spend(funding,1000000,1000);const auto child=spend({parent.GetTxid(),0},999000,1000);
+    dinero::ChainDbMempoolView mempool_chain_view_4{&db}; Mempool pool(&mempool_chain_view_4,&coins);const auto funding=fund(7);const auto parent=spend(funding,1000000,1000);const auto child=spend({parent.GetTxid(),0},999000,1000);
     ASSERT_TRUE(pool.submitTransaction(parent,"fixture",false).accepted());ASSERT_TRUE(pool.submitTransaction(child,"fixture",false).accepted());
     ASSERT_TRUE(pool.refreshProof(child.GetTxid().AsUint256(),{1},110));
     ConnectedBlockEffects effects;effects.confirmed_txids.push_back(parent.GetTxid().AsUint256());effects.spent_transparent_inputs.push_back(funding);Mempool::ProofRefreshPolicy policy;

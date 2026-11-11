@@ -253,14 +253,17 @@ def test_accepted_macos15_references_are_pinned():
 def test_accepted_linux_references_are_pinned():
     # Recorded by run 5 (GCC 13 and GCC 15 printed byte-identical files; PR merge
     # ref af2722021870 = stage-0 baseline), reviewed against the macos15 references
-    # and accepted as-is by the owner on 2026-11-01. The ELF-only DW.ref.* entries
-    # stay in the symbol lists on purpose (platform-specific, kept visible).
+    # and accepted as-is by the owner on 2026-11-01. PR #893 moves the mempool
+    # MissingFile exception out of the NodeCore archive; its Linux W5 checks
+    # measured exactly one removed internal DW.ref RTTI symbol in each list.
+    # Pin the reviewed one-line-adjusted lists, retaining other ELF DW.ref.*
+    # entries as platform-specific, visible symbols.
     import hashlib, json
     pins = {
         "scripts/ci/separation/consensus_vectors_ref_linux_off.json": "38143c38a50ae84eb5313aeac74fbd5420d29299cafba562114e64e01728fe2e",
         "scripts/ci/separation/consensus_vectors_ref_linux_on.json": "8fd00c5bb60cb5b7f8d7a7672e0ee8028dec7e866f7b9427cfd1fa9932e97b33",
-        "tests/separation/interface_baseline/symbols_linux_off.txt": "aa142886f762afb471f7f156e1318f3abf0a4a3e6803a7b44854a91403174c8a",
-        "tests/separation/interface_baseline/symbols_linux_on.txt": "6dd13493ee345d0ebd41c5e759f9342fc597331cae0a45a96c0dcc8f952e90a9",
+        "tests/separation/interface_baseline/symbols_linux_off.txt": "5459a01f7d9059d39624cc673f0e76ef8008ff980ce6aef2f8ed364d0b0bf678",
+        "tests/separation/interface_baseline/symbols_linux_on.txt": "cae1666e4fefae849497ad7c51a86433f4ab4ab61bcf9edbabefa533347607a6",
     }
     for rel, digest in pins.items():
         assert hashlib.sha256((ROOT / rel).read_bytes()).hexdigest() == digest, rel

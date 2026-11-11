@@ -1946,7 +1946,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_utreexo_safety_gate.cpp)
   add_executable(test_utreexo_safety_gate
     tests/mining/test_utreexo_safety_gate.cpp
-    src/daemon/mempool.cpp
+
     src/daemon/config.cpp
     tests/stubs/vault_test_stubs.cpp  # vault observers — Mempool methods come from real mempool.cpp above
   )
@@ -2055,7 +2055,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_consensus_validation_tripwires.cpp)
   add_executable(test_consensus_validation_tripwires
     tests/consensus/test_consensus_validation_tripwires.cpp
-    src/daemon/mempool.cpp    # Provides dinero::Mempool implementation
+        # Provides dinero::Mempool implementation
     src/daemon/config.cpp     # Provides GetConfig()
     tests/stubs/vault_test_stubs.cpp  # vault observers (real mempool present, so vault-only seam)
   )
@@ -5378,7 +5378,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_rbf_policy_service.cpp)
   add_executable(test_rbf_policy_service
     tests/services/test_rbf_policy_service.cpp
     src/daemon/services/rbf_policy_service.cpp
-    src/policy/mempool_policy.cpp
+
     src/primitives/transaction_serializer.cpp
   )
   target_link_libraries(test_rbf_policy_service PRIVATE
@@ -5561,7 +5561,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_mempool_policy.cpp)
   add_executable(test_mempool_policy
     tests/services/test_mempool_policy.cpp
-    src/policy/mempool_policy.cpp
+
     src/primitives/transaction_serializer.cpp
   )
   target_link_libraries(test_mempool_policy PRIVATE
@@ -6895,7 +6895,7 @@ set_tests_properties(ChainParamsSelection PROPERTIES
 
 add_executable(test_covenant_system_lifecycle
   tests/consensus/test_covenant_system_lifecycle.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   tests/stubs/vault_test_stubs.cpp
 )
@@ -6942,7 +6942,7 @@ set_tests_properties(CovenantSystemLifecycle PROPERTIES
 
 add_executable(test_template_maturity
   tests/mempool/test_template_maturity.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   tests/stubs/vault_test_stubs.cpp
 )
@@ -6985,7 +6985,7 @@ set_tests_properties(MempoolTemplateMaturity PROPERTIES
 
 add_executable(test_wallet_input_coins
   tests/mempool/test_wallet_input_coins.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   tests/stubs/vault_test_stubs.cpp
 )
@@ -7028,7 +7028,7 @@ set_tests_properties(WalletInputCoins PROPERTIES
 
 add_executable(test_mempool_callback_owner
   tests/mempool/test_mempool_callback_owner.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   tests/stubs/vault_test_stubs.cpp
 )
@@ -7071,7 +7071,7 @@ set_tests_properties(MempoolCallbackOwner PROPERTIES
 
 add_executable(test_mempool_replacement_policy
   tests/mempool/test_mempool_replacement_policy.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   tests/stubs/vault_test_stubs.cpp
 )
@@ -7114,7 +7114,7 @@ set_tests_properties(MempoolReplacementPolicy PROPERTIES
 
 add_executable(test_mempool_package_bounds
   tests/mempool/test_mempool_package_bounds.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   tests/stubs/vault_test_stubs.cpp
 )
@@ -7157,7 +7157,7 @@ set_tests_properties(MempoolPackageBounds PROPERTIES
 
 add_executable(test_mempool_maintenance_owner
   tests/mempool/test_mempool_maintenance_owner.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   tests/stubs/vault_test_stubs.cpp
 )
@@ -7200,7 +7200,7 @@ set_tests_properties(MempoolMaintenanceOwner PROPERTIES
 
 add_executable(test_mempool_input_owners
   tests/mempool/test_mempool_input_owners.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   tests/stubs/vault_test_stubs.cpp
 )
@@ -7243,7 +7243,7 @@ set_tests_properties(MempoolInputOwners PROPERTIES
 
 add_executable(test_mempool_transaction_body
   tests/mempool/test_mempool_transaction_body.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   tests/stubs/vault_test_stubs.cpp
 )
@@ -7296,7 +7296,7 @@ set_tests_properties(MempoolTransactionBody PROPERTIES
 
 add_executable(test_mempool_output_coins
   tests/mempool/test_mempool_output_coins.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   tests/stubs/vault_test_stubs.cpp
 )
@@ -7349,7 +7349,7 @@ set_tests_properties(MempoolOutputCoins PROPERTIES
 
 add_executable(test_mempool_typed_relay
   tests/p2p/test_mempool_typed_relay.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   src/daemon/tx_relay_manager.cpp
   tests/stubs/vault_test_stubs.cpp
@@ -7403,7 +7403,7 @@ set_tests_properties(MempoolTypedRelay PROPERTIES
 
 add_executable(test_mempool_typed_ingress
   tests/p2p/test_mempool_typed_ingress.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   src/daemon/tx_relay_manager.cpp
   tests/stubs/vault_test_stubs.cpp
@@ -7457,7 +7457,7 @@ set_tests_properties(MempoolTypedIngress PROPERTIES
 
 add_executable(test_mempool_relay_reader
   tests/p2p/test_mempool_relay_reader.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   src/daemon/tx_relay_manager.cpp
   tests/stubs/vault_test_stubs.cpp
@@ -7511,7 +7511,7 @@ set_tests_properties(MempoolRelayReader PROPERTIES
 
 add_executable(test_mempool_raw_rpc
   tests/rpc/test_mempool_raw_rpc.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   src/daemon/legacy_globals_stub.cpp
   src/daemon/tx_relay_manager.cpp
@@ -7565,7 +7565,7 @@ set_tests_properties(MempoolRawRpc PROPERTIES
 
 add_executable(test_mempool_ranked_rpc
   tests/rpc/test_mempool_ranked_rpc.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   src/daemon/legacy_globals_stub.cpp
   src/daemon/tx_relay_manager.cpp
@@ -7620,7 +7620,7 @@ set_tests_properties(MempoolRankedRpc PROPERTIES
 add_executable(test_mempool_address_capture
   tests/rpc/test_mempool_address_capture.cpp
   tests/stubs/vault_test_stubs.cpp  # Isolate vault observers; keep the real mempool below.
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   src/daemon/legacy_globals_stub.cpp
   src/daemon/tx_relay_manager.cpp
@@ -7702,7 +7702,7 @@ set_tests_properties(MempoolAddressCapture PROPERTIES
 add_executable(test_mempool_retained_load
   tests/mempool/test_mempool_retained_load.cpp
   tests/stubs/vault_test_stubs.cpp  # Isolate vault observers; keep the real mempool below.
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   src/daemon/legacy_globals_stub.cpp
   src/daemon/tx_relay_manager.cpp
@@ -7784,7 +7784,7 @@ set_tests_properties(MempoolRetainedLoad PROPERTIES
 add_executable(test_mempool_typed_package
   tests/mempool/test_mempool_typed_package.cpp
   tests/stubs/vault_test_stubs.cpp  # Isolate vault observers; keep the real mempool below.
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   src/daemon/legacy_globals_stub.cpp
   src/daemon/tx_relay_manager.cpp
@@ -7887,7 +7887,7 @@ set_tests_properties(MempoolTypedPackage PROPERTIES
 
 add_executable(test_mempool_admission_owner
   tests/mempool/test_mempool_admission_owner.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   tests/stubs/vault_test_stubs.cpp
 )
@@ -7930,7 +7930,7 @@ set_tests_properties(MempoolAdmissionOwner PROPERTIES
 
 add_executable(test_mempool_policy_owner
   tests/mempool/test_mempool_policy_owner.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   tests/stubs/vault_test_stubs.cpp
 )
@@ -7973,7 +7973,7 @@ set_tests_properties(MempoolPolicyOwner PROPERTIES
 
 add_executable(test_mempool_block_owner
   tests/mempool/test_mempool_block_owner.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   tests/stubs/vault_test_stubs.cpp
 )
@@ -8016,7 +8016,7 @@ set_tests_properties(MempoolBlockOwner PROPERTIES
 
 add_executable(test_mempool_refresh_owner
   tests/mempool/test_mempool_refresh_owner.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   tests/stubs/vault_test_stubs.cpp
 )
@@ -8059,7 +8059,7 @@ set_tests_properties(MempoolRefreshOwner PROPERTIES
 
 add_executable(test_mempool_prepared_refresh
   tests/mempool/test_mempool_prepared_refresh.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   tests/stubs/vault_test_stubs.cpp
 )
@@ -8102,7 +8102,7 @@ set_tests_properties(MempoolPreparedRefresh PROPERTIES
 
 add_executable(test_pool_tip_consumers
   tests/mempool/test_pool_tip_consumers.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   src/daemon/tx_relay_manager.cpp
   tests/stubs/vault_test_stubs.cpp
@@ -8146,7 +8146,7 @@ set_tests_properties(PoolTipConsumers PROPERTIES
 
 add_executable(test_mempool_service_owner
   tests/mempool/test_mempool_service_owner.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   src/daemon/tx_relay_manager.cpp
   tests/stubs/vault_test_stubs.cpp
@@ -8190,7 +8190,7 @@ set_tests_properties(MempoolServiceOwner PROPERTIES
 
 add_executable(test_block_relay_pool_owner
   tests/mempool/test_block_relay_pool_owner.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   src/daemon/tx_relay_manager.cpp
   tests/stubs/vault_test_stubs.cpp
@@ -8234,7 +8234,7 @@ set_tests_properties(BlockRelayPoolOwner PROPERTIES
 
 add_executable(test_mining_pool_owner
   tests/mempool/test_mining_pool_owner.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   src/daemon/tx_relay_manager.cpp
   tests/stubs/vault_test_stubs.cpp
@@ -8278,7 +8278,7 @@ set_tests_properties(MiningPoolOwner PROPERTIES
 
 add_executable(test_mining_selection_snapshot
   tests/mempool/test_mining_selection_snapshot.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   src/daemon/tx_relay_manager.cpp
   tests/stubs/vault_test_stubs.cpp
@@ -8322,7 +8322,7 @@ set_tests_properties(MiningSelectionSnapshot PROPERTIES
 
 add_executable(test_mining_package_selection
   tests/mempool/test_mining_package_selection.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   src/daemon/tx_relay_manager.cpp
   tests/stubs/vault_test_stubs.cpp
@@ -8370,7 +8370,7 @@ set_tests_properties(MiningTopologicalSelection PROPERTIES
 
 add_executable(test_mining_job_policy
   tests/mempool/test_mining_job_policy.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   src/daemon/tx_relay_manager.cpp
   tests/stubs/vault_test_stubs.cpp
@@ -8414,7 +8414,7 @@ set_tests_properties(MiningJobPolicy PROPERTIES
 
 add_executable(test_mining_template_result
   tests/mempool/test_mining_template_result.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   src/daemon/tx_relay_manager.cpp
   tests/stubs/vault_test_stubs.cpp
@@ -8458,7 +8458,7 @@ set_tests_properties(MiningTemplateResult PROPERTIES
 
 add_executable(test_mining_chain_guard
   tests/mempool/test_mining_chain_guard.cpp
-  src/daemon/mempool.cpp
+
   src/daemon/config.cpp
   src/daemon/tx_relay_manager.cpp
   tests/stubs/vault_test_stubs.cpp
@@ -11146,7 +11146,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_ct_selection_policy.cpp)
   add_executable(test_ct_selection_policy
     tests/mining/test_ct_selection_policy.cpp
-    src/mining/ct_selection_policy.cpp
+
     src/consensus/chainparams_impl.cpp
   )
   target_link_libraries(test_ct_selection_policy PRIVATE
@@ -11223,7 +11223,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_block_assembler_smoke.
     # Missing dependencies for linker
     src/metrics/metrics_registry.cpp
     src/daemon/block_write_metrics.cpp  # metrics_registry reads the block-write counters
-    src/daemon/mempool.cpp
+
     src/crypto/decrypt_encrypted_key.cpp
     src/daemon/secure_random.cpp
     src/daemon/wallet_crypto.cpp  # Contains decryptAesGcm, encryptAesGcm, deriveKeyArgon2id
@@ -11298,7 +11298,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_consensus_integrati
     src/core/crypto/ripemd160.cpp
     src/metrics/metrics_registry.cpp
     src/daemon/block_write_metrics.cpp  # metrics_registry reads the block-write counters
-    src/daemon/mempool.cpp
+
     src/crypto/decrypt_encrypted_key.cpp
     src/daemon/secure_random.cpp
     src/daemon/wallet_crypto.cpp
@@ -11368,7 +11368,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/integration/test_codebase_verifica
     src/core/crypto/ripemd160.cpp
     src/metrics/metrics_registry.cpp
     src/daemon/block_write_metrics.cpp  # metrics_registry reads the block-write counters
-    src/daemon/mempool.cpp
+
     src/crypto/decrypt_encrypted_key.cpp
     src/daemon/secure_random.cpp
     src/daemon/wallet_crypto.cpp
@@ -11546,7 +11546,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_comprehensive.c
     tests/support/test_stubs.cpp
     src/common/logger.cpp
     src/common/config_manager.cpp
-    src/daemon/mempool.cpp
+
     src/mining/block_assembler.cpp
     # src/mining/template_validator.cpp  # REMOVED: Zombie code
     src/database/sqlite_manager.cpp
@@ -11689,7 +11689,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_tx_inclusion_analyzer.cpp)
   add_executable(test_tx_inclusion_analyzer
     tests/mining/test_tx_inclusion_analyzer.cpp
     src/common/logger.cpp
-    src/daemon/mempool.cpp    # Provides dinero::Mempool implementation
+        # Provides dinero::Mempool implementation
     src/daemon/config.cpp     # Provides GetConfig()
   )
   target_link_libraries(test_tx_inclusion_analyzer PRIVATE
@@ -11720,7 +11720,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_rbf_cpfp_detector.cpp)
   add_executable(test_rbf_cpfp_detector
     tests/wallet/test_rbf_cpfp_detector.cpp
     src/common/logger.cpp
-    src/daemon/mempool.cpp    # Provides dinero::Mempool implementation
+        # Provides dinero::Mempool implementation
     src/daemon/config.cpp     # Provides GetConfig()
   )
   target_link_libraries(test_rbf_cpfp_detector PRIVATE
@@ -11752,7 +11752,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_fee_bump_engine.cpp)
   add_executable(test_fee_bump_engine
     tests/wallet/test_fee_bump_engine.cpp
     src/common/logger.cpp
-    src/daemon/mempool.cpp    # Provides dinero::Mempool implementation
+        # Provides dinero::Mempool implementation
     src/daemon/config.cpp     # Provides GetConfig()
   )
   target_link_libraries(test_fee_bump_engine PRIVATE
@@ -11788,7 +11788,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/rpc/test_fee_bump_rpc.cpp)
     src/wallet/rbf_cpfp_detector.cpp
     src/wallet/fee_bump_engine.cpp
     src/common/logger.cpp
-    src/daemon/mempool.cpp    # Provides dinero::Mempool implementation
+        # Provides dinero::Mempool implementation
     src/daemon/config.cpp     # Provides GetConfig()
   )
   target_link_libraries(test_fee_bump_rpc PRIVATE
@@ -11824,7 +11824,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_fee_bump_hooks.cpp)
     src/wallet/rbf_cpfp_detector.cpp
     src/wallet/fee_bump_engine.cpp
     src/common/logger.cpp
-    src/daemon/mempool.cpp    # Provides dinero::Mempool implementation
+        # Provides dinero::Mempool implementation
     src/daemon/config.cpp     # Provides GetConfig()
   )
   target_link_libraries(test_wallet_fee_bump_hooks PRIVATE
@@ -11917,7 +11917,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_smoke.cpp)
     src/core/crypto/ripemd160.cpp
     src/metrics/metrics_registry.cpp
     src/daemon/block_write_metrics.cpp  # metrics_registry reads the block-write counters
-    src/daemon/mempool.cpp
+
     src/crypto/decrypt_encrypted_key.cpp
     src/daemon/secure_random.cpp
     src/daemon/wallet_crypto.cpp
@@ -12395,13 +12395,13 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_block_template.cpp)
   add_executable(test_block_template
     tests/mining/test_block_template.cpp
     src/mining/block_assembler.cpp
-    src/daemon/mempool.cpp
+
     src/common/logger.cpp
     src/core/privacy/silent_scanner_manager.cpp
     src/core/privacy/silent_scanner.cpp
-    src/mempool/fee_estimator.cpp
+
     src/consensus/undo.cpp
-    src/policy/rbf_policy.cpp
+
     src/p2p/inventory.cpp
   )
   target_link_libraries(test_block_template PRIVATE
@@ -14311,7 +14311,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/policy/test_ct_fee_policy.cpp)
   add_executable(test_ct_fee_policy
     tests/policy/test_ct_fee_policy.cpp
-    src/policy/fee_estimator.cpp
+
     src/common/logger.cpp
   )
   target_link_libraries(test_ct_fee_policy PRIVATE
@@ -14824,7 +14824,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_tx_relay_g3.cpp)
   add_executable(test_tx_relay_g3
     tests/p2p/test_tx_relay_g3.cpp
     src/daemon/tx_relay_manager.cpp
-    src/mempool/tx_orphan_pool.cpp
+
     src/daemon/interfaces/ingress_types.cpp
     src/primitives/transaction.cpp
     src/primitives/transaction_serializer.cpp
@@ -14853,7 +14853,7 @@ endif()
 add_executable(test_relay_refresh_owner
   tests/p2p/test_relay_refresh_owner.cpp
   src/daemon/tx_relay_manager.cpp
-  src/mempool/tx_orphan_pool.cpp
+
   src/daemon/interfaces/ingress_types.cpp
   src/primitives/transaction.cpp
   src/primitives/transaction_serializer.cpp
@@ -14875,7 +14875,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_csn_proof_refresh.cpp)
   add_executable(test_csn_proof_refresh
     tests/p2p/test_csn_proof_refresh.cpp
     src/daemon/tx_relay_manager.cpp
-    src/mempool/tx_orphan_pool.cpp
+
     src/daemon/interfaces/ingress_types.cpp
     src/primitives/transaction.cpp
     src/primitives/transaction_serializer.cpp
@@ -14905,7 +14905,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mempool/test_fee_estimation_g4.cpp)
   add_executable(test_fee_estimation_g4
     tests/mempool/test_fee_estimation_g4.cpp
-    src/mempool/fee_estimator.cpp
+
     src/primitives/uint256.cpp
     src/common/sha256d.cpp
   )
@@ -15075,7 +15075,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_validation_queue_handoff.cpp)
   add_executable(test_validation_queue_handoff
     tests/consensus/test_validation_queue_handoff.cpp
-    src/daemon/mempool.cpp
+
     src/daemon/config.cpp                # GetConfig() — referenced by consensus_write_batch.obj
     tests/stubs/vault_test_stubs.cpp     # vault observers — real mempool linked
   )
@@ -15773,9 +15773,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mempool/test_mempool_proof_staleness.cpp)
     tests/mempool/test_mempool_proof_staleness.cpp
     tests/mempool/test_mempool_proof_staleness_stubs.cpp
     tests/stubs/mempool_relay_reader_stub.cpp
-    src/mempool/coins_view_mempool.cpp
-    src/daemon/mempool.cpp
-    src/mining/address_validator.cpp
+
+
+
     src/daemon/bech32_decode.cpp
     src/common/logger.cpp
   )
@@ -15808,8 +15808,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mempool/test_mempool_address_queries.cpp)
     tests/mempool/test_mempool_address_queries.cpp
     tests/mempool/test_mempool_proof_staleness_stubs.cpp
     tests/stubs/mempool_relay_reader_stub.cpp
-    src/daemon/mempool.cpp
-    src/mining/address_validator.cpp
+
+
     src/daemon/bech32_decode.cpp
     src/common/logger.cpp
   )
@@ -16301,7 +16301,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
   add_executable(test_wallet_mainnet_readiness
     tests/wallet/test_wallet_mainnet_readiness.cpp
     src/daemon/config.cpp
-    src/daemon/mempool.cpp
+
   )
 
   # RpcImportMnemonic reaches the real WalletWorker/daemon graph. Match the
@@ -17132,7 +17132,7 @@ if(UNIX)
   add_executable(test_wallet_historical_rpc
     tests/wallet/test_wallet_historical_rpc.cpp
     src/daemon/config.cpp
-    src/daemon/mempool.cpp)
+    )
   # RuntimeBlockBody and retained reorg plans share protocol types in both
   # configurations. Headers alone do not enable or link the Orchard backend.
   target_include_directories(test_wallet_historical_rpc PRIVATE
@@ -17379,15 +17379,8 @@ endif()
 function(dinero_attach_real_mempool_fixture_runtime)
   # Chainstate now prepares real mempool transitions and retains service operation
   # owners. The former no-op mempool stubs cannot implement those contracts.
-  # Compile the real runtime once for the affected service/storage/RPC fixtures;
+  # Link the real library for the affected service/storage/RPC fixtures;
   # preserve each fixture and its existing vault isolation (or real vault runtime).
-  add_library(dinero_test_mempool_runtime OBJECT
-    src/daemon/mempool.cpp src/daemon/tx_relay_manager.cpp)
-  target_include_directories(dinero_test_mempool_runtime PRIVATE
-    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
-  target_link_libraries(dinero_test_mempool_runtime PRIVATE
-    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
-    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES})
   set(_real_mempool_fixture_targets
     test_mining_height2
     test_wallet_height2_coinbase
@@ -17451,7 +17444,7 @@ function(dinero_attach_real_mempool_fixture_runtime)
     get_target_property(_sources ${_fixture} SOURCES)
     list(FILTER _sources EXCLUDE REGEX "(^|/)tests/stubs/(mempool_test_stubs|daemon_test_stubs)\\.cpp$")
     set_property(TARGET ${_fixture} PROPERTY SOURCES "${_sources}")
-    target_sources(${_fixture} PRIVATE $<TARGET_OBJECTS:dinero_test_mempool_runtime>)
+    target_link_libraries(${_fixture} PRIVATE dinero_mempool)
     get_target_property(_definitions ${_fixture} COMPILE_DEFINITIONS)
     if(NOT "DINERO_TEST_REAL_VAULT_RUNTIME=1" IN_LIST _definitions)
       target_sources(${_fixture} PRIVATE tests/stubs/vault_test_stubs.cpp)

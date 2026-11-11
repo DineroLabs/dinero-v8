@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign patched-path policy invariants. No unsafe-original execution.
 #include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
@@ -52,7 +53,7 @@ public:
     void warning(const std::string& text) override {log(LogLevel::WARNING,text);} void error(const std::string& text) override {log(LogLevel::ERROR,text);}
 };
 TEST_F(MempoolAdmissionOwner, InsertionExceptionRestoresEntriesIndexesAndOverlay) {
-    PublicationLogger logger;Mempool pool(&db,&coins);pool.setLogger(&logger);const auto existing=spend(fund(1),1000000,1000);ASSERT_TRUE(pool.submitTransaction(existing,"fixture",false).accepted());
+    PublicationLogger logger;dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins);pool.setLogger(&logger);const auto existing=spend(fund(1),1000000,1000);ASSERT_TRUE(pool.submitTransaction(existing,"fixture",false).accepted());
     const auto input=fund(2);const auto candidate=spend(input,1000000,2000);const auto ids=idsFor(pool);const auto size=pool.getTotalSize();const auto fees=pool.getTotalFees();int calls=0;pool.setTxAcceptedCallback([&](const Transaction&){++calls;});
     logger.fail_at="Added transaction to mempool:";EXPECT_THROW(pool.submitTransaction(candidate,"fixture",false),std::runtime_error);logger.fail_at.clear();
     EXPECT_EQ(idsFor(pool),ids);EXPECT_EQ(pool.getTotalSize(),size);EXPECT_EQ(pool.getTotalFees(),fees);EXPECT_EQ(calls,0);
@@ -60,7 +61,7 @@ TEST_F(MempoolAdmissionOwner, InsertionExceptionRestoresEntriesIndexesAndOverlay
     EXPECT_TRUE(pool.submitTransaction(candidate,"fixture",false).accepted());EXPECT_EQ(calls,1);EXPECT_EQ(pool.getTransactionsByFeeRate().size(),2U);
 }
 TEST_F(MempoolAdmissionOwner, ReplacementExceptionRestoresDescendantsAndExclusions) {
-    PublicationLogger logger;Mempool pool(&db,&coins);pool.setLogger(&logger);pool.setRBFEnabled(true);const auto input=fund(3);const auto parent=spend(input,1000000,1000);const auto child=spend({parent.GetTxid(),0},999000,1000);
+    PublicationLogger logger;dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins);pool.setLogger(&logger);pool.setRBFEnabled(true);const auto input=fund(3);const auto parent=spend(input,1000000,1000);const auto child=spend({parent.GetTxid(),0},999000,1000);
     ASSERT_TRUE(pool.submitTransaction(parent,"fixture",false).accepted());ASSERT_TRUE(pool.submitTransaction(child,"fixture",false).accepted());
     pool.excludeFromBlockTemplates(child.GetTxid().AsUint256(),"fixture exclusion");const auto ids=idsFor(pool);const auto prior=pool.getMempoolEntry(child.GetTxid().AsUint256());ASSERT_TRUE(prior.has_value());const auto replacement=spend(input,1000000,50000);
     logger.fail_at="Added transaction to mempool:";EXPECT_THROW(pool.submitTransaction(replacement,"fixture",false),std::runtime_error);logger.fail_at.clear();EXPECT_EQ(idsFor(pool),ids);
@@ -69,7 +70,7 @@ TEST_F(MempoolAdmissionOwner, ReplacementExceptionRestoresDescendantsAndExclusio
     EXPECT_TRUE(pool.submitTransaction(replacement,"fixture",false).accepted());EXPECT_EQ(pool.size(),1U);EXPECT_FALSE(pool.isExcludedFromBlockTemplates(child.GetTxid().AsUint256()));
 }
 TEST_F(MempoolAdmissionOwner, MaintenanceExceptionRollsBackBeforeObservers) {
-    PublicationLogger logger;Mempool pool(&db,&coins);pool.setLogger(&logger);const auto input=fund(4);const auto candidate=spend(input,1000000,1000);pool.setMaxSize(1);int calls=0;pool.setTxAcceptedCallback([&](const Transaction&){++calls;});
+    PublicationLogger logger;dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins);pool.setLogger(&logger);const auto input=fund(4);const auto candidate=spend(input,1000000,1000);pool.setMaxSize(1);int calls=0;pool.setTxAcceptedCallback([&](const Transaction&){++calls;});
     logger.fail_at="Evicting low-fee transaction:";EXPECT_THROW(pool.submitTransaction(candidate,"fixture",false),std::runtime_error);logger.fail_at.clear();EXPECT_EQ(pool.size(),0U);EXPECT_EQ(calls,0);EXPECT_FALSE(pool.isOutputSpentInMempool(input));EXPECT_EQ(pool.getCoinsView().createdCount(),0U);
     pool.setMaxSize(1000000);EXPECT_TRUE(pool.submitTransaction(candidate,"fixture",false).accepted());EXPECT_EQ(calls,1);
 }
