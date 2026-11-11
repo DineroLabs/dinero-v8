@@ -2628,7 +2628,7 @@ TEST(OrchardSnapshotRuntime, QueuedDownloadedHeaderIsRevalidatedWithoutSelectedP
     for(const auto& block:source.f.blocks)
         history.emplace_back(block.header,history.empty()?nullptr:&history.back());
     history.emplace_back(pending.header,&history.back());
-    const auto consensus=GetConsensusForCurrentNetwork();
+    const auto consensus=GetConsensusForNetwork(dinero::Params());
     for(unsigned i=0;i<2;++i) {
         const auto* prior=&history.back();auto header=prior->header;
         header.prev_block_hash=prior->hash;header.timestamp+=60;
