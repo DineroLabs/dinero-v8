@@ -1008,10 +1008,6 @@ set(DINERO_CORE_IPC_ORACLE_SOURCES
   src/ipc/oracles/transaction_oracle_client.cpp
 )
 
-set(DINERO_CORE_STORAGE_GLUE_SOURCES
-  src/storage/chainstate_metadata.cpp
-)
-
 set(DINERO_CORE_METRICS_SOURCES
   src/metrics/metrics_registry.cpp
 )
@@ -1247,8 +1243,6 @@ add_library(dinero_core STATIC
   # IPC oracle clients (Phase 9.2: Lightning event forwarding)
   ${DINERO_CORE_IPC_ORACLE_SOURCES}
 
-  # Chainstate restart metadata persistence
-  ${DINERO_CORE_STORAGE_GLUE_SOURCES}
 )
 
 target_include_directories(dinero_core BEFORE PUBLIC
