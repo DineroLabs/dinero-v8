@@ -16,9 +16,11 @@
 #include "primitives/uint256.h"
 
 #include <array>
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
@@ -88,10 +90,108 @@ BlockHeader HeaderFromHex(std::string_view hex) {
     return header.value();
 }
 
+void Require(bool condition, const char* message) {
+    if (!condition) throw std::runtime_error(message);
+}
+
+// Independent, deliberately uncached oracle. The synthetic entries exercise
+// ancestry derivation only; actual mainnet PoW/ASERT acceptance is tested below.
+HeaderAsertContext WalkContext(const HeaderIndexEntry& parent,
+                              std::optional<uint32_t> anchor_height) {
+    HeaderAsertContext result;
+    result.parent_height = parent.height;
+    std::vector<uint32_t> mtp;
+    for (auto* p = &parent; p; p = p->parent) {
+        if (mtp.size() < 11) mtp.push_back(p->header.timestamp);
+        if (p->height == 1) result.block1_time = p->header.timestamp;
+        if (anchor_height && p->height == *anchor_height)
+            result.timing_anchor = AsertAnchor{static_cast<int32_t>(p->height),
+                static_cast<int64_t>(p->header.timestamp), p->header.difficulty};
+    }
+    std::sort(mtp.begin(), mtp.end());
+    result.parent_mtp = mtp[mtp.size() / 2];
+    return result;
+}
+
+void CheckContext(HeaderAsertAncestryCache& cache, const HeaderIndexEntry& parent,
+                  std::optional<uint32_t> anchor_height) {
+    const auto expected = WalkContext(parent, anchor_height);
+    const auto actual = cache.ForParent(parent, anchor_height);
+    Require(actual.parent_height == expected.parent_height &&
+        actual.parent_mtp == expected.parent_mtp &&
+        actual.block1_time == expected.block1_time &&
+        actual.timing_anchor.has_value() == expected.timing_anchor.has_value(),
+        "memoized ASERT ancestry differs from uncached ancestry");
+    if (expected.timing_anchor) {
+        Require(actual.timing_anchor->height == expected.timing_anchor->height &&
+            actual.timing_anchor->time == expected.timing_anchor->time &&
+            actual.timing_anchor->bits == expected.timing_anchor->bits,
+            "memoized timing anchor belongs to another branch or schedule");
+    }
+}
+
+auto MakeAncestry(size_t count, const HeaderIndexEntry* parent, uint32_t salt) {
+    std::vector<std::unique_ptr<HeaderIndexEntry>> entries;
+    entries.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        BlockHeader header;
+        header.version = 1;
+        header.prev_block_hash = parent ? parent->hash : uint256{};
+        const uint32_t height = parent ? parent->height + 1 : 0;
+        // Nonmonotonic times also exercise the independently computed MTP.
+        header.timestamp = 1700000000 + height * 60 + (height % 3) * 7 + salt;
+        header.difficulty = 0x1e00c7ff - (height % 7);
+        header.nonce = salt;
+        entries.push_back(std::make_unique<HeaderIndexEntry>(header, parent));
+        parent = entries.back().get();
+    }
+    return entries;
+}
+
+void TestAncestryMemo() {
+    HeaderAsertAncestryCache cache;
+    auto main = MakeAncestry(700, nullptr, 0);
+    for (const auto& entry : main) CheckContext(cache, *entry, 350);
+    CheckContext(cache, *main.back(), 350);  // same parent
+    CheckContext(cache, *main[200], 350);    // jump backward, anchor not yet known
+    CheckContext(cache, *main[350], 350);    // newly reached anchor
+    CheckContext(cache, *main[351], 351);    // changed anchor height
+    CheckContext(cache, *main[352], std::nullopt);
+    CheckContext(cache, *main[353], 350);    // schedule re-enabled
+
+    auto fork = MakeAncestry(500, main[100].get(), 19);
+    for (const auto& entry : fork) CheckContext(cache, *entry, 350);
+    CheckContext(cache, *main[599], 350);    // same height, different branch anchor
+    CheckContext(cache, *fork[498], 350);
+    auto early_fork = MakeAncestry(700, main[0].get(), 37);
+    for (const auto& entry : early_fork) CheckContext(cache, *entry, 350);
+    CheckContext(cache, *main[699], 350);    // different block-one time
+
+    // Cache values outlive their original entries without retaining pointers.
+    auto transient = MakeAncestry(5, nullptr, 91);
+    CheckContext(cache, *transient.back(), 2);
+    transient.clear();
+    CheckContext(cache, *main[699], 350);
+
+    // Mainnet-sized sequential hydration must not walk back to block one on
+    // every header. Independently compare sampled deep ancestors as well.
+    auto deep = MakeAncestry(150001, nullptr, 57);
+    for (const auto& entry : deep) {
+        const auto context = cache.ForParent(*entry, 100000);
+        Require(context.parent_height == entry->height &&
+            context.block1_time == (entry->height ? deep[1]->header.timestamp : 0),
+            "long retained chain lost its block-one identity");
+        if (entry->height % 25000 == 0 || entry->height == 100001)
+            CheckContext(cache, *entry, 100000);
+    }
+    std::cout << "ASERT ancestry memo matches uncached linear/fork/anchor oracles" << std::endl;
+}
+
 }  // namespace
 
 int main() {
     SelectParams(Chain::MAINNET);
+    TestAncestryMemo();
     std::cout << "=== Real Mainnet Header Replay Test ===" << std::endl;
 
     HeaderChainSelector selector;
