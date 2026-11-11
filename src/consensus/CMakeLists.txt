@@ -140,6 +140,7 @@ add_library(dinero_consensus STATIC
   src/consensus/chainparams_impl.cpp   # Chain parameters (mainnet/testnet/regtest)
   src/consensus/chainwork.cpp          # arith_uint256 for difficulty calculations
   src/consensus/block_index.cpp        # Phase 3B: Block index management and fork choice
+  src/consensus/block_index_record.cpp
   src/consensus/block_undo.cpp         # Block undo data structures
   src/consensus/merkle_root.cpp        # Phase 11a.2: Canonical merkle root computation
   src/consensus/witness_commitment.cpp # Phase 11c.1: Witness commitment structure (DINW magic)

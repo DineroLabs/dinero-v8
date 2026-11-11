@@ -11201,6 +11201,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_block_assembler_smoke.
     src/database/sqlite_manager.cpp
     # src/consensus/supply_tracker.cpp  # REMOVED: Zombie code
     src/consensus/block_index.cpp
+    src/consensus/block_index_record.cpp
     src/consensus/block_lifecycle.cpp
     src/consensus/orphan_manager.cpp
     # src/consensus/genesis_canonical.cpp  # REMOVED - depends on missing genesis_block.h
@@ -11277,6 +11278,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_consensus_integrati
     src/database/sqlite_manager.cpp
     # src/consensus/supply_tracker.cpp  # REMOVED: Zombie code
     src/consensus/block_index.cpp
+    src/consensus/block_index_record.cpp
     src/consensus/block_lifecycle.cpp
     src/consensus/orphan_manager.cpp
     # src/consensus/genesis_canonical.cpp  # REMOVED - depends on missing genesis_block.h
@@ -11349,6 +11351,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/integration/test_codebase_verifica
     src/daemon/db_meta_utils.cpp
     # src/consensus/supply_tracker.cpp  # REMOVED: Zombie code
     src/consensus/block_index.cpp
+    src/consensus/block_index_record.cpp
     src/consensus/block_lifecycle.cpp
     src/consensus/orphan_manager.cpp
     # src/consensus/genesis_canonical.cpp  # REMOVED - depends on missing genesis_block.h
@@ -11554,6 +11557,7 @@ if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_comprehensive.c
     src/daemon/db_meta_utils.cpp
     # src/consensus/supply_tracker.cpp  # REMOVED: Zombie code
     src/consensus/block_index.cpp
+    src/consensus/block_index_record.cpp
     src/consensus/block_lifecycle.cpp
     src/consensus/orphan_manager.cpp
     # src/consensus/genesis_canonical.cpp  # REMOVED - depends on missing genesis_block.h
@@ -11897,6 +11901,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_mining_smoke.cpp)
     src/daemon/db_meta_utils.cpp
     # src/consensus/supply_tracker.cpp  # REMOVED: Zombie code
     src/consensus/block_index.cpp
+    src/consensus/block_index_record.cpp
     src/consensus/block_lifecycle.cpp
     src/consensus/orphan_manager.cpp
     # src/consensus/genesis_canonical.cpp  # REMOVED - depends on missing genesis_block.h
@@ -15659,6 +15664,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_sync_restart.cpp)
     tests/consensus/test_header_sync_restart.cpp
     src/consensus/header_sync_manager.cpp
     src/consensus/block_index.cpp
+    src/consensus/block_index_record.cpp
     tests/consensus/chainstate_metadata_stub.cpp
     tests/consensus/missing_symbols_stub.cpp
     src/storage/chain_db.cpp
@@ -15717,6 +15723,7 @@ if(ENABLE_TESTS AND EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_prune_eligib
   add_executable(test_prune_eligibility
     tests/consensus/test_prune_eligibility.cpp
     src/consensus/block_index.cpp
+    src/consensus/block_index_record.cpp
     src/consensus/chainwork.cpp
     src/primitives/uint256.cpp
     src/primitives/block.cpp
