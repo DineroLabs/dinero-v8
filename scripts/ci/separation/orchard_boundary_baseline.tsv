@@ -1,0 +1,8 @@
+# GATE O1 baseline: tier<TAB>archive-or-source<TAB>definer-or-family<TAB>count.
+# Regenerate with check_orchard_boundary.py --build <orchard-ON build> --write-baseline
+H	orchard_block_coins.cpp	include/storage/	3
+H	orchard_block_context.cpp	include/storage/	1
+H	orchard_block_filter.cpp	include/storage/	1
+H	orchard_forest_transition.cpp	include/storage/	1
+H	orchard_state_root.cpp	include/storage/	4
+H	orchard_state_transition.cpp	include/storage/	1

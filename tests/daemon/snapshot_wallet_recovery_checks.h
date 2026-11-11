@@ -255,4 +255,65 @@ TEST(SnapshotWalletRecovery, PhoneStartupDoesNotRewindRecoveredWalletToBootstrap
     service->Stop();f.context.wallet.reset();
 }
 
+namespace {
+// Forces the fixture's selected tip (130) to be Orchard-active on regtest and
+// restores the live params afterwards. Regtest accepts a nonzero activation
+// height with a nonzero branch id (OrchardProfileConfigurationValid).
+struct OrchardActiveOverride {
+    uint32_t old_height=MutableParams().orchard_activation_height;
+    uint32_t old_branch=MutableParams().orchard_branch_id;
+    OrchardActiveOverride(){
+        MutableParams().orchard_activation_height=120;
+        if(!MutableParams().orchard_branch_id)MutableParams().orchard_branch_id=1;
+    }
+    ~OrchardActiveOverride(){
+        MutableParams().orchard_activation_height=old_height;
+        MutableParams().orchard_branch_id=old_branch;
+    }
+};
+}
+
+TEST(SnapshotWalletRecovery, OrchardActiveSelectedSourceIsRefusedFailClosed){
+    // 2026-11-11-native-v6-wallet-recovery-design.md stage A: the refusal is
+    // deliberate (a compact v6 base has no owned-coin set to recover from);
+    // this pins the behavior and the exact string the RPC classifies on.
+    SnapshotWalletRecoveryFixture f;
+    OrchardActiveOverride orchard_active;
+    std::string refused;
+    EXPECT_FALSE(f.source->RecoverTransparentSnapshotWallet(f.wallet,&refused));
+    EXPECT_EQ(refused,"transparent snapshot recovery requires a pre-Orchard selected source");
+    EXPECT_EQ(f.Count("SELECT COUNT(*) FROM utxos"),0);
+}
+
+TEST(SnapshotWalletRecovery, RpcMarksPermanentCapabilityRefusalNonRetryable){
+    // Both phone apps retry any retryable error every 15 seconds; a permanent
+    // capability refusal must come back retryable:false, while a transient
+    // failure (a selected body still unavailable) stays retryable:true.
+    SnapshotWalletRecoveryFixture f;
+    auto service=std::make_shared<WalletService>();ASSERT_TRUE(service->Init(f.context));f.context.wallet=service;
+    std::string first;
+    {auto use=WalletService::AcquireWalletUse(service);auto index=ChainstateService::AcquireWalletIndexUse(f.source);
+     auto& wallet=use->Wallet();wallet.setUTXOIndex(&index->Index());wallet.create("existing");
+     first=wallet.getNewAddress();ASSERT_FALSE(first.empty());
+     wallet.addWatchScript(f.chain[24].vtx[0].vout[0].scriptPubKey,"m/84'/1'/0'/0/0",false);}
+    ExecutionContext request;request.daemon=&f.context;
+    auto params=din::obj();params["walletname"]="existing";params["expected_first_address"]=first;
+    {
+        OrchardActiveOverride orchard_active;
+        const auto reply=rpc_context_wallet_recoversnapshot(request,params);
+        ASSERT_TRUE(reply.isMember("error"))<<reply.toStyledString();
+        EXPECT_EQ(reply["error"].asString(),
+                  "transparent snapshot recovery requires a pre-Orchard selected source");
+        ASSERT_TRUE(reply.isMember("retryable"));
+        EXPECT_FALSE(reply["retryable"].asBool());
+    }
+    // Transient control: a missing selected body refuses but stays retryable.
+    ASSERT_EQ(f.db.deleteBlock(ChainWriteToken::CreateForTesting(),f.chain[109].GetHash()),Status::Ok);
+    const auto transient=rpc_context_wallet_recoversnapshot(request,params);
+    ASSERT_TRUE(transient.isMember("error"))<<transient.toStyledString();
+    ASSERT_TRUE(transient.isMember("retryable"));
+    EXPECT_TRUE(transient["retryable"].asBool());
+    service->Stop();f.context.wallet.reset();
+}
+
 }
