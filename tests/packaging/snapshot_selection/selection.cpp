@@ -13,18 +13,18 @@ int main(int argc, char** argv) {
         const std::string name = argv[1];
         using dinero::qt::SelectBundledSnapshots;
         if (name == "FreshPrimary") {
-            const auto selected = SelectBundledSnapshots({"148375.dat", "99677.dat", "65300.dat"});
-            Require(selected.primary == "148375.dat", "newest snapshot was not selected");
-            Require(selected.fallbacks == std::vector<std::string>{"99677.dat", "65300.dat"}, "old recovery bases were lost");
+            const auto selected = SelectBundledSnapshots({"150200-v6-full.dat", "148375.dat", "99677.dat", "65300.dat"});
+            Require(selected.primary == "150200-v6-full.dat", "newest snapshot was not selected");
+            Require(selected.fallbacks == std::vector<std::string>{"148375.dat", "99677.dat", "65300.dat"}, "old recovery bases were lost");
         } else if (name == "MissingPrimary") {
-            const auto selected = SelectBundledSnapshots({"", "99677.dat", "65300.dat"});
-            Require(selected.primary == "99677.dat", "available recovery base was not selected");
-            Require(selected.fallbacks == std::vector<std::string>{"65300.dat"}, "oldest recovery base was lost");
+            const auto selected = SelectBundledSnapshots({"", "148375.dat", "99677.dat", "65300.dat"});
+            Require(selected.primary == "148375.dat", "available recovery base was not selected");
+            Require(selected.fallbacks == std::vector<std::string>{"99677.dat", "65300.dat"}, "older recovery bases were lost");
         } else if (name == "OldestOnly") {
-            const auto selected = SelectBundledSnapshots({"", "", "65300.dat"});
+            const auto selected = SelectBundledSnapshots({"", "", "", "65300.dat"});
             Require(selected.primary == "65300.dat" && selected.fallbacks.empty(), "oldest-only install refused");
         } else if (name == "None") {
-            const auto selected = SelectBundledSnapshots({"", "", ""});
+            const auto selected = SelectBundledSnapshots({"", "", "", ""});
             Require(selected.primary.empty() && selected.fallbacks.empty(), "missing payloads invented a selection");
         } else if (name == "Deduplicate") {
             const auto selected = SelectBundledSnapshots({"same.dat", "same.dat", "old.dat", "old.dat"});

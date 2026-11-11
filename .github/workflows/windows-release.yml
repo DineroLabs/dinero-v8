@@ -30,6 +30,14 @@ on:
         description: 'Optional full reviewed commit SHA for signed artifact-only preparation (no tag/upload)'
         required: false
         type: string
+      snapshot_payload_url:
+        description: 'For artifact-only preparation: qualified full-v6 snapshot.dat HTTPS URL'
+        required: false
+        type: string
+      snapshot_manifest_url:
+        description: 'For artifact-only preparation: matching full-v6 manifest.json HTTPS URL'
+        required: false
+        type: string
 
 permissions:
   contents: write        # required to attach artifacts to the release
@@ -66,6 +74,12 @@ jobs:
       - name: Require current persisted-state readers
         shell: bash
         run: ./scripts/check_release_lineage.sh HEAD
+
+      - name: Check full-v6 snapshot wiring and profile admission
+        shell: bash
+        run: |
+          python3 -B scripts/ci/test_snapshot_wiring.py -v
+          python3 -B packaging/snapshot/test_desktop_primary_profile.py -v
 
       # Strip the leading "v" from the tag; fall back to the dispatch input,
       # else a dev marker so an unflagged run never embeds an empty version.
@@ -110,35 +124,44 @@ jobs:
             exit 1
           }
 
-      # Draft-release assets are intentionally unavailable through the public
-      # /releases/download/<tag>/ URL. Fetch them through authenticated GitHub
-      # access so the Windows installer can be built and tested before the
-      # release is published.
-      - name: Fetch snapshot assets from draft release
-        if: steps.ver.outputs.release_tag != ''
+      # Draft assets require authenticated GitHub access. Keep the three
+      # published prior bases available for GUI recovery after an upgrade.
+      - name: Fetch full-v6 primary and exact recovery bases
         env:
           GH_TOKEN: ${{ github.token }}
+          SNAPSHOT_PAYLOAD_URL: ${{ inputs.snapshot_payload_url }}
+          SNAPSHOT_MANIFEST_URL: ${{ inputs.snapshot_manifest_url }}
         shell: bash
         run: |
           mkdir -p packaging/windows/dist
-          gh release download "${{ steps.ver.outputs.release_tag }}" \
-            --pattern 'dinero-assumeutxo-148375-v5.dat' \
-            --pattern 'dinero-assumeutxo-148375-v5.dat.manifest.json' \
-            --dir packaging/windows/dist \
-            --clobber
-
-      - name: Fetch recent snapshot for artifact-only candidate
-        if: inputs.candidate_source != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          mkdir -p packaging/windows/dist
+          PRIMARY_RELEASE="${{ steps.ver.outputs.release_tag }}"
+          if [ -n "$PRIMARY_RELEASE" ]; then
+            gh release download "$PRIMARY_RELEASE" --repo DineroLabs/dinero-v8 \
+              --pattern 'dinero-assumeutxo-150200-v6-full.dat' \
+              --pattern 'dinero-assumeutxo-150200-v6-full.dat.manifest.json' \
+              --dir packaging/windows/dist --clobber
+          else
+            python3 packaging/snapshot/fetch_desktop_primary.py \
+              --payload-url "$SNAPSHOT_PAYLOAD_URL" \
+              --manifest-url "$SNAPSHOT_MANIFEST_URL" \
+              --destination packaging/windows/dist
+          fi
           gh release download v8.2.2 --repo DineroLabs/dinero-v8 \
             --pattern 'dinero-assumeutxo-148375-v5.dat' \
             --pattern 'dinero-assumeutxo-148375-v5.dat.manifest.json' \
             --dir packaging/windows/dist --clobber
-          echo '41b4bb8ee5b1b4a354b0d3bdd03b7dee4372cfecd1a8ef1bf5c01bff0ed991e7  packaging/windows/dist/dinero-assumeutxo-148375-v5.dat' | sha256sum --check
+          gh release download v8.1.11 --repo DineroLabs/dinero-v8 \
+            --pattern 'dinero-assumeutxo-99677-v4.dat' \
+            --pattern 'dinero-assumeutxo-99677-v4.manifest.json' \
+            --dir packaging/windows/dist --clobber
+          gh release download v8.0.17 --repo DineroLabs/dinero-v8 \
+            --pattern 'utxo-snapshot-65300.dat' \
+            --pattern 'utxo-snapshot-65300.dat.manifest.json' \
+            --dir packaging/windows/dist --clobber
+          python3 packaging/snapshot/check_desktop_primary.py \
+            --payload packaging/windows/dist/dinero-assumeutxo-150200-v6-full.dat \
+            --manifest packaging/windows/dist/dinero-assumeutxo-150200-v6-full.dat.manifest.json \
+            --expected-name dinero-assumeutxo-150200-v6-full.dat
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -345,7 +368,9 @@ jobs:
             -Version '${{ steps.ver.outputs.version }}' `
             -BuildDir 'build-msvc-server' `
             -VcpkgRoot "$env:VCPKG_INSTALLATION_ROOT" `
-            -VcpkgBin "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin"
+            -VcpkgBin "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" `
+            -SnapshotPath 'packaging\windows\dist\dinero-assumeutxo-150200-v6-full.dat' `
+            -SnapshotManifestPath 'packaging\windows\dist\dinero-assumeutxo-150200-v6-full.dat.manifest.json'
 
       - name: Stage GUI installer and portable operator archive
         shell: powershell
@@ -357,8 +382,14 @@ jobs:
             -QtBin "$env:QT_ROOT_DIR\bin" `
             -CudaBin "$env:CUDA_PATH\bin" `
             -Sv2BuildDir 'dinero-sv2\target\release' `
-            -SnapshotPath 'packaging\windows\dist\dinero-assumeutxo-148375-v5.dat' `
-            -SnapshotManifestPath 'packaging\windows\dist\dinero-assumeutxo-148375-v5.dat.manifest.json'
+            -SnapshotPath 'packaging\windows\dist\dinero-assumeutxo-150200-v6-full.dat' `
+            -SnapshotManifestPath 'packaging\windows\dist\dinero-assumeutxo-150200-v6-full.dat.manifest.json' `
+            -SnapshotFallbackPath 'packaging\windows\dist\dinero-assumeutxo-148375-v5.dat' `
+            -SnapshotFallbackManifestPath 'packaging\windows\dist\dinero-assumeutxo-148375-v5.dat.manifest.json' `
+            -SnapshotLegacyFallbackPath 'packaging\windows\dist\dinero-assumeutxo-99677-v4.dat' `
+            -SnapshotLegacyFallbackManifestPath 'packaging\windows\dist\dinero-assumeutxo-99677-v4.manifest.json' `
+            -SnapshotOldestFallbackPath 'packaging\windows\dist\utxo-snapshot-65300.dat' `
+            -SnapshotOldestFallbackManifestPath 'packaging\windows\dist\utxo-snapshot-65300.dat.manifest.json'
 
       # Policy pin. A release that silently linked a different OpenSSL than the
       # one the Linux/macOS lanes assert would be a supply-chain divergence.
@@ -469,7 +500,7 @@ jobs:
           try {
             & 'C:\Program Files (x86)\NSIS\makensis.exe' "/DVERSION=$version" "/DVERSION_NUMERIC=$numericVersion" dinero-installer.nsi
             if ($LASTEXITCODE -ne 0) { throw 'GUI NSIS rebuild failed' }
-            & 'C:\Program Files (x86)\NSIS\makensis.exe' "/DVERSION=$version" "/DVERSION_NUMERIC=$numericVersion" "/DSNAPSHOT_FILE=dinero-assumeutxo-148375-v5.dat" dinero-server-installer.nsi
+            & 'C:\Program Files (x86)\NSIS\makensis.exe' "/DVERSION=$version" "/DVERSION_NUMERIC=$numericVersion" "/DSNAPSHOT_FILE=dinero-assumeutxo-150200-v6-full.dat" dinero-server-installer.nsi
             if ($LASTEXITCODE -ne 0) { throw 'server NSIS rebuild failed' }
           } finally { Pop-Location }
 
@@ -696,6 +727,7 @@ jobs:
           path: |
             ${{ steps.sums.outputs.artifacts }}
             ${{ steps.sums.outputs.sumfile }}
+            packaging/windows/dist/*publisher.*
           if-no-files-found: error
 
       - name: Attach to release

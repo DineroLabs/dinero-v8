@@ -145,13 +145,15 @@ jobs:
       - name: Build Windows server release and installer
         shell: powershell
         run: |
-          # The qualified primary can be read from a draft release without
-          # publishing it. Use the same snapshot as the production packages.
+          # Historical v5 snapshot for this OpenSSL/NSIS build smoke. Full-v6
+          # release admission runs in windows-release.yml once pinned.
           .\packaging\windows\build-server-installer.ps1 `
             -Version '8.2.2-openssl357-ci' `
             -BuildDir 'build-msvc-server' `
             -VcpkgRoot "$env:VCPKG_INSTALLATION_ROOT" `
             -VcpkgBin "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" `
+            -SnapshotFileName 'dinero-assumeutxo-148375-v5.dat' `
+            -SnapshotReleaseTag 'v8.2.2' `
             -SnapshotPath 'packaging\windows\dist\dinero-assumeutxo-148375-v5.dat' `
             -SnapshotManifestPath 'packaging\windows\dist\dinero-assumeutxo-148375-v5.dat.manifest.json'
 
