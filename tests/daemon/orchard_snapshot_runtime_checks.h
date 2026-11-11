@@ -1,5 +1,7 @@
 #pragma once
 #include "consensus/utreexo_delta_codec.h"
+#include "consensus/pow.hpp"
+#include "consensus/pow_context.h"
 #include "p2p/orchard_catalog_transfer.h"
 #include "p2p/orchard_catalog_server.h"
 #include "p2p/orchard_catalog_client.h"
@@ -108,6 +110,11 @@ struct OrchardSnapshotStoreTestAccess {
     }
     static auto Restore(AnnotatedRecursiveMutex& mutex,const ChainDB& db,const consensus::HeaderChainSelector& headers) {
         std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);return OrchardSnapshotStore::Restore(mutex,db,headers);
+    }
+    static auto RestoreRetained(AnnotatedRecursiveMutex& mutex,const ChainDB& db,
+        const consensus::HeaderChainSelector& headers,const auto& previous) {
+        std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);
+        return OrchardSnapshotStore::Restore(mutex,db,headers,previous.reads);
     }
     static bool Recover(AnnotatedRecursiveMutex& mutex,ChainDB& db,const ChainWriteToken& token,
         const consensus::HeaderChainSelector& headers) {
@@ -2393,6 +2400,27 @@ TEST(OrchardSnapshotRuntime, RealRegtestActivationFullAndCompactImportReopenAndF
         MutableParams().state_commitment_burial_depth=1;
         installed.full.reset();installed.compact.reset();db.close();ASSERT_EQ(db.init(database_path),Status::Ok);
         auto restored=Access::Restore(mutex,db,headers);
+        {
+            auto repeated=Access::RestoreRetained(mutex,db,headers,restored);
+            EXPECT_EQ(repeated.reads.baseline,restored.reads.baseline);
+            EXPECT_EQ(repeated.reads.selected_nodes,restored.reads.selected_nodes);
+            const auto id=section.base_catalog.transactions;
+            const auto node=db.getOrchardCatalogNode(id);ASSERT_TRUE(node.ok());
+            for(const bool missing:{true,false}) {
+                auto corrupt=*node;corrupt.back()^=1;
+                ChainDBTransactionReadTestPeer::SnapshotCatalogFault(db,source.f.token,id,
+                    missing?std::optional<std::string>{}:std::optional<std::string>{corrupt});
+                EXPECT_ANY_THROW(Access::RestoreRetained(mutex,db,headers,restored));
+                ChainDBTransactionReadTestPeer::SnapshotCatalogFault(db,source.f.token,id,*node);
+                ASSERT_NO_THROW(Access::RestoreRetained(mutex,db,headers,restored));
+            }
+            // A historical orphan is not part of the selected reachable union.
+            storage::catalog::Node orphan{storage::catalog::Kind::Transactions};orphan.key[0]=99;
+            const auto bytes=orphan.Encode();const auto extra=storage::catalog::Hash(bytes);
+            ChainDBTransactionReadTestPeer::SnapshotCatalogFault(db,source.f.token,extra,bytes);
+            ASSERT_NO_THROW(Access::RestoreRetained(mutex,db,headers,restored));
+            ChainDBTransactionReadTestPeer::SnapshotCatalogFault(db,source.f.token,extra,{});
+        }
         if(profile==OrchardSnapshotProfile::Full) {
             ASSERT_TRUE(restored.full);EXPECT_EQ(restored.full->GetSetSize(),coins.size());
             EXPECT_EQ(restored.full->GetForest().serialize(),section.accumulator);
@@ -2409,6 +2437,7 @@ TEST(OrchardSnapshotRuntime, RealRegtestActivationFullAndCompactImportReopenAndF
         const auto original=db.getForestTipMarker();ASSERT_TRUE(original.ok());auto forged=*original;forged.forest_root.data[0]^=1;
         ASSERT_EQ(db.putForestTipMarker(source.f.token,forged),Status::Ok);
         EXPECT_ANY_THROW(Access::Restore(mutex,db,headers));
+        EXPECT_ANY_THROW(Access::RestoreRetained(mutex,db,headers,restored));
         ASSERT_EQ(db.putForestTipMarker(source.f.token,*original),Status::Ok);
         ASSERT_NO_THROW(Access::Restore(mutex,db,headers));
         restored.full.reset();restored.compact.reset();
@@ -2427,6 +2456,7 @@ TEST(OrchardSnapshotRuntime, RealRegtestActivationFullAndCompactImportReopenAndF
         ASSERT_EQ(db.getRaw(key,proof),Status::Ok);auto corrupted=proof;corrupted.back()^=1;
         {rocksdb::WriteBatch batch;batch.Put(key,corrupted);ASSERT_EQ(db.writeBatch(source.f.token,std::move(batch),true),Status::Ok);}
         EXPECT_ANY_THROW(Access::Restore(mutex,db,headers));EXPECT_EQ(db.getTip()->hash,section.state.block_hash);
+        EXPECT_ANY_THROW(Access::RestoreRetained(mutex,db,headers,restored));
         {rocksdb::WriteBatch batch;batch.Put(key,proof);ASSERT_EQ(db.writeBatch(source.f.token,std::move(batch),true),Status::Ok);}
         ASSERT_NO_THROW(Access::Restore(mutex,db,headers));db.close();
         MutableParams().state_commitment_burial_depth=0;
@@ -2590,6 +2620,39 @@ TEST(OrchardSnapshotRuntime, QueuedDownloadedHeaderIsRevalidatedWithoutSelectedP
     ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,bad),Status::Ok);EXPECT_ANY_THROW(seed());
     ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,metadata),Status::Ok);
     EXPECT_NO_THROW(seed());
+
+    // A later body may beat its intervening headers' ChainDB metadata to disk.
+    // Both intervening and child headers have genuine, independently checked
+    // PoW/ASERT; recovering them does not accept a body or create chain rows.
+    std::deque<HeaderIndexEntry> history;
+    for(const auto& block:source.f.blocks)
+        history.emplace_back(block.header,history.empty()?nullptr:&history.back());
+    history.emplace_back(pending.header,&history.back());
+    const auto consensus=GetConsensusForCurrentNetwork();
+    for(unsigned i=0;i<2;++i) {
+        const auto* prior=&history.back();auto header=prior->header;
+        header.prev_block_hash=prior->hash;header.timestamp+=60;
+        header.difficulty=GetNextWorkRequiredForCandidate(prior->height+1,header.timestamp,
+            consensus,nullptr,prior,static_cast<NoChainDb*>(nullptr));
+        ASSERT_NE(header.difficulty,0u);header=OrchardAdmissionFixture::SolveHeader(header);
+        history.emplace_back(header,prior);ASSERT_TRUE(store.StoreHeader(history.back()));
+    }
+    const auto& middle=history[history.size()-2];const auto& child=history.back();
+    auto child_claim=metadata;child_claim.height=int32_t(child.height);child_claim.parent_hash=child.prev_hash;
+    child_claim.chainwork=child.chainwork;child_claim.status_flags=uint32_t(BLOCK_VALID_HEADER)|uint32_t(BLOCK_VALID_CHAIN);
+    child_claim.file_number=0;child_claim.data_pos=0;child_claim.data_size=0;
+    ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,child.hash,child_claim),Status::Ok);
+    ASSERT_EQ(source.f.db.getHeaderMetadata(middle.hash).status(),Status::NotFound);
+    EXPECT_NO_THROW(seed());
+    auto forged_middle=middle;forged_middle.chainwork+=arith_uint256{1};
+    ASSERT_TRUE(store.StoreHeader(forged_middle));EXPECT_ANY_THROW(seed());
+    ASSERT_TRUE(store.StoreHeader(middle));EXPECT_NO_THROW(seed());
+    ASSERT_TRUE(store.DeleteHeader(middle.hash));EXPECT_ANY_THROW(seed());
+    ASSERT_TRUE(store.StoreHeader(middle));EXPECT_NO_THROW(seed());
+    EXPECT_EQ(source.f.db.getHeader(middle.hash).status(),Status::NotFound);
+    EXPECT_EQ(source.f.db.getHeader(child.hash).status(),Status::NotFound);
+    EXPECT_EQ(source.f.db.getHeaderMetadata(middle.hash).status(),Status::NotFound);
+    EXPECT_EQ(source.f.db.getTip()->hash,tip->hash);EXPECT_EQ(source.f.db.getValidatedTip()->hash,tip->hash);
 }
 
 TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles) {
@@ -2706,6 +2769,15 @@ TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles)
             if(stateless) {
                 service->setValidationMode(ValidationMode::STATEFUL);EXPECT_FALSE(service->Start());
                 EXPECT_EQ(service->GetActiveTip(),nullptr);service->setValidationMode(ValidationMode::STATELESS);
+            }
+            if(run==1) {
+                // Init's retained decoded bytes cannot hide a later missing
+                // live catalog row at the actual Start publication boundary.
+                const auto state=storage::catalog::State::Decode(*db->getOrchardCatalogState(second_metadata.block_hash));
+                const auto bytes=db->getOrchardCatalogNode(state.transactions);ASSERT_TRUE(bytes.ok());
+                ChainDBTransactionReadTestPeer::SnapshotCatalogFault(*db,source.f.token,state.transactions,{});
+                EXPECT_FALSE(service->Start());EXPECT_EQ(service->GetActiveTip(),nullptr);
+                ChainDBTransactionReadTestPeer::SnapshotCatalogFault(*db,source.f.token,state.transactions,*bytes);
             }
             ASSERT_TRUE(service->Start());
             if(stateless&&run==0) {

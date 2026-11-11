@@ -146,6 +146,42 @@ TEST(OrchardSnapshotDiskCatalog, ByteIdentitySharedOwnershipAndExactReachableUni
     });
     EXPECT_TRUE(streamed.nodes.empty());ASSERT_TRUE(streamed.disk_nodes);EXPECT_EQ(EncodeOrchardSnapshotSection(streamed),bytes);
 }
+TEST(OrchardSnapshotDiskCatalog, InvalidContentCannotReceivePrivateIntegrityTags) {
+    Fixture f;OrchardSnapshotCatalog catalog;
+    const auto& [id,bytes]=*f.section.nodes.begin();auto bad=bytes;bad.back()^=1;
+    EXPECT_ANY_THROW(catalog.Insert(id,bad));
+    EXPECT_ANY_THROW(catalog.InsertUnique(H(98),bytes));
+    catalog.InsertUnique(id,bytes);catalog.Seal();
+    EXPECT_EQ(catalog.Size(),1u);EXPECT_EQ(catalog.Read(id),bytes);
+    EXPECT_FALSE(catalog.Find(H(98)));
+}
+TEST(OrchardSnapshotDiskCatalog, LargeSharedUnionKeepsWireBytesAndRefusesMissingOrExtraNodes) {
+    Fixture f;f.all.clear();auto& parent=f.section.parent_catalog;auto& base=f.section.base_catalog;
+    parent.transactions={};parent.transaction_count=0;
+    c::Tree tree(c::Kind::Transactions,f.Read(),f.Write());uint256 root;
+    for(unsigned i=0;i<4097;++i) {
+        uint256 id;id.data[0]=uint8_t(i);id.data[1]=uint8_t(i>>8);id.data[2]=0x70;
+        root=tree.Insert(root,c::TransactionKey(TxId(id)),{});
+        if(i==3072){parent.transactions=root;parent.transaction_count=i+1;}
+    }
+    base.transactions=root;base.transaction_count=4097;base.previous_record=c::Hash(parent.Encode());
+    f.CaptureReachable();ASSERT_GT(f.section.nodes.size(),8192u);
+    const auto expected=EncodeOrchardSnapshotSection(f.section);
+    // Ordinals follow private insertion order, not the canonical wire order.
+    auto catalog=std::make_shared<OrchardSnapshotCatalog>();
+    for(auto it=f.section.nodes.rbegin();it!=f.section.nodes.rend();++it) {
+        catalog->Insert(it->first,it->second);catalog->Insert(it->first,it->second);
+    }
+    catalog->Seal();auto disk=f.section;disk.nodes.clear();disk.disk_nodes=catalog;
+    EXPECT_EQ(OrchardSnapshotNodeCount(disk),f.section.nodes.size());
+    EXPECT_EQ(EncodeOrchardSnapshotSection(disk),expected);
+    EXPECT_EQ(EncodeOrchardSnapshotSection(disk),expected); // cached integrity scan
+    auto missing=f.section;missing.nodes.erase(std::prev(missing.nodes.end()));
+    EXPECT_ANY_THROW(ValidateOrchardSnapshotSection(DiskSection(std::move(missing))));
+    auto extra=f.section;c::Node node{c::Kind::Transactions};node.key[0]=99;
+    const auto bytes=node.Encode();extra.nodes.emplace(c::Hash(bytes),bytes);
+    EXPECT_ANY_THROW(ValidateOrchardSnapshotSection(DiskSection(std::move(extra))));
+}
 TEST(OrchardSnapshotDiskCatalog, PrivateWorkspaceCleanupAndCachedWalkStillCheckDiskIntegrity) {
     const auto path=std::filesystem::temp_directory_path()/("dinero-v6-disk-"+util::hex(secure_random_bytes(16)));
     ASSERT_TRUE(std::filesystem::create_directory(path));
@@ -169,6 +205,70 @@ TEST(OrchardSnapshotDiskCatalog, PrivateWorkspaceCleanupAndCachedWalkStillCheckD
     EXPECT_EQ(children,1u);
     EXPECT_ANY_THROW(DiskSection(f.section,path/"missing"));
     {std::ifstream user(path/"keep");EXPECT_EQ(std::string(std::istreambuf_iterator<char>(user),{}),"caller data");}
+}
+TEST(OrchardSnapshotDiskCatalog, ProjectionMatchesFlatOracleAcrossOverlayFlushesAndFiltersOldNodes) {
+    Fixture f;const auto original_section=f.section;auto original=DiskSection(original_section).disk_nodes;
+    auto& s=f.section;s.parent_catalog=original_section.base_catalog;
+    c::Tree tree(c::Kind::Transactions,f.Read(),f.Write());
+    ++s.parent_catalog.height;s.parent_catalog.parent=original_section.base_catalog.block;
+    s.parent_catalog.block=H(3);s.parent_catalog.work+=arith_uint256{1};
+    s.parent_catalog.previous_record=c::Hash(original_section.base_catalog.Encode());
+    s.parent_catalog.transactions=tree.Erase(s.parent_catalog.transactions,c::TransactionKey(TxId(H(20))));
+    --s.parent_catalog.transaction_count;s.base_catalog=s.parent_catalog;
+    auto& base=s.base_catalog;++base.height;base.block=H(4);base.parent=s.parent_catalog.block;
+    base.work+=arith_uint256{1};base.previous_record=c::Hash(s.parent_catalog.Encode());
+    for(unsigned i=0;i<2049;++i) {
+        uint256 id;id.data[0]=uint8_t(i);id.data[1]=uint8_t(i>>8);id.data[2]=0x71;
+        base.transactions=tree.Insert(base.transactions,c::TransactionKey(TxId(id)),{});++base.transaction_count;
+    }
+    s.state.height=base.height;s.state.block_hash=base.block;
+    s.retirement.height=base.height;s.retirement.block_hash=base.block;s.retirement.parent_hash=base.parent;
+    s.anchors.front().references+=2;f.CaptureReachable();
+    const auto expected=EncodeOrchardSnapshotSection(s);
+    auto projected=s;projected.nodes.clear();
+    projected.disk_nodes=OrchardSnapshotCatalog::Project(original,s.parent_catalog,s.base_catalog,f.Read());
+    EXPECT_EQ(EncodeOrchardSnapshotSection(projected),expected);
+    EXPECT_EQ(EncodeOrchardSnapshotSection(projected),expected); // cached MAC/hash/count scan
+    EXPECT_EQ(OrchardSnapshotNodeCount(projected),s.nodes.size());
+    std::map<uint256,std::string,OrchardSnapshotRawLess> actual;
+    projected.disk_nodes->ForEach([&](const auto& id,const auto& bytes){EXPECT_TRUE(actual.emplace(id,bytes).second);});
+    EXPECT_EQ(actual,s.nodes);
+    unsigned filtered=0;
+    for(const auto& [id,bytes]:original_section.nodes)if(!s.nodes.contains(id)) {
+        ++filtered;EXPECT_FALSE(projected.disk_nodes->Find(id));EXPECT_ANY_THROW(projected.disk_nodes->Read(id));
+    }
+    EXPECT_GT(filtered,0u);
+    auto changed=projected;++changed.base_catalog.transaction_count;
+    EXPECT_ANY_THROW(ValidateOrchardSnapshotSection(changed));
+    EXPECT_ANY_THROW(OrchardSnapshotCatalog::Project(original,s.parent_catalog,s.base_catalog,
+        [](const auto&)->std::string{throw std::runtime_error("missing source node");}));
+    EXPECT_ANY_THROW(OrchardSnapshotCatalog::Project(original,s.parent_catalog,s.base_catalog,
+        [&](const auto& id){auto bytes=f.all.at(id);bytes.back()^=1;return bytes;}));
+    EXPECT_ANY_THROW(OrchardSnapshotCatalog::Project(projected.disk_nodes,s.parent_catalog,s.base_catalog,f.Read()));
+}
+TEST(OrchardSnapshotDiskCatalog, CachedProjectionStillRefusesParentAndOverlayDiskCorruption) {
+    for(const bool corrupt_parent:{true,false}) {
+        const auto path=std::filesystem::temp_directory_path()/("dinero-v6-project-"+util::hex(secure_random_bytes(16)));
+        ASSERT_TRUE(std::filesystem::create_directory(path));
+        struct Cleanup {std::filesystem::path path;~Cleanup(){std::error_code ignored;std::filesystem::remove_all(path,ignored);}} cleanup{path};
+        Fixture f;auto original=DiskSection(f.section,path).disk_nodes;
+        std::filesystem::path parent_file;
+        for(const auto& child:std::filesystem::directory_iterator(path))parent_file=child.path()/"records.sqlite";
+        auto next=f.section.base_catalog;c::Tree tree(c::Kind::Transactions,f.Read(),f.Write());
+        next.transactions=tree.Insert(next.transactions,c::TransactionKey(TxId(H(99))),{});++next.transaction_count;
+        auto projected=OrchardSnapshotCatalog::Project(original,f.section.base_catalog,next,f.Read());
+        ASSERT_NO_THROW(projected->ValidateReachability(f.section.base_catalog,next));
+        std::filesystem::path overlay_file;
+        for(const auto& child:std::filesystem::directory_iterator(path))
+            if(child.path()/"records.sqlite"!=parent_file)overlay_file=child.path()/"records.sqlite";
+        ASSERT_FALSE(parent_file.empty());ASSERT_FALSE(overlay_file.empty());
+        sqlite3* db=nullptr;const auto damaged=corrupt_parent?parent_file:overlay_file;
+        ASSERT_EQ(sqlite3_open_v2(damaged.string().c_str(),&db,SQLITE_OPEN_READWRITE,nullptr),SQLITE_OK);
+        struct Close {sqlite3* db;~Close(){sqlite3_close_v2(db);}} close{db};
+        ASSERT_EQ(sqlite3_exec(db,"UPDATE records SET v=x'00'",nullptr,nullptr,nullptr),SQLITE_OK);
+        EXPECT_ANY_THROW(projected->ValidateReachability(f.section.base_catalog,next));
+        EXPECT_ANY_THROW(projected->ForEach([](const auto&,const auto&){}));
+    }
 }
 TEST(OrchardSnapshotSection, DomainParentRetirementAndCompactStumpMustAgree) {
     Fixture f;const auto good=f.section;

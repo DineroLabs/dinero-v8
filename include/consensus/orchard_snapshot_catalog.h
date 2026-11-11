@@ -12,6 +12,13 @@ namespace dinero::consensus {
 class OrchardSnapshotCatalog final {
 public:
     explicit OrchardSnapshotCatalog(const std::filesystem::path& work_directory={});
+    // Build a complete reachable union over a flat immutable inventory. Only
+    // missing content-addressed nodes are loaded into a small disk overlay.
+    // This is DATA, not source-storage or selected-chain authentication: the
+    // caller must freshly compare every projected node to its live source.
+    static std::shared_ptr<const OrchardSnapshotCatalog> Project(
+        std::shared_ptr<const OrchardSnapshotCatalog>,const storage::catalog::State&,
+        const storage::catalog::State&,const std::function<std::string(const uint256&)>&);
     ~OrchardSnapshotCatalog();
     OrchardSnapshotCatalog(const OrchardSnapshotCatalog&)=delete;
     OrchardSnapshotCatalog& operator=(const OrchardSnapshotCatalog&)=delete;
