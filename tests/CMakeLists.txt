@@ -6248,7 +6248,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     if(NOT DINERO_TEST_ORCHARD_HTTP_TRANSPORT)
       target_sources(test_assumeutxo_replay PRIVATE src/daemon/http_rpc_server.cpp src/daemon/rpc_auth.cpp
         src/daemon/legacy_globals_stub.cpp)
-      target_compile_definitions(test_assumeutxo_replay PRIVATE DINERO_CLI_VERSION="8.2.2")
+      target_compile_definitions(test_assumeutxo_replay PRIVATE DINERO_CLI_VERSION="8.2.3")
     endif()
     target_link_libraries(test_assumeutxo_replay PRIVATE dinero-solo-miner)
     target_compile_definitions(test_assumeutxo_replay PRIVATE DINERO_TEST_EMBEDDED_MINING=1)

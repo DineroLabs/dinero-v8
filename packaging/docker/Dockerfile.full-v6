@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 # Prepared full-v6 image lane. Do not switch docker-publish.yml to this file
 # until the H150521 full-profile catalog pin and public release asset exist.
-# The source version remains 8.2.2 until the coordinated release freeze.
-ARG DINERO_VERSION=8.2.2
+# The candidate version changes with the coordinated release source freeze.
+ARG DINERO_VERSION=8.2.3
 ARG PRIMARY_SNAPSHOT_RELEASE=v8.2.3
 ARG RECOVERY_SNAPSHOT_RELEASE=v8.2.2
 

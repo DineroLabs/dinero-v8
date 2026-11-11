@@ -148,7 +148,7 @@ jobs:
           # Historical v5 snapshot for this OpenSSL/NSIS build smoke. Full-v6
           # release admission runs in windows-release.yml once pinned.
           .\packaging\windows\build-server-installer.ps1 `
-            -Version '8.2.2-openssl357-ci' `
+            -Version '8.2.3-openssl357-ci' `
             -BuildDir 'build-msvc-server' `
             -VcpkgRoot "$env:VCPKG_INSTALLATION_ROOT" `
             -VcpkgBin "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" `
@@ -182,13 +182,13 @@ jobs:
         run: |
           python -B scripts/ci/check_windows_server_uninstall.py packaging/windows/dinero-server-installer.nsi
           if ($LASTEXITCODE -ne 0) { throw 'Windows server uninstall contract failed' }
-          $installer = Resolve-Path 'packaging\windows\dist\Dinero-Server-8.2.2-openssl357-ci-windows-x86_64-Setup.exe'
+          $installer = Resolve-Path 'packaging\windows\dist\Dinero-Server-8.2.3-openssl357-ci-windows-x86_64-Setup.exe'
           $installDir = Join-Path $env:ProgramFiles 'Dinero-Server'
 
           $info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($installer)
           $numericVersion = "$($info.FileMajorPart).$($info.FileMinorPart).$($info.FileBuildPart).$($info.FilePrivatePart)"
-          if ($numericVersion -ne '8.2.2.0') {
-            throw "installer numeric file version is $numericVersion, expected 8.2.2.0"
+          if ($numericVersion -ne '8.2.3.0') {
+            throw "installer numeric file version is $numericVersion, expected 8.2.3.0"
           }
 
           $install = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
@@ -231,5 +231,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-server-openssl-3.5.7-smoke
-          path: packaging/windows/dist/Dinero-Server-8.2.2-openssl357-ci-windows-x86_64-Setup.exe
+          path: packaging/windows/dist/Dinero-Server-8.2.3-openssl357-ci-windows-x86_64-Setup.exe
           if-no-files-found: warn
