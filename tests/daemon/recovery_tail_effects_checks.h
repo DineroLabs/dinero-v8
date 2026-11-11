@@ -55,26 +55,28 @@ TEST(RecoveryTailEffects, ExtractsSelectedTailWithKnownSpendAndChange) {
 TEST(RecoveryTailEffects, FoldsDisconnectIntoSelectedChain) {
     CanonicalRecoveryFixture f(true);
     f.MineEmpty();
-    const auto* detached_tip = f.f.service->GetActiveTip();
-    ASSERT_NE(detached_tip, nullptr);
-    const auto detached = detached_tip->hash;
-    ASSERT_TRUE(ShieldedStateStartupTestAccess::DisconnectBoundary(*f.f.service, f.f.service->GetActiveTip()));
-    // Replace the detached block with one that cannot collide: it carries the
-    // shield transaction, so the replacement body differs from the empty one.
     const auto receiver = orchard::WalletKeys::FromSeed(std::array<uint8_t, 64>{67}, 0);
     const auto [body, bundle] = f.Shield(receiver);
     (void)bundle;
     (void)f.Mine(body);
+    const auto* detached_tip = f.f.service->GetActiveTip();
+    ASSERT_NE(detached_tip, nullptr);
+    const auto detached = detached_tip->hash;
+    // Capture immediately after the disconnect: mining afterwards would race
+    // the service re-selecting the detached higher-work block.
+    ASSERT_TRUE(ShieldedStateStartupTestAccess::DisconnectBoundary(*f.f.service, f.f.service->GetActiveTip()));
     const auto view = f.f.service->getRuntimeAccountReplay();
     ASSERT_TRUE(view.ok());
     const auto effects = ReadRecoveryTailEffects(**view);
     ASSERT_FALSE(effects.blocks.empty());
-    for (const auto& block : effects.blocks) EXPECT_NE(block.hash, detached);
+    // The detached block and the shield's effects inside it fold away; the
+    // folded chain ends exactly at the lowered selected tip.
+    for (const auto& block : effects.blocks) {
+        EXPECT_NE(block.hash, detached);
+        for (const auto& tx : block.transactions)
+            EXPECT_NE(tx.txid.AsUint256(), body.GetTxid().AsUint256());
+    }
     EXPECT_EQ(effects.blocks.back().hash, f.f.service->GetActiveTip()->hash);
-    // The disconnected block's effects are gone; the replacement's shield is
-    // present, so the folded chain is exactly the selected one.
-    ASSERT_EQ(effects.blocks.back().transactions.size(), 2u);
-    EXPECT_EQ(effects.blocks.back().transactions[1].txid.AsUint256(), body.GetTxid().AsUint256());
 }
 }  // namespace dinero
 #endif

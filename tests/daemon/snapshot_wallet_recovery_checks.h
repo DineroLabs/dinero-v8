@@ -1,6 +1,7 @@
 #pragma once
 #include "wallet/wallet_worker.h"
 #include "wallet/p2mr_address.h"
+#include "wallet/selected_history.h"
 din::Json rpc_context_wallet_recoversnapshot(const ExecutionContext&,const din::Json&);
 namespace dinero {
 namespace {
@@ -353,6 +354,94 @@ TEST(SnapshotWalletRecovery, V5ParentModeWithoutConfiguredSourceKeepsRefusal){
     EXPECT_FALSE(f.source->RecoverTransparentSnapshotWallet(f.wallet,&refused,0,true));
     EXPECT_EQ(refused,"transparent snapshot recovery requires a pre-Orchard selected source");
     EXPECT_EQ(f.Count("SELECT COUNT(*) FROM utxos"),0);
+}
+
+TEST(SnapshotWalletRecovery, TypedTailDeltasApplyThroughTheSnapshotRescanWriter){
+    // Stage C step 2 of 2026-11-11-native-v6-wallet-recovery-design.md §5a:
+    // typed per-block deltas stand in for owned raw bodies in snapshot mode
+    // and drive the SAME SQL writer: utxo insert + spend marking (base coin
+    // spent in the tail, created-and-spent netting), send/receive/generate
+    // history rows with header timestamps, and recovered-block stamps.
+    SnapshotWalletRecoveryFixture f;
+    const auto owned24=f.chain[24].vtx[0].vout[0].scriptPubKey;
+    const auto owned109=f.chain[109].vtx[0].vout[0].scriptPubKey;
+    const auto base_txid=f.chain[24].vtx[0].GetTxid();
+    const auto base_value=f.chain[24].vtx[0].vout[0].value.GetUna();
+    std::set<std::vector<uint8_t>> watched;
+    {auto lease=f.wallet.AcquireDatabaseLease();sqlite3_stmt* q=nullptr;
+     ASSERT_EQ(sqlite3_prepare_v2(lease->Database(),"SELECT script_pubkey FROM watch_scripts",-1,&q,nullptr),SQLITE_OK);
+     std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> rows(q,sqlite3_finalize);
+     int rc;while((rc=sqlite3_step(q))==SQLITE_ROW){const auto* bytes=static_cast<const uint8_t*>(sqlite3_column_blob(q,0));
+        watched.emplace(bytes,bytes+sqlite3_column_bytes(q,0));}
+     ASSERT_EQ(rc,SQLITE_DONE);}
+    ASSERT_TRUE(watched.contains(owned24));ASSERT_TRUE(watched.contains(owned109));
+    SnapshotWalletSourceData snapshot;
+    snapshot.base=uint256::FromHexUnsafe(std::string(64,'b'));
+    snapshot.height=105;
+    snapshot.coins.push_back({base_txid.AsUint256(),0,base_value,owned24,25,false,true});
+    const auto h106=uint256::FromHexUnsafe(std::string(64,'1'));
+    const auto h107=uint256::FromHexUnsafe(std::string(64,'2'));
+    const TxId cb106(uint256::FromHexUnsafe(std::string(64,'3')));
+    const TxId fund106(uint256::FromHexUnsafe(std::string(64,'4')));
+    const TxId cb107(uint256::FromHexUnsafe(std::string(64,'5')));
+    const TxId spend107(uint256::FromHexUnsafe(std::string(64,'6')));
+    const TxId foreign(uint256::FromHexUnsafe(std::string(64,'7')));
+    std::vector<RecoveryTailBlock> tail(2);
+    tail[0].hash=h106;tail[0].parent=snapshot.base;tail[0].height=106;tail[0].timestamp=1700000106;
+    tail[0].transactions.resize(2);
+    tail[0].transactions[0].txid=cb106;
+    tail[0].transactions[0].outputs.push_back({5000000000ull,owned24,false});
+    tail[0].transactions[1].txid=fund106;
+    tail[0].transactions[1].spends.push_back({foreign,1}); // non-owned prevout: writer no-op
+    tail[0].transactions[1].outputs.push_back({700000000ull,owned109,false});
+    tail[1].hash=h107;tail[1].parent=h106;tail[1].height=107;tail[1].timestamp=1700000107;
+    tail[1].transactions.resize(2);
+    tail[1].transactions[0].txid=cb107;
+    tail[1].transactions[0].outputs.push_back({5000000000ull,{0x6a},false}); // not watched
+    tail[1].transactions[1].txid=spend107;
+    tail[1].transactions[1].spends.push_back({base_txid,0}); // base coin spent in tail
+    tail[1].transactions[1].spends.push_back({fund106,0});   // created-and-spent in tail
+    tail[1].transactions[1].outputs.push_back({200000000ull,owned24,false}); // owned change
+    SelectedWalletHistory::Builder builder(Params().network_id,uint256::FromHexUnsafe(Params().genesis_hash),h107);
+    builder.SetSnapshot(106,snapshot,watched);
+    builder.SetTypedTail(tail);
+    const auto prepared=builder.Build();
+    uint64_t session;{auto lease=f.wallet.AcquireDatabaseLease();session=lease->Session();}
+    ASSERT_TRUE(f.wallet.RescanFromSelectedHistory(106,0,*prepared,session));
+    EXPECT_EQ(f.Count("SELECT COUNT(*) FROM utxos"),4);
+    EXPECT_EQ(f.Count("SELECT COUNT(*) FROM utxos WHERE is_spent=0"),2);
+    EXPECT_EQ(f.Count(("SELECT COUNT(*) FROM utxos WHERE is_spent=1 AND spent_height=107 AND spent_txid='"+spend107.AsUint256().GetHex()+"' AND txid='"+base_txid.AsUint256().GetHex()+"'").c_str()),1);
+    EXPECT_EQ(f.Count(("SELECT COUNT(*) FROM utxos WHERE is_spent=1 AND spent_height=107 AND txid='"+fund106.AsUint256().GetHex()+"'").c_str()),1);
+    EXPECT_EQ(f.Count(("SELECT COUNT(*) FROM utxos WHERE is_spent=0 AND height=106 AND is_coinbase=1 AND txid='"+cb106.AsUint256().GetHex()+"'").c_str()),1);
+    EXPECT_EQ(f.Count(("SELECT COUNT(*) FROM utxos WHERE is_spent=0 AND height=107 AND amount=200000000 AND txid='"+spend107.AsUint256().GetHex()+"'").c_str()),1);
+    EXPECT_EQ(f.Count("SELECT COUNT(*) FROM transactions"),3);
+    EXPECT_EQ(f.Count(("SELECT COUNT(*) FROM transactions WHERE category='generate' AND time=1700000106 AND txid='"+cb106.AsUint256().GetHex()+"'").c_str()),1);
+    EXPECT_EQ(f.Count(("SELECT COUNT(*) FROM transactions WHERE category='receive' AND time=1700000106 AND txid='"+fund106.AsUint256().GetHex()+"'").c_str()),1);
+    EXPECT_EQ(f.Count(("SELECT COUNT(*) FROM transactions WHERE category='send' AND amount<0 AND time=1700000107 AND txid='"+spend107.AsUint256().GetHex()+"'").c_str()),1);
+    EXPECT_TRUE(f.wallet.snapshotRecoveryAlreadyApplied(106,h106.GetHex()));
+    EXPECT_TRUE(f.wallet.snapshotRecoveryAlreadyApplied(107,h107.GetHex()));
+    EXPECT_EQ(f.wallet.getCurrentBlockchainHeight(),107u);
+}
+
+TEST(SnapshotWalletRecovery, TypedTailBuilderRefusesUnlinkedOrMixedHistories){
+    SnapshotWalletSourceData snapshot;
+    snapshot.base=uint256::FromHexUnsafe(std::string(64,'b'));snapshot.height=105;
+    const auto h106=uint256::FromHexUnsafe(std::string(64,'1'));
+    std::vector<RecoveryTailBlock> tail(1);
+    tail[0].hash=h106;tail[0].parent=snapshot.base;tail[0].height=106;tail[0].timestamp=1;
+    const auto genesis=uint256::FromHexUnsafe(Params().genesis_hash);
+    {SelectedWalletHistory::Builder ok(Params().network_id,genesis,h106);
+     ok.SetSnapshot(106,snapshot,{});ok.SetTypedTail(tail);EXPECT_NO_THROW(ok.Build());}
+    {SelectedWalletHistory::Builder bad(Params().network_id,genesis,h106); // typed tail needs snapshot mode
+     bad.SetTypedTail(tail);EXPECT_THROW(bad.Build(),std::invalid_argument);}
+    {SelectedWalletHistory::Builder bad(Params().network_id,genesis,h106); // broken base link
+     auto broken=tail;broken[0].parent=h106;
+     bad.SetSnapshot(106,snapshot,{});bad.SetTypedTail(broken);EXPECT_THROW(bad.Build(),std::invalid_argument);}
+    {SelectedWalletHistory::Builder bad(Params().network_id,genesis,snapshot.base); // tip mismatch
+     bad.SetSnapshot(106,snapshot,{});bad.SetTypedTail(tail);EXPECT_THROW(bad.Build(),std::invalid_argument);}
+    {SelectedWalletHistory::Builder bad(Params().network_id,genesis,h106); // wrong first height
+     auto shifted=tail;shifted[0].height=107;
+     bad.SetSnapshot(106,snapshot,{});bad.SetTypedTail(shifted);EXPECT_THROW(bad.Build(),std::invalid_argument);}
 }
 
 }
