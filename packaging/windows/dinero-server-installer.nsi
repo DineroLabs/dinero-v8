@@ -263,21 +263,90 @@ Section "Uninstall"
   SetShellVarContext all
   SetRegView 64
 
-  ; Stop the service and wait for dinerod to actually release its file
-  ; handles before delete + RMDir, otherwise RMDir leaves $INSTDIR behind.
-  ; dinerod's graceful-shutdown path (flush chainstate, close ChainDB, close
-  ; wallets) takes ~15-30s on a syncing node; we wait 30s here as a worst-
-  ; case ceiling. (Observed: 5s sleep was enough to clear STOP_PENDING but
-  ; dinerod still held blk00000.dat handles when RMDir fired.)
+  ; A fixed sleep is not a stop acknowledgement: a syncing node can keep
+  ; dinerod.exe mapped longer than 30 seconds. Poll the service state, then
+  ; retry actual removal for a bounded two minutes. If anything remains, keep
+  ; the uninstall registry entry and report failure rather than claim success.
   nsExec::ExecToLog '"$SYSDIR\sc.exe" stop ${SVC_NAME}'
-  Pop $0
-  Sleep 30000
+  Pop $R0
+  StrCpy $R3 0
+  service_wait:
+    ; sc.exe's numeric 1060 means absent; its localized state text is not
+    ; parsed. For a present service, ServiceControllerStatus 1 means Stopped.
+    ; Other Get-Service failures exit 2, never masquerading as service absence.
+    nsExec::ExecToStack '"$SYSDIR\sc.exe" query ${SVC_NAME}'
+    Pop $R0
+    Pop $R1
+    ${If} $R0 == 1060
+      Goto service_stopped
+    ${ElseIf} $R0 == 1072
+      Goto service_pending
+    ${ElseIf} $R0 != 0
+      SetErrorLevel 10
+      Abort "Could not query Dinerod service during uninstall (sc exit $R0)."
+    ${EndIf}
+    nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "try { if ([int]((Get-Service -Name ${SVC_NAME} -ErrorAction Stop).Status) -eq 1) { exit 0 } else { exit 1 } } catch { exit 2 }"'
+    Pop $R0
+    ${If} $R0 == 0
+      Goto service_stopped
+    ${ElseIf} $R0 != 1
+      SetErrorLevel 10
+      Abort "Could not query Dinerod service during uninstall (PowerShell exit $R0)."
+    ${EndIf}
+  service_pending:
+    IntOp $R3 $R3 + 1
+    ${If} $R3 >= 120
+      SetErrorLevel 11
+      Abort "Dinerod service did not stop within 120 seconds; installed files were kept."
+    ${EndIf}
+    Sleep 1000
+    Goto service_wait
+  service_stopped:
   nsExec::ExecToLog '"$SYSDIR\sc.exe" delete ${SVC_NAME}'
-  Pop $0
-  Sleep 1000
+  Pop $R0
+  ${If} $R0 != 0
+  ${AndIf} $R0 != 1060
+  ${AndIf} $R0 != 1072
+    SetErrorLevel 12
+    Abort "Could not delete Dinerod service (sc exit $R0); installed files were kept."
+  ${EndIf}
 
-  Delete "$INSTDIR\Uninstall.exe"
-  RMDir /r "$INSTDIR"
+  StrCpy $R3 0
+  service_delete_wait:
+    nsExec::ExecToStack '"$SYSDIR\sc.exe" query ${SVC_NAME}'
+    Pop $R0
+    Pop $R1
+    ${If} $R0 == 1060
+      Goto service_deleted
+    ${ElseIf} $R0 != 0
+    ${AndIf} $R0 != 1072
+      SetErrorLevel 12
+      Abort "Could not verify Dinerod service deletion (sc exit $R0)."
+    ${EndIf}
+    IntOp $R3 $R3 + 1
+    ${If} $R3 >= 120
+      SetErrorLevel 12
+      Abort "Dinerod service remained registered after 120 seconds; installed files were kept."
+    ${EndIf}
+    Sleep 1000
+    Goto service_delete_wait
+  service_deleted:
+
+  StrCpy $R3 0
+  remove_install_dir:
+    ClearErrors
+    Delete "$INSTDIR\Uninstall.exe"
+    Delete "$INSTDIR\dinerod.exe"
+    RMDir /r "$INSTDIR"
+    IfFileExists "$INSTDIR" 0 files_removed
+    IntOp $R3 $R3 + 1
+    ${If} $R3 >= 120
+      SetErrorLevel 13
+      Abort "Dinerod stopped, but installed files remained locked after 120 seconds."
+    ${EndIf}
+    Sleep 1000
+    Goto remove_install_dir
+  files_removed:
 
   DeleteRegKey HKLM "${APP_REGKEY}"
   DeleteRegKey HKLM "${APP_UNINSTKEY}"
