@@ -65,6 +65,7 @@ TEST(FilterCommitmentActivation, MissingCommitmentAcceptedBeforeActivation) {
         coinbase,
         filter_hash,
         FilterCommitment::ACTIVATION_HEIGHT - 1,
+        Params().coinbase_structure_activation_height,
         error));
     EXPECT_TRUE(error.empty());
 }
@@ -78,6 +79,7 @@ TEST(FilterCommitmentActivation, MissingCommitmentRejectedAtActivation) {
         coinbase,
         filter_hash,
         FilterCommitment::ACTIVATION_HEIGHT,
+        Params().coinbase_structure_activation_height,
         error));
     EXPECT_NE(error.find("Missing DNRF filter commitment"), std::string::npos);
 }
@@ -97,6 +99,7 @@ TEST(FilterCommitmentActivation, PresentCommitmentMustMatchEvenBeforeActivation)
         coinbase,
         computed_hash,
         FilterCommitment::ACTIVATION_HEIGHT - 1,
+        Params().coinbase_structure_activation_height,
         error));
     EXPECT_NE(error.find("Filter commitment mismatch"), std::string::npos);
 }
@@ -115,6 +118,7 @@ TEST(FilterCommitmentActivation, ValidCommitmentAcceptedAtAndAfterActivation) {
         coinbase,
         filter_hash,
         FilterCommitment::ACTIVATION_HEIGHT,
+        Params().coinbase_structure_activation_height,
         activation_error));
     EXPECT_TRUE(activation_error.empty());
 
@@ -123,6 +127,7 @@ TEST(FilterCommitmentActivation, ValidCommitmentAcceptedAtAndAfterActivation) {
         coinbase,
         filter_hash,
         FilterCommitment::ACTIVATION_HEIGHT + 1,
+        Params().coinbase_structure_activation_height,
         post_activation_error));
     EXPECT_TRUE(post_activation_error.empty());
 }
@@ -150,21 +155,24 @@ TEST(FilterCommitmentActivation, MainnetRejectsMalformedHistoricalForkWhileTestn
     coinbase.vin[0].prevout.vout = 0;
 
     SelectParams(Chain::TESTNET); // Its history has not been scanned yet.
-    EXPECT_TRUE(FindFilterCommitmentIndexForBlock(coinbase, 144257).has_value());
+    EXPECT_TRUE(FindFilterCommitmentIndexForBlock(coinbase, 144257, Params().coinbase_structure_activation_height).has_value());
     std::string dormant;
-    EXPECT_TRUE(ValidateFilterCommitment(coinbase, hash, 144257, dormant)) << dormant;
+    EXPECT_TRUE(ValidateFilterCommitment(coinbase, hash, 144257,
+        Params().coinbase_structure_activation_height, dormant)) << dormant;
 
     SelectParams(Chain::MAINNET);
-    EXPECT_FALSE(FindFilterCommitmentIndexForBlock(coinbase, 1).has_value());
-    EXPECT_FALSE(FindFilterCommitmentIndexForBlock(coinbase, 144257).has_value());
-    EXPECT_FALSE(FindFilterCommitmentIndexForBlock(coinbase, 149999).has_value());
+    EXPECT_FALSE(FindFilterCommitmentIndexForBlock(coinbase, 1, Params().coinbase_structure_activation_height).has_value());
+    EXPECT_FALSE(FindFilterCommitmentIndexForBlock(coinbase, 144257, Params().coinbase_structure_activation_height).has_value());
+    EXPECT_FALSE(FindFilterCommitmentIndexForBlock(coinbase, 149999, Params().coinbase_structure_activation_height).has_value());
     std::string mainnet;
-    EXPECT_FALSE(ValidateFilterCommitment(coinbase, hash, 144257, mainnet));
+    EXPECT_FALSE(ValidateFilterCommitment(coinbase, hash, 144257,
+        Params().coinbase_structure_activation_height, mainnet));
 
     SelectParams(Chain::REGTEST); // Active from the first mined regtest block.
-    EXPECT_FALSE(FindFilterCommitmentIndexForBlock(coinbase, 1).has_value());
+    EXPECT_FALSE(FindFilterCommitmentIndexForBlock(coinbase, 1, Params().coinbase_structure_activation_height).has_value());
     std::string after;
-    EXPECT_FALSE(ValidateFilterCommitment(coinbase, hash, 1, after));
+    EXPECT_FALSE(ValidateFilterCommitment(coinbase, hash, 1,
+        Params().coinbase_structure_activation_height, after));
     SelectParams(Chain::MAINNET);
 }
 
@@ -187,10 +195,10 @@ TEST(FilterCommitmentActivation, HeightOnlyScheduleWouldLeaveHistoricalForkGap) 
     commitment.scriptPubKey = BuildFilterCommitmentScript(hash);
     malformed.vout.push_back(commitment);
     malformed.vin[0].prevout.vout = 0;
-    EXPECT_FALSE(FindFilterCommitmentIndexForBlock(malformed, 149999).has_value());
+    EXPECT_FALSE(FindFilterCommitmentIndexForBlock(malformed, 149999, Params().coinbase_structure_activation_height).has_value());
     MutableParams().coinbase_structure_activation_height = 150000;
-    EXPECT_TRUE(FindFilterCommitmentIndexForBlock(malformed, 149999).has_value());
-    EXPECT_FALSE(FindFilterCommitmentIndexForBlock(malformed, 150000).has_value());
+    EXPECT_TRUE(FindFilterCommitmentIndexForBlock(malformed, 149999, Params().coinbase_structure_activation_height).has_value());
+    EXPECT_FALSE(FindFilterCommitmentIndexForBlock(malformed, 150000, Params().coinbase_structure_activation_height).has_value());
     MutableParams().coinbase_structure_activation_height = saved_height;
     SelectParams(Chain::MAINNET);
 }
@@ -216,6 +224,7 @@ TEST(FilterCommitmentActivation, PrevBlockHashKeyMatchesCommitmentButBlockHashKe
         block.vtx[0],
         committed_filter_hash,
         FilterCommitment::ACTIVATION_HEIGHT,
+        Params().coinbase_structure_activation_height,
         correct_error));
     EXPECT_TRUE(correct_error.empty());
 
@@ -227,6 +236,7 @@ TEST(FilterCommitmentActivation, PrevBlockHashKeyMatchesCommitmentButBlockHashKe
         block.vtx[0],
         wrong_filter_hash,
         FilterCommitment::ACTIVATION_HEIGHT,
+        Params().coinbase_structure_activation_height,
         wrong_error));
     EXPECT_NE(wrong_error.find("Filter commitment mismatch"), std::string::npos);
 }
@@ -264,6 +274,7 @@ TEST(FilterCommitmentActivation, HistoricalOutputsOnlyCommitmentCanDifferFromFul
         coinbase,
         committed_filter_hash,
         FilterCommitment::ACTIVATION_HEIGHT + 173,
+        Params().coinbase_structure_activation_height,
         outputs_only_error));
     EXPECT_TRUE(outputs_only_error.empty());
 
@@ -282,6 +293,7 @@ TEST(FilterCommitmentActivation, HistoricalOutputsOnlyCommitmentCanDifferFromFul
         coinbase,
         full_filter_hash,
         FilterCommitment::ACTIVATION_HEIGHT + 173,
+        Params().coinbase_structure_activation_height,
         full_error));
     EXPECT_NE(full_error.find("Filter commitment mismatch"), std::string::npos);
 }

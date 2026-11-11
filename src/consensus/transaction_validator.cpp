@@ -45,7 +45,8 @@ std::string ScriptValidationFailureReason(consensus::ScriptValidationResult rc) 
 TransactionValidator::ValidationResult TransactionValidator::ValidateTransaction(
     const Transaction& tx,
     consensus::IUTXOProvider* utxo_provider,
-    uint32_t current_height
+    uint32_t current_height,
+    const ChainParams& params
 ) {
     ValidationResult result;
     result.valid = false;
@@ -69,7 +70,7 @@ TransactionValidator::ValidationResult TransactionValidator::ValidateTransaction
 
     // 4. Verify all signatures
     if (!VerifySignatures(
-            tx, utxo_provider, current_height, result.error)) {
+            tx, utxo_provider, current_height, params, result.error)) {
         return result;
     }
 
@@ -222,6 +223,7 @@ TransactionValidator::InputVerificationResult TransactionValidator::VerifyInput(
     uint32_t script_flags,
     uint32_t height,
     uint64_t median_time_past,
+    const ChainParams& params,
     const std::vector<uint64_t>& all_input_amounts,
     const std::vector<std::vector<uint8_t>>& all_input_scriptpubkeys,
     const std::vector<uint8_t>& all_input_confidential_flags,
@@ -302,7 +304,7 @@ TransactionValidator::InputVerificationResult TransactionValidator::VerifyInput(
     // add stricter flags, but may not omit the authoritative height-derived
     // baseline.
     script_flags |= consensus::CovenantActivationParams::StandardFlags(
-        height, dinero::Params());
+        height, params);
 
     // F.8.3: Check script cache before expensive verification
     bool cached_result = false;
@@ -374,7 +376,7 @@ TransactionValidator::InputVerificationResult TransactionValidator::VerifyInput(
 
         const consensus::ScriptValidationResult script_result =
             consensus::ValidateSpend(tx, input_index, all_utxos[input_index],
-                                     height, all_utxos,
+                                     height, params, all_utxos,
                                      covenant_precomputed);
 
         if (consensus::g_script_cache) {
@@ -636,11 +638,11 @@ TransactionValidator::InputVerificationResult TransactionValidator::VerifyInput(
         const bool is_script_path = effective_items != 1;
         if (is_script_path &&
             !consensus::CovenantActivationParams::IsScriptPathActive(
-                height, dinero::Params())) {
+                height, params)) {
             result.error = "Taproot script-path spending not yet active at height " +
                            std::to_string(height) + " (activates at " +
                            std::to_string(
-                               dinero::Params().taproot_scriptpath_activation_height) +
+                               params.taproot_scriptpath_activation_height) +
                            ")";
             return result;
         }
@@ -670,7 +672,7 @@ TransactionValidator::InputVerificationResult TransactionValidator::VerifyInput(
         std::string script_error;
         const uint32_t taproot_flags =
             consensus::CovenantActivationParams::StandardFlags(
-                height, dinero::Params());
+                height, params);
         result.valid = consensus::ScriptVerifier::VerifyTaproot(
             tx, input_index, utxo_entries, script_error, taproot_flags,
             covenant_precomputed);
@@ -700,6 +702,7 @@ bool TransactionValidator::VerifySignatures(
     const Transaction& tx,
     consensus::IUTXOProvider* utxo_provider,
     uint32_t validation_height,
+    const ChainParams& params,
     std::string& error
 ) {
     if (!utxo_provider) {
@@ -747,6 +750,7 @@ bool TransactionValidator::VerifySignatures(
                                    0 /* script_flags */,
                                    validation_height,
                                    0 /* median_time_past - mempool has no MTP context */,
+                                   params,
                                    all_input_amounts,
                                    all_input_scriptpubkeys,
                                    all_input_confidential_flags,

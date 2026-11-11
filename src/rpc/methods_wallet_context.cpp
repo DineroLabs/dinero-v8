@@ -5862,6 +5862,7 @@ din::Json rpc_context_wallet_signrawtransaction(const ExecutionContext& ctx, con
                             i,
                             prevout_entries[i],
                             validation_height,
+                            dinero::Params(),
                             prevout_entries,
                             &precomputed) !=
                         dinero::consensus::ScriptValidationResult::OK) {

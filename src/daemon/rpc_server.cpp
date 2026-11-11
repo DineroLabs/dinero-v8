@@ -1156,7 +1156,7 @@ Json::Value RPCServer::getBlockTemplate(const Json::Value& params) {
     }
 
     try {
-        const Consensus consensus = GetConsensusForCurrentNetwork();
+        const Consensus consensus = GetConsensusForNetwork(dinero::Params());
 
         // Get current blockchain state
         uint32_t current_height = m_blockchain->getLatestHeight();

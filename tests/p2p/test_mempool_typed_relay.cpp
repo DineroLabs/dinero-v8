@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign patched-path policy invariants. No unsafe-original execution.
 #include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
@@ -48,7 +49,7 @@ protected:
 TEST_F(MempoolTypedRelay, CapturedBodyAndSendSurviveReplacement) {
     const auto tx = spend(fund(1), 1000000, 1000);
     const auto id = tx.GetTxid().AsUint256();
-    Mempool pool(&db, &coins);
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1, &coins);
     ASSERT_TRUE(pool.submitTransaction(tx, "fixture", false).accepted());
     TxRelayManager relay(nullptr);
     size_t original = 0, replacement = 0;

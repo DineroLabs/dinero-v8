@@ -1,5 +1,6 @@
 #include "consensus/orchard_header.h"
 #include "consensus/block_filter.h"
+#include "consensus/chainparams.h"
 #include "consensus/filter_commitment.h"
 #include "storage/archival_block_reader.h"
 #include "consensus/utreexo_delta_codec.h"
@@ -1294,7 +1295,8 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
     const auto filter=GCSFilter::Build(scripts,low.hash);
     std::string filter_error;
     operation="historical/filter-commitment";
-    require(ValidateFilterCommitment(block.vtx.front(),filter.GetHash(),high.height,filter_error));
+    require(ValidateFilterCommitment(block.vtx.front(),filter.GetHash(),high.height,
+        dinero::Params().coinbase_structure_activation_height,filter_error));
     operation="historical/retained-filter";
     const auto old_filter=db.getBlockFilter(high.hash);
     require(old_filter.ok()?(old_filter->data==filter.encoded_data&&old_filter->element_count==filter.element_count):

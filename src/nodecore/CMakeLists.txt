@@ -47,7 +47,7 @@ if(BUILD_NODECORE OR (CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT BUILD_FFI_ONLY))
     src/daemon/legacy_globals_stub.cpp
     src/daemon/config.cpp
     src/daemon/rpc_context_wiring.cpp
-    src/daemon/mempool.cpp
+
     src/daemon/db_repair.cpp
 
     # Read-only contract inspection RPC dependencies. Fund-moving handlers
@@ -134,7 +134,19 @@ if(BUILD_NODECORE OR (CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT BUILD_FFI_ONLY))
   add_executable(nodecore_link_smoke EXCLUDE_FROM_ALL
     tests/mobile/nodecore_link_smoke.cpp)
   set_target_properties(nodecore_link_smoke PROPERTIES MACOSX_BUNDLE FALSE)
-  target_link_libraries(nodecore_link_smoke PRIVATE nodecore_ffi)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # The native smoke must resolve the same mutually dependent archive set
+    # as nodecore_runtime_driver. GNU ld scans each static archive once unless
+    # the group is rescanned; CMake's LINK_GROUP requires newer than 3.20.
+    target_link_libraries(nodecore_link_smoke PRIVATE
+      "-Wl,--start-group" nodecore_ffi dinero_rpc_handlers dinero_core
+      dinero_wallet dinero_chainstate dinero_consensus dinero_shielded
+      dinero_bridge dinero_pool dinero_lightning_keys dinero_address_encoding
+      dinero_bip32 dinero_pq dinero_zk dinero_tx_primitives dinero_crypto
+      "-Wl,--end-group" jsoncpp_static)
+  else()
+    target_link_libraries(nodecore_link_smoke PRIVATE nodecore_ffi)
+  endif()
 
   # iOS-specific configuration
   if(CMAKE_SYSTEM_NAME STREQUAL "iOS")

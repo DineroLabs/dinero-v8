@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign patched-path policy invariants. No unsafe-original execution.
 #include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
@@ -82,7 +83,7 @@ TEST_F(MempoolOutputCoins, SignedParentChildReplacementAndBranchRemoval) {
     const auto replacement = spend(parent_output, 999000, 20000);
     const OutPoint child_output{child.GetTxid(), 0};
     const OutPoint replacement_output{replacement.GetTxid(), 0};
-    Mempool pool(&db, &coins);
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1, &coins);
     pool.setRBFEnabled(true);
     ASSERT_TRUE(pool.submitTransaction(parent, "fixture", false).accepted());
     ASSERT_FALSE(coins.GetCoin(parent_output));

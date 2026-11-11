@@ -371,7 +371,8 @@ void CheckStoredFilter(const ChainDB& db,const OrchardBlockContext& context,
     const auto stored_filter=RequiredLocal(db.getBlockFilter(context.block_hash));
     std::string filter_error;
     if(stored_filter.data!=filter.encoded_data || stored_filter.element_count!=filter.element_count ||
-        !ValidateFilterCommitment(block.Transactions()[0].Historical(),filter.GetHash(),context.height,filter_error))
+        !ValidateFilterCommitment(block.Transactions()[0].Historical(),filter.GetHash(),context.height,
+            dinero::Params().coinbase_structure_activation_height,filter_error))
         throw OrchardStateLookupError(Status::Corruption);
 }
 }

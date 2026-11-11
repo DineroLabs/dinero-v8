@@ -3207,7 +3207,8 @@ static din::Json rpc_context_getblockfilters(const ExecutionContext& ctx, const 
             }
             std::string local_error;
             const bool ok = dinero::consensus::ValidateFilterCommitment(
-                block.vtx[0], candidate.GetHash(), h, local_error);
+                block.vtx[0], candidate.GetHash(), h,
+                dinero::Params().coinbase_structure_activation_height, local_error);
             if (error_out) {
                 *error_out = local_error;
             }
@@ -3296,7 +3297,8 @@ static din::Json rpc_context_getblockfilters(const ExecutionContext& ctx, const 
             if (dinero::consensus::RequiresFilterCommitment(h)) {
                 std::string filter_error;
                 if (!dinero::consensus::ValidateFilterCommitment(
-                        block.vtx[0], filter_obj.GetHash(), h, filter_error)) {
+                        block.vtx[0], filter_obj.GetHash(), h,
+                        dinero::Params().coinbase_structure_activation_height, filter_error)) {
                     filter_ready = rebuild_filter();
                 }
             }

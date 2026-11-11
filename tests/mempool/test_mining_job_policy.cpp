@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign job policy selection checks on the patched implementation only.
 #include "consensus/chainparams.h"
 #include "consensus/genesis_canonical.h"
@@ -69,7 +70,7 @@ protected:
     }
 };
 TEST_F(MiningJobPolicy, JobAppliesParentPolicyAndRetry) {
-    Mempool pool(&db,&coins);const auto parent=payment(41,10000,20),descendant=child(parent,0,50000);
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins);const auto parent=payment(41,10000,20),descendant=child(parent,0,50000);
     ASSERT_TRUE(pool.submitTransaction(parent,"fixture",false).accepted());
     ASSERT_TRUE(pool.submitTransaction(descendant,"fixture",false).accepted());
     const auto captured=pool.CaptureBlockSelection(1000000,4000000,1);
@@ -87,7 +88,7 @@ TEST_F(MiningJobPolicy, JobAppliesParentPolicyAndRetry) {
     }
 }
 TEST_F(MiningJobPolicy, JobIncludesSharedParentExactlyOnce) {
-    Mempool pool(&db,&coins);const auto parent=payment(42,1000,1),first=child(parent,0,5000),second=child(parent,1,1000);
+    dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins);const auto parent=payment(42,1000,1),first=child(parent,0,5000),second=child(parent,1,1000);
     for(const auto& tx:{parent,first,second})ASSERT_TRUE(pool.submitTransaction(tx,"fixture",false).accepted());
     BlockAssembler assembler(&db);wire(assembler);assembler.setMempool(&pool);
     BlockRelayManager relay(nullptr);assembler.SetBlockRelayManager(&relay);assembler.SetIntelligentSelection(true);
@@ -97,7 +98,7 @@ TEST_F(MiningJobPolicy, JobIncludesSharedParentExactlyOnce) {
     EXPECT_EQ(ids.size(),3U);EXPECT_EQ(job->total_fees,7000U);EXPECT_EQ(pool.size(),3U);
 }
 TEST_F(MiningJobPolicy, JobHonorsExactWeightBoundary) {
-    Mempool pool(&db,&coins);const auto parent=payment(43,1000),descendant=child(parent,0,10000);
+    dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins);const auto parent=payment(43,1000),descendant=child(parent,0,10000);
     ASSERT_TRUE(pool.submitTransaction(parent,"fixture",false).accepted());
     ASSERT_TRUE(pool.submitTransaction(descendant,"fixture",false).accepted());
     BlockAssembler assembler(&db);wire(assembler);assembler.setMempool(&pool);

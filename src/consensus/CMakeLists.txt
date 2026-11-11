@@ -85,7 +85,13 @@ target_link_libraries(dinero_consensus_core PUBLIC
   dinero_logging
   dinero_crypto
   dinero_pq        # Phase 6: P2MR spend validator (VerifyP2MRSpend) in script_validation.cpp
-  dinero_shielded  # v7 Shielded pool: commitment tree + nullifier set + validation
+  # dinero_shielded was linked here but resolved ZERO symbols (nm-verified,
+  # sep4 stage A): the kernel uses only header-only shielded code
+  # (ShieldedEpochSnapshot, compact.h inlines), which compiles via includes
+  # alone. The edge made every kernel user inherit sqlite3, dinero_zk and
+  # dinero_bip32 at link time for nothing. Real shielded users (the full
+  # dinero_consensus tier's members via dinero_core, orchard staging/reindex)
+  # keep their own declared edges.
   secp256k1
   OpenSSL::Crypto
   zstd  # For Utreexo proof compression

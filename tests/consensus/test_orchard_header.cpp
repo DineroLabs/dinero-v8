@@ -112,7 +112,7 @@ int main() {
     const auto genesis = BuildCanonicalGenesis(Params()).header;
     HeaderChainSelector headers;
     CHECK(headers.AddHeader(genesis));
-    const auto consensus = GetConsensusForCurrentNetwork();
+    const auto consensus = GetConsensusForNetwork(dinero::Params());
     std::vector<std::unique_ptr<HeaderIndexEntry>> chain;
     chain.push_back(std::make_unique<HeaderIndexEntry>(genesis, nullptr));
     const auto check = [&](const BlockHeader& header, const BlockHeader& parent, uint32_t height, uint64_t now) {

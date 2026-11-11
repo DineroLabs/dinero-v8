@@ -88,27 +88,27 @@ tests/CMakeLists.txt	13335	CSNIntegration
 .github/workflows/desktop-release.yml	531	DINERO_BUILD_ORCHARD_BACKEND=ON
 .github/workflows/macos-release.yml	163	DINERO_BUILD_ORCHARD_BACKEND=ON
 src/wallet/wallet_manager.cpp	93	storage/chain_db.h
-src/wallet/wallet_manager.cpp	425	open_sqlite
-src/wallet/wallet_manager.cpp	1811	open_sqlite
-src/wallet/wallet_manager.cpp	2069	open_sqlite
-src/wallet/wallet_manager.cpp	2878	ClearRegisteredAddresses
-src/wallet/wallet_manager.cpp	6310	utxo_index_->GetUTXO
+src/wallet/wallet_manager.cpp	406	open_sqlite
+src/wallet/wallet_manager.cpp	1792	open_sqlite
+src/wallet/wallet_manager.cpp	2050	open_sqlite
+src/wallet/wallet_manager.cpp	2859	ClearRegisteredAddresses
+src/wallet/wallet_manager.cpp	6291	utxo_index_->GetUTXO
 src/wallet/wallet_manager.cpp	6317	isOutputSpentInMempool
 src/wallet/wallet_manager.cpp	6342	isOutputSpentInMempool
-src/wallet/wallet_manager.cpp	7160	utxo_index_->RegisterAddress
-src/wallet/wallet_manager.cpp	7315	utxo_index_->RegisterAddress
+src/wallet/wallet_manager.cpp	7141	utxo_index_->RegisterAddress
+src/wallet/wallet_manager.cpp	7296	utxo_index_->RegisterAddress
 src/wallet/wallet_manager.cpp	7507	if (!chain_db && !prepared)
 src/wallet/wallet_manager.cpp	7557	chain_db->getTip()
 src/wallet/wallet_manager.cpp	7638	chain_db->getBlockHashByHeight
 src/wallet/wallet_manager.cpp	7640	ReadArchivalBlock
-src/wallet/wallet_manager.cpp	7875	utxo_index_->ApplyAtomically
-src/wallet/wallet_manager.cpp	7881	utxo_index_->AddUTXO
-src/wallet/wallet_manager.cpp	10108	MergeRegisteredAddresses
-src/wallet/wallet_manager.cpp	10141	utxo_index_->RegisterAddress
-src/wallet/wallet_manager.cpp	10333	utxo_index_->RegisterAddress
-src/wallet/wallet_manager.cpp	10478	utxo_index_->RegisterAddress
-src/wallet/wallet_manager.cpp	10523	utxo_index_->RegisterAddress
-src/wallet/wallet_manager.cpp	10673	utxo_index_->RegisterAddress
+src/wallet/wallet_manager.cpp	7870	utxo_index_->ApplyAtomically
+src/wallet/wallet_manager.cpp	7876	utxo_index_->AddUTXO
+src/wallet/wallet_manager.cpp	10103	MergeRegisteredAddresses
+src/wallet/wallet_manager.cpp	10136	utxo_index_->RegisterAddress
+src/wallet/wallet_manager.cpp	10328	utxo_index_->RegisterAddress
+src/wallet/wallet_manager.cpp	10473	utxo_index_->RegisterAddress
+src/wallet/wallet_manager.cpp	10518	utxo_index_->RegisterAddress
+src/wallet/wallet_manager.cpp	10668	utxo_index_->RegisterAddress
 src/wallet/wallet_sync_status.cpp	25	chain_db->getTip()
 src/wallet/wallet_sync_status.cpp	44	getSyncPhase
 src/wallet/wallet_sync_status.cpp	54	header_sync->GetStatus
@@ -134,11 +134,11 @@ src/wallet/recipient_descriptor.cpp	18	BuildScriptPubKeyFromAddress
 include/wallet/selected_history.h	3	daemon/services/snapshot_wallet_source.h
 include/wallet/wallet_sync_status.h	3	p2p/block_download_scheduler.h
 include/wallet/wallet_fee_bump_hooks.h	7	mining/tx_inclusion_analyzer.h
-include/wallet/wallet_manager.h	174	setUTXOIndex
-include/wallet/wallet_manager.h	175	getUTXOIndex
+include/wallet/wallet_manager.h	171	setUTXOIndex
+include/wallet/wallet_manager.h	172	getUTXOIndex
 include/wallet/wallet_manager.h	604	const Mempool* mempool
 include/wallet/wallet_manager.h	796	dinero::ChainDB* chain_db
-include/wallet/wallet_manager.h	1150	RescanBlockchainImpl
+include/wallet/wallet_manager.h	1167	RescanBlockchainImpl
 include/wallet/wallet_worker.h	18	class ChainDB;
 include/wallet/wallet_worker.h	169	RescanSynchronously
 include/storage/archival_block_reader.h	70	ReadArchivalBlockDetailed
@@ -167,16 +167,15 @@ include/daemon/mempool_transaction.h	75	const Transaction& Historical() const
 include/daemon/mempool_transaction.h	77	Orchard transaction has no historical body
 include/wallet/wallet_manager.h	45	struct Block;
 include/wallet/wallet_manager.h	49	class Mempool;
-include/wallet/wallet_manager.h	51	class UTXOIndex;
+include/wallet/wallet_manager.h	50	class UTXOIndex;
 include/wallet/wallet_manager.h	52	class ChainDB;
 include/wallet/wallet_manager.h	54	class BlockStorage;
-include/wallet/wallet_manager.h	57	class ChainstateService;
+include/wallet/wallet_manager.h	54	class ChainstateService;
 include/wallet/wallet_manager.h	58	namespace wallet { class OrchardAccountDelivery; }
-include/wallet/wallet_manager.h	381	friend class wallet::OrchardAccountDelivery;
-include/wallet/wallet_manager.h	1142	friend class ChainstateService;
-include/wallet/wallet_manager.h	1157	friend class RuntimeOrdinaryDelivery;
-include/wallet/wallet_manager.h	1158	friend class RuntimeWalletRecovery;
-include/wallet/wallet_manager.h	1159	friend class wallet::OrchardAccountDelivery;
+include/wallet/wallet_manager.h	378	friend class wallet::OrchardAccountDelivery;
+include/wallet/wallet_manager.h	1171	friend class RuntimeOrdinaryDelivery;
+include/wallet/wallet_manager.h	1172	friend class RuntimeWalletRecovery;
+include/wallet/wallet_manager.h	1173	friend class wallet::OrchardAccountDelivery;
 tests/CMakeLists.txt	905	src/wallet/utxo_index.cpp
 tests/CMakeLists.txt	4438	src/wallet/utxo_index.cpp
 rust/orchard_backend/CMakeLists.txt	663	src/wallet/utxo_index.cpp

@@ -271,7 +271,8 @@ bool CheckStatelessBlockContextReadOnly(
         return false;
     }
     if (RequiresFilterCommitment(height) &&
-        !FindFilterCommitmentIndexForBlock(coinbase, height)) {
+        !FindFilterCommitmentIndexForBlock(coinbase, height,
+            Params().coinbase_structure_activation_height)) {
         error = "stateless-context-missing-dnrf";
         return false;
     }
@@ -407,7 +408,7 @@ bool CheckStatelessBlockContextReadOnly(
         const PrecomputedTransactionData precomputed(tx, input_utxos);
         for (size_t input_idx = 0; input_idx < tx.vin.size(); ++input_idx) {
             if (ValidateSpend(tx, input_idx, input_utxos[input_idx], height,
-                              input_utxos, &precomputed) != ScriptValidationResult::OK) {
+                              Params(), input_utxos, &precomputed) != ScriptValidationResult::OK) {
                 error = "stateless-context-script-verification-failed";
                 return false;
             }
@@ -1797,7 +1798,7 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                 // This validates signatures and script execution
                 // Pass all_utxos for BIP341 Taproot sighash computation
                 ScriptValidationResult script_result = ValidateSpend(
-                    tx, input_idx, utxo, height, fee_input_utxos,
+                    tx, input_idx, utxo, height, Params(), fee_input_utxos,
                     &covenant_precomputed);
 
                 if (script_result != ScriptValidationResult::OK) {
@@ -1968,7 +1969,9 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
 
     // The normal connect and CSN replay paths share one exact reward
     // comparator. Every coinbase output counts; all totals are checked.
-    if (!CheckCoinbaseReward(coinbase_tx, height, total_fees, error)) {
+    if (!CheckCoinbaseReward(coinbase_tx, height,
+                             Params().sixty_second_activation_height,
+                             total_fees, error)) {
         return false;
     }
     
@@ -3261,7 +3264,7 @@ bool BlockValidator::ValidateTransaction(const Transaction& tx, uint32_t height,
         // Use minimal script engine (explicit validation per script type)
         // Pass all input UTXOs for BIP341 Taproot sighash computation
         ScriptValidationResult result = ValidateSpend(
-            tx, i, utxo, height, input_utxos, &covenant_precomputed);
+            tx, i, utxo, height, Params(), input_utxos, &covenant_precomputed);
 
         if (result != ScriptValidationResult::OK) {
             // Map validation result to error message

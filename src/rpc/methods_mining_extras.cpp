@@ -328,7 +328,7 @@ din::Json handle_generatetoaddress(
             block.header.timestamp = static_cast<uint64_t>(block_time);
             block.header.timestamp = block_time;
 
-            const Consensus consensus = GetConsensusForCurrentNetwork();
+            const Consensus consensus = GetConsensusForNetwork(dinero::Params());
             const uint32_t bits = GetNextWorkRequiredWithChainDB(
                 static_cast<int32_t>(height),
                 static_cast<int64_t>(block.header.timestamp),
@@ -1204,7 +1204,7 @@ din::Json handle_getblocktemplate(
     // ========== CANONICAL DIFFICULTY SELECTOR ==========
     // ALWAYS route through GetNextWorkRequired - never compute in RPC.
     // This ensures GBT uses the same difficulty as validation/mining.
-    const Consensus consensus = GetConsensusForCurrentNetwork();
+    const Consensus consensus = GetConsensusForNetwork(dinero::Params());
 
     uint32_t bits;
 

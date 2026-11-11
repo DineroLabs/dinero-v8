@@ -226,7 +226,7 @@ public:
             block.header.difficulty=0x1d00ffff;block.header.ZeroReserved();
             if(real_pow) {
                 block.header.difficulty=GetNextWorkRequiredForCandidate(height,block.header.timestamp,
-                    GetConsensusForCurrentNetwork(),static_cast<const CBlockIndex*>(nullptr),
+                    GetConsensusForNetwork(dinero::Params()),static_cast<const CBlockIndex*>(nullptr),
                     &headers.back(),static_cast<NoChainDb*>(nullptr));
                 Require(block.header.difficulty!=0);
             }
@@ -276,7 +276,8 @@ public:
             commitment.scriptPubKey=consensus::BuildFilterCommitmentScript(filter.GetHash());
             block.vtx.front().vout.push_back(std::move(commitment));
             std::string filter_error;
-            Require(consensus::ValidateFilterCommitment(block.vtx.front(),filter.GetHash(),height,filter_error));
+            Require(consensus::ValidateFilterCommitment(block.vtx.front(),filter.GetHash(),height,
+                dinero::Params().coinbase_structure_activation_height,filter_error));
             if(consensus::IsStateCommitmentActive(height,Params().state_commitment_activation_height)) {
                 const auto post_root=consensus::shielded::PredictPostBlockShieldedRoot({},height,
                     Params().shielded_epoch_reset_height,Params().shielded_spend_auth_epoch_reset_height,

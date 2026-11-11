@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 /**
  * v0.14.0.1: Block Template Construction Test (FOUNDATION)
  *
@@ -82,7 +83,7 @@ int main() {
         // Phase M.0: Pass uint256 for tip hash
         chain_db.setTip(0, uint256::FromHexUnsafe(std::string(64, '0')));
 
-        Mempool mempool(&chain_db);
+        dinero::ChainDbMempoolView mempool_chain_view_1{&chain_db}; Mempool mempool(&mempool_chain_view_1);
         mempool.setLogger(&logger);
 
         BlockAssembler assembler(&chain_db);
@@ -126,7 +127,7 @@ int main() {
         // Phase M.0: Pass uint256 for tip hash
         chain_db.setTip(0, uint256::FromHexUnsafe(std::string(64, '0')));
 
-        Mempool mempool(&chain_db);
+        dinero::ChainDbMempoolView mempool_chain_view_2{&chain_db}; Mempool mempool(&mempool_chain_view_2);
         mempool.setLogger(&logger);
 
         BlockAssembler assembler(&chain_db);
@@ -156,7 +157,7 @@ int main() {
         // Phase M.0: Pass uint256 for tip hash
         chain_db.setTip(0, uint256::FromHexUnsafe(std::string(64, '0')));
 
-        Mempool mempool(&chain_db);
+        dinero::ChainDbMempoolView mempool_chain_view_3{&chain_db}; Mempool mempool(&mempool_chain_view_3);
         mempool.setLogger(&logger);
 
         BlockAssembler assembler(&chain_db);
@@ -189,7 +190,7 @@ int main() {
         // Phase M.0: Pass uint256 for tip hash
         chain_db.setTip(0, uint256::FromHexUnsafe(std::string(64, '0')));
 
-        Mempool mempool(&chain_db);
+        dinero::ChainDbMempoolView mempool_chain_view_4{&chain_db}; Mempool mempool(&mempool_chain_view_4);
         mempool.setLogger(&logger);
 
         BlockAssembler assembler(&chain_db);
@@ -215,7 +216,7 @@ int main() {
         // Phase M.0: Pass uint256 for tip hash
         chain_db.setTip(0, uint256::FromHexUnsafe(std::string(64, '0')));
 
-        Mempool mempool(&chain_db);
+        dinero::ChainDbMempoolView mempool_chain_view_5{&chain_db}; Mempool mempool(&mempool_chain_view_5);
         mempool.setLogger(&logger);
 
         BlockAssembler assembler(&chain_db);
@@ -243,7 +244,7 @@ int main() {
         // Phase M.0: Pass uint256 for tip hash
         chain_db.setTip(0, uint256::FromHexUnsafe(std::string(64, '0')));
 
-        Mempool mempool(&chain_db);
+        dinero::ChainDbMempoolView mempool_chain_view_6{&chain_db}; Mempool mempool(&mempool_chain_view_6);
         mempool.setLogger(&logger);
 
         BlockAssembler assembler(&chain_db);

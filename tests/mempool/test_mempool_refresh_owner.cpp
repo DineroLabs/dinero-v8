@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign patched-path policy invariants. No unsafe-original execution.
 #include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
@@ -52,7 +53,7 @@ public:
     void warning(const std::string& text) override {log(LogLevel::WARNING,text);} void error(const std::string& text) override {log(LogLevel::ERROR,text);}
 };
 TEST_F(MempoolRefreshOwner, AgeEvictionRemovesDescendantsBeforeSelectingSurvivors) {
-    Mempool pool(&db,&coins); const auto funding=fund(1); const auto parent=spend(funding,1000000,1000);
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins); const auto funding=fund(1); const auto parent=spend(funding,1000000,1000);
     const auto child=spend({parent.GetTxid(),0},999000,1000); const auto independent=spend(fund(2),1000000,2000);
     ASSERT_TRUE(pool.submitTransaction(parent,"fixture",false).accepted()); ASSERT_TRUE(pool.submitTransaction(child,"fixture",false).accepted()); ASSERT_TRUE(pool.submitTransaction(independent,"fixture",false).accepted());
     ASSERT_TRUE(pool.refreshProof(parent.GetTxid().AsUint256(),{1},1)); ASSERT_TRUE(pool.refreshProof(child.GetTxid().AsUint256(),{1},110)); ASSERT_TRUE(pool.refreshProof(independent.GetTxid().AsUint256(),{1},110));
@@ -65,7 +66,7 @@ TEST_F(MempoolRefreshOwner, AgeEvictionRemovesDescendantsBeforeSelectingSurvivor
     EXPECT_TRUE(pool.selectStaleForRefresh(110,20,2,1,256).empty()); EXPECT_EQ(pool.size(),0U); EXPECT_EQ(pool.getStats().stale_evicted_total,3U);
 }
 TEST_F(MempoolRefreshOwner, OverloadEvictsChildrenWithoutProofMetadata) {
-    Mempool pool(&db,&coins); const auto funding=fund(3); const auto parent=spend(funding,1000000,1000);
+    dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins); const auto funding=fund(3); const auto parent=spend(funding,1000000,1000);
     const auto child=spend({parent.GetTxid(),0},999000,1000); const auto independent=spend(fund(4),1000000,2000);
     ASSERT_TRUE(pool.submitTransaction(parent,"fixture",false).accepted()); ASSERT_TRUE(pool.submitTransaction(child,"fixture",false).accepted()); ASSERT_TRUE(pool.submitTransaction(independent,"fixture",false).accepted());
     ASSERT_TRUE(pool.refreshProof(parent.GetTxid().AsUint256(),{1},110)); pool.onBlockDisconnected(110); ASSERT_EQ(pool.getStaleCount(),1U);
@@ -76,7 +77,7 @@ TEST_F(MempoolRefreshOwner, OverloadEvictsChildrenWithoutProofMetadata) {
     const auto stats=pool.getStats(); EXPECT_EQ(stats.stale_evicted_total,2U); EXPECT_EQ(stats.refresh_dropped_budget_total,2U); EXPECT_EQ(stats.refresh_attempted_total,0U);
 }
 TEST_F(MempoolRefreshOwner, SelectionExceptionRestoresEntriesAttemptsAndCounters) {
-    PublicationLogger logger; Mempool pool(&db,&coins); pool.setLogger(&logger);
+    PublicationLogger logger; dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins); pool.setLogger(&logger);
     const auto parent=spend(fund(5),1000000,1000); const auto child=spend({parent.GetTxid(),0},999000,1000); const auto independent=spend(fund(6),1000000,2000);
     ASSERT_TRUE(pool.submitTransaction(parent,"fixture",false).accepted()); ASSERT_TRUE(pool.submitTransaction(child,"fixture",false).accepted()); ASSERT_TRUE(pool.submitTransaction(independent,"fixture",false).accepted());
     ASSERT_TRUE(pool.refreshProof(parent.GetTxid().AsUint256(),{1},1)); ASSERT_TRUE(pool.refreshProof(child.GetTxid().AsUint256(),{1},110)); ASSERT_TRUE(pool.refreshProof(independent.GetTxid().AsUint256(),{1},110));

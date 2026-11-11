@@ -24,6 +24,10 @@ WalletSigningIdentity CaptureWalletSigningIdentity(WalletManager& wallet,const s
         throw std::runtime_error("Selected wallet does not match signing request");
     return {lease->WalletName(),lease->Session()};
 }
+SignResult SignWalletPaymentBeforeActivation(WalletManager& manager,
+        const WalletSigningIdentity& identity,const UnsignedTransaction& input,const PendingPaymentIntent& payment){
+    return WalletTransactionOwner::SignBeforeActivation(manager,identity,input,payment);
+}
 SignResult WalletTransactionOwner::SignBeforeActivation(WalletManager& manager,
         const WalletSigningIdentity& identity,const UnsignedTransaction& input,const PendingPaymentIntent& payment){
     SignResult refused;

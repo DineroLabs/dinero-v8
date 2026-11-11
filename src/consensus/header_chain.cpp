@@ -9,7 +9,7 @@
 #include "consensus/difficulty.h"
 #include "consensus/pow.h"
 #include "consensus/pow.hpp"          // GetNextWorkRequiredForCandidate (shared expected-bits fn)
-#include "consensus/pow_context.h"    // GetConsensusForCurrentNetwork, NoChainDb
+#include "consensus/pow_context.h"    // GetConsensusForNetwork, NoChainDb
 #include "consensus/chainparams.h"
 #include "crypto/sha256.h"
 #include <algorithm>
@@ -1128,7 +1128,7 @@ bool HeaderChainSelector::ValidateHeader(
     const BlockHeader& header, const HeaderIndexEntry* prev) {
     std::optional<HeaderAsertContext> parent;
     if (prev) {
-        const auto consensus = GetConsensusForCurrentNetwork();
+        const auto consensus = GetConsensusForNetwork(dinero::Params());
         parent = asert_ancestry_cache_.ForParent(*prev, TimingUpgradeAnchorHeight(
             static_cast<int32_t>(prev->height) + 1, consensus));
     }
@@ -1225,7 +1225,7 @@ bool ValidateHistoricalHeader(const BlockHeader& header,
     // startup and block_acceptor remains the backstop. Compact bits are compared
     // for equality against the canonical encoding (never ordered numerically).
     if (parent.has_value() && !Params().SkipProofOfWork()) {
-        const Consensus consensus = GetConsensusForCurrentNetwork();
+        const Consensus consensus = GetConsensusForNetwork(dinero::Params());
         const auto input = BuildAsertInputForCandidateTimes(
             parent->parent_mtp, parent->block1_time,
             static_cast<dinero::NoChainDb*>(nullptr),

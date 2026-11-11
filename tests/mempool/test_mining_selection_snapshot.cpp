@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign selection and fee snapshot checks on the patched implementation only.
 #include "consensus/chainparams.h"
 #include "consensus/genesis_canonical.h"
@@ -61,7 +62,7 @@ struct ClearAfterCapture final : Mempool::ChainstateReadGuard {
     ~ClearAfterCapture() override {pool.clear();}
 };
 TEST_F(MiningSelectionSnapshot, CapturedMetadataSurvivesPoolClear) {
-    Mempool pool(&db,&coins);const auto first=payment(21,1000),second=payment(22,2000);
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins);const auto first=payment(21,1000),second=payment(22,2000);
     ASSERT_TRUE(pool.submitTransaction(first,"fixture",false).accepted());
     ASSERT_TRUE(pool.submitTransaction(second,"fixture",false).accepted());
     const auto entry=pool.getMempoolEntry(first.GetTxid().AsUint256());ASSERT_TRUE(entry);
@@ -76,7 +77,7 @@ TEST_F(MiningSelectionSnapshot, CapturedMetadataSurvivesPoolClear) {
     for(const auto& tx:capture.transactions)EXPECT_EQ(tx.Serialize(),tx.GetTxid()==first.GetTxid()?first.Serialize():second.Serialize());
 }
 TEST_F(MiningSelectionSnapshot, JobAndRpcTemplateKeepCapturedFees) {
-    Mempool pool(&db,&coins);const auto tx=payment(23,3000);
+    dinero::ChainDbMempoolView mempool_chain_view_2{&db}; Mempool pool(&mempool_chain_view_2,&coins);const auto tx=payment(23,3000);
     ASSERT_TRUE(pool.submitTransaction(tx,"fixture",false).accepted());
     BlockAssembler assembler(&db);wire(assembler);assembler.setMempool(&pool);
     pool.setChainstateReadGuardFactory([&]{return std::make_unique<ClearAfterCapture>(pool);});
@@ -92,7 +93,7 @@ TEST_F(MiningSelectionSnapshot, JobAndRpcTemplateKeepCapturedFees) {
     EXPECT_EQ(block->vtx[0].vout[0].value.GetUna(),job->block_reward+3000);
 }
 TEST_F(MiningSelectionSnapshot, UnavailableChainCaptureRefusesMining) {
-    Mempool pool(&db,&coins);BlockAssembler assembler(&db);wire(assembler);assembler.setMempool(&pool);
+    dinero::ChainDbMempoolView mempool_chain_view_3{&db}; Mempool pool(&mempool_chain_view_3,&coins);BlockAssembler assembler(&db);wire(assembler);assembler.setMempool(&pool);
     pool.setChainstateReadGuardFactory([]{return std::unique_ptr<Mempool::ChainstateReadGuard>{};});
     EXPECT_FALSE(pool.CaptureBlockSelection(1000000,4000000,1).available);
     EXPECT_THROW(assembler.CreateJob(),std::runtime_error);

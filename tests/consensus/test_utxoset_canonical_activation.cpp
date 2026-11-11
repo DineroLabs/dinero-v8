@@ -264,9 +264,7 @@ TEST_F(UtxoSetCanonicalActivation, LegacyV2ForestPayloadNeedsHeightDerivedMode) 
 
     // Emit a genuine v2 payload via the debug injection knob, so this exercises
     // the real legacy format rather than a hand-built approximation.
-    ::setenv("DINERO_FOREST_SERIALIZE_LEGACY_V2", "1", 1);
-    const auto v2_bytes = original.serialize();
-    ::unsetenv("DINERO_FOREST_SERIALIZE_LEGACY_V2");
+    const auto v2_bytes = original.serialize(/*inject_legacy_v2=*/true);
 
     const auto v3_bytes = original.serialize();
     ASSERT_NE(HexOf(v2_bytes), HexOf(v3_bytes))

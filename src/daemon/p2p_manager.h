@@ -49,7 +49,12 @@ enum class PeerLifetimeState {
     DESTROYED       // Object destroyed (not used - tracked by shared_ptr)
 };
 
-struct PeerInfo {
+// Memberwise-copyable peer state. Every field here is carried automatically
+// by the compiler-generated move/copy, so getpeerinfo /
+// get_connected_peers() snapshots can never silently drop one — add plain
+// data fields HERE. Live-connection machinery (atomics, mutexes, the relay
+// inbox, the QUIC session) lives on PeerInfo below instead.
+struct PeerSharedState {
     struct ViaRelayInfo {
         uint64_t circuit_id{0};
         std::string relay_peer_address;
@@ -64,6 +69,13 @@ struct PeerInfo {
     uint64_t service_flags{0};
     uint32_t start_height{0};
     uint32_t best_known_height{0};
+    // Peer-reported VALIDATED chain height, carried by the extended ping
+    // payload. Distinct from best_known_height, which tracks the peer's
+    // announce/relay tip and can run ahead of what the peer has actually
+    // validated during catch-up or recovery. Peers on older protocol builds
+    // never report it (validated_height_reported stays false).
+    uint32_t validated_height{0};
+    bool validated_height_reported{false};
     uint32_t synced_headers{0};
     uint32_t best_height{0};
     uint32_t synced_blocks{0};
@@ -84,12 +96,6 @@ struct PeerInfo {
     bool is_connected;
     int socket_fd;
 
-    // issue #241/#214: consecutive send_message() failures on this peer's
-    // socket (see daemon/peer_send_health.h). Reaching the threshold evicts
-    // the peer from send_to_peer — a socket that stops draining must not
-    // convoy senders on its send mutex forever.
-    std::atomic<uint32_t> consecutive_send_failures{0};
-
     // ========================================================================
     // PHASE C: Persistent Peer Database & Adaptive Keepalive
     // ========================================================================
@@ -104,15 +110,6 @@ struct PeerInfo {
     // initial send; keepalive_loop() re-sends every getaddr_interval_.
     // ========================================================================
     std::chrono::steady_clock::time_point last_getaddr_sent{};
-
-    // ========================================================================
-    // Ring 3 Phase 4c: Thread-Safe Lifetime Tracking
-    // ========================================================================
-    std::atomic<PeerLifetimeState> lifetime_state{PeerLifetimeState::ALLOCATED};
-
-    // Per-peer send mutex: serializes send() calls on this peer's socket
-    // to prevent TCP stream interleaving from concurrent threads.
-    std::unique_ptr<std::mutex> send_mutex{std::make_unique<std::mutex>()};
 
     // ─── NAT traversal Phase 1A: proven node identity ────────────────────
     // our_nonce: random 8-byte value we put in our outgoing version message.
@@ -165,11 +162,6 @@ struct PeerInfo {
     // instead of a direct TCP socket. address is a stable virtual key:
     // relay:<target_node_id_hex>:<circuit_id_hex>.
     std::optional<ViaRelayInfo> via_relay;
-    std::mutex relay_inbox_mutex;
-    std::condition_variable relay_inbox_cv;
-    std::deque<std::vector<uint8_t>> relay_inbox_frames;
-    std::shared_ptr<dinero::network::QuicSession> relay_quic_session;
-    std::optional<dinero::network::QuicSessionOptions> relay_quic_options;
     // Direct QUIC peer: no relay and no TCP socket. Its session (in
     // relay_quic_session) carries the same framed stream as an encrypted relay
     // circuit, so both share the inbox, reader loop and send path below.
@@ -194,47 +186,53 @@ struct PeerInfo {
     // getpeerinfo "path": how this peer is reached.
     const char* path_name() const { return punched ? "punched" : (via_relay ? "relayed" : "direct"); }
 
-    // Ring 3 Phase 4c: Move constructor (atomic is not movable, must load/store)
+    std::string to_string() const {
+        if (via_relay.has_value()) {
+            return address;
+        }
+        return dinero::network::FormatEndpoint(address, port);
+    }
+};
+
+// A live peer connection: the shared snapshot state above plus
+// connection-local machinery that is deliberately NOT snapshotted (the
+// mutex/condition_variable also delete the implicit special members, which
+// is why the move constructor below is hand-written at all).
+struct PeerInfo : PeerSharedState {
+    // issue #241/#214: consecutive send_message() failures on this peer's
+    // socket (see daemon/peer_send_health.h). Reaching the threshold evicts
+    // the peer from send_to_peer — a socket that stops draining must not
+    // convoy senders on its send mutex forever.
+    std::atomic<uint32_t> consecutive_send_failures{0};
+
+    // ========================================================================
+    // Ring 3 Phase 4c: Thread-Safe Lifetime Tracking
+    // ========================================================================
+    std::atomic<PeerLifetimeState> lifetime_state{PeerLifetimeState::ALLOCATED};
+
+    // Per-peer send mutex: serializes send() calls on this peer's socket
+    // to prevent TCP stream interleaving from concurrent threads.
+    std::unique_ptr<std::mutex> send_mutex{std::make_unique<std::mutex>()};
+
+    // NAT traversal slice 4c: relay-circuit inbox and QUIC session for the
+    // via_relay / quic_direct transports declared in the shared state.
+    std::mutex relay_inbox_mutex;
+    std::condition_variable relay_inbox_cv;
+    std::deque<std::vector<uint8_t>> relay_inbox_frames;
+    std::shared_ptr<dinero::network::QuicSession> relay_quic_session;
+    std::optional<dinero::network::QuicSessionOptions> relay_quic_options;
+
+    // Ring 3 Phase 4c: Move constructor. All shared data fields move via the
+    // compiler-generated base move — nothing to keep in sync by hand. Only
+    // the machinery is listed: atomics load/store, the QUIC session
+    // transfers; the send mutex and relay inbox stay fresh in the
+    // destination (connection-local).
     PeerInfo(PeerInfo&& other) noexcept
-        : address(std::move(other.address)),
-          port(other.port),
-          user_agent(std::move(other.user_agent)),
-          protocol_version(other.protocol_version),
-          service_flags(other.service_flags),
-          start_height(other.start_height),
-          best_known_height(other.best_known_height),
-          synced_headers(other.synced_headers),
-          best_height(other.best_height),
-          synced_blocks(other.synced_blocks),
-          compact_blocks_enabled(other.compact_blocks_enabled),
-          compact_blocks_announce(other.compact_blocks_announce),
-          compact_blocks_version(other.compact_blocks_version),
-          bytes_recv(other.bytes_recv),
-          bytes_sent(other.bytes_sent),
-          connected_since(other.connected_since),
-          last_message_at(other.last_message_at),
-          last_seen(other.last_seen),
-          last_ping_sent(other.last_ping_sent),
-          is_outbound(other.is_outbound),
-          is_feeler(other.is_feeler),
-          is_connected(other.is_connected),
-          socket_fd(other.socket_fd),
+        : PeerSharedState(std::move(static_cast<PeerSharedState&>(other))),
           consecutive_send_failures(other.consecutive_send_failures.load()),
-          last_seen_unix(other.last_seen_unix),
-          avg_latency_ms(other.avg_latency_ms),
-          last_getaddr_sent(other.last_getaddr_sent),
-          their_pubkey(other.their_pubkey),
-          their_node_id(other.their_node_id),
-          identity_proven(other.identity_proven),
-          is_our_relay(other.is_our_relay),
-          via_relay(std::move(other.via_relay)),
+          lifetime_state(other.lifetime_state.load()),
           relay_quic_session(std::move(other.relay_quic_session)),
           relay_quic_options(std::move(other.relay_quic_options)),
-          quic_direct(other.quic_direct),
-          quic_remote(other.quic_remote),
-          punched(other.punched),
-          punch_expected_id(other.punch_expected_id),
-          lifetime_state(other.lifetime_state.load()),
           compact_timing_capable(other.compact_timing_capable.load()),
           orchard_capable(other.orchard_capable.load()),
           release_handshake_complete(other.release_handshake_complete.load()) {}
@@ -251,13 +249,6 @@ struct PeerInfo {
     PeerInfo(const PeerInfo&) = delete;
     PeerInfo& operator=(const PeerInfo&) = delete;
     PeerInfo& operator=(PeerInfo&&) = delete;
-
-    std::string to_string() const {
-        if (via_relay.has_value()) {
-            return address;
-        }
-        return dinero::network::FormatEndpoint(address, port);
-    }
 };
 
 struct P2PMessage {
@@ -369,6 +360,10 @@ struct P2PMessage {
     static P2PMessage create_punch_go(uint64_t nonce);
 
     static P2PMessage create_ping(uint64_t nonce);
+    // Extended ping: appends the sender's validated chain height (4 bytes LE)
+    // after the nonce. Legacy receivers read only the first 8 bytes, so the
+    // extra field is wire-compatible with older peers.
+    static P2PMessage create_ping(uint64_t nonce, uint32_t validated_height);
     static P2PMessage create_pong(uint64_t nonce);
     static P2PMessage create_getaddr();
     static P2PMessage create_addr(const std::vector<PeerInfo>& peers);

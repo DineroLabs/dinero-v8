@@ -87,7 +87,7 @@ TEST(OrchardBranchAncestry, CommonGateKeepsRealWorkTimingAndCheckpointRules) {
     MutableParams().regtest_enforce_pow=true;
     std::vector<Block> blocks{SelectedGenesis()};
     consensus::HeaderChainSelector selector;ASSERT_TRUE(selector.AddHeader(blocks.front().header));
-    const auto consensus=GetConsensusForCurrentNetwork();
+    const auto consensus=GetConsensusForNetwork(dinero::Params());
     for(uint32_t h=1;h<4;++h) {
         auto block=CaptureOnlyBlock(h,blocks.back().GetHash());
         block.header.timestamp=blocks.front().header.timestamp+h*120;

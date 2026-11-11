@@ -144,7 +144,7 @@ add_executable(test_block_assembly_w1
     ${CMAKE_SOURCE_DIR}/src/mining/block_assembly_context.cpp
     ${CMAKE_SOURCE_DIR}/src/mining/transaction_scorer.cpp
     ${CMAKE_SOURCE_DIR}/src/mining/template_delta_tracker.cpp
-    ${CMAKE_SOURCE_DIR}/src/daemon/mempool.cpp    # Provides dinero::Mempool implementation
+        # Provides dinero::Mempool implementation
     ${CMAKE_SOURCE_DIR}/src/daemon/config.cpp     # Provides GetConfig()
     ${CMAKE_SOURCE_DIR}/src/network/bridge_node.cpp  # Provides BridgeNode::GenerateProofForBlock
 )
@@ -192,7 +192,7 @@ add_executable(test_block_assembly_w1_integration
     ${CMAKE_SOURCE_DIR}/src/mining/transaction_scorer.cpp
     ${CMAKE_SOURCE_DIR}/src/mining/template_delta_tracker.cpp
     ${CMAKE_SOURCE_DIR}/src/mining/block_assembler.cpp
-    ${CMAKE_SOURCE_DIR}/src/daemon/mempool.cpp    # Provides dinero::Mempool implementation
+        # Provides dinero::Mempool implementation
     ${CMAKE_SOURCE_DIR}/src/daemon/config.cpp     # Provides GetConfig()
     ${CMAKE_SOURCE_DIR}/tests/stubs/vault_test_stubs.cpp  # vault observers (real mempool linked)
     # bridge_node.cpp removed: BridgeNode::* now comes from dinero_bridge transitively via dinero_core
@@ -371,7 +371,7 @@ add_executable(test_slow_reason_analyzer
     ${CMAKE_SOURCE_DIR}/src/wallet/slow_reason_analyzer.cpp
     ${CMAKE_SOURCE_DIR}/src/wallet/wallet_sync_status.cpp
     ${CMAKE_SOURCE_DIR}/src/wallet/reorg_detector.cpp
-    ${CMAKE_SOURCE_DIR}/src/daemon/mempool.cpp    # Provides dinero::Mempool implementation
+        # Provides dinero::Mempool implementation
     ${CMAKE_SOURCE_DIR}/src/daemon/config.cpp     # Provides GetConfig()
     ${CMAKE_SOURCE_DIR}/src/network/bridge_node.cpp  # Provides BridgeNode::GenerateProofForBlock
 )
@@ -458,7 +458,7 @@ message(STATUS "   Tests: RPC API endpoints (10 tests)")
 add_executable(test_wallet_sync_integration
     ../wallet/test_wallet_sync_integration.cpp
     ${CMAKE_SOURCE_DIR}/tests/stubs/vault_test_stubs.cpp # optional vault observer isolation
-    ${CMAKE_SOURCE_DIR}/src/daemon/mempool.cpp    # Provides dinero::Mempool implementation
+        # Provides dinero::Mempool implementation
     ${CMAKE_SOURCE_DIR}/src/daemon/config.cpp     # Provides GetConfig()
     ${CMAKE_SOURCE_DIR}/src/network/bridge_node.cpp  # Provides BridgeNode::GenerateProofForBlock
 )

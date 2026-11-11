@@ -1,0 +1,2 @@
+# GATE P1 baseline: tier<TAB>file<TAB>token<TAB>count. Regenerate with
+# scripts/ci/separation/check_consensus_globals.py --write-baseline

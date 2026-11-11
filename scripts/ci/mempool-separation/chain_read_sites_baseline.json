@@ -1,0 +1,113 @@
+{
+  "functions": {
+    "ChainDBStateView": {
+      "guards": 0,
+      "guards_before_pool_lock": [],
+      "reads": {
+        "getCoin": 2,
+        "getTip": 1
+      }
+    },
+    "ChainDBUTXOView": {
+      "guards": 0,
+      "guards_before_pool_lock": [],
+      "reads": {
+        "commitmentScan": 1,
+        "getCoin": 3,
+        "getTip": 1,
+        "getTxLocation": 1
+      }
+    },
+    "ConsensusUTXOStateView": {
+      "guards": 0,
+      "guards_before_pool_lock": [],
+      "reads": {
+        "fallbackGetCoin": 1,
+        "fallbackHasCoin": 1
+      }
+    },
+    "Mempool::CaptureBlockSelectionImpl": {
+      "guards": 1,
+      "guards_before_pool_lock": [
+        true
+      ],
+      "reads": {}
+    },
+    "Mempool::CaptureEntriesWithInputCoins": {
+      "guards": 1,
+      "guards_before_pool_lock": [
+        true
+      ],
+      "reads": {}
+    },
+    "Mempool::computeVWUForTx": {
+      "guards": 0,
+      "guards_before_pool_lock": [],
+      "reads": {
+        "mempoolUTXOView": 1
+      }
+    },
+    "Mempool::getConfirmedWalletCoins": {
+      "guards": 1,
+      "guards_before_pool_lock": [
+        true
+      ],
+      "reads": {}
+    },
+    "Mempool::isSelectableAtHeightLocked": {
+      "guards": 0,
+      "guards_before_pool_lock": [],
+      "reads": {
+        "mempoolUTXOView": 1
+      }
+    },
+    "Mempool::removeConfirmedTransactions": {
+      "guards": 0,
+      "guards_before_pool_lock": [],
+      "reads": {
+        "getTip": 1
+      }
+    },
+    "Mempool::submitOrchardBody": {
+      "guards": 1,
+      "guards_before_pool_lock": [
+        true
+      ],
+      "reads": {}
+    },
+    "Mempool::submitTransactionInternal": {
+      "guards": 1,
+      "guards_before_pool_lock": [
+        true
+      ],
+      "reads": {
+        "getTip": 3
+      }
+    },
+    "Mempool::submitTransactionTestOnly": {
+      "guards": 0,
+      "guards_before_pool_lock": [],
+      "reads": {
+        "getTip": 1
+      }
+    },
+    "Mempool::validateTransaction": {
+      "guards": 0,
+      "guards_before_pool_lock": [],
+      "reads": {
+        "getTip": 4,
+        "mempoolUTXOView": 1
+      }
+    },
+    "MempoolUTXOView": {
+      "guards": 0,
+      "guards_before_pool_lock": [],
+      "reads": {
+        "commitmentScan": 1,
+        "getTip": 1,
+        "getTxLocation": 1
+      }
+    }
+  },
+  "total_reads": 26
+}

@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign patched-path policy invariants. No unsafe-original execution.
 #include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
@@ -25,6 +26,7 @@ class MempoolRetainedLoad : public ::testing::Test {
 protected:
     ChainDB db;consensus::ConsensusUTXOSet coins;std::filesystem::path root;
     std::array<uint8_t,32> secret{},internal{};std::vector<uint8_t> script;
+    ChainDbMempoolView chain_view{&db};
     std::unique_ptr<Mempool> pool;
     void SetUp() override {
         SelectParams(Chain::MAINNET);root=std::filesystem::temp_directory_path()/("mempool_retained_load_"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -33,7 +35,7 @@ protected:
         secret.back()=69;int parity=0;std::array<uint8_t,32> output{};
         ASSERT_TRUE(TaprootKeys::DeriveXOnlyPubkey(secret,internal,parity));ASSERT_TRUE(TaprootKeys::ComputeTweakedPubkey(internal,output));
         script={0x51,0x20};script.insert(script.end(),output.begin(),output.end());
-        pool = std::make_unique<Mempool>(&db, &coins);
+        pool = std::make_unique<Mempool>(&chain_view, &coins);
     }
     void TearDown() override {
         pool.reset(); db.close(); std::filesystem::remove_all(root);
@@ -89,7 +91,7 @@ TEST_F(MempoolRetainedLoad, SignedDependencyOrderAndReopen) {
     ASSERT_TRUE(pool->saveToDisk(path.string()));
     pool->setTxAcceptedCallback({});
     pool.reset();
-    pool = std::make_unique<Mempool>(&db, &coins);
+    pool = std::make_unique<Mempool>(&chain_view, &coins);
     ASSERT_TRUE(pool->loadFromDisk(path.string()));
     EXPECT_EQ(pool->size(), 2U);
     EXPECT_EQ(pool->getMempoolEntry(child.GetTxid().AsUint256())->tx.Serialize(), child.Serialize(true));

@@ -329,7 +329,7 @@ TEST(CovenantActivation, HighLevelValidationUsesSpendHeightNotCoinHeight) {
     // Script path and CTV activate at validation height 20 even though the
     // spent coin was created before activation.
     const auto result =
-        TransactionValidator::ValidateTransaction(tx, &provider, 20);
+        TransactionValidator::ValidateTransaction(tx, &provider, 20, dinero::Params());
     EXPECT_TRUE(result.valid) << result.error;
     EXPECT_EQ(result.total_fee, dinero::AmountUna::Una(1'000));
 }
@@ -386,13 +386,13 @@ TEST(CovenantActivation, MainnetBoundaryEnforcesCtvAtBlock100000) {
     // The deliberately wrong template remains historical NOP4 through block
     // 99,999 and is rejected from the activation block onward.
     const auto before =
-        TransactionValidator::ValidateTransaction(tx, &provider, 99999);
+        TransactionValidator::ValidateTransaction(tx, &provider, 99999, dinero::Params());
     EXPECT_TRUE(before.valid) << before.error;
     const auto former_boundary =
-        TransactionValidator::ValidateTransaction(tx, &provider, 100000);
+        TransactionValidator::ValidateTransaction(tx, &provider, 100000, dinero::Params());
     EXPECT_FALSE(former_boundary.valid);
     const auto sentinel =
-        TransactionValidator::ValidateTransaction(tx, &provider, UINT32_MAX);
+        TransactionValidator::ValidateTransaction(tx, &provider, UINT32_MAX, dinero::Params());
     EXPECT_FALSE(sentinel.valid);
 
     // Mixed-version compatibility: a legacy node with the former dormant
@@ -406,7 +406,7 @@ TEST(CovenantActivation, MainnetBoundaryEnforcesCtvAtBlock100000) {
     legacy.ctv_activation_height = UINT32_MAX;
     legacy.ccv_activation_height = UINT32_MAX;
     const auto legacy_result =
-        TransactionValidator::ValidateTransaction(tx, &provider, 100000);
+        TransactionValidator::ValidateTransaction(tx, &provider, 100000, dinero::Params());
     legacy.ctv_activation_height = saved_ctv;
     legacy.ccv_activation_height = saved_ccv;
     EXPECT_TRUE(legacy_result.valid) << legacy_result.error;
@@ -475,7 +475,7 @@ TEST(CovenantActivation, LegacyCtvReceivesSharedPrecomputation) {
     const PrecomputedTransactionData matching(tx);
     EXPECT_TRUE(dinero::consensus::verifyScript(
         {}, covenant_script, {}, tx, 0, 1'000,
-        {}, {}, {}, {}, 20, &matching));
+        {}, {}, {}, {}, 20, dinero::Params(), &matching));
 
     // A precomputation object is transaction-bound. This intentionally
     // mismatched object proves that the canonical legacy/P2SH entry point
@@ -486,7 +486,7 @@ TEST(CovenantActivation, LegacyCtvReceivesSharedPrecomputation) {
     const PrecomputedTransactionData mismatched(other);
     EXPECT_FALSE(dinero::consensus::verifyScript(
         {}, covenant_script, {}, tx, 0, 1'000,
-        {}, {}, {}, {}, 20, &mismatched));
+        {}, {}, {}, {}, 20, dinero::Params(), &mismatched));
 }
 
 } // namespace

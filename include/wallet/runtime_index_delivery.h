@@ -12,9 +12,9 @@ namespace dinero {
 namespace wallet { class OrchardCatalogCapture; }
 class UTXOIndex;
 class WalletManager;
-class ChainstateService;
 class RuntimeWalletOriginProjection;
 class RuntimeWalletCoverageProjection;
+class RuntimeWalletBalanceSnapshot;
 struct RuntimeIndexProgress {
     RuntimeOutboxCursor cursor;
     uint256 origin_hash, tip_hash;
@@ -56,34 +56,45 @@ private:
 // Acquire the selected checked source before this call. Initial adoption does
 // not certify the pre-origin baseline or key ownership.
 class RuntimeOrdinaryDelivery {
-    friend class ChainstateService;
     friend struct RuntimeOriginProjectionTestAccess;
-    static std::unique_ptr<RuntimeWalletOriginProjection> CaptureOriginDomain(WalletManager&,uint64_t,UTXOIndex* = nullptr,bool existing_identity_only = false);
-    static void CheckOriginDomain(WalletManager&,const RuntimeWalletOriginProjection&,UTXOIndex* = nullptr);
-    static void AdoptOrigin(WalletManager&,UTXOIndex&,const RuntimeWalletOriginProjection&);
-    // Capture and restore before the service takes its selected-source lock.
-    // ReconcileCoverage reauthenticates the captured bytes in the write owner.
-    static std::unique_ptr<wallet::OrchardCatalogCapture> PrepareCoverage(
-        WalletManager&,const RuntimeWalletCoverageProjection&);
-    static void ReconcileCoverage(WalletManager&,UTXOIndex&,const RuntimeWalletCoverageProjection&,
-        const wallet::OrchardCatalogCapture&,const std::function<void()>& source_before_commit = {});
     static WalletManager::BalanceSummary ReadCoverageBalance(WalletManager&,UTXOIndex&,
         const RuntimeWalletCoverageProjection&,const wallet::OrchardCatalogCapture&,
         const std::string& expected_wallet,const std::function<void()>& source_before_capture);
     static RuntimeIndexProgress Apply(WalletManager&,uint64_t,const RuntimeOutboxEvent&,const RuntimeWalletOriginProjection*);
     static RuntimeIndexProgress ApplyInTransaction(WalletManager&,WalletManager::DatabaseLease*,const std::string&,
         const RuntimeOutboxEvent&,const RuntimeWalletOriginProjection*);
+public:
+    // Producer-facing capture/check/adopt/advance surface. None of these trust
+    // their caller: every one re-reads and reauthenticates the wallet and
+    // index owners it touches against the projections it is handed, in its
+    // own transaction, and throws on any divergence.
+    static std::unique_ptr<RuntimeWalletOriginProjection> CaptureOriginDomain(WalletManager&,uint64_t,UTXOIndex* = nullptr,bool existing_identity_only = false);
+    static void CheckOriginDomain(WalletManager&,const RuntimeWalletOriginProjection&,UTXOIndex* = nullptr);
+    static void AdoptOrigin(WalletManager&,UTXOIndex&,const RuntimeWalletOriginProjection&);
+    // Capture and restore before the producer takes its selected-source lock.
+    // ReconcileCoverage reauthenticates the captured bytes in the write owner.
+    static std::unique_ptr<wallet::OrchardCatalogCapture> PrepareCoverage(
+        WalletManager&,const RuntimeWalletCoverageProjection&);
+    static void ReconcileCoverage(WalletManager&,UTXOIndex&,const RuntimeWalletCoverageProjection&,
+        const wallet::OrchardCatalogCapture&,const std::function<void()>& source_before_commit = {});
     // Strict classification: only BOTH genuinely absent is the Orchard-only
     // composition. Invalidated/corrupt/one-store partial coverage throws.
     static std::optional<std::pair<RuntimeIndexProgress,RuntimeIndexProgress>> ExistingCoverage(
         WalletManager&,UTXOIndex&,uint64_t);
     static RuntimeIndexProgress AdvanceCoverage(WalletManager&,UTXOIndex&,const RuntimeWalletCoverageProjection&,
         const wallet::OrchardCatalogCapture&,const std::function<void()>& source_before_commit);
-public:
     // Read-only classification of missing/invalidated/script-changed receipts.
     // Corrupt metadata and unavailable reads throw; they are not a reset flag.
     static bool CoverageRequiredForWallet(WalletManager&,UTXOIndex&,uint64_t session);
     static std::optional<RuntimeIndexProgress> ReadForWallet(WalletManager&, uint64_t expected_session);
     static RuntimeIndexProgress ApplyForWallet(WalletManager&, uint64_t expected_session, const RuntimeOutboxEvent&);
+    // One owned read of the covered balance, minted as an immutable snapshot.
+    // Same read and source fence as the private summary read; the fence runs
+    // again after the read and the snapshot's cursor/tip come from the given
+    // coverage, never from the caller. Only this read mints the snapshot.
+    static std::shared_ptr<const RuntimeWalletBalanceSnapshot> ReadCoverageBalanceSnapshot(
+        WalletManager&,UTXOIndex&,const RuntimeWalletCoverageProjection&,
+        const wallet::OrchardCatalogCapture&,const std::string& expected_wallet,
+        const std::function<void()>& source_before_capture);
 };
 } // namespace dinero

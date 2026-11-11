@@ -1,4 +1,5 @@
 #include "consensus/orchard_block_filter.h"
+#include "consensus/chainparams.h"
 #include "consensus/filter_commitment.h"
 namespace dinero::consensus {
 GCSFilter BuildOrchardBlockFilter(const PreparedOrchardBlockCoins& coins) {
@@ -26,7 +27,8 @@ GCSFilter CheckOrchardBlockFilter(const OrchardBlockCandidate& block,
     auto filter = BuildOrchardBlockFilter(coins);
     std::string error;
     if (!ValidateFilterCommitment(block.Transactions()[0].Historical(),
-            filter.GetHash(), coins.Height(), error))
+            filter.GetHash(), coins.Height(),
+            dinero::Params().coinbase_structure_activation_height, error))
         throw OrchardBlockCoinError(OrchardBlockCoinErrorCode::Filter);
     return filter;
 }

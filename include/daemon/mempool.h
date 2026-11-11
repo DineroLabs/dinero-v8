@@ -5,6 +5,8 @@
 #include "daemon/mempool_transaction.h"
 #include "daemon/mempool_acceptance_observer.h"
 #include "daemon/mempool_chainstate_guard.h"
+#include "daemon/mempool_chain_view.h"
+#include "daemon/mempool_scan_sink.h"
 #include "primitives/uint256.h"  // Phase M.0: uint256 type
 #include "daemon/interfaces/ingress_types.h"  // Step 5: Canonical ingress types
 #include <unordered_map>
@@ -25,9 +27,6 @@
 #include "mining/ct_selection_policy.h"  // Phase 3: CT fee policy
 
 // Forward declarations
-namespace din::sp {
-    class ScannerManager;
-}
 
 namespace dinero {
 class VerifiedUtreexoTransaction;
@@ -56,7 +55,6 @@ class IConsensusUTXOSet;
 // TxRejectCode and TxAcceptResult are imported via ingress_types.h above
 
 // Forward declarations
-class ChainDB;
 class ILogger;  // Forward declaration for dependency injection
 class FeeEstimator;  // v0.13.0.3: Fee estimation
 struct Block;  // Utreexo proof staleness: onBlockConnected/onBlockDisconnected
@@ -213,9 +211,10 @@ public:
         size_t max_replacement_count = 0;
     };
 
-    explicit Mempool(ChainDB* chain_db,
+    explicit Mempool(const IMempoolChainView* chain_view,
                      const consensus::IConsensusUTXOSet* consensus_utxo_set = nullptr,
-                     bool allow_chain_db_fallback = false);
+                     bool allow_chain_db_fallback = false,
+                     std::unique_ptr<IMempoolScanSink> scan_sink = nullptr);
     ~Mempool();
 
     // ========================================================================
@@ -754,7 +753,7 @@ private:
     mining::CTSelectionConfig ct_config_; // CT fee policy configuration (Phase 3)
     
     // Dependencies
-    ChainDB* chain_db_;  // Non-owning pointer - single source of truth for chain state
+    const IMempoolChainView* chain_view_;  // Non-owning pointer - single source of truth for chain state
     const consensus::shielded::CommitmentTree* shielded_tree_ = nullptr;
     const consensus::shielded::NullifierSet* shielded_nullifiers_ = nullptr;
     std::unique_ptr<consensus::ChainStateView> chain_state_view_;  // Adapter: ChainDB -> ChainStateView interface (Phase M.1)
@@ -770,7 +769,7 @@ private:
     #define MPLOG_ERR(msg)   if (m_logger) m_logger->error(msg)
 
     // Silent Payments scanner
-    std::unique_ptr<din::sp::ScannerManager> m_sp_scanner_manager;
+    std::unique_ptr<IMempoolScanSink> m_scan_sink;
 
     // BIP125 RBF policy enforcement
     std::unique_ptr<policy::RBFPolicy> m_rbf_policy;

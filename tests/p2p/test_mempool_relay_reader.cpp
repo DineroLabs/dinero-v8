@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 // Benign patched-path policy invariants. No unsafe-original execution.
 #include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
@@ -55,7 +56,7 @@ TEST_F(MempoolRelayReader, SignedHistoricalRoundTripAndActualAdmission) {
     EXPECT_FALSE(historical.IsOrchard());EXPECT_EQ(historical.Serialize(),tx.Serialize());
     EXPECT_EQ(available.Serialize(),tx.Serialize());EXPECT_EQ(available.GetTxid(),tx.GetTxid());
     EXPECT_EQ(available.GetWeight(),tx.GetWeight());
-    Mempool pool(&db,&coins);TxRelayManager relay(nullptr);
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db}; Mempool pool(&mempool_chain_view_1,&coins);TxRelayManager relay(nullptr);
     relay.SetSubmitBodyCallback([&](const MempoolTransaction& body,const auto& peer){return pool.submitTransaction(body.Historical(),peer,false);});
     relay.HandleTx("decoded-peer",available);available=MempoolTransaction{};
     ASSERT_TRUE(pool.hasTransaction(tx.GetTxid().AsUint256()));

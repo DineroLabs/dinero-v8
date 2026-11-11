@@ -1,3 +1,4 @@
+#include "storage/chain_db_mempool_view.h"
 #include "consensus/shielded/resource_limits.h"
 #include "consensus/block_validation.h"
 #include "consensus/chainparams.h"
@@ -324,7 +325,7 @@ TEST_F(
     ASSERT_GT(bad_control_block.vin[0].witness[1].size(), 1U);
     bad_control_block.vin[0].witness[1][1] ^= 0x01;
 
-    Mempool pool(&db_);
+    dinero::ChainDbMempoolView mempool_chain_view_1{&db_}; Mempool pool(&mempool_chain_view_1);
     pool.setMinFeeRate(0);
     const auto bad_control_result = pool.submitTransaction(
         bad_control_block, "covenant-adversarial-test", false);
@@ -366,7 +367,7 @@ TEST_F(
 
     SetTip(db_, 18, 0x18);
     {
-        Mempool pool(&db_);
+        dinero::ChainDbMempoolView mempool_chain_view_2{&db_}; Mempool pool(&mempool_chain_view_2);
         pool.setMinFeeRate(0);
         const auto pre_activation =
             pool.submitTransaction(spend_.tx, "covenant-system-test", false);
@@ -400,7 +401,7 @@ TEST_F(
     }
 
     {
-        Mempool restarted_pre_activation(&db_);
+        dinero::ChainDbMempoolView mempool_chain_view_3{&db_}; Mempool restarted_pre_activation(&mempool_chain_view_3);
         restarted_pre_activation.setMinFeeRate(0);
         EXPECT_TRUE(restarted_pre_activation.loadFromDisk(
             persistence_file.string()));
@@ -409,7 +410,7 @@ TEST_F(
 
     SetTip(db_, 19, 0x29);
     {
-        Mempool restarted_active(&db_);
+        dinero::ChainDbMempoolView mempool_chain_view_4{&db_}; Mempool restarted_active(&mempool_chain_view_4);
         restarted_active.setMinFeeRate(0);
         EXPECT_TRUE(restarted_active.loadFromDisk(
             persistence_file.string()));
@@ -428,7 +429,7 @@ TEST_F(
     // retains historical NOP4 behavior.
     SetTip(db_, 99'998, 0x91);
     {
-        Mempool pool(&db_);
+        dinero::ChainDbMempoolView mempool_chain_view_5{&db_}; Mempool pool(&mempool_chain_view_5);
         pool.setMinFeeRate(0);
         const auto premature =
             pool.submitTransaction(spend_.tx, "mainnet-boundary", false);
@@ -465,7 +466,7 @@ TEST_F(
     }
 
     {
-        Mempool restarted_preactivation(&db_);
+        dinero::ChainDbMempoolView mempool_chain_view_6{&db_}; Mempool restarted_preactivation(&mempool_chain_view_6);
         restarted_preactivation.setMinFeeRate(0);
         EXPECT_TRUE(restarted_preactivation.loadFromDisk(
             persistence_file.string()));
@@ -474,7 +475,7 @@ TEST_F(
 
     SetTip(db_, 99'999, 0x94);
     {
-        Mempool restarted_active(&db_);
+        dinero::ChainDbMempoolView mempool_chain_view_7{&db_}; Mempool restarted_active(&mempool_chain_view_7);
         restarted_active.setMinFeeRate(0);
         EXPECT_TRUE(restarted_active.loadFromDisk(
             persistence_file.string()));
@@ -499,7 +500,7 @@ TEST_F(CovenantSystemLifecycleTest, AuthMempoolResourceGateTracksTipAndReorg) {
     output.zk_proof.resize(168'000, 4);
     bundle.outputs.push_back(output);
     tx.shielded_bundle_bytes = sh::SerializeShieldedBundle(bundle);
-    Mempool pool(&db_);
+    dinero::ChainDbMempoolView mempool_chain_view_8{&db_}; Mempool pool(&mempool_chain_view_8);
     for (uint32_t tip : {98u, 99u, 98u}) {
         SetTip(db_, tip, uint8_t(tip));
         auto result = pool.submitTransactionTestOnly(tx, "auth-resources");
