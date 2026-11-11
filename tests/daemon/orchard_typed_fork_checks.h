@@ -14,6 +14,7 @@ struct OrchardActivationParentTestAccess {
     bool Complete(ChainstateService& service) {
         return request && service.CompleteActivationParentPlan(*request);
     }
+    uint256 BestHash() const { return std::get<0>(request->snapshot.best); }
     void Apply(ChainstateService& service) {
         std::unique_ptr<ChainstateService::ActivationParentPlan> unused;
         service.ActivateBestChainPass(request.get(),unused,false,nullptr);
@@ -522,8 +523,117 @@ TEST(OrchardTypedFork, DescendantArrivalsBeforeRebindDoNotStarveForkActivation) 
     stale.Apply(*f.f.service);
     ASSERT_EQ(f.f.service->GetActiveTip(),a103);
 
-    f.f.service->ActivateBestChain();
+    // Orchard connects one body per activation pass. The maintenance loop
+    // must keep advancing after the proved prefix was bound, even though the
+    // rest of the replacement branch was already present in the candidate
+    // graph when the first pass ran.
+    for(size_t pass=0;pass<2*arrivals.size() &&
+            f.f.service->GetActiveTip()!=arrivals.back();++pass)
+        f.f.service->ActivateBestChain();
     const auto tip=f.f.db.getTip();ASSERT_TRUE(tip.ok());EXPECT_EQ(tip->hash,arrivals.back()->hash);
+}
+TEST(OrchardTypedFork, InvalidatedProvedPrefixCannotBindArrivingDescendant) {
+    NetworkRoutingFixture f;
+    f.f.service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
+    // The detached replay reads the transition parent's archived body.
+    {
+        auto selected=f.f.service->AcquireBlockIngressActivationLock();
+        std::lock_guard<std::recursive_mutex> graph(g_block_index_mutex);
+        const auto& parent=f.f.blocks.back();
+        auto* index=dinero::FindBlockIndex(parent.GetHash());ASSERT_NE(index,nullptr);
+        const auto position=f.files->writeBlock(parent.GetHash(),parent);ASSERT_TRUE(position.ok());
+        CBlockIndex recorded=*index;recorded.file_number=position->file_number;
+        recorded.data_pos=position->offset;recorded.data_size=position->size;
+        rocksdb::WriteBatch batch;
+        ASSERT_EQ(f.f.db.updateBlockIndex(f.f.token,&recorded,&batch),Status::Ok);
+        ASSERT_EQ(f.f.db.writeBatch(f.f.token,std::move(batch),true),Status::Ok);
+        index->file_number=recorded.file_number;index->data_pos=recorded.data_pos;
+        index->data_size=recorded.data_size;
+    }
+    const auto first=f.Build();ASSERT_TRUE(first);ASSERT_TRUE(f.Submit(first->WireBytes()).connected);
+    auto* a102=f.f.service->GetActiveTip();
+    BlockAssembler assembler(&f.f.db);WireOrchardAssembler(assembler,f.f);
+    const auto second=assembler.CreateOrchardBlock(OrchardMiningPayout);ASSERT_TRUE(second);
+    ASSERT_TRUE(f.Submit(second->WireBytes()).connected);auto* a103=f.f.service->GetActiveTip();
+    const auto third=assembler.CreateOrchardBlock(OrchardMiningPayout);ASSERT_TRUE(third);
+    ASSERT_EQ(third->Height(),104u);
+    std::string error;ASSERT_TRUE(f.f.service->InvalidateBlock(a102->hash,error))<<error;
+    const auto [bheader,bbytes]=ForkSibling(*first);
+    ASSERT_TRUE(f.Submit(bbytes).connected);auto* b102=f.f.service->GetActiveTip();
+    ASSERT_EQ(b102->hash,bheader.GetHash());
+    ASSERT_TRUE(f.f.service->ReconsiderBlock(a102->hash,error))<<error;
+    ASSERT_EQ(f.f.service->GetActiveTip(),b102);
+    OrchardActivationParentTestAccess proved;
+    ASSERT_TRUE(proved.Capture(*f.f.service));
+    ASSERT_TRUE(proved.Complete(*f.f.service));
+    ASSERT_EQ(proved.BestHash(),a103->hash);
+    ASSERT_TRUE(f.Submit(third->WireBytes()).retained());
+    auto* a104=dinero::FindBlockIndex(third->Header().GetHash());ASSERT_NE(a104,nullptr);
+    ASSERT_EQ(a104->pprev,a103);
+    // The operator invalidates the proved prefix after its descendant made
+    // the candidate newer. The rebind must not turn that stale proof into a
+    // selected tip, even though the descendant has an available body.
+    ASSERT_TRUE(f.f.service->InvalidateBlock(a103->hash,error))<<error;
+    proved.Apply(*f.f.service);
+    EXPECT_EQ(f.f.service->GetActiveTip(),b102);
+    const auto durable=f.f.db.getTip();ASSERT_TRUE(durable.ok());EXPECT_EQ(durable->hash,b102->hash);
+    EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*f.f.service));
+}
+TEST(OrchardTypedFork, CompetingHigherWorkBranchCannotBindObsoleteProof) {
+    NetworkRoutingFixture f;
+    f.f.service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
+    {
+        auto selected=f.f.service->AcquireBlockIngressActivationLock();
+        std::lock_guard<std::recursive_mutex> graph(g_block_index_mutex);
+        const auto& parent=f.f.blocks.back();
+        auto* index=dinero::FindBlockIndex(parent.GetHash());ASSERT_NE(index,nullptr);
+        const auto position=f.files->writeBlock(parent.GetHash(),parent);ASSERT_TRUE(position.ok());
+        CBlockIndex recorded=*index;recorded.file_number=position->file_number;
+        recorded.data_pos=position->offset;recorded.data_size=position->size;
+        rocksdb::WriteBatch batch;
+        ASSERT_EQ(f.f.db.updateBlockIndex(f.f.token,&recorded,&batch),Status::Ok);
+        ASSERT_EQ(f.f.db.writeBatch(f.f.token,std::move(batch),true),Status::Ok);
+        index->file_number=recorded.file_number;index->data_pos=recorded.data_pos;
+        index->data_size=recorded.data_size;
+    }
+    const auto first=f.Build();ASSERT_TRUE(first);ASSERT_TRUE(f.Submit(first->WireBytes()).connected);
+    auto* a102=f.f.service->GetActiveTip();
+    BlockAssembler assembler(&f.f.db);WireOrchardAssembler(assembler,f.f);
+    const auto second=assembler.CreateOrchardBlock(OrchardMiningPayout);ASSERT_TRUE(second);
+    ASSERT_TRUE(f.Submit(second->WireBytes()).connected);auto* a103=f.f.service->GetActiveTip();
+    std::string error;ASSERT_TRUE(f.f.service->InvalidateBlock(a102->hash,error))<<error;
+    const auto [bheader,bbytes]=ForkSibling(*first);
+    ASSERT_TRUE(f.Submit(bbytes).connected);auto* b102=f.f.service->GetActiveTip();
+    ASSERT_EQ(b102->hash,bheader.GetHash());
+    ASSERT_TRUE(f.f.service->ReconsiderBlock(a102->hash,error))<<error;
+    ASSERT_EQ(f.f.service->GetActiveTip(),b102);
+    OrchardActivationParentTestAccess proved;
+    ASSERT_TRUE(proved.Capture(*f.f.service));
+    ASSERT_TRUE(proved.Complete(*f.f.service));
+    ASSERT_EQ(proved.BestHash(),a103->hash);
+    // The selected sibling grows beyond the prepared replacement. The old
+    // prefix is neither the best branch nor an ancestor of it, so its proof
+    // must not displace the new higher-work chain at rebind.
+    BlockAssembler competing(&f.f.db);WireOrchardAssembler(competing,f.f);
+    const auto b103=competing.CreateOrchardBlock(OrchardMiningPayout);ASSERT_TRUE(b103);
+    // At equal work the selector chooses the lower hash. Give the sibling
+    // that ordering deterministically so it connects before its H104 child
+    // makes the competing branch strictly heavier.
+    auto b103_header=b103->Header();
+    for(uint32_t attempt=0;attempt<100000 && !(b103_header.GetHash()<a103->hash);++attempt)
+        ++b103_header.nonce;
+    ASSERT_LT(b103_header.GetHash(),a103->hash);
+    auto b103_wire=b103->WireBytes();const auto b103_prefix=b103_header.SerializeForHash();
+    std::copy(b103_prefix.begin(),b103_prefix.end(),b103_wire.begin());
+    ASSERT_TRUE(f.Submit(b103_wire).connected);
+    const auto b104=competing.CreateOrchardBlock(OrchardMiningPayout);ASSERT_TRUE(b104);
+    ASSERT_TRUE(f.Submit(b104->WireBytes()).connected);
+    auto* selected=f.f.service->GetActiveTip();ASSERT_EQ(selected->height,104u);
+    ASSERT_EQ(selected->pprev->pprev,b102);
+    proved.Apply(*f.f.service);
+    EXPECT_EQ(f.f.service->GetActiveTip(),selected);
+    const auto durable=f.f.db.getTip();ASSERT_TRUE(durable.ok());EXPECT_EQ(durable->hash,selected->hash);
+    EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*f.f.service));
 }
 namespace {
 void BranchReplayHistory(CanonicalPoolFixture& f) {
