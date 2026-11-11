@@ -1,5 +1,2 @@
 # GATE P1 baseline: tier<TAB>file<TAB>token<TAB>count. Regenerate with
 # scripts/ci/separation/check_consensus_globals.py --write-baseline
-L	src/consensus/block_reward.cpp	Params_call	1
-L	src/consensus/transaction_validator.cpp	Params_call	5
-L	src/consensus/tx_validation.cpp	Params_call	2

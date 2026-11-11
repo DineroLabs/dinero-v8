@@ -1969,7 +1969,9 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
 
     // The normal connect and CSN replay paths share one exact reward
     // comparator. Every coinbase output counts; all totals are checked.
-    if (!CheckCoinbaseReward(coinbase_tx, height, total_fees, error)) {
+    if (!CheckCoinbaseReward(coinbase_tx, height,
+                             Params().sixty_second_activation_height,
+                             total_fees, error)) {
         return false;
     }
     

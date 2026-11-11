@@ -308,6 +308,7 @@ bool ParallelBlockValidator::validateBlockParallel(const Block& block, uint64_t 
                 check.script_flags,
                 check.height,
                 check.median_time_past,
+                Params(),
                 check.all_input_amounts,        // BIP341: Full UTXO context
                 check.all_input_scriptpubkeys,  // BIP341: Full UTXO context
                 check.all_input_confidential_flags,
@@ -393,7 +394,7 @@ bool ParallelBlockValidator::validateBlockSerial(const Block& block, uint64_t he
     for (size_t i = 1; i < block.vtx.size(); ++i) {
         const Transaction& tx = block.vtx[i];
 
-        auto result = TransactionValidator::ValidateTransaction(tx, consensus_utxo_set_, height);
+        auto result = TransactionValidator::ValidateTransaction(tx, consensus_utxo_set_, height, Params());
         if (!result.valid) {
             error = "Tx " + std::to_string(i) + " validation failed: " + result.error;
             return false;
@@ -463,7 +464,7 @@ bool ParallelBlockValidator::validateScriptsOnlyParallel(const Block& block, std
 
         task.custom_func = [this, tx, tx_idx](std::string& err) -> bool {
             // Verify signatures using TransactionValidator (with caching)
-            auto result = TransactionValidator::ValidateTransaction(tx, consensus_utxo_set_, 0);
+            auto result = TransactionValidator::ValidateTransaction(tx, consensus_utxo_set_, 0, Params());
             if (!result.valid) {
                 err = "Tx " + std::to_string(tx_idx) + " script verification failed: " + result.error;
                 return false;
@@ -520,7 +521,7 @@ bool ParallelBlockValidator::validateScriptsOnlySerial(const Block& block, std::
         // Previously this was a stub that only checked structure - consensus-breaking!
         // Now we verify signatures using TransactionValidator (with caching)
         // ========================================================================
-        auto result = TransactionValidator::ValidateTransaction(tx, consensus_utxo_set_, 0);
+        auto result = TransactionValidator::ValidateTransaction(tx, consensus_utxo_set_, 0, Params());
         if (!result.valid) {
             error = "Tx " + std::to_string(i) + " script verification failed: " + result.error;
             return false;

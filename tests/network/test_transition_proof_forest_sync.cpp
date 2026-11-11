@@ -520,7 +520,9 @@ void test_replay_accepts_post_activation_cpfp_and_binds_child_metadata() {
     auto forged_spent = spent_outputs;
     forged_spent[1].value = parent_value + 1;
     std::string accounting_error;
-    TEST_ASSERT(CheckBlockRewardFromSpentOutputs(overpay, spend_height, &forged_spent, accounting_error),
+    TEST_ASSERT(CheckBlockRewardFromSpentOutputs(overpay, spend_height,
+                    dinero::Params().sixty_second_activation_height,
+                    &forged_spent, accounting_error),
                 "Forged child metadata defeats unauthenticated fee arithmetic as intended by fixture");
     TEST_ASSERT(!StatelessNode::CheckReplayReward(
                     overpay, spend_height, {funding_leaf}, &forged_spent, accounting_error),
@@ -836,12 +838,16 @@ void test_reward_accounting_cardinality_and_overflow() {
     auto rejects = [&](const Block& candidate, const std::vector<SpentOutputData>* metadata,
                        const char* expected) {
         std::string error;
-        TEST_ASSERT(!CheckBlockRewardFromSpentOutputs(candidate, height, metadata, error),
+        TEST_ASSERT(!CheckBlockRewardFromSpentOutputs(candidate, height,
+                    dinero::Params().sixty_second_activation_height,
+                    metadata, error),
                     std::string("Reward accounting rejects ") + expected);
         TEST_ASSERT(error == expected, "Reward accounting rejects for the intended reason: " + error);
     };
     std::string error;
-    TEST_ASSERT(CheckBlockRewardFromSpentOutputs(block, height, &spent, error),
+    TEST_ASSERT(CheckBlockRewardFromSpentOutputs(block, height,
+                    dinero::Params().sixty_second_activation_height,
+                    &spent, error),
                 "Pure accounting accepts exact transparent fee");
     rejects(block, nullptr, "block-reward-missing-spent-outputs");
     std::vector<SpentOutputData> empty;
@@ -876,7 +882,9 @@ void test_reward_accounting_cardinality_and_overflow() {
     payout.scriptPubKey = script;
     unshield.vout.push_back(payout);
     shielded.vtx.push_back(unshield);
-    TEST_ASSERT(CheckBlockRewardFromSpentOutputs(shielded, height, nullptr, error),
+    TEST_ASSERT(CheckBlockRewardFromSpentOutputs(shielded, height,
+                    dinero::Params().sixty_second_activation_height,
+                    nullptr, error),
                 "Zero-input shielded explicit fee needs no spent metadata for accounting");
     shielded.vtx[1].SetExplicitFee(UINT64_MAX);
     rejects(shielded, nullptr, "block-reward-subsidy-fee-overflow");

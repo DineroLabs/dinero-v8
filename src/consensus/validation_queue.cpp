@@ -547,7 +547,7 @@ bool ValidationQueue::validateBlock(BlockValidationJob& job) {
         for (size_t i = 1; i < job.block.vtx.size(); ++i) {
             const Transaction& tx = job.block.vtx[i];
 
-            auto result = TransactionValidator::ValidateTransaction(tx, consensus_utxo_set_, job.height);
+            auto result = TransactionValidator::ValidateTransaction(tx, consensus_utxo_set_, job.height, Params());
             if (!result.valid) {
                 job.error_msg = "Tx validation failed: " + result.error;
                 return false;

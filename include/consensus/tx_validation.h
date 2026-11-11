@@ -25,6 +25,7 @@
 #include <optional>
 
 namespace dinero {
+struct ChainParams;  // callers select the chain; validators read only the argument
 namespace consensus {
 
 class PrecomputedTransactionData;
@@ -190,12 +191,17 @@ struct TxValidationContext {
     // If nullptr, time-based locks are rejected (fail-closed)
     MtpLookupFn mtp_at_height;
 
+    // sep3 stage D: the caller's chain parameters. Required when scripts
+    // are verified; validateInputs fails closed if null (like mtp_at_height).
+    const ChainParams* params;
+
     TxValidationContext()
         : block_height(0)
         , median_time_past(0)
         , check_sequence_locks(true)
         , skip_script_verification(false)
         , mtp_at_height(nullptr)
+        , params(nullptr)
     {}
 
     TxValidationContext(uint32_t height, uint64_t mtp)
@@ -204,6 +210,7 @@ struct TxValidationContext {
         , check_sequence_locks(true)
         , skip_script_verification(false)
         , mtp_at_height(nullptr)
+        , params(nullptr)
     {}
 
     // Constructor with MTP lookup for full BIP68 support
@@ -213,6 +220,7 @@ struct TxValidationContext {
         , check_sequence_locks(true)
         , skip_script_verification(false)
         , mtp_at_height(std::move(mtp_lookup))
+        , params(nullptr)
     {}
 };
 
@@ -389,6 +397,7 @@ bool verifyScript(
     const std::vector<uint8_t>& all_input_confidential_flags,
     const std::vector<std::vector<uint8_t>>& all_input_commitments,
     uint32_t block_height,
+    const ChainParams& params,
     const PrecomputedTransactionData*
         covenant_precomputed = nullptr
 );

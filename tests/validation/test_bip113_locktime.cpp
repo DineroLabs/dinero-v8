@@ -10,6 +10,7 @@
  * 3. Parallel vs serial validation produces identical results
  */
 
+#include "consensus/chainparams.h"
 #include "consensus/transaction_validator.h"
 #include "consensus/block_index.h"
 #include "wallet/transaction.h"
@@ -150,7 +151,8 @@ void testHeightBasedLocktimeUnchanged() {
         tx, 0, utxo.spk, utxo.value,
         0 /* script_flags */,
         99 /* height */,
-        2000000 /* median_time_past - irrelevant for height-based */
+        2000000 /* median_time_past - irrelevant for height-based */,
+        dinero::Params()
     );
 
     assert(!result1.valid && "Should reject at height 99");
@@ -161,7 +163,8 @@ void testHeightBasedLocktimeUnchanged() {
         tx, 0, utxo.spk, utxo.value,
         0 /* script_flags */,
         100 /* height */,
-        2000000 /* median_time_past - irrelevant for height-based */
+        2000000 /* median_time_past - irrelevant for height-based */,
+        dinero::Params()
     );
 
     // Note: Will fail signature verification, but locktime check should pass
@@ -216,12 +219,12 @@ void testParallelSerialIdentical() {
 
     auto result1 = TransactionValidator::VerifyInput(
         tx1, 0, std::vector<uint8_t>(spk.begin(), spk.end()), value,
-        0, height, mtp
+        0, height, mtp, dinero::Params()
     );
 
     auto result2 = TransactionValidator::VerifyInput(
         tx2, 0, std::vector<uint8_t>(spk.begin(), spk.end()), value,
-        0, height, mtp
+        0, height, mtp, dinero::Params()
     );
 
     // Both should fail signature verification (no valid UTXO), but locktime should pass

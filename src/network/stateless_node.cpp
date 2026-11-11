@@ -494,7 +494,9 @@ bool StatelessNode::ValidateAndApplyProofInto(
     // Monetary validity precedes the first forest/stump mutation, including
     // speculative branch validation.
     if (!consensus::CheckBlockRewardFromSpentOutputs(
-            block, proof_msg.block_height, &proof_msg.proof_data.spent_outputs,
+            block, proof_msg.block_height,
+            Params().sixty_second_activation_height,
+            &proof_msg.proof_data.spent_outputs,
             err_out)) {
         return false;
     }
@@ -701,7 +703,9 @@ bool StatelessNode::ValidateWithTransitionProof(
     // its coinbase. Reject bad accounting before even the cached stump moves.
     std::string reward_error;
     if (!consensus::CheckBlockRewardFromSpentOutputs(
-            block, proof_msg.block_height, &proof_msg.proof_data.spent_outputs,
+            block, proof_msg.block_height,
+            Params().sixty_second_activation_height,
+            &proof_msg.proof_data.spent_outputs,
             reward_error)) {
         g_logger.error("[StatelessNode-TP] " + reward_error);
         return false;
@@ -1180,7 +1184,8 @@ bool StatelessNode::CheckReplayReward(
         return false;
     }
     return consensus::CheckBlockRewardFromSpentOutputs(
-        block, block_height, spent_outputs, error);
+        block, block_height, Params().sixty_second_activation_height,
+        spent_outputs, error);
 }
 
 bool StatelessNode::ReplayBlock(
