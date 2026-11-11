@@ -59,14 +59,21 @@ class SnapshotWiring(unittest.TestCase):
                 if path == 'macos-desktop-candidate.yml':
                     self.assertIn('--payload-url "$SNAPSHOT_PAYLOAD_URL"', source)
                     self.assertIn('--manifest-url "$SNAPSHOT_MANIFEST_URL"', source)
+                    self.assertIn('cp release-inputs/*publisher.* packaging/mac/dist/', source)
                 else:
                     self.assertIn('--pattern ' + ("'" if path.startswith('windows') else '') + self.names[0], source)
+                    expected_count = 2 if path == 'desktop-release.yml' else 1
+                    self.assertGreaterEqual(source.count(self.names[0] + '.publisher.manifest.json'), expected_count)
+                    self.assertGreaterEqual(source.count(self.names[0] + '.publisher.manifest.sig'), expected_count)
                 self.assertIn(self.names[0] + '.manifest.json', source)
                 if not path.startswith('windows'):
                     self.assertIn('DINERO_SNAPSHOT_LEGACY_FALLBACK_DAT=', source)
                     self.assertIn('DINERO_SNAPSHOT_LEGACY_FALLBACK_MANIFEST=', source)
                     self.assertIn('DINERO_SNAPSHOT_OLDEST_FALLBACK_DAT=', source)
                     self.assertIn('DINERO_SNAPSHOT_OLDEST_FALLBACK_MANIFEST=', source)
+        for path in ['desktop-release.yml', 'macos-desktop-candidate.yml']:
+            source = (ROOT / '.github/workflows' / path).read_text()
+            self.assertIn('cmp -s "${GITHUB_WORKSPACE}/tooling/packaging/mac/build-installer.sh" packaging/mac/build-installer.sh', source)
 
         smoke = (ROOT / '.github/workflows/windows-openssl-release-smoke.yml').read_text()
         self.assertIn("-SnapshotFileName 'dinero-assumeutxo-148375-v5.dat'", smoke)

@@ -35,7 +35,7 @@ on:
         required: false
         type: string
       snapshot_manifest_url:
-        description: 'For artifact-only preparation: matching full-v6 manifest.json HTTPS URL'
+        description: 'For artifact-only preparation: full-v6 manifest.json HTTPS URL; sibling .sig required'
         required: false
         type: string
 
@@ -139,6 +139,8 @@ jobs:
             gh release download "$PRIMARY_RELEASE" --repo DineroLabs/dinero-v8 \
               --pattern 'dinero-assumeutxo-150200-v6-full.dat' \
               --pattern 'dinero-assumeutxo-150200-v6-full.dat.manifest.json' \
+              --pattern 'dinero-assumeutxo-150200-v6-full.dat.publisher.manifest.json' \
+              --pattern 'dinero-assumeutxo-150200-v6-full.dat.publisher.manifest.sig' \
               --dir packaging/windows/dist --clobber
           else
             python3 packaging/snapshot/fetch_desktop_primary.py \
@@ -161,6 +163,8 @@ jobs:
           python3 packaging/snapshot/check_desktop_primary.py \
             --payload packaging/windows/dist/dinero-assumeutxo-150200-v6-full.dat \
             --manifest packaging/windows/dist/dinero-assumeutxo-150200-v6-full.dat.manifest.json \
+            --publisher-manifest packaging/windows/dist/dinero-assumeutxo-150200-v6-full.dat.publisher.manifest.json \
+            --publisher-signature packaging/windows/dist/dinero-assumeutxo-150200-v6-full.dat.publisher.manifest.sig \
             --expected-name dinero-assumeutxo-150200-v6-full.dat
 
       - name: Setup MSVC

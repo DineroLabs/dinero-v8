@@ -75,7 +75,9 @@ fi
 python3 "$PROJECT_ROOT/scripts/ci/check_snapshot_freshness.py" \
     --manifest "$PRIMARY_MANIFEST" "${FRESHNESS_ARGS[@]}"
 python3 "$PROJECT_ROOT/packaging/snapshot/check_desktop_primary.py" \
-    --payload "$PRIMARY_DATA" --manifest "$PRIMARY_MANIFEST" --expected-name "$PRIMARY_NAME"
+    --payload "$PRIMARY_DATA" --manifest "$PRIMARY_MANIFEST" --expected-name "$PRIMARY_NAME" \
+    --publisher-manifest "${PRIMARY_DATA}.publisher.manifest.json" \
+    --publisher-signature "${PRIMARY_DATA}.publisher.manifest.sig"
 verify_and_stage "$PRIMARY_DATA" "$PRIMARY_MANIFEST" "$PRIMARY_NAME"
 verify_and_stage "$FALLBACK_DATA" "$FALLBACK_MANIFEST" "$FALLBACK_NAME"
 verify_and_stage "$LEGACY_FALLBACK_DATA" "$LEGACY_FALLBACK_MANIFEST" "$LEGACY_FALLBACK_NAME"

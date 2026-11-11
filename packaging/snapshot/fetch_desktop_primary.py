@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Stage an exact pinned full-v6 desktop primary from qualified HTTPS inputs.
 
-The publisher serves snapshot.dat/manifest.json. This stages the payload under
-the release filename and adjusts only the manifest's snapshot_file field. The
-catalog pin, payload profile, internal checksum, and freshness are checked
-before either output appears. Native import/restart qualification is separate.
+The publisher serves snapshot.dat/manifest.json/manifest.sig. Production
+staging requires a valid detached signature under the pinned fleet public key,
+then stages the payload under the release filename and adjusts only the
+manifest's snapshot_file field. The catalog pin, payload profile, internal
+checksum, and freshness are checked before either output appears. Native
+import/restart qualification is separate.
 """
 
 import argparse
@@ -42,8 +44,9 @@ def _download(url: str, destination: Path, limit: int) -> None:
 
 def fetch(payload_url: str, manifest_url: str, catalog_path: Path, destination: Path,
           *, signature_url: str | None = None, publisher_key: Path | None = None,
-          allow_file: bool = False) -> tuple[Path, Path]:
-    inferred_signature = signature_url is None
+          allow_file: bool = False, allow_unsigned_fixture: bool = False) -> tuple[Path, Path]:
+    if allow_unsigned_fixture and not allow_file:
+        raise ValueError("unsigned fixture mode requires local file inputs")
     if signature_url is None:
         if not manifest_url.endswith(".json"):
             raise ValueError("publisher manifest URL must end in .json")
@@ -76,11 +79,11 @@ def fetch(payload_url: str, manifest_url: str, catalog_path: Path, destination: 
         try:
             _download(signature_url, source_signature, 1024)
         except HTTPError as exc:
-            if not inferred_signature or exc.code != 404:
-                raise
+            if not (allow_unsigned_fixture and exc.code == 404):
+                raise ValueError("publisher manifest signature is required and must be available") from exc
         except URLError as exc:
-            if not (inferred_signature and allow_file and isinstance(exc.reason, FileNotFoundError)):
-                raise
+            if not (allow_unsigned_fixture and isinstance(exc.reason, FileNotFoundError)):
+                raise ValueError("publisher manifest signature is required and must be available") from exc
         else:
             key = publisher_key or Path(__file__).with_name("fleet-publisher-ed25519.pub.pem")
             result = subprocess.run(
@@ -90,6 +93,8 @@ def fetch(payload_url: str, manifest_url: str, catalog_path: Path, destination: 
             if result.returncode != 0:
                 raise ValueError("publisher manifest signature verification failed")
             signature_verified = True
+        if not signature_verified and not allow_unsigned_fixture:
+            raise ValueError("publisher manifest signature is required")
         manifest = json.loads(source_manifest.read_text(encoding="utf-8"))
         identity = manifest.get("snapshot")
         if not isinstance(identity, dict) or identity.get("snapshot_file") not in (

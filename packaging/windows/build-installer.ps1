@@ -229,6 +229,23 @@ function Assert-SnapshotManifest {
     }
 }
 
+function Resolve-PrimaryPublisherAsset {
+    param([string]$SnapshotSourcePath, [string]$AssetName, [string]$ReleaseTag)
+    $adjacent = Join-Path (Split-Path -Parent $SnapshotSourcePath) $AssetName
+    if (Test-Path $adjacent) { return (Resolve-Path $adjacent).Path }
+    if (-not $ReleaseTag) { throw "Required publisher provenance missing: $AssetName" }
+    if (-not (Test-Path $DistDir)) { New-Item $DistDir -ItemType Directory | Out-Null }
+    $cached = Join-Path $DistDir $AssetName
+    if (Test-Path $cached) { return $cached }
+    $url = "https://github.com/DineroLabs/dinero-v8/releases/download/$ReleaseTag/$AssetName"
+    try { Invoke-WebRequest $url -OutFile $cached -ErrorAction Stop }
+    catch {
+        if (Test-Path $cached) { Remove-Item $cached -Force }
+        throw "Required publisher provenance unavailable: $AssetName"
+    }
+    return $cached
+}
+
 Write-Host '----------------------------------------------------------'
 Write-Host "Building Dinero installer -- v$Version"
 Write-Host '----------------------------------------------------------'
@@ -396,7 +413,9 @@ if ($snap) {
     $manifest = Resolve-BundledSnapshotManifest $SnapshotFileName $snap $SnapshotManifestPath $SnapshotReleaseTag 'primary'
     if ($manifest) {
         Assert-SnapshotManifest $snap $manifest $SnapshotFileName 'primary'
-        & python (Join-Path $ProjectRoot 'packaging\snapshot\check_desktop_primary.py') --payload $snap --manifest $manifest --expected-name $SnapshotFileName
+        $publisherManifest = Resolve-PrimaryPublisherAsset $snap "$SnapshotFileName.publisher.manifest.json" $SnapshotReleaseTag
+        $publisherSignature = Resolve-PrimaryPublisherAsset $snap "$SnapshotFileName.publisher.manifest.sig" $SnapshotReleaseTag
+        & python (Join-Path $ProjectRoot 'packaging\snapshot\check_desktop_primary.py') --payload $snap --manifest $manifest --expected-name $SnapshotFileName --publisher-manifest $publisherManifest --publisher-signature $publisherSignature
         if ($LASTEXITCODE -ne 0) { throw 'Primary desktop snapshot is not the pinned full-v6 input.' }
         Copy-Item $manifest (Join-Path $Stage "$SnapshotFileName.manifest.json")
         Write-Host "Bundled AssumeUTXO primary manifest"

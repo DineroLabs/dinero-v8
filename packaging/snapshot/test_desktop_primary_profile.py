@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import unittest
 
-from check_desktop_primary import verify
+from check_desktop_primary import verify, verify_publisher
 from fetch_desktop_primary import fetch
 
 
@@ -105,7 +105,8 @@ class DesktopPrimaryProfileTest(unittest.TestCase):
         self.manifest.write_text(json.dumps(source))
         destination = self.root / "staged"
         payload, manifest = fetch(self.payload.as_uri(), self.manifest.as_uri(),
-                                  self.catalog, destination, allow_file=True)
+                                  self.catalog, destination, allow_file=True,
+                                  allow_unsigned_fixture=True)
         self.assertEqual(payload.name, self.name)
         self.assertEqual(json.loads(manifest.read_text())["snapshot"]["snapshot_file"], self.name)
         self.assertEqual(verify(payload, manifest, self.catalog, self.name)["profile"], "full")
@@ -119,6 +120,17 @@ class DesktopPrimaryProfileTest(unittest.TestCase):
             fetch(self.payload.as_uri(), self.manifest.as_uri(), self.catalog,
                   destination, allow_file=True)
         self.assertFalse(destination.exists())
+
+    def test_missing_publisher_signature_refuses_default_fetch(self):
+        source = json.loads(self.manifest.read_text())
+        source["snapshot"]["snapshot_file"] = "snapshot.dat"
+        self.manifest.write_text(json.dumps(source))
+        destination = self.root / "unsigned-refused"
+        with self.assertRaisesRegex(ValueError, "publisher manifest signature is required"):
+            fetch(self.payload.as_uri(), self.manifest.as_uri(), self.catalog,
+                  destination, allow_file=True)
+        self.assertFalse((destination / self.name).exists())
+        self.assertFalse((destination / (self.name + ".manifest.json")).exists())
 
     @unittest.skipUnless(shutil.which("openssl"), "OpenSSL CLI unavailable")
     def test_signed_publisher_bytes_retained_separately(self):
@@ -141,6 +153,22 @@ class DesktopPrimaryProfileTest(unittest.TestCase):
                          signature.read_bytes())
         receipt = json.loads((destination / (self.name + ".publisher.receipt.json")).read_text())
         self.assertTrue(receipt["publisher_signature_verified"])
+        staged_manifest = destination / (self.name + ".manifest.json")
+        verify_publisher(staged_manifest, destination / (self.name + ".publisher.manifest.json"),
+                         destination / (self.name + ".publisher.manifest.sig"), self.name, public)
+        rewritten = json.loads(staged_manifest.read_text())
+        rewritten["snapshot"]["height"] += 1
+        staged_manifest.write_text(json.dumps(rewritten))
+        with self.assertRaisesRegex(ValueError, "differ in height"):
+            verify_publisher(staged_manifest, destination / (self.name + ".publisher.manifest.json"),
+                             destination / (self.name + ".publisher.manifest.sig"), self.name, public)
+        rewritten = json.loads(staged_manifest.read_text())
+        rewritten["snapshot"]["height"] -= 1
+        rewritten["generated_at"] = "20990101T000000Z"
+        staged_manifest.write_text(json.dumps(rewritten))
+        with self.assertRaisesRegex(ValueError, "differ in generated_at"):
+            verify_publisher(staged_manifest, destination / (self.name + ".publisher.manifest.json"),
+                             destination / (self.name + ".publisher.manifest.sig"), self.name, public)
         # The installed manifest has a different filename and no attached sig.
         self.assertNotEqual((destination / (self.name + ".manifest.json")).read_bytes(),
                             self.manifest.read_bytes())

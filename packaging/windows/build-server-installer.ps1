@@ -264,6 +264,20 @@ function Resolve-SnapshotManifest([string]$SnapshotSourcePath) {
     throw "No adjacent manifest found for AssumeUTXO snapshot asset $SnapshotAssetName"
 }
 
+function Resolve-PrimaryPublisherAsset([string]$SnapshotSourcePath, [string]$AssetName) {
+    $adjacent = Join-Path (Split-Path -Parent $SnapshotSourcePath) $AssetName
+    if (Test-Path $adjacent) { return (Resolve-Path $adjacent).Path }
+    $cached = Join-Path $DistDir $AssetName
+    if (Test-Path $cached) { return $cached }
+    $url = "https://github.com/DineroLabs/dinero-v8/releases/download/$SnapshotReleaseTag/$AssetName"
+    try { Invoke-WebRequest $url -OutFile $cached -ErrorAction Stop }
+    catch {
+        if (Test-Path $cached) { Remove-Item $cached -Force }
+        throw "Required publisher provenance unavailable: $AssetName"
+    }
+    return $cached
+}
+
 function Assert-SnapshotManifest([string]$DataPath, [string]$ManifestPath) {
     $manifest = (Get-Content -Raw $ManifestPath | ConvertFrom-Json).snapshot
     if ($manifest.snapshot_file -ne $SnapshotFileName) {
@@ -390,7 +404,9 @@ Write-Host "  $SnapshotFileName"
 $snapshotManifest = Resolve-SnapshotManifest $snapshot
 Assert-SnapshotManifest $snapshot $snapshotManifest
 if ($SnapshotFileName -eq 'dinero-assumeutxo-150200-v6-full.dat') {
-    & python (Join-Path $ProjectRoot 'packaging\snapshot\check_desktop_primary.py') --payload $snapshot --manifest $snapshotManifest --expected-name $SnapshotFileName
+    $publisherManifest = Resolve-PrimaryPublisherAsset $snapshot "$SnapshotFileName.publisher.manifest.json"
+    $publisherSignature = Resolve-PrimaryPublisherAsset $snapshot "$SnapshotFileName.publisher.manifest.sig"
+    & python (Join-Path $ProjectRoot 'packaging\snapshot\check_desktop_primary.py') --payload $snapshot --manifest $snapshotManifest --expected-name $SnapshotFileName --publisher-manifest $publisherManifest --publisher-signature $publisherSignature
     if ($LASTEXITCODE -ne 0) { throw 'Primary server snapshot is not the pinned full-v6 input.' }
 }
 Copy-Item $snapshotManifest (Join-Path $Stage "$SnapshotFileName.manifest.json")

@@ -240,7 +240,9 @@ else
         --manifest "$SNAPSHOT_MANIFEST" "${FRESHNESS_ARGS[@]}"
     python3 "$PROJECT_ROOT/packaging/snapshot/check_desktop_primary.py" \
         --payload "$SNAPSHOT_DAT" --manifest "$SNAPSHOT_MANIFEST" \
-        --expected-name dinero-assumeutxo-150200-v6-full.dat
+        --expected-name dinero-assumeutxo-150200-v6-full.dat \
+        --publisher-manifest "${SNAPSHOT_DAT}.publisher.manifest.json" \
+        --publisher-signature "${SNAPSHOT_DAT}.publisher.manifest.sig"
     cp "$SNAPSHOT_DAT" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-150200-v6-full.dat"
     cp "$SNAPSHOT_MANIFEST" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-150200-v6-full.dat.manifest.json"
     echo "Bundling AssumeUTXO lifecycle fallback: $(basename "$SNAPSHOT_FALLBACK_DAT")"

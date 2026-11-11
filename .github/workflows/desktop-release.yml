@@ -35,7 +35,7 @@ on:
         required: false
         type: string
       snapshot_manifest_url:
-        description: 'For candidate_source: matching full-v6 manifest.json HTTPS URL'
+        description: 'For candidate_source: full-v6 manifest.json HTTPS URL; sibling .sig required'
         required: false
         type: string
 
@@ -301,6 +301,8 @@ jobs:
               --repo DineroLabs/dinero-v8 \
               --pattern dinero-assumeutxo-150200-v6-full.dat \
               --pattern dinero-assumeutxo-150200-v6-full.dat.manifest.json \
+              --pattern dinero-assumeutxo-150200-v6-full.dat.publisher.manifest.json \
+              --pattern dinero-assumeutxo-150200-v6-full.dat.publisher.manifest.sig \
               --dir release-inputs
           fi
           gh release download v8.2.2 \
@@ -510,7 +512,10 @@ jobs:
 
       - name: Overlay reviewed architecture-aware packaging helpers
         run: |
-          cp "${GITHUB_WORKSPACE}/tooling/packaging/mac/build-installer.sh" packaging/mac/
+          cmp -s "${GITHUB_WORKSPACE}/tooling/packaging/mac/build-installer.sh" packaging/mac/build-installer.sh || {
+            echo 'Immutable source and reviewed tooling have different Mac installer helpers' >&2
+            exit 1
+          }
           cp "${GITHUB_WORKSPACE}/tooling/packaging/mac/assert-v8-release-lane.sh" packaging/mac/
           chmod +x packaging/mac/build-installer.sh packaging/mac/assert-v8-release-lane.sh
 
@@ -569,6 +574,8 @@ jobs:
             --repo DineroLabs/dinero-v8 \
             --pattern dinero-assumeutxo-150200-v6-full.dat \
             --pattern dinero-assumeutxo-150200-v6-full.dat.manifest.json \
+            --pattern dinero-assumeutxo-150200-v6-full.dat.publisher.manifest.json \
+            --pattern dinero-assumeutxo-150200-v6-full.dat.publisher.manifest.sig \
             --dir release-inputs
           gh release download v8.2.2 \
             --repo DineroLabs/dinero-v8 \
