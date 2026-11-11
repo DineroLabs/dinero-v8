@@ -6087,8 +6087,13 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   if(DINERO_BUILD_ORCHARD_BACKEND)
     add_test(NAME OrchardCompactDownloadMode COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactDownloadMode.*)
     set_tests_properties(OrchardCompactDownloadMode PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;p2p;mandatory")
-    add_test(NAME OrchardCompactHeaderBinding COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactHeaderBinding.*)
-    set_tests_properties(OrchardCompactHeaderBinding PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;headers;mandatory")
+    # The Orchard root build registers each header-binding case separately.
+    # K4's separation build needs the suite name as a consensus vector, but
+    # registering it in the root build runs every case twice.
+    if(DINERO_SEPARATION_GATES)
+      add_test(NAME OrchardCompactHeaderBinding COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactHeaderBinding.*)
+      set_tests_properties(OrchardCompactHeaderBinding PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;headers;mandatory")
+    endif()
   endif()
   add_test(NAME UtreexoBlockPayload COMMAND test_assumeutxo_replay --gtest_filter=UtreexoBlockPayload.*)
   set_tests_properties(UtreexoBlockPayload PROPERTIES TIMEOUT 180 LABELS "daemon;utreexo;p2p;mandatory")

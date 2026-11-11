@@ -516,6 +516,18 @@ jobs:
           [ "$rc" -ne 0 ] || sep_ctest SepTxValidationBinds || rc=$?
           gate_result K6 "$rc" "" "tx_validation.h manifest hash or SepTxValidationBinds (ChainStateView/CoinsViewCache binding) did not pass"; exit "$rc"
 
+      - name: O1 orchard consensus boundary
+        id: o1
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' && env.SEP_CFG == 'on' }}
+        run: |
+          . "$RUNNER_TEMP/sep_gate.sh"
+          # O1 measures built Orchard archives: ON lanes only (the gated
+          # targets do not exist in OFF builds). Ratchet semantics per
+          # check_orchard_boundary.py; the committed baseline may only shrink.
+          rc=0
+          python scripts/ci/separation/check_orchard_boundary.py --build "$SEP_BUILD"             --nm "$(command -v nm)" --ninja "$(command -v ninja)" || rc=$?
+          gate_result O1 "$rc" "" "orchard boundary: symbol or header reach above baseline (or stale baseline)"; exit "$rc"
+
       - name: W1 wallet forced link
         id: w1
         if: ${{ !cancelled() && steps.configure.outcome == 'success' }}
