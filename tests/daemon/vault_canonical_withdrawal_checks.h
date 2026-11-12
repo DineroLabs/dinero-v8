@@ -109,6 +109,7 @@ TEST(VaultCanonicalWithdrawal, ActualInclusionMaturityUndoReopenAndReinclusionKe
     const auto included=f.Mine(body);f.Observe();
     EXPECT_TRUE(std::holds_alternative<vault::WithdrawalPaymentRetained>(f.bound.service->withdrawalState(id)));
     EXPECT_EQ(f.bound.service->accountLocked(f.account),20000u);f.MineEmpty();f.Observe();
+    const auto retained_child_hash=f.f.service->GetActiveTip()->hash;
     const auto confirmed=std::get<vault::WithdrawalPaymentConfirmed>(f.bound.service->withdrawalState(id));
     EXPECT_EQ(confirmed.inclusion.height,103u);EXPECT_EQ(confirmed.inclusion.block_hash,f.Raw(included->Orchard().Header().GetHash()));
     EXPECT_EQ(f.bound.service->accountConfirmed(f.account),80000u);EXPECT_EQ(f.bound.service->accountLocked(f.account),0u);
@@ -118,16 +119,21 @@ TEST(VaultCanonicalWithdrawal, ActualInclusionMaturityUndoReopenAndReinclusionKe
     EXPECT_EQ(f.bound.service->accountConfirmed(f.account),100000u);EXPECT_EQ(f.bound.service->accountLocked(f.account),20000u);
     EXPECT_EQ(f.bound.service->accountSpendable(f.account),80000u);EXPECT_EQ(f.Sources(id),sources);
     const auto undone=f.Bytes();f.Reopen();EXPECT_EQ(f.Bytes(),undone);EXPECT_EQ(f.wallet->get().getPendingPayments().at(0).signed_body,retained);
-    // Both retained descendants need whole-branch validation. The nested RPC
-    // router defers that work; drive the same root maintenance used by the node.
+    // The re-admitted parent has an already-proved prefix. It connects that
+    // prefix while the retained child still awaits whole-branch validation.
+    // P2P maintenance invokes ActivateBestChain when the best header remains
+    // ahead of the selected tip. Drive that root pass here and require the
+    // exact child without changing the vault's retained request or sources.
     const auto* before_retry=f.f.service->GetActiveTip();
-    const auto deferred=f.Submit(included->Orchard().WireBytes());
-    ASSERT_TRUE(deferred.retained())<<deferred.reason;
-    EXPECT_FALSE(deferred.connected);
-    EXPECT_EQ(f.f.service->GetActiveTip(),before_retry);
+    const auto first=f.Submit(included->Orchard().WireBytes());
+    ASSERT_TRUE(first.accepted()&&first.connected)<<first.reason;
+    ASSERT_EQ(first.height,103u);
+    ASSERT_NE(f.f.service->GetActiveTip(),before_retry);
+    ASSERT_EQ(f.f.service->GetActiveTip()->hash,included->Orchard().Header().GetHash());
     EXPECT_EQ(f.Bytes(),undone);EXPECT_EQ(f.Sources(id),sources);
     EXPECT_EQ(f.wallet->get().getPendingPayments().at(0).signed_body,retained);
-    f.f.service->PumpReplayMetadataRecovery();
+    f.f.service->ActivateBestChain();
+    ASSERT_EQ(f.f.service->GetActiveTip()->hash,retained_child_hash);
     const auto result=f.Submit(included->Orchard().WireBytes());ASSERT_TRUE(result.accepted()&&result.connected)<<result.reason;
     ASSERT_GT(f.f.service->GetActiveTip()->height,result.height);
     uint256 canonical_hash;
@@ -138,7 +144,7 @@ TEST(VaultCanonicalWithdrawal, ActualInclusionMaturityUndoReopenAndReinclusionKe
     ASSERT_TRUE(repeated.accepted()&&repeated.connected)<<repeated.reason;
     EXPECT_EQ(repeated.block_hash,result.block_hash);EXPECT_EQ(repeated.height,result.height);
     EXPECT_EQ(f.f.service->GetActiveTip()->hash,selected_tip);
-    f.MineEmpty();f.Observe();EXPECT_TRUE(std::holds_alternative<vault::WithdrawalPaymentConfirmed>(f.bound.service->withdrawalState(id)));
+    f.MineEmpty();f.Observe();ASSERT_TRUE(std::holds_alternative<vault::WithdrawalPaymentConfirmed>(f.bound.service->withdrawalState(id)));
     EXPECT_EQ(f.Sources(id),sources);EXPECT_EQ(f.bound.service->accountConfirmed(f.account),80000u);
     EXPECT_EQ(f.wallet->get().getPendingPayments().at(0).signed_body,retained);
 }
