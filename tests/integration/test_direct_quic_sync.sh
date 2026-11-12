@@ -53,9 +53,20 @@ start() {  # start <name> <rpc> <p2p> <extra args...>
 [[ -x "${DINEROD}" ]] || fail "dinerod not found at ${DINEROD}"
 
 start a "${A_RPC}" "${A_P2P}" --listen=1 --quic="${A_QUIC}"
-start b "${B_RPC}" "${B_P2P}" --listen=0 --quicconnect="127.0.0.1:${A_P2P}"
+start b "${B_RPC}" "${B_P2P}" --listen=0 --maxconnections=1 --connect=0 \
+    --quicconnect="localhost:${A_P2P}"
 wait_rpc "${A_RPC}" "${WORK}/a" || fail "A RPC never came up"
 wait_rpc "${B_RPC}" "${WORK}/b" || fail "B RPC never came up"
+
+b_network="$(rpc "${B_RPC}" "${WORK}/b" getnetworkinfo '[]' | result)"
+python3 -c '
+import json,sys
+n=json.loads(sys.argv[1])
+q=n["quic_transport"]
+assert n["listen"] is False, n
+assert q["listening"] is False and q["listen_port"] == 0, q
+' "${b_network}" || fail "listen=0 advertised inbound TCP or QUIC"
+pass "B reports both inbound transports disabled while retaining outbound QUIC"
 
 if [[ "${A_QUIC}" == 1 ]]; then
     listening="$(rpc "${A_RPC}" "${WORK}/a" getnetworkinfo '[]' | result |

@@ -326,7 +326,11 @@ listen=true
 
 **Use Cases:**
 - `listen=true` - Public node (accepts inbound)
-- `listen=false` - Private node (outbound only)
+- `listen=false` - Private node (outbound only). No TCP listener or inbound QUIC
+  sessions or relay-backed inbound peers are accepted. Direct outbound QUIC
+  uses an ephemeral UDP socket, and originated relay circuits remain available.
+  Automatic relay registration and STUN discovery are disabled because there
+  is no inbound route to advertise.
 
 ---
 
@@ -373,9 +377,11 @@ connect=192.168.1.101:20999
 ```
 
 **Behavior:**
-- Daemon connects ONLY to these nodes
+- Daemon dials only these nodes and any explicitly configured `quicconnect` targets
+- `quicconnect` accepts numeric IPv4/IPv6 endpoints and hostnames with IPv4 records
 - Disables DNS seed discovery
-- Disables automatic peer discovery
+- Disables automatic peer and relay discovery, dial-back probes, and hole punching
+- Disables automatic STUN discovery, including public fallback servers
 - Use for isolated/private networks
 
 ---
@@ -386,7 +392,7 @@ connect=192.168.1.101:20999
 **Type:** Integer
 **Default:** `125`
 **Status:** STABLE
-**Valid:** `8-10000`
+**Valid:** `1-10000`
 
 Maximum number of total connections (inbound + outbound).
 
@@ -396,7 +402,7 @@ maxconnections=125
 ```
 
 **Constraints:**
-- Minimum: 8 (required for network health)
+- Minimum: 1 (for isolated or resource-constrained nodes; 8 or more is recommended for public nodes)
 - Maximum: 10000 (theoretical limit)
 - Recommended: 125 (default)
 
@@ -823,7 +829,7 @@ Pruning:
 
 3. **Valid Range Changed**
    - Old range: `p2p.maxconnections=1-1000`
-   - New range: `p2p.maxconnections=8-10000`
+   - New range: `p2p.maxconnections=1-10000` (8 or more recommended for public nodes)
    - **Policy:** Reject invalid configs with clear error message
 
 4. **Option Removed**

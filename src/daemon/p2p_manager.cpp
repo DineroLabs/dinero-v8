@@ -1216,6 +1216,7 @@ void P2PManager::handle_relay_connect(const std::string& peer_address,
 // the path.
 void P2PManager::handle_relay_data(const std::string& peer_address,
                                    const P2PMessage& message) {
+    if (connect_only_) return;
     if (message.payload.size() < 9) {
         return;  // need at least circuit_id_8 + direction_1
     }
@@ -1480,6 +1481,7 @@ void P2PManager::RecomputeRelayBehindThrottle() {
 
 bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_address,
                                             const P2PMessage& message) {
+    if (connect_only_) return false;
     if (message.payload.size() < 9) {
         return false;
     }
@@ -1526,6 +1528,9 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
     }
 
     if (!is_local_endpoint) {
+        // A relay is another inbound transport. Outbound-only nodes may
+        // originate circuits, but must not accept a new target-side peer.
+        if (!listen_enabled_) return true;
         std::shared_ptr<PeerInfo> relay_peer;
         {
             std::lock_guard<std::mutex> lock(peers_mutex_);
@@ -1596,9 +1601,16 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
             }
         }
 
+        bool admitted = false;
         {
             std::lock_guard<std::mutex> lock(peers_mutex_);
-            connected_peers_.emplace(virtual_peer_key, std::move(virtual_peer));
+            if (active_peer_count_locked() < max_total_connections_) {
+                admitted = connected_peers_.emplace(virtual_peer_key, virtual_peer).second;
+            }
+        }
+        if (!admitted) {
+            if (virtual_peer->relay_quic_session) virtual_peer->relay_quic_session->Close();
+            return true;
         }
         is_local_endpoint = true;
         std::cout << "[P2P] relay-data: created inbound virtual peer "
@@ -1625,7 +1637,10 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
                 }
             }
             if (handler_peer) {
-                start_peer_handler_thread(std::move(handler_peer));
+                if (!start_peer_handler_thread(std::move(handler_peer))) {
+                    cleanup_peer(virtual_peer_key);
+                    return true;
+                }
             }
         }
     }
@@ -1939,6 +1954,7 @@ bool P2PManager::relay_serving() const {
 }
 
 void P2PManager::set_relay_service_enabled(bool enabled) {
+    if (connect_only_ || !listen_enabled_) enabled = false;
     const bool was = relay_service_enabled_.exchange(enabled, std::memory_order_acq_rel);
     if (was && !enabled) {
         // Our registrants must not keep counting on a relay that left.
@@ -1967,6 +1983,7 @@ uint64_t P2PManager::SendRelayConnect(
     const std::array<uint8_t, 20>& target_node_id,
     std::function<void(bool ok, uint64_t circuit_id,
                        const std::string& msg)> callback) {
+    if (connect_only_) return 0;
     // Origin-side mainnet gate removed: the orchestrator's install path now
     // wires a QUIC client session on the resulting circuit, so the data
     // plane is encrypted end-to-end. RELAY_CONNECT itself rides the existing
@@ -2112,6 +2129,7 @@ std::string P2PManager::install_outbound_virtual_relay_peer(
     const std::array<uint8_t, 20>& target_node_id,
     const std::string& relay_peer_address,
     uint64_t circuit_id) {
+    if (connect_only_) return {};
     // Reply demultiplexing reconstructs this name from the acknowledged
     // numeric circuit ID. Use its canonical, fixed-width representation so
     // circuits with leading zero hex digits remain addressable.
@@ -2173,9 +2191,17 @@ std::string P2PManager::install_outbound_virtual_relay_peer(
         }
     }
 
+    bool admitted = false;
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
-        connected_peers_[virtual_peer_key] = peer;
+        if (active_peer_count_locked() < max_total_connections_) {
+            connected_peers_[virtual_peer_key] = peer;
+            admitted = true;
+        }
+    }
+    if (!admitted) {
+        if (peer->relay_quic_session) peer->relay_quic_session->Close();
+        return {};
     }
     return virtual_peer_key;
 }
@@ -2411,7 +2437,10 @@ P2PManager::ManualRelayDialResult P2PManager::TryDialRelayHint(
                       << std::hex << circuit_id << std::dec
                       << " to " << target_hex << " via "
                       << relay_peer_address << std::endl;
-            start_peer_handler_thread(std::move(virtual_peer));
+            if (!start_peer_handler_thread(std::move(virtual_peer))) {
+                cleanup_peer(virtual_peer_key);
+                return;
+            }
             {
                 std::lock_guard<std::mutex> hints_lock(relay_hints_mutex_);
                 auto hit = relay_hints_by_target_.find(target_hex);
@@ -2604,7 +2633,7 @@ void P2PManager::SignedRelayHintsTick(bool force) {
 
     // As a NAT'd target: one freshly signed hint per confirmed relay.
     std::vector<std::vector<uint8_t>> ours;
-    if (node_identity_) {
+    if (node_identity_ && listen_enabled_ && !connect_only_) {
         std::vector<std::pair<std::string, uint16_t>> relays;
         {
             std::lock_guard<std::mutex> lock(peers_mutex_);
@@ -2712,6 +2741,7 @@ void P2PManager::test_set_peer_services(const std::string& peer_key, uint64_t se
 #endif
 
 void P2PManager::OrchestrateRelayDials() {
+    if (connect_only_) return;
     if (!node_identity_) return;  // can't drive dineroid for the inner handshake
 
     // Snapshot the side-table + already-connected key set so the rest
@@ -2902,7 +2932,10 @@ void P2PManager::OrchestrateRelayDials() {
                           << std::hex << circuit_id << std::dec
                           << " to " << target_hex << " via "
                           << relay_peer_address << std::endl;
-                start_peer_handler_thread(std::move(virtual_peer));
+                if (!start_peer_handler_thread(std::move(virtual_peer))) {
+                    cleanup_peer(virtual_peer_key);
+                    return;
+                }
                 {
                     std::lock_guard<std::mutex> hints_lock(relay_hints_mutex_);
                     auto hit = relay_hints_by_target_.find(target_hex);
@@ -3422,6 +3455,7 @@ void P2PManager::handle_relay_hints(const std::string& peer_address,
 // Lookup is O(N) over configured_relay_endpoints_ (capped at ~3 entries
 // in practice). Per-handshake cost is negligible.
 void P2PManager::SendRelayRegisterIfConfigured(PeerInfo* peer) {
+    if (connect_only_ || !listen_enabled_) return;
     if (!peer || !node_identity_) return;
     if (!peer->identity_proven) return;       // need dineroid to have run
 
@@ -3474,6 +3508,7 @@ void P2PManager::SendRelayRegisterIfConfigured(PeerInfo* peer) {
 // fine — slice 2 doesn't reject duplicates, and the connection is
 // still the same (replay-binding is per-connection).
 void P2PManager::RefreshRelayRegistrations() {
+    if (connect_only_ || !listen_enabled_) return;
     if (!node_identity_) return;
     {
         std::lock_guard<std::mutex> lock(relay_endpoints_mutex_);
@@ -4735,6 +4770,7 @@ constexpr std::pair<const char*, uint16_t> kMainnetRelayPeers[] = {
 }  // namespace
 
 void P2PManager::MaybeAutoRegisterWithRelays() {
+    if (connect_only_ || !listen_enabled_) return;
     // An operator pinned relays via relayregister= — never override them.
     if (relay_endpoints_from_config_.load(std::memory_order_acquire)) return;
 
@@ -5176,6 +5212,7 @@ bool P2PManager::probe_onion_proxy(std::string* message) {
 
 void P2PManager::add_advertised_address(const std::string& address, uint16_t port, bool learned,
                                         dinero::p2p::CandidateSource source) {
+    if (!listen_enabled_) return;
     if (IsLocalOrWildcardAddress(address) || port == 0) {
         std::cout << "[P2P] Skipping unroutable advertised address: "
                   << address << ":" << port << std::endl;
@@ -5329,13 +5366,18 @@ bool P2PManager::start() {
     shutdown_requested_ = false;
     network_active_.store(true, std::memory_order_release);
 
-    if (quic_enabled_ && relay_tls_ready_ && !start_quic_endpoint(listen_port_)) {
+    // Outbound direct QUIC still needs a local UDP socket when listen=0.
+    // Use an ephemeral port and refuse inbound sessions in AcceptFn below.
+    if (quic_enabled_ && relay_tls_ready_ &&
+        !start_quic_endpoint(listen_enabled_ ? listen_port_ : 0)) {
         std::cout << "[P2P] quic: direct QUIC peers unavailable (UDP " << listen_port_
                   << " not bound or QUIC not compiled in)" << std::endl;
     }
     
     // Start listen thread
-    listen_thread_ = std::make_unique<std::thread>(&P2PManager::listen_loop, this);
+    if (listen_enabled_) {
+        listen_thread_ = std::make_unique<std::thread>(&P2PManager::listen_loop, this);
+    }
 
     // Start connection manager thread
     connection_manager_thread_ = std::make_unique<std::thread>(&P2PManager::connection_manager_loop, this);
@@ -5349,7 +5391,9 @@ bool P2PManager::start() {
 
     running_ = true;
 
-    std::cout << "P2P manager started on port " << listen_port_ << " (async outbox + keepalive enabled)" << std::endl;
+    std::cout << "P2P manager started "
+              << (listen_enabled_ ? "on port " + std::to_string(listen_port_) : "outbound-only")
+              << " (async outbox + keepalive enabled)" << std::endl;
     return true;
 }
 
@@ -5757,6 +5801,27 @@ bool P2PManager::connect_to_peer(const std::string& address, uint16_t port) {
     return connect_to_peer_impl(address, port, false);
 }
 
+void P2PManager::set_connect_only_targets(
+    bool enabled, std::vector<std::pair<std::string, uint16_t>> targets) {
+    connect_only_targets_.clear();
+    for (const auto& [host, port] : targets) {
+        std::string endpoint = dinero::network::FormatEndpoint(host, port);
+        std::transform(endpoint.begin(), endpoint.end(), endpoint.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        connect_only_targets_.insert(std::move(endpoint));
+    }
+    connect_only_ = enabled;
+    if (enabled) set_relay_service_enabled(false);
+}
+
+bool P2PManager::connect_only_allows(const std::string& address, uint16_t port) const {
+    if (!connect_only_) return true;
+    std::string endpoint = dinero::network::FormatEndpoint(address, port);
+    std::transform(endpoint.begin(), endpoint.end(), endpoint.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return connect_only_targets_.count(endpoint) != 0;
+}
+
 std::optional<std::string> P2PManager::resolve_ipv4_for_dial(
     const std::string& host, std::chrono::milliseconds timeout) const {
     struct in_addr ipv4 {};
@@ -5788,6 +5853,7 @@ unsigned P2PManager::test_resolver_in_flight() {
 bool P2PManager::connect_to_peer_impl(const std::string& address, uint16_t port,
                                       bool is_feeler,
                                       const std::optional<std::string>& pre_resolved_ip) {
+    if (!connect_only_allows(address, port)) return false;
     if (shutdown_requested_.load(std::memory_order_acquire) ||
         !network_active_.load(std::memory_order_acquire)) {
         return false;
@@ -5864,7 +5930,9 @@ bool P2PManager::connect_to_peer_impl(const std::string& address, uint16_t port,
     }
 
     // Check if already connected or connection in progress
-    std::string peer_key = dinero::network::FormatEndpoint(address, port);
+    // The handler keys the peer by its resolved address. Reserve that same
+    // key so a DNS seed cannot leave a stale connecting slot after handshake.
+    std::string peer_key = dinero::network::FormatEndpoint(resolved_ip, port);
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         auto it = connected_peers_.find(peer_key);
@@ -5885,6 +5953,10 @@ bool P2PManager::connect_to_peer_impl(const std::string& address, uint16_t port,
                 release_feeler();
                 return true;
             }
+        }
+        if (reserved_peer_slots_locked() >= max_total_connections_) {
+            release_feeler();
+            return false;
         }
         connecting_peers_.insert(peer_key);
     }
@@ -6026,7 +6098,7 @@ void P2PManager::connection_manager_loop() {
         // TS2 COMPLIANT: Collect connection targets inside lock, connect outside lock
         std::vector<dinero::p2p::NetworkAddress> addrman_candidates;
         bool durable_outbound_full = false;
-        if (address_manager_) {
+        if (address_manager_ && !connect_only_) {
             // AddrMan also contains bootstrap endpoints. Draw an extra margin
             // so those duplicates cannot crowd learned community candidates
             // out of the randomized sample.
@@ -6343,17 +6415,6 @@ void P2PManager::handle_incoming_connection(int client_socket, const std::string
         return;
     }
 
-    // Enforce inbound connection caps to prevent resource exhaustion
-    {
-        std::lock_guard<std::mutex> lock(peers_mutex_);
-        std::string why;
-        if (!inbound_slot_available_locked(client_address, &why)) {
-            std::cout << "[P2P] " << why << ", rejecting " << client_address << std::endl;
-            close_socket(client_socket);
-            return;
-        }
-    }
-
     // SELF-LOOP PREVENTION: Only reject true self-connections
     // Note: For incoming connections, we cannot know the peer's listening port
     // (only their ephemeral source port). Self-connection prevention is primarily
@@ -6401,6 +6462,23 @@ void P2PManager::handle_incoming_connection(int client_socket, const std::string
         return;
     }
 
+    // Reserve the socket before spawning its handshake thread. Otherwise two
+    // accepts in the same listen-loop pass can both pass the cap check while
+    // neither handler has inserted its peer yet.
+    const std::string peer_key = dinero::network::FormatEndpoint(client_address, source_port);
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        std::string why;
+        if (!inbound_slot_available_locked(client_address, &why) ||
+            connecting_peers_.count(peer_key) || connected_peers_.count(peer_key)) {
+            std::cout << "[P2P] " << (why.empty() ? "Duplicate inbound peer" : why)
+                      << ", rejecting " << peer_key << std::endl;
+            close_socket(client_socket);
+            return;
+        }
+        connecting_peers_.insert(peer_key);
+    }
+
     // Ring 3 Phase 4c: Create peer with shared_ptr for TS1 compliance
     auto peer = std::make_shared<PeerInfo>();
     peer->address = client_address;
@@ -6421,6 +6499,10 @@ void P2PManager::handle_incoming_connection(int client_socket, const std::string
     if (test_before_peer_handler_start_) test_before_peer_handler_start_(client_socket);
 #endif
     if (!start_peer_handler_thread(peer)) {
+        {
+            std::lock_guard<std::mutex> lock(peers_mutex_);
+            connecting_peers_.erase(peer_key);
+        }
         close_socket(client_socket);
     }
 }
@@ -6551,10 +6633,28 @@ void P2PManager::peer_handler_loop(std::shared_ptr<PeerInfo> peer) {
 
     // Add to connected peers (manager takes ownership via shared_ptr)
     std::weak_ptr<PeerInfo> peer_weak;  // TS1 Invariant O1: Worker holds weak_ptr only
+    bool capacity_refused = false;
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
-        connected_peers_[peer_key] = peer;  // shared_ptr copied (not moved)
-        peer_weak = peer;  // Create weak_ptr for thread-safe access
+        const auto existing = connected_peers_.find(peer_key);
+        const bool already_reserved = existing != connected_peers_.end() &&
+                                      existing->second == peer;
+        if (!already_reserved && active_peer_count_locked() >= max_total_connections_) {
+            connecting_peers_.erase(peer_key);
+            capacity_refused = true;
+        } else {
+            connected_peers_[peer_key] = peer;  // shared_ptr copied (not moved)
+            peer_weak = peer;  // Create weak_ptr for thread-safe access
+        }
+    }
+    if (capacity_refused) {
+        peer->lifetime_state.store(PeerLifetimeState::STOPPING, std::memory_order_release);
+        if (peer->socket_fd >= 0) close_socket(peer->socket_fd);
+        peer->socket_fd = -1;
+        if (peer->relay_quic_session) peer->relay_quic_session->Close();
+        std::cout << "[P2P] Total connection limit reached ("
+                  << max_total_connections_ << "), rejecting " << peer_key << std::endl;
+        return;
     }
 
     // Perform handshake
@@ -8147,7 +8247,35 @@ std::string QuicRemoteHost(const dinero::network::UdpAddr& remote) {
 }
 }  // namespace
 
+size_t P2PManager::active_peer_count_locked() const {
+    size_t active = 0;
+    for (const auto& [_, peer] : connected_peers_) {
+        if (!peer) continue;
+        const auto state = peer->lifetime_state.load(std::memory_order_acquire);
+        if (state != PeerLifetimeState::STOPPING && state != PeerLifetimeState::JOINED) ++active;
+    }
+    return active;
+}
+
+size_t P2PManager::reserved_peer_slots_locked() const {
+    size_t slots = active_peer_count_locked();
+    for (const auto& key : connecting_peers_) {
+        const auto it = connected_peers_.find(key);
+        if (it == connected_peers_.end() || !it->second ||
+            it->second->lifetime_state.load(std::memory_order_acquire) == PeerLifetimeState::STOPPING ||
+            it->second->lifetime_state.load(std::memory_order_acquire) == PeerLifetimeState::JOINED) {
+            ++slots;
+        }
+    }
+    return slots;
+}
+
 bool P2PManager::inbound_slot_available_locked(const std::string& ip, std::string* why) const {
+    if (reserved_peer_slots_locked() >= max_total_connections_) {
+        if (why) *why = "Total connection limit reached (" +
+                        std::to_string(max_total_connections_) + ")";
+        return false;
+    }
     size_t inbound_count = 0;
     size_t same_ip_count = 0;  // same IPv4 address or same IPv6 /64
     const std::string host_key = AddressLimitKey(ip);
@@ -8192,7 +8320,7 @@ bool P2PManager::start_quic_endpoint(uint16_t port) {
         // Runs on the endpoint's socket thread under its mutex: no endpoint
         // calls from here, and is_peer_banned before taking peers_mutex_.
         [this](const dinero::network::UdpAddr& remote) {
-            if (shutdown_requested_.load(std::memory_order_acquire) ||
+            if (!listen_enabled_ || shutdown_requested_.load(std::memory_order_acquire) ||
                 !network_active_.load(std::memory_order_acquire)) {
                 return false;
             }
@@ -8216,7 +8344,9 @@ bool P2PManager::start_quic_endpoint(uint16_t port) {
         });
     if (!ok) return false;
     quic_endpoint_ = std::move(endpoint);
-    std::cout << "[P2P] quic: direct QUIC peers listening on UDP " << quic_endpoint_->Port()
+    std::cout << "[P2P] quic: direct QUIC "
+              << (listen_enabled_ ? "listening" : "outbound-only")
+              << " on UDP " << quic_endpoint_->Port()
               << std::endl;
     return true;
 }
@@ -8498,6 +8628,7 @@ void P2PManager::SendPunchProbes(const std::vector<dinero::network::UdpAddr>& ta
 }
 
 void P2PManager::PunchTick() {
+    if (connect_only_ || !listen_enabled_) return;
     std::lock_guard<std::mutex> tick_lock(punch_tick_mutex_);
     if (!node_identity_ || shutdown_requested_.load(std::memory_order_acquire)) return;
     const PunchPeerId ours = node_identity_->get_node_id_bytes();
@@ -9020,6 +9151,7 @@ uint64_t P2PManager::send_reach_check(const std::string& peer_key,
 }
 
 void P2PManager::run_reachability_tick() {
+    if (connect_only_ || !listen_enabled_) return;
     const auto now = std::chrono::steady_clock::now();
     // Requests that never got an answer count as failures.
     {
@@ -9067,6 +9199,7 @@ void P2PManager::run_reachability_tick() {
 
 uint8_t P2PManager::dialback_probe(const std::string& ip, uint16_t port,
                                    const std::array<uint8_t, 20>& expected) {
+    if (connect_only_) return kReachRefusedRate;
     const int fd = create_client_socket(ip, port);
     if (fd < 0) return kReachConnectFailed;
     // Transient, never in connected_peers_: a feeler-style handshake that
@@ -9138,6 +9271,11 @@ void P2PManager::handle_reach_check(const std::string& peer_address, const P2PMe
         }
         send_to_peer(peer_address, res);
     };
+
+    if (connect_only_) {
+        reply(kReachRefusedRate, 0);
+        return;
+    }
 
     if (transport != static_cast<uint8_t>(dinero::p2p::Transport::Tcp) || via_relay || port == 0 ||
         (!dialback_private_targets_.load() && !IsAdvertisableAddress(target_ip, port))) {
@@ -9266,9 +9404,13 @@ size_t P2PManager::test_reach_checks_sent() const {
 #endif
 
 uint64_t P2PManager::local_quic_service_bits() const {
-    return (quic_endpoint_ && quic_endpoint_->Listening())
+    return accepts_inbound_quic()
                ? (ServiceFlags::NODE_P2P_QUIC | ServiceFlags::NODE_HOLEPUNCH)
                : 0;
+}
+
+bool P2PManager::accepts_inbound_quic() const noexcept {
+    return listen_enabled_ && quic_endpoint_ && quic_endpoint_->Listening();
 }
 
 void P2PManager::set_quic_connect_targets(std::vector<std::string> targets) {
@@ -9307,31 +9449,38 @@ void P2PManager::dial_quic_connect_targets() {
 bool P2PManager::connect_to_peer_quic(
     const std::string& ip, uint16_t port,
     std::optional<std::array<uint8_t, 20>> punch_expected_id) {
+    // Authorize the operator's configured name before resolving it. DNS must
+    // never turn an ambient target into an allowed connect-only dial.
+    if (!connect_only_allows(ip, port)) return false;
     if (shutdown_requested_.load(std::memory_order_acquire) ||
         !network_active_.load(std::memory_order_acquire) ||
         !quic_endpoint_ || !quic_endpoint_->Listening()) {
         return false;
     }
+    const auto resolved_ip = resolve_ipv4_for_dial(ip);
+    if (!resolved_ip) return false;
     dinero::network::UdpAddr remote;
     uint8_t buf[16];
-    if (inet_pton(AF_INET, ip.c_str(), buf) == 1) {
+    if (inet_pton(AF_INET, resolved_ip->c_str(), buf) == 1) {
         remote = dinero::network::UdpAddr::FromIPv4(buf, port);
-    } else if (inet_pton(AF_INET6, ip.c_str(), buf) == 1) {
+    } else if (inet_pton(AF_INET6, resolved_ip->c_str(), buf) == 1) {
         remote = dinero::network::UdpAddr::FromIPv6(buf, port);
     } else {
         return false;
     }
     if (port == quic_endpoint_->Port() &&
-        ((!external_ip_.empty() && ip == external_ip_) || dinero::network::IsLocalInterfaceIp(ip))) {
+        ((!external_ip_.empty() && *resolved_ip == external_ip_) ||
+         dinero::network::IsLocalInterfaceIp(*resolved_ip))) {
         return false;  // ourselves
     }
-    if (is_peer_banned(ip, port)) return false;
+    if (is_peer_banned(ip, port) || is_peer_banned(*resolved_ip, port)) return false;
     const std::string key = dinero::network::FormatEndpoint(QuicRemoteHost(remote), port);
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
         auto it = connected_peers_.find(key);
         if (it != connected_peers_.end() && it->second->is_connected) return false;
         if (connecting_peers_.count(key)) return false;
+        if (reserved_peer_slots_locked() >= max_total_connections_) return false;
     }
     auto session = quic_endpoint_->Connect(remote, quic_p2p_options_);
     if (!session) return false;
@@ -9373,7 +9522,8 @@ std::string P2PManager::install_direct_quic_peer(
         auto it = connected_peers_.find(key);
         const bool live = it != connected_peers_.end() &&
             it->second->lifetime_state.load(std::memory_order_acquire) != PeerLifetimeState::STOPPING;
-        if (live || connecting_peers_.count(key)) {
+        if (live || connecting_peers_.count(key) ||
+            active_peer_count_locked() >= max_total_connections_) {
             refused = true;
         } else {
             // Reserve the address until the handshake ends (the handler or
