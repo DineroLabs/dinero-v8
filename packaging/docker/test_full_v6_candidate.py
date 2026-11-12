@@ -149,24 +149,24 @@ class FullV6DockerCandidateTest(unittest.TestCase):
         self.assertNotEqual(run_check('b' * 40).returncode, 0)
         self.assertNotEqual(run_check(expected_sha, '8.2.2').returncode, 0)
 
-    def test_image_admission_refuses_current_unqualified_catalog(self):
+    def test_image_admission_requires_qualified_catalog(self):
         workflow = (ROOT / '.github/workflows/docker-publish.yml').read_text()
         script = workflow_run_script(workflow, 'Admit exact full-v6 catalog primary')
         current = subprocess.run(['bash', '-e', '-c', script], cwd=ROOT,
                                  text=True, capture_output=True)
-        self.assertNotEqual(current.returncode, 0)
-        self.assertIn('native-qualified catalog pin is unavailable', current.stderr)
+        self.assertEqual(current.returncode, 0, current.stderr)
 
         catalog_dir = self.root / 'packaging/snapshot'
         catalog_dir.mkdir(parents=True)
         catalog_dir.joinpath('desktop-inputs-candidate.json').write_text(json.dumps({
-            'primary': {'filename': 'dinero-assumeutxo-150521-v6-full.dat',
-                        'height': 150521, 'format_version': 6,
-                        'snapshot_profile': 'full', 'bytes': 4096,
-                        'sha256': 'a' * 64, 'block_hash': 'b' * 64}}))
-        qualified_shape = subprocess.run(['bash', '-e', '-c', script], cwd=self.root,
-                                         text=True, capture_output=True)
-        self.assertEqual(qualified_shape.returncode, 0, qualified_shape.stderr)
+            'primary': {'filename': 'dinero-assumeutxo-148375-v5.dat',
+                        'height': 148375, 'format_version': 5,
+                        'bytes': 4096, 'sha256': 'a' * 64,
+                        'block_hash': 'b' * 64}}))
+        legacy = subprocess.run(['bash', '-e', '-c', script], cwd=self.root,
+                                text=True, capture_output=True)
+        self.assertNotEqual(legacy.returncode, 0)
+        self.assertIn('native-qualified catalog pin is unavailable', legacy.stderr)
 
     def test_manual_candidate_requires_exact_source_hashes_and_dry_run(self):
         workflow = (ROOT / '.github/workflows/docker-publish.yml').read_text()
