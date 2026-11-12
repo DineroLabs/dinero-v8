@@ -2028,6 +2028,8 @@ TEST(OrchardHistoryCache, FreshGuardReadsExactPublicBytesAndNeverOverwritesOrAdo
         EXPECT_FALSE(cache.Has('b',id));
         cache.Put('b',id,bytes.size(),bytes.size(),[&](const auto& sink){sink(bytes);});
         EXPECT_EQ(history_cache_test::Read(cache,id),bytes);
+        for(const auto& p:std::filesystem::directory_iterator(root/Cache::Directory))
+            EXPECT_FALSE(p.path().filename().string().starts_with("partial-"))<<p.path();
         cache.Put('b',id,bytes.size(),bytes.size(),[&](const auto& sink){sink(bytes);});
         auto other=bytes;other.back()^=1;
         EXPECT_ANY_THROW(cache.Put('b',id,other.size(),other.size(),[&](const auto& sink){sink(other);}));
