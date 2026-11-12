@@ -19,6 +19,14 @@ on:
         description: 'Full reviewed Core source SHA; artifact-only, no publication'
         required: true
         type: string
+      snapshot_payload_url:
+        description: 'Qualified full-v6 snapshot.dat HTTPS URL; must match source catalog pin'
+        required: true
+        type: string
+      snapshot_manifest_url:
+        description: 'Matching full-v6 manifest.json HTTPS URL; sibling .sig is required'
+        required: true
+        type: string
 permissions:
   # Needed to read historical snapshot assets if their release is still draft.
   contents: write
@@ -37,6 +45,8 @@ jobs:
           python3 -B scripts/ci/test_desktop_candidate.py -v
           python3 -B scripts/ci/test_macos_minimum.py -v
           python3 -B scripts/ci/test_macos_desktop_payload.py -v
+          python3 -B scripts/ci/test_snapshot_wiring.py -v
+          python3 -B packaging/snapshot/test_desktop_primary_profile.py -v
       - name: Require an immutable candidate input
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -121,7 +131,7 @@ jobs:
             echo 'variant=${{ matrix.variant }}'
             echo 'qt_version=${{ matrix.qt }}'
             echo 'deployment_target=13.0'
-            echo 'snapshot_inputs=v8.1.11 primary, v8.0.17 fallback; final bootstrap review pending'
+            echo 'snapshot_inputs=provisional H150521 full-v6 primary from pinned HTTPS inputs; H148375/H99677/H65300 recovery bases'
             echo "source_commit=$SOURCE_HEAD"
             echo "tooling_commit=$TOOLING_HEAD"
             echo "sv2_commit=$SV2_HEAD"
@@ -131,9 +141,15 @@ jobs:
       - name: Exercise the audit with real Apple tools before the full build
         run: python3 "$GITHUB_WORKSPACE/tooling/scripts/ci/test_macos_minimum.py" -v
 
+      - name: Require full-v6 wiring in the immutable source
+        run: python3 -B scripts/ci/test_snapshot_wiring.py -v
+
       - name: Overlay reviewed architecture-aware packaging helpers
         run: |
-          cp "${GITHUB_WORKSPACE}/tooling/packaging/mac/build-installer.sh" packaging/mac/
+          cmp -s "${GITHUB_WORKSPACE}/tooling/packaging/mac/build-installer.sh" packaging/mac/build-installer.sh || {
+            echo 'Immutable source and reviewed tooling have different Mac installer helpers' >&2
+            exit 1
+          }
           cp "${GITHUB_WORKSPACE}/tooling/packaging/mac/assert-v8-release-lane.sh" packaging/mac/
           chmod +x packaging/mac/build-installer.sh packaging/mac/assert-v8-release-lane.sh
 
@@ -197,11 +213,17 @@ jobs:
           bash scripts/fetch-tor-expert-bundle.sh ${{ matrix.arch }} "$RUNNER_TEMP/tor-expert-bundle"
           echo "DINERO_TOR_BUNDLE_DIR=$RUNNER_TEMP/tor-expert-bundle" >> "$GITHUB_ENV"
 
-      - name: Fetch and verify snapshot pair
+      - name: Fetch full-v6 primary and exact recovery bases
         env:
           GH_TOKEN: ${{ github.token }}
+          SNAPSHOT_PAYLOAD_URL: ${{ inputs.snapshot_payload_url }}
+          SNAPSHOT_MANIFEST_URL: ${{ inputs.snapshot_manifest_url }}
         run: |
           mkdir -p release-inputs
+          python3 packaging/snapshot/fetch_desktop_primary.py \
+            --payload-url "$SNAPSHOT_PAYLOAD_URL" \
+            --manifest-url "$SNAPSHOT_MANIFEST_URL" \
+            --destination release-inputs
           gh release download v8.2.2 \
             --repo DineroLabs/dinero-v8 \
             --pattern dinero-assumeutxo-148375-v5.dat \
@@ -218,12 +240,14 @@ jobs:
             --pattern utxo-snapshot-65300.dat.manifest.json \
             --dir release-inputs
           {
-            echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat"
-            echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat.manifest.json"
-            echo "DINERO_SNAPSHOT_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-99677-v4.dat"
-            echo "DINERO_SNAPSHOT_LEGACY_FALLBACK_DAT=$PWD/release-inputs/utxo-snapshot-65300.dat"
-            echo "DINERO_SNAPSHOT_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-99677-v4.manifest.json"
-            echo "DINERO_SNAPSHOT_LEGACY_FALLBACK_MANIFEST=$PWD/release-inputs/utxo-snapshot-65300.dat.manifest.json"
+            echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-150521-v6-full.dat"
+            echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-150521-v6-full.dat.manifest.json"
+            echo "DINERO_SNAPSHOT_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat"
+            echo "DINERO_SNAPSHOT_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat.manifest.json"
+            echo "DINERO_SNAPSHOT_LEGACY_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-99677-v4.dat"
+            echo "DINERO_SNAPSHOT_LEGACY_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-99677-v4.manifest.json"
+            echo "DINERO_SNAPSHOT_OLDEST_FALLBACK_DAT=$PWD/release-inputs/utxo-snapshot-65300.dat"
+            echo "DINERO_SNAPSHOT_OLDEST_FALLBACK_MANIFEST=$PWD/release-inputs/utxo-snapshot-65300.dat.manifest.json"
           } >> "$GITHUB_ENV"
 
       - name: Configure exact ${{ matrix.variant }} release
@@ -335,6 +359,7 @@ jobs:
         run: |
           V="${{ steps.provenance.outputs.version }}"
           cp desktop-release-provenance-macos-${{ matrix.variant }}.txt packaging/mac/dist/
+          cp release-inputs/*publisher.* packaging/mac/dist/
           ARCHIVE="dinero-macos-${{ matrix.variant }}-desktop-stage-${V}.zip"
           (cd packaging/mac && ditto -c -k --sequesterRsrc --keepParent dist "$GITHUB_WORKSPACE/$ARCHIVE")
           shasum -a 256 "$GITHUB_WORKSPACE/$ARCHIVE"

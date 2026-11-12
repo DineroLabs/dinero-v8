@@ -64,15 +64,19 @@ param(
     [string]$SnapshotFileName   = '',
     [string]$SnapshotPath       = '',
     [string]$SnapshotManifestPath = '',
-    [string]$SnapshotReleaseTag = 'v8.2.2',
+    [string]$SnapshotReleaseTag = 'v8.2.3',
     [string]$SnapshotFallbackFileName   = '',
     [string]$SnapshotFallbackPath       = '',
     [string]$SnapshotFallbackManifestPath = '',
-    [string]$SnapshotFallbackReleaseTag = 'v8.1.11',
+    [string]$SnapshotFallbackReleaseTag = 'v8.2.2',
     [string]$SnapshotLegacyFallbackFileName = '',
     [string]$SnapshotLegacyFallbackPath = '',
     [string]$SnapshotLegacyFallbackManifestPath = '',
-    [string]$SnapshotLegacyFallbackReleaseTag = 'v8.0.17',
+    [string]$SnapshotLegacyFallbackReleaseTag = 'v8.1.11',
+    [string]$SnapshotOldestFallbackFileName = '',
+    [string]$SnapshotOldestFallbackPath = '',
+    [string]$SnapshotOldestFallbackManifestPath = '',
+    [string]$SnapshotOldestFallbackReleaseTag = 'v8.0.17',
     [switch]$NoSnapshot
 )
 
@@ -98,7 +102,7 @@ $Stage   = Join-Path $ScriptDir 'dist\installer-stage'
 $DistDir = Join-Path $ScriptDir 'dist'
 
 # Derive all installed filenames from the GUI's compiled-in constants.
-if ((-not $SnapshotFileName -or -not $SnapshotFallbackFileName -or -not $SnapshotLegacyFallbackFileName) -and -not $NoSnapshot) {
+if ((-not $SnapshotFileName -or -not $SnapshotFallbackFileName -or -not $SnapshotLegacyFallbackFileName -or -not $SnapshotOldestFallbackFileName) -and -not $NoSnapshot) {
     $qtMain = Join-Path $ProjectRoot 'qt\src\main.cpp'
     if (Test-Path $qtMain) {
         if (-not $SnapshotFileName) {
@@ -113,7 +117,11 @@ if ((-not $SnapshotFileName -or -not $SnapshotFallbackFileName -or -not $Snapsho
             $m = Select-String -Path $qtMain -Pattern 'kBundledSnapshotLegacyFallback\[\]\s*=\s*"([^"]+)"' | Select-Object -First 1
             if ($m) { $SnapshotLegacyFallbackFileName = $m.Matches[0].Groups[1].Value }
         }
-        Write-Host "Bundled snapshot names: primary=$SnapshotFileName fallback=$SnapshotFallbackFileName older=$SnapshotLegacyFallbackFileName"
+        if (-not $SnapshotOldestFallbackFileName) {
+            $m = Select-String -Path $qtMain -Pattern 'kBundledSnapshotOldestFallback\[\]\s*=\s*"([^"]+)"' | Select-Object -First 1
+            if ($m) { $SnapshotOldestFallbackFileName = $m.Matches[0].Groups[1].Value }
+        }
+        Write-Host "Bundled snapshot names: primary=$SnapshotFileName fallbacks=$SnapshotFallbackFileName,$SnapshotLegacyFallbackFileName,$SnapshotOldestFallbackFileName"
     }
 }
 
@@ -219,6 +227,23 @@ function Assert-SnapshotManifest {
         & python (Join-Path $ProjectRoot 'scripts\ci\check_snapshot_freshness.py') --manifest $ManifestPath @freshnessArgs
         if ($LASTEXITCODE -ne 0) { throw 'Primary desktop snapshot failed freshness admission' }
     }
+}
+
+function Resolve-PrimaryPublisherAsset {
+    param([string]$SnapshotSourcePath, [string]$AssetName, [string]$ReleaseTag)
+    $adjacent = Join-Path (Split-Path -Parent $SnapshotSourcePath) $AssetName
+    if (Test-Path $adjacent) { return (Resolve-Path $adjacent).Path }
+    if (-not $ReleaseTag) { throw "Required publisher provenance missing: $AssetName" }
+    if (-not (Test-Path $DistDir)) { New-Item $DistDir -ItemType Directory | Out-Null }
+    $cached = Join-Path $DistDir $AssetName
+    if (Test-Path $cached) { return $cached }
+    $url = "https://github.com/DineroLabs/dinero-v8/releases/download/$ReleaseTag/$AssetName"
+    try { Invoke-WebRequest $url -OutFile $cached -ErrorAction Stop }
+    catch {
+        if (Test-Path $cached) { Remove-Item $cached -Force }
+        throw "Required publisher provenance unavailable: $AssetName"
+    }
+    return $cached
 }
 
 Write-Host '----------------------------------------------------------'
@@ -379,9 +404,8 @@ try {
     $ErrorActionPreference = $oldEAP
 }
 
-# Bundle the newest primary and the previous desktop anchor. The latter is not
-# chosen on a fresh install; it exists only so an interrupted older lifecycle can
-# restart after an installer upgrade replaces Program Files.
+# Bundle the full-v6 primary and three prior exact lifecycle bases. The old
+# files allow interrupted imports to restart after Program Files is replaced.
 $snap = Resolve-BundledSnapshot $SnapshotFileName $SnapshotPath $SnapshotReleaseTag 'primary'
 if ($snap) {
     Copy-Item $snap (Join-Path $Stage $SnapshotFileName)
@@ -389,6 +413,10 @@ if ($snap) {
     $manifest = Resolve-BundledSnapshotManifest $SnapshotFileName $snap $SnapshotManifestPath $SnapshotReleaseTag 'primary'
     if ($manifest) {
         Assert-SnapshotManifest $snap $manifest $SnapshotFileName 'primary'
+        $publisherManifest = Resolve-PrimaryPublisherAsset $snap "$SnapshotFileName.publisher.manifest.json" $SnapshotReleaseTag
+        $publisherSignature = Resolve-PrimaryPublisherAsset $snap "$SnapshotFileName.publisher.manifest.sig" $SnapshotReleaseTag
+        & python (Join-Path $ProjectRoot 'packaging\snapshot\check_desktop_primary.py') --payload $snap --manifest $manifest --expected-name $SnapshotFileName --publisher-manifest $publisherManifest --publisher-signature $publisherSignature
+        if ($LASTEXITCODE -ne 0) { throw 'Primary desktop snapshot is not the pinned full-v6 input.' }
         Copy-Item $manifest (Join-Path $Stage "$SnapshotFileName.manifest.json")
         Write-Host "Bundled AssumeUTXO primary manifest"
     } else {
@@ -421,6 +449,16 @@ if ($legacySnap) {
     Copy-Item $legacyManifest (Join-Path $Stage "$SnapshotLegacyFallbackFileName.manifest.json")
 } elseif (-not $NoSnapshot) {
     throw 'Required older exact-lifecycle snapshot fallback missing.'
+}
+$oldestSnap = Resolve-BundledSnapshot $SnapshotOldestFallbackFileName $SnapshotOldestFallbackPath $SnapshotOldestFallbackReleaseTag 'oldest fallback'
+if ($oldestSnap) {
+    $oldestManifest = Resolve-BundledSnapshotManifest $SnapshotOldestFallbackFileName $oldestSnap $SnapshotOldestFallbackManifestPath $SnapshotOldestFallbackReleaseTag 'oldest fallback'
+    if (-not $oldestManifest) { throw 'Required oldest snapshot fallback manifest missing.' }
+    Assert-SnapshotManifest $oldestSnap $oldestManifest $SnapshotOldestFallbackFileName 'oldest fallback'
+    Copy-Item $oldestSnap (Join-Path $Stage $SnapshotOldestFallbackFileName)
+    Copy-Item $oldestManifest (Join-Path $Stage "$SnapshotOldestFallbackFileName.manifest.json")
+} elseif (-not $NoSnapshot) {
+    throw 'Required oldest exact-lifecycle snapshot fallback missing.'
 }
 
 $totalSize = (Get-ChildItem $Stage -Recurse | Measure-Object Length -Sum).Sum

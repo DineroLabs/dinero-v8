@@ -145,13 +145,15 @@ jobs:
       - name: Build Windows server release and installer
         shell: powershell
         run: |
-          # The qualified primary can be read from a draft release without
-          # publishing it. Use the same snapshot as the production packages.
+          # Historical v5 snapshot for this OpenSSL/NSIS build smoke. Full-v6
+          # release admission runs in windows-release.yml once pinned.
           .\packaging\windows\build-server-installer.ps1 `
-            -Version '8.2.2-openssl357-ci' `
+            -Version '8.2.3-openssl357-ci' `
             -BuildDir 'build-msvc-server' `
             -VcpkgRoot "$env:VCPKG_INSTALLATION_ROOT" `
             -VcpkgBin "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" `
+            -SnapshotFileName 'dinero-assumeutxo-148375-v5.dat' `
+            -SnapshotReleaseTag 'v8.2.2' `
             -SnapshotPath 'packaging\windows\dist\dinero-assumeutxo-148375-v5.dat' `
             -SnapshotManifestPath 'packaging\windows\dist\dinero-assumeutxo-148375-v5.dat.manifest.json'
 
@@ -178,13 +180,15 @@ jobs:
       - name: Silent installer and uninstall smoke
         shell: powershell
         run: |
-          $installer = Resolve-Path 'packaging\windows\dist\Dinero-Server-8.2.2-openssl357-ci-windows-x86_64-Setup.exe'
+          python -B scripts/ci/check_windows_server_uninstall.py packaging/windows/dinero-server-installer.nsi
+          if ($LASTEXITCODE -ne 0) { throw 'Windows server uninstall contract failed' }
+          $installer = Resolve-Path 'packaging\windows\dist\Dinero-Server-8.2.3-openssl357-ci-windows-x86_64-Setup.exe'
           $installDir = Join-Path $env:ProgramFiles 'Dinero-Server'
 
           $info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($installer)
           $numericVersion = "$($info.FileMajorPart).$($info.FileMinorPart).$($info.FileBuildPart).$($info.FilePrivatePart)"
-          if ($numericVersion -ne '8.2.2.0') {
-            throw "installer numeric file version is $numericVersion, expected 8.2.2.0"
+          if ($numericVersion -ne '8.2.3.0') {
+            throw "installer numeric file version is $numericVersion, expected 8.2.3.0"
           }
 
           $install = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
@@ -215,11 +219,17 @@ jobs:
           if (Test-Path (Join-Path $installDir 'dinerod.exe')) {
             throw "silent uninstall left dinerod.exe installed"
           }
+          if (Test-Path $installDir) {
+            throw "silent uninstall left the server installation directory behind"
+          }
+          if (Get-Service -Name Dinerod -ErrorAction SilentlyContinue) {
+            throw "silent uninstall left the Dinerod service registered"
+          }
 
       - name: Upload installer
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: windows-server-openssl-3.5.7-smoke
-          path: packaging/windows/dist/Dinero-Server-8.2.2-openssl357-ci-windows-x86_64-Setup.exe
+          path: packaging/windows/dist/Dinero-Server-8.2.3-openssl357-ci-windows-x86_64-Setup.exe
           if-no-files-found: warn
