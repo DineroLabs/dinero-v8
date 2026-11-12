@@ -4,21 +4,27 @@ namespace {
 // Persist an unvalidated candidate exactly as a retained body, without calling
 // ingress or claiming validity. The real ABC/ConnectTip pipeline must validate
 // and commit it. This isolates the root activation entry from ingress guards.
-CBlockIndex* RetainActivationCandidate(CanonicalPoolFixture& f,const OrchardMiningTemplate& body) {
-    const auto hash=body.Header().GetHash();const auto height=body.Height();
-    const auto work=*f.f.db.getBlockWork(f.parent->hash)+GetBlockProof(body.Header().difficulty);
-    const auto position=f.files->writeBlockBytes(hash,{body.WireBytes().begin(),body.WireBytes().end()});
+CBlockIndex* RetainActivationCandidate(CanonicalPoolFixture& f,const OrchardMiningTemplate& body,
+    std::optional<uint32_t> solved_nonce={}) {
+    auto header=body.Header();auto wire=body.WireBytes();
+    if(solved_nonce) {
+        header.nonce=*solved_nonce;
+        const auto prefix=header.SerializeForHash();std::copy(prefix.begin(),prefix.end(),wire.begin());
+    }
+    const auto hash=header.GetHash();const auto height=body.Height();
+    const auto work=*f.f.db.getBlockWork(f.parent->hash)+GetBlockProof(header.difficulty);
+    const auto position=f.files->writeBlockBytes(hash,{wire.begin(),wire.end()});
     OrchardAdmissionFixture::Require(position.ok());
     ChainDB::PersistedHeaderMetadata metadata;
-    metadata.height=height;metadata.parent_hash=body.Header().prev_block_hash;metadata.chainwork=work;
+    metadata.height=height;metadata.parent_hash=header.prev_block_hash;metadata.chainwork=work;
     metadata.status_flags=BLOCK_VALID_HEADER|BLOCK_HAVE_DATA;
     metadata.file_number=position->file_number;metadata.data_pos=position->offset;metadata.data_size=position->size;
-    OrchardAdmissionFixture::Require(f.f.db.putHeader(f.f.token,hash,body.Header(),height,work)==Status::Ok);
+    OrchardAdmissionFixture::Require(f.f.db.putHeader(f.f.token,hash,header,height,work)==Status::Ok);
     OrchardAdmissionFixture::Require(f.f.db.putHeaderMetadata(f.f.token,hash,metadata)==Status::Ok);
     auto headers=std::make_shared<consensus::HeaderChainSelector>();
     for(const auto& b:f.f.blocks)OrchardAdmissionFixture::Require(headers->AddHeader(b.header));
-    OrchardAdmissionFixture::Require(headers->AddHeader(body.Header()));f.f.service->setHeaderChainSelector(headers);
-    auto* index=dinero::AddBlockIndex(body.Header(),height);OrchardAdmissionFixture::Require(index!=nullptr);
+    OrchardAdmissionFixture::Require(headers->AddHeader(header));f.f.service->setHeaderChainSelector(headers);
+    auto* index=dinero::AddBlockIndex(header,height);OrchardAdmissionFixture::Require(index!=nullptr);
     index->status=metadata.status_flags;index->file_number=metadata.file_number;
     index->data_pos=metadata.data_pos;index->data_size=metadata.data_size;
     f.f.service->AddCandidate(index);return index;

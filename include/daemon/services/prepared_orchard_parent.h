@@ -10,7 +10,9 @@ class PreparedHistoricalCatalogRange;
 // The actual service captures real storage owners and validates outside the
 // selected lock. This opaque owner has the same public type in ON/OFF builds;
 // backend-specific state is constructed only by an enabled service. Thread
-// affinity is enforced by the replay owner. No result authorizes activation.
+// affinity applies to request lifetimes and unfinished replay. Completed
+// immutable proof material may be shared by the service cache. No result
+// authorizes activation without the selected owner's full state comparison.
 class PreparedOrchardParent final {
 public:
     ~PreparedOrchardParent();

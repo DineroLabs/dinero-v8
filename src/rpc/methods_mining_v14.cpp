@@ -274,6 +274,34 @@ din::Json rpc_getblocktemplate_v14(const ExecutionContext& ctx, const din::Json&
         }
     }
 
+    // Route legacy callers before acquiring a mining owner: at the activation
+    // parent that acquisition independently replays the historical prefix.
+    // Unsupported callers must never start that work on every retry. Recheck
+    // below under the owner as well, since the selected tip can change here.
+    const auto early_tip = chain_db->getTip();
+    if (early_tip.ok() && early_tip->height >= 0 && early_tip->height < INT32_MAX &&
+        ::dinero::consensus::OrchardActiveForHeight(::dinero::Params(), uint32_t(early_tip->height) + 1)) {
+        const auto config=std::dynamic_pointer_cast<::dinero::ConfigService>(ctx.daemon->config);
+        const auto readiness=::dinero::mining::EvaluateMiningReadiness(chainstate.get(),ctx.daemon->p2p.get(),config.get());
+        if(!readiness.ready) {
+            InvalidateMiningJobsForSafety();PopulateTemplateSafetyError(result,readiness);return result;
+        }
+        bool capable = false;
+        if (params_obj["capabilities"].isArray())
+            for (const auto& capability : params_obj["capabilities"])
+                if (capability.isString() && capability.asString() == "orchard-immutable-jobs-v1") capable = true;
+        if (!capable || !excluded_txids.empty()) {
+            result["error"] = "Orchard mining requires immutable job support; use mining.getjob and mining.submit";
+            return result;
+        }
+        result["profile"] = "orchard-v1";
+        result["height"] = early_tip->height + 1;
+        result["previousblockhash"] = early_tip->hash.GetHex();
+        result["longpollid"] = early_tip->hash.GetHex();
+        result["immutable_job_rpc"] = "mining.getjob";
+        return result;
+    }
+
     // Longpoll has finished. Keep selected coins, forest and tip from changing
     // during readiness, construction and response serialization; acquire before pool use.
     auto chain_guard = ::dinero::ChainstateService::AcquireMiningReadGuard(chainstate);
@@ -961,6 +989,15 @@ din::Json rpc_mining_getjob(const ExecutionContext& ctx, const din::Json& params
     if (mining_address.empty() || mining_address.length() < 10) {
         result["error"] = "Invalid mining address";
         return result;
+    }
+
+    if (params_obj["longpollid"].isString()) {
+        const auto client_tip=params_obj["longpollid"].asString();
+        if (!client_tip.empty())
+            dinero::rpc::LongPollNotifier::instance().waitIfCurrentTip([&] {
+                const auto tip=chain_db->getTip();
+                return tip.ok() && client_tip==tip->hash.GetHex();
+            }, std::chrono::milliseconds(8000));
     }
 
     auto chain_guard = ::dinero::ChainstateService::AcquireMiningReadGuard(chainstate);

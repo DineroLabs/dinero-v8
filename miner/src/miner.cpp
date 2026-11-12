@@ -176,6 +176,7 @@ bool SoloMiner::start(const MinerConfig& config) {
     blocks_found_ = 0;
     blocks_accepted_ = 0;
     blocks_rejected_ = 0;
+    work_generation_ = 0;
     start_time_ = std::chrono::steady_clock::now();
     last_hashrate_time_ = start_time_;
     last_hashrate_hashes_ = 0;
@@ -377,6 +378,7 @@ void SoloMiner::templateThread() {
     std::string last_longpollid;
 
     while (running_ && !stopping_) {
+        const auto requested_generation=work_generation_.load();
         if (submit_in_flight_.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
             continue;
@@ -388,19 +390,26 @@ void SoloMiner::templateThread() {
         // (tip already advanced past last_longpollid), the server
         // returns immediately with the new template.
         auto tmpl = rpc_->getBlockTemplate(config_.payout_address, last_longpollid);
+        if(work_generation_.load()!=requested_generation || submit_in_flight_.load()) {
+            last_longpollid.clear();
+            continue;
+        }
 
         bool fetch_ok = false;
         if (tmpl) {
             auto work = WorkTemplate::fromJson(*tmpl);
             if (work && work->isValid()) {
-                last_longpollid = work->longpollid;  // remember for next iteration
-
                 const uint32_t published_height = work->height;
                 const uint32_t published_difficulty = work->difficulty_bits;
                 auto published_work = std::make_shared<WorkTemplate>(std::move(*work));
 
                 {
                     std::lock_guard<std::mutex> lock(work_mutex_);
+                    if(work_generation_.load()!=requested_generation || submit_in_flight_.load()) {
+                        last_longpollid.clear();
+                        continue;
+                    }
+                    last_longpollid=published_work->longpollid;
                     current_work_ = std::move(published_work);
                 }
 
@@ -446,6 +455,10 @@ void SoloMiner::templateThread() {
         //     error-backoff floor, so we don't tight-loop against a
         //     broken or disconnected daemon.
         if (!fetch_ok) {
+            {
+                std::lock_guard<std::mutex> lock(work_mutex_);
+                current_work_.reset();
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(config_.template_refresh_ms));
         }
     }
@@ -461,6 +474,7 @@ void SoloMiner::minerThread(int thread_id, uint32_t start_nonce, uint32_t stride
         // Get current work
         {
             std::lock_guard<std::mutex> lock(work_mutex_);
+            if (!current_work_) local_work.reset();
             if (current_work_ && current_work_->isValid()) {
                 if (!local_work || local_work->height != current_work_->height ||
                     local_work->prev_hash != current_work_->prev_hash ||
@@ -474,6 +488,9 @@ void SoloMiner::minerThread(int thread_id, uint32_t start_nonce, uint32_t stride
                     // Reset nonce for new work
                     nonce = start_nonce;
                 }
+                // A refreshed job can bind the same header under a new ID.
+                // Keep nonce progress while retaining the current submit ID.
+                else local_work = current_work_;
             }
         }
 
@@ -497,17 +514,17 @@ void SoloMiner::minerThread(int thread_id, uint32_t start_nonce, uint32_t stride
         // Compare hash to target (hash must be <= target)
         // Both hash (SHA256d output) and target are big-endian (MSB at byte[0]).
         if (hashMeetsTarget(hash, local_work->target)) {
-            bool expected = false;
-            if (!submit_in_flight_.compare_exchange_strong(expected, true)) {
-                local_work.reset();
-                std::this_thread::sleep_for(std::chrono::milliseconds(25));
-                continue;
-            }
-
             // Retire this template immediately so other threads stop hashing
             // the same candidate while submitblock is still in flight.
             {
                 std::lock_guard<std::mutex> lock(work_mutex_);
+                bool expected=false;
+                if(!current_work_ || current_work_->buildHeader(nonce)!=header ||
+                    !submit_in_flight_.compare_exchange_strong(expected,true)) {
+                    local_work.reset();continue;
+                }
+                local_work=current_work_;
+                ++work_generation_;
                 current_work_.reset();
             }
 
@@ -587,6 +604,7 @@ void SoloMiner::gpuMinerThread() {
     while (running_ && !stopping_) {
         {
             std::lock_guard<std::mutex> lock(work_mutex_);
+            if (!current_work_) local_work.reset();
             if (current_work_ && current_work_->isValid()) {
                 if (!local_work || local_work->height != current_work_->height ||
                     local_work->prev_hash != current_work_->prev_hash ||
@@ -599,6 +617,7 @@ void SoloMiner::gpuMinerThread() {
                     local_height = local_work->height;
                     nonce_cursor = 0;
                 }
+                else local_work = current_work_;
             }
         }
 
@@ -655,14 +674,15 @@ void SoloMiner::gpuMinerThread() {
                 continue;
             }
 
-            bool expected = false;
-            if (!submit_in_flight_.compare_exchange_strong(expected, true)) {
-                // Another worker took the slot; bail out of this batch.
-                break;
-            }
-
             {
                 std::lock_guard<std::mutex> lock(work_mutex_);
+                bool expected=false;
+                if(!current_work_ || current_work_->buildHeader(winning_nonce)!=verify_header ||
+                    !submit_in_flight_.compare_exchange_strong(expected,true)) {
+                    local_work.reset();break;
+                }
+                local_work=current_work_;
+                ++work_generation_;
                 current_work_.reset();
             }
 
@@ -717,8 +737,8 @@ SoloMiner::SubmitResult SoloMiner::submitBlock(uint32_t nonce, const std::shared
     const Hash256 candidate_hash_bytes = HashEngine::hashHeader(header.data());
     const std::string candidate_hash = bytesToHex(candidate_hash_bytes.data(),
                                                   candidate_hash_bytes.size());
-    std::string block_hex = work->buildBlock(nonce);
-    bool accepted = rpc_->submitBlock(block_hex);
+    bool accepted = work->job_id.empty() ? rpc_->submitBlock(work->buildBlock(nonce))
+                                        : rpc_->submitJob(work->job_id, nonce);
 
     if (accepted) {
         return SubmitResult::Accepted;

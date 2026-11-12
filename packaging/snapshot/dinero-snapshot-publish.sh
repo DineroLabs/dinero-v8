@@ -135,7 +135,8 @@ if [ ! -f "$PENDING" ]; then
         fail "unpaired pending payload; inspect or recover before exporting again"
     fi
     EXPORT_ARGS=(); [ "$SNAPSHOT_PROFILE" != compact ] || EXPORT_ARGS+=(compact)
-    OUT=$("${CLI[@]}" dumptxoutset "$DUMP_FILE" "${EXPORT_ARGS[@]}") || fail "dumptxoutset RPC failed"
+    # A compact mainnet export can outlive the CLI's ordinary 30-second wait.
+    OUT=$("${CLI[@]}" -rpcclienttimeout=900 dumptxoutset "$DUMP_FILE" "${EXPORT_ARGS[@]}") || fail "dumptxoutset RPC failed"
     printf '%s\n' "$OUT" > "$PENDING.tmp"
     mv "$PENDING.tmp" "$PENDING"
 fi

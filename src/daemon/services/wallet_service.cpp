@@ -10,6 +10,7 @@
 #include "wallet/wallet_worker.h"
 #include "wallet/hd_wallet.h"         // Phase F.5: For BIP32 view key derivation
 #include "consensus/coin_type.h"      // DINERO_COIN_TYPE
+#include "consensus/chainparams.h"
 #include "primitives/block.h"          // For dinero::Block
 #include <filesystem>
 #include <stdexcept>
@@ -285,7 +286,14 @@ bool WalletService::Start() {
         if (wallet_mgr_->hasActiveWallet()) {
             EnsureRuntimeWalletBindings();
             std::string canonical_error;
-            const auto canonical=RecoverActiveWalletFromCanonicalSource(&canonical_error);
+            // The boundary's first independent genesis replay belongs to the
+            // running RuntimeDeliveryWorker, never the listener startup path.
+            // Defer without claiming recovery or allowing a legacy catch-up scan.
+            const bool activation_parent=chainstate_ &&
+                uint64_t(actual_blockchain_height)+1==Params().orchard_activation_height;
+            const auto canonical=activation_parent ? CanonicalRecovery::Deferred :
+                RecoverActiveWalletFromCanonicalSource(&canonical_error);
+            if(activation_parent)canonical_error="Activation-parent wallet recovery queued for the runtime worker";
             legacy_scan_suppressed=canonical!=CanonicalRecovery::NotRequired;
             if(!legacy_scan_suppressed&&GetConfig().utreexo_stateless&&
                chainstate_&&chainstate_->GetSnapshotWalletRecoveryBaseHeight()>0){

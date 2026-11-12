@@ -39,3 +39,26 @@
 # declaration and all other orchard_header content unchanged.
 6 modify src/consensus/orchard_header.cpp
 6 add src/consensus/orchard_block_context.cpp
+
+# Activation recovery: memoize unchanged legacy tree roots under the existing
+# mutex. Exact insertions only; hashing and serialization remain unchanged.
+6 insert include/consensus/shielded/commitment_tree.h@144 ^    mutable std::optional<Hash> cached_root_;$
+6 insert src/consensus/shielded/commitment_tree.cpp@115 ^    cached_root_ = other\.cached_root_;$
+6 insert src/consensus/shielded/commitment_tree.cpp@125 ^    cached_root_ = other\.cached_root_;$
+6 insert src/consensus/shielded/commitment_tree.cpp@133 ^    cached_root_ = other\.cached_root_;$
+6 insert src/consensus/shielded/commitment_tree.cpp@143 ^    cached_root_ = other\.cached_root_;$
+6 insert src/consensus/shielded/commitment_tree.cpp@151 ^    cached_root_\.reset\(\);$
+6 insert src/consensus/shielded/commitment_tree.cpp@178 ^    if \(cached_root_\) return \*cached_root_;$
+6 insert src/consensus/shielded/commitment_tree.cpp@186 ^    cached_root_ = current;$
+6 insert src/consensus/shielded/commitment_tree.cpp@232 ^    cached_root_\.reset\(\);$
+6 insert src/consensus/shielded/commitment_tree.cpp@272 ^    cached_root_\.reset\(\);$
+
+# Compact-v6 cold-start recovery: exact reviewed ASERT ancestry memo only.
+# Every header still runs ValidateHistoricalHeader; no open-ended file allowance.
+6 sha256 include/consensus/header_chain.h 15e2cb6d067b2dc2e12146f6f5afe5418e4ca9dd22eb681d60b9e833fa8b25f0
+6 sha256 src/consensus/header_chain.cpp fbf9a34f7ec9a3d619e49e71c711848f863db048e47094e49b1cdd1aecfa984b
+
+# Compact-v6 cold startup: exact process-local authenticated catalog data reuse.
+# Complete graph, byte-integrity, live-source and selected-state checks remain.
+6 sha256 include/consensus/orchard_snapshot_catalog.h 76dcce54efcd00ca26dd351623983bca3517cbd42cf65507ba596a743bdfd972
+6 sha256 src/consensus/orchard_snapshot_catalog.cpp d069a6af2cee6115560aa3d60f8fee1aa39fe7bdbb083d5a19a63b84e9bd888b

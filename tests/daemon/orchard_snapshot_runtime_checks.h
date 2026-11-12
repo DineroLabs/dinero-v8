@@ -1,5 +1,7 @@
 #pragma once
 #include "consensus/utreexo_delta_codec.h"
+#include "consensus/pow.hpp"
+#include "consensus/pow_context.h"
 #include "p2p/orchard_catalog_transfer.h"
 #include "p2p/orchard_catalog_server.h"
 #include "p2p/orchard_catalog_client.h"
@@ -30,6 +32,8 @@ std::string EncodeHead(const RuntimeOutboxCursor&);
 }
 struct OrchardSnapshotStoreTestAccess {
     using ActivationPublication=OrchardSnapshotStore::ActivationPublication;
+    static void Seed(const ChainDB& db,consensus::HeaderChainSelector& headers,
+        consensus::HeaderStore& store){OrchardSnapshotStore::SeedRetainedHeaders(db,headers,&store);}
     static auto RowsDigest(const ChainDB& db){return OrchardSnapshotStore::HandoffStoreDigest(db,{});}
     static auto AuditStore(AnnotatedRecursiveMutex& mutex,const ChainDB& original,const ChainDB& db,
         const ChainWriteToken& token,const BlockStorage& files,const uint256& parent,
@@ -106,6 +110,11 @@ struct OrchardSnapshotStoreTestAccess {
     }
     static auto Restore(AnnotatedRecursiveMutex& mutex,const ChainDB& db,const consensus::HeaderChainSelector& headers) {
         std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);return OrchardSnapshotStore::Restore(mutex,db,headers);
+    }
+    static auto RestoreRetained(AnnotatedRecursiveMutex& mutex,const ChainDB& db,
+        const consensus::HeaderChainSelector& headers,const auto& previous) {
+        std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);
+        return OrchardSnapshotStore::Restore(mutex,db,headers,previous.reads);
     }
     static bool Recover(AnnotatedRecursiveMutex& mutex,ChainDB& db,const ChainWriteToken& token,
         const consensus::HeaderChainSelector& headers) {
@@ -2391,6 +2400,27 @@ TEST(OrchardSnapshotRuntime, RealRegtestActivationFullAndCompactImportReopenAndF
         MutableParams().state_commitment_burial_depth=1;
         installed.full.reset();installed.compact.reset();db.close();ASSERT_EQ(db.init(database_path),Status::Ok);
         auto restored=Access::Restore(mutex,db,headers);
+        {
+            auto repeated=Access::RestoreRetained(mutex,db,headers,restored);
+            EXPECT_EQ(repeated.reads.baseline,restored.reads.baseline);
+            EXPECT_EQ(repeated.reads.selected_nodes,restored.reads.selected_nodes);
+            const auto id=section.base_catalog.transactions;
+            const auto node=db.getOrchardCatalogNode(id);ASSERT_TRUE(node.ok());
+            for(const bool missing:{true,false}) {
+                auto corrupt=*node;corrupt.back()^=1;
+                ChainDBTransactionReadTestPeer::SnapshotCatalogFault(db,source.f.token,id,
+                    missing?std::optional<std::string>{}:std::optional<std::string>{corrupt});
+                EXPECT_ANY_THROW(Access::RestoreRetained(mutex,db,headers,restored));
+                ChainDBTransactionReadTestPeer::SnapshotCatalogFault(db,source.f.token,id,*node);
+                ASSERT_NO_THROW(Access::RestoreRetained(mutex,db,headers,restored));
+            }
+            // A historical orphan is not part of the selected reachable union.
+            storage::catalog::Node orphan{storage::catalog::Kind::Transactions};orphan.key[0]=99;
+            const auto bytes=orphan.Encode();const auto extra=storage::catalog::Hash(bytes);
+            ChainDBTransactionReadTestPeer::SnapshotCatalogFault(db,source.f.token,extra,bytes);
+            ASSERT_NO_THROW(Access::RestoreRetained(mutex,db,headers,restored));
+            ChainDBTransactionReadTestPeer::SnapshotCatalogFault(db,source.f.token,extra,{});
+        }
         if(profile==OrchardSnapshotProfile::Full) {
             ASSERT_TRUE(restored.full);EXPECT_EQ(restored.full->GetSetSize(),coins.size());
             EXPECT_EQ(restored.full->GetForest().serialize(),section.accumulator);
@@ -2407,6 +2437,7 @@ TEST(OrchardSnapshotRuntime, RealRegtestActivationFullAndCompactImportReopenAndF
         const auto original=db.getForestTipMarker();ASSERT_TRUE(original.ok());auto forged=*original;forged.forest_root.data[0]^=1;
         ASSERT_EQ(db.putForestTipMarker(source.f.token,forged),Status::Ok);
         EXPECT_ANY_THROW(Access::Restore(mutex,db,headers));
+        EXPECT_ANY_THROW(Access::RestoreRetained(mutex,db,headers,restored));
         ASSERT_EQ(db.putForestTipMarker(source.f.token,*original),Status::Ok);
         ASSERT_NO_THROW(Access::Restore(mutex,db,headers));
         restored.full.reset();restored.compact.reset();
@@ -2425,6 +2456,7 @@ TEST(OrchardSnapshotRuntime, RealRegtestActivationFullAndCompactImportReopenAndF
         ASSERT_EQ(db.getRaw(key,proof),Status::Ok);auto corrupted=proof;corrupted.back()^=1;
         {rocksdb::WriteBatch batch;batch.Put(key,corrupted);ASSERT_EQ(db.writeBatch(source.f.token,std::move(batch),true),Status::Ok);}
         EXPECT_ANY_THROW(Access::Restore(mutex,db,headers));EXPECT_EQ(db.getTip()->hash,section.state.block_hash);
+        EXPECT_ANY_THROW(Access::RestoreRetained(mutex,db,headers,restored));
         {rocksdb::WriteBatch batch;batch.Put(key,proof);ASSERT_EQ(db.writeBatch(source.f.token,std::move(batch),true),Status::Ok);}
         ASSERT_NO_THROW(Access::Restore(mutex,db,headers));db.close();
         MutableParams().state_commitment_burial_depth=0;
@@ -2536,6 +2568,93 @@ TEST(OrchardSnapshotRuntime, DeferredV5WaitsForBurialBeforeLoaderAttempt) {
         EXPECT_EQ(std::filesystem::file_size(snapshot),68u);
     }
 }
+TEST(OrchardSnapshotRuntime, QueuedDownloadedHeaderIsRevalidatedWithoutSelectedPublication) {
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
+    OrchardCycleFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    HeaderChainSelector ancestry;
+    for(const auto& block:source.f.blocks)ASSERT_TRUE(ancestry.AddHeader(block.header));
+    BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+    const auto body=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(body);
+    const auto tip=source.f.db.getTip();ASSERT_TRUE(tip.ok());
+    const auto parent=ancestry.GetHeaderValue(tip->hash);ASSERT_TRUE(parent);
+    HeaderIndexEntry pending(body->Header(),&*parent);const auto hash=pending.hash;
+    ASSERT_EQ(pending.height,uint32_t(tip->height)+1);
+    shielded_store_fixture::TempDir directory;
+    HeaderStore store((directory.path/"headers").string());ASSERT_TRUE(store.Open());
+    ASSERT_TRUE(store.StoreHeader(pending));
+    BlockStorage files;ASSERT_EQ(files.init(directory.path/"files"),Status::Ok);
+    const auto& wire=body->WireBytes();
+    const auto position=files.writeBlockBytes(hash,std::string(wire.begin(),wire.end()));ASSERT_TRUE(position.ok());
+    ChainDB::PersistedHeaderMetadata metadata;
+    metadata.height=int32_t(pending.height);metadata.parent_hash=pending.prev_hash;metadata.chainwork=pending.chainwork;
+    // AddBlockIndex's CHAIN bit records graph connectivity here, not execution.
+    metadata.status_flags=uint32_t(BLOCK_VALID_HEADER)|uint32_t(BLOCK_VALID_CHAIN)|uint32_t(BLOCK_HAVE_DATA);
+    metadata.file_number=position->file_number;metadata.data_pos=position->offset;metadata.data_size=position->size;
+    ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,metadata),Status::Ok);
+    ASSERT_EQ(source.f.db.getHeader(hash).status(),Status::NotFound);
+    const auto seed=[&]{HeaderChainSelector checked;
+        for(const auto& block:source.f.blocks)if(!checked.AddHeader(block.header))
+            throw std::runtime_error("genuine retained parent header refused");
+        Access::Seed(source.f.db,checked,store);
+        const auto value=checked.GetHeaderValue(hash);if(!value||value->height!=pending.height||
+            value->chainwork!=pending.chainwork)throw std::runtime_error("queued header was not independently derived");};
+    EXPECT_NO_THROW(seed());
+    EXPECT_EQ(source.f.db.getHeader(hash).status(),Status::NotFound); // No database repair or publication.
+    EXPECT_EQ(source.f.db.getTip()->hash,tip->hash);
+    EXPECT_EQ(source.f.db.getValidatedTip()->hash,tip->hash);
+    EXPECT_EQ(source.f.db.getOrchardState().status(),Status::NotFound);
+
+    auto bad=metadata;bad.parent_hash=uint256{};
+    ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,bad),Status::Ok);EXPECT_ANY_THROW(seed());
+    bad=metadata;bad.chainwork+=arith_uint256{1};
+    auto bad_entry=pending;bad_entry.chainwork+=arith_uint256{1};ASSERT_TRUE(store.StoreHeader(bad_entry));
+    ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,bad),Status::Ok);
+    EXPECT_ANY_THROW(seed()); // Even two agreeing stored claims cannot replace derived work.
+    ASSERT_TRUE(store.StoreHeader(pending));
+    bad=metadata;bad.height=tip->height;
+    ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,bad),Status::Ok);EXPECT_ANY_THROW(seed());
+    bad=metadata;bad.status_flags|=uint32_t(BLOCK_HAVE_UNDO);
+    ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,bad),Status::Ok);EXPECT_ANY_THROW(seed());
+    bad=metadata;bad.status_flags|=uint32_t(BLOCK_VALID_SCRIPTS);
+    ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,bad),Status::Ok);EXPECT_ANY_THROW(seed());
+    ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,metadata),Status::Ok);
+    EXPECT_NO_THROW(seed());
+
+    // A later body may beat its intervening headers' ChainDB metadata to disk.
+    // Both intervening and child headers have genuine, independently checked
+    // PoW/ASERT; recovering them does not accept a body or create chain rows.
+    std::deque<HeaderIndexEntry> history;
+    for(const auto& block:source.f.blocks)
+        history.emplace_back(block.header,history.empty()?nullptr:&history.back());
+    history.emplace_back(pending.header,&history.back());
+    const auto consensus=GetConsensusForNetwork(dinero::Params());
+    for(unsigned i=0;i<2;++i) {
+        const auto* prior=&history.back();auto header=prior->header;
+        header.prev_block_hash=prior->hash;header.timestamp+=60;
+        header.difficulty=GetNextWorkRequiredForCandidate(prior->height+1,header.timestamp,
+            consensus,nullptr,prior,static_cast<NoChainDb*>(nullptr));
+        ASSERT_NE(header.difficulty,0u);header=OrchardAdmissionFixture::SolveHeader(header);
+        history.emplace_back(header,prior);ASSERT_TRUE(store.StoreHeader(history.back()));
+    }
+    const auto& middle=history[history.size()-2];const auto& child=history.back();
+    auto child_claim=metadata;child_claim.height=int32_t(child.height);child_claim.parent_hash=child.prev_hash;
+    child_claim.chainwork=child.chainwork;child_claim.status_flags=uint32_t(BLOCK_VALID_HEADER)|uint32_t(BLOCK_VALID_CHAIN);
+    child_claim.file_number=0;child_claim.data_pos=0;child_claim.data_size=0;
+    ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,child.hash,child_claim),Status::Ok);
+    ASSERT_EQ(source.f.db.getHeaderMetadata(middle.hash).status(),Status::NotFound);
+    EXPECT_NO_THROW(seed());
+    auto forged_middle=middle;forged_middle.chainwork+=arith_uint256{1};
+    ASSERT_TRUE(store.StoreHeader(forged_middle));EXPECT_ANY_THROW(seed());
+    ASSERT_TRUE(store.StoreHeader(middle));EXPECT_NO_THROW(seed());
+    ASSERT_TRUE(store.DeleteHeader(middle.hash));EXPECT_ANY_THROW(seed());
+    ASSERT_TRUE(store.StoreHeader(middle));EXPECT_NO_THROW(seed());
+    EXPECT_EQ(source.f.db.getHeader(middle.hash).status(),Status::NotFound);
+    EXPECT_EQ(source.f.db.getHeader(child.hash).status(),Status::NotFound);
+    EXPECT_EQ(source.f.db.getHeaderMetadata(middle.hash).status(),Status::NotFound);
+    EXPECT_EQ(source.f.db.getTip()->hash,tip->hash);EXPECT_EQ(source.f.db.getValidatedTip()->hash,tip->hash);
+}
+
 TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles) {
     using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
     OrchardCycleFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
@@ -2641,12 +2760,49 @@ TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles)
             if(stateless)EXPECT_EQ(original,nullptr);
             context.logger_interface=source.f.logger.get();auto pool=std::make_shared<MempoolService>();
             ASSERT_TRUE(pool->Init(context));context.mempool=pool;
-            service->setHeaderChainSelector(headers);service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
+            auto import_headers=headers;
+            if(stateless&&run==0) {
+                import_headers=std::make_shared<HeaderChainSelector>();
+                ASSERT_TRUE(import_headers->AddHeader(source.f.blocks.front().header));
+            }
+            service->setHeaderChainSelector(import_headers);service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
             if(stateless) {
                 service->setValidationMode(ValidationMode::STATEFUL);EXPECT_FALSE(service->Start());
                 EXPECT_EQ(service->GetActiveTip(),nullptr);service->setValidationMode(ValidationMode::STATELESS);
             }
+            if(run==1) {
+                // Init's retained decoded bytes cannot hide a later missing
+                // live catalog row at the actual Start publication boundary.
+                const auto state=storage::catalog::State::Decode(*db->getOrchardCatalogState(second_metadata.block_hash));
+                const auto bytes=db->getOrchardCatalogNode(state.transactions);ASSERT_TRUE(bytes.ok());
+                ChainDBTransactionReadTestPeer::SnapshotCatalogFault(*db,source.f.token,state.transactions,{});
+                EXPECT_FALSE(service->Start());EXPECT_EQ(service->GetActiveTip(),nullptr);
+                ChainDBTransactionReadTestPeer::SnapshotCatalogFault(*db,source.f.token,state.transactions,*bytes);
+            }
             ASSERT_TRUE(service->Start());
+            if(stateless&&run==0) {
+                // A physical phone starts with genesis, then receives header
+                // batches while maintenance and P2P callbacks try activation.
+                // There is deliberately no full coin owner during this wait.
+                ASSERT_TRUE(service->IsSnapshotBootstrapPending());
+                ASSERT_EQ(service->GetActiveTip()->height,0u);
+                for(size_t height=1;height<source.f.blocks.size();++height) {
+                    ASSERT_TRUE(import_headers->AddHeader(source.f.blocks[height].header));
+                    if(height%17==0) {
+                        service->ActivateBestChain();service->TryDeferredSnapshotBootstrap();
+                        ASSERT_FALSE(service->IsInSafeMode())<<service->GetSafeModeReason();
+                        ASSERT_TRUE(service->IsSnapshotBootstrapPending());
+                        ASSERT_EQ(service->GetConsensusUTXOSet(),nullptr);
+                        ASSERT_EQ(service->GetActiveTip()->height,0u);
+                    }
+                }
+                ASSERT_TRUE(import_headers->AddHeader(first->Header()));
+                ASSERT_TRUE(import_headers->AddHeader(second->Header()));
+                ASSERT_TRUE(import_headers->AddHeader(third->Header()));
+                service->TryDeferredSnapshotBootstrap();
+                ASSERT_FALSE(service->IsSnapshotBootstrapPending());
+                ASSERT_FALSE(service->IsInSafeMode())<<service->GetSafeModeReason();
+            }
             if(!stateless&&run==0) {
                 EXPECT_FALSE(context.config->CompactSnapshotBootstrapEnabled());
                 const auto refused_root=service->LoadSnapshot(bad_root_path);

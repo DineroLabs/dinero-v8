@@ -40,6 +40,22 @@ TEST(RuntimeDeliveryWorker, HistoricalWalletNoLogAndStoppedOwnerRemainDistinct) 
     EXPECT_EQ(report.wallet,DeliveryWorker::WalletOutcome::Deferred);EXPECT_FALSE(report.wallet_head);
 }
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
+TEST(RuntimeDeliveryWorker, ActivationParentStartupLeavesReplayToActualWorker) {
+    CanonicalRecoveryFixture f;
+    ASSERT_EQ(f.f.service->getBlockHeight()+1,Params().orchard_activation_height);
+    ASSERT_FALSE(ShieldedStateStartupTestAccess::HasBoundaryCache(*f.f.service));
+    const auto rows=ChainDBTransactionReadTestPeer::HandoffRows(f.f.db);
+    ASSERT_TRUE(f.wallet->Start());
+    // Startup must return without running the independent historical replay.
+    EXPECT_FALSE(ShieldedStateStartupTestAccess::HasBoundaryCache(*f.f.service));
+    DeliveryWorker worker(f.f.service,f.wallet,DeliveryWorkerFixtureLimits());worker.Start();
+    const auto report=WaitDeliveryWorker(worker,[](const auto& r){return r.slices>0;});worker.Stop();
+    EXPECT_EQ(report.wallet,DeliveryWorker::WalletOutcome::NoLog);
+    EXPECT_TRUE(ShieldedStateStartupTestAccess::HasBoundaryCache(*f.f.service));
+    EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(f.f.db),rows);
+    const auto page=f.f.service->getRuntimeDeliveryPage({},1);ASSERT_TRUE(page.ok());
+    EXPECT_EQ((*page)->head.sequence,0u);EXPECT_TRUE((*page)->events.empty());
+}
 TEST(RuntimeDeliveryWorker, StartupAndRestartRecoverEncryptedEarnedWalletPrefix) {
     CanonicalRecoveryFixture f(true);f.MineAndAdopt();
     DeliveryWorker worker(f.f.service,f.wallet,DeliveryWorkerFixtureLimits());worker.Start();

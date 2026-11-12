@@ -226,6 +226,14 @@ jobs:
             .github/workflows/core-heavy.yml \
             --baseline scripts/ci/unexecuted_tests_baseline.txt
 
+      # The CLI timeout test uses a real local HTTP socket and has the
+      # integration label, so the broad sweep excludes it.
+      - name: Run CLI RPC timeout regression
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          ctest --test-dir build-tests --output-on-failure --no-tests=error \
+            -R '^CliRpcTimeout$'
+
       # These tests carry the integration label and are excluded from the
       # broad ctest sweep. Run each by exact name in this backend-off build;
       # the separate Orchard workflow uses a different configuration and

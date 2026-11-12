@@ -28,9 +28,18 @@ private:
     friend class ChainstateService;
     friend class DaemonApp;
     friend struct OrchardSnapshotStoreTestAccess;
+    // Process-local decoded DATA for one Init -> Start. Every reuse rehashes
+    // the retained proof in ChainDB and compares all selected catalog nodes to
+    // a fresh checksummed CF stream. Never restored from a durable receipt.
+    struct StartupReads {
+        std::optional<storage::OrchardSnapshotBase> base;
+        std::shared_ptr<const consensus::OrchardSnapshotSection> baseline;
+        std::shared_ptr<const consensus::OrchardSnapshotCatalog> selected_nodes;
+    };
     struct Publication {
         std::unique_ptr<consensus::ConsensusUTXOSet> full;
         std::unique_ptr<OrchardCompactChainstate> compact;
+        StartupReads reads;
     };
     struct ActivationPublication {
         // The bound DB outlives its typed compact owner. The caller retains
@@ -141,9 +150,13 @@ private:
     // New directories only, under the caller's datadir guard. No existing
     // database is opened/migrated/replaced and no chainstate is enrolled.
     static void CreateFreshStore(const std::filesystem::path&);
-    static void SeedRetainedHeaders(const ChainDB&,consensus::HeaderChainSelector&);
+    static void SeedRetainedHeaders(const ChainDB&,consensus::HeaderChainSelector&,
+        consensus::HeaderStore* pending_headers=nullptr);
     static consensus::OrchardSnapshotSection Capture(const ChainDB&,
         consensus::OrchardSnapshotProfile,const std::vector<uint8_t>& accumulator);
+    static consensus::OrchardSnapshotSection Capture(const ChainDB&,
+        consensus::OrchardSnapshotProfile,const std::vector<uint8_t>&,
+        std::shared_ptr<const consensus::OrchardSnapshotCatalog>,bool project=false);
     // Detached, read-only reconstruction of the FIRST Orchard block, even
     // after the selected tip has advanced. Requires retained bodies/catalog
     // nodes and the locally selected buried activation header. Never rolls
@@ -192,5 +205,7 @@ private:
     // pre-base transaction history was executed. The suffix audit is separate.
     static Publication Restore(AnnotatedRecursiveMutex&,const ChainDB&,
         const consensus::HeaderChainSelector&);
+    static Publication Restore(AnnotatedRecursiveMutex&,const ChainDB&,
+        const consensus::HeaderChainSelector&,const StartupReads&);
 };
 } // namespace dinero

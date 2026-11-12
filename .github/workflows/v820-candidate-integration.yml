@@ -48,6 +48,7 @@ jobs:
       - name: Rust workspace and pool/miner binaries
         working-directory: sv2
         run: |
+          python3 -B crates/dinero-sv2-pool/tests/test_orchard_job_ready.py -v
           cargo test --locked --workspace
           cargo build --locked --release -p dinero-sv2-pool -p dinero-sv2-miner
       - name: Build pinned Core with real Orchard and coupled activation fixture

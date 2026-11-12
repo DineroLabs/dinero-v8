@@ -188,7 +188,9 @@ private:
         Require(thread_ == std::this_thread::get_id(), "Parent replay belongs to another thread");
     }
     void CheckFinished() const {
-        CheckThread();
+        // Completion freezes the engine. Publication through the service's
+        // cache mutex permits const reads on other threads; Append/Finish
+        // remain confined to the constructing thread.
         Require(finished_ && !poisoned_ && Profile() == profile_, "Parent replay has no completed result");
     }
     static uint64_t Add(uint64_t left, uint64_t right) {

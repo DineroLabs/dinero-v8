@@ -219,7 +219,7 @@ public:
     // callers before I/O. Captures real storage owners briefly under the lock,
     // then reads and independently validates the hash-linked branch outside it.
     // A prepared result is not activation permission or an acknowledgment.
-    [[nodiscard]] std::unique_ptr<PreparedOrchardParent> PrepareSelectedOrchardParent();
+    [[nodiscard]] std::unique_ptr<PreparedOrchardParent> PrepareSelectedOrchardParent(bool prepare_catalog=true);
     // Read-only comparison against ALL current selected live/durable owners.
     // Result is valid only for this call, not a continuing readiness certificate.
     [[nodiscard]] std::optional<storage::LegacyRetirementRecord>
@@ -1607,6 +1607,11 @@ private:
 
     struct CompactStartupReadUse;
     struct ParentPreparationScope;
+    // One completed immutable boundary proof per service/profile/parent. This
+    // mutex is acquired only outside the selected-chain lock.
+    struct BoundaryParentCache;
+    std::mutex boundary_parent_cache_mutex_;
+    std::unique_ptr<BoundaryParentCache> boundary_parent_cache_;
     struct PreparedOrchardExtension;
     struct PreparedOrchardInverse;
     std::unique_ptr<PreparedOrchardInverse> CaptureOrchardInverseUnderLock();
@@ -1686,6 +1691,10 @@ private:
         std::unique_ptr<PreparedOrchardExtension> extension;
         std::string extension_wire;
     };
+    // Test access only: split capture, detached completion and exact rebind so
+    // a candidate can be staged deterministically between the proof and the
+    // commit without adding a callback to the production replay hot loop.
+    friend struct OrchardActivationParentTestAccess;
     // Retains startup lifetime without opening ordinary read admission. Proof
     // work runs outside the activation lock; binding never publishes a tip.
     struct PreparedCompactStartupAudit {
@@ -1707,7 +1716,8 @@ private:
     bool CompleteActivationParentPlan(ActivationParentPlan&);
     void ActivateBestChainPass(const ActivationParentPlan*,std::unique_ptr<ActivationParentPlan>&,bool,
         PreparedOrchardInverse* = nullptr);
-    bool CompletePreparedOrchardParent(PreparedOrchardParent&);
+    bool CompletePreparedOrchardParent(PreparedOrchardParent&,bool prepare_catalog=true,bool audit_canonical=false);
+    bool CompletePreparedOrchardBranch(PreparedOrchardParent&,size_t historical_bytes);
     bool BindActivationParentUnderLock(CBlockIndex*,CBlockIndex*,const std::vector<CBlockIndex*>&,
         const std::vector<CBlockIndex*>&,const ActivationParentPlan*,std::unique_ptr<ActivationParentPlan>&,
         bool,std::unique_ptr<ParentPreparationScope>&);
@@ -1744,6 +1754,7 @@ private:
     // accepts ONLY independently executed full backing, never assumed state.
     bool CheckIndependentLegacyMobileParentUnderLock() const;
     std::shared_ptr<const RuntimeAccountReplay> CaptureEmptyActivationParentReplayUnderLock();
+    std::shared_ptr<const RuntimeAccountReplay> CaptureEmptyActivationParentReplay();
     // Caller owns snapshot_load_mutex_ THEN activation_mutex_. The context
     // retains its original full/explicit-proof coin authority unchanged.
     bool CheckRuntimeAccountReplayCurrentUnderLock(const RuntimeAccountReplay&,
@@ -2127,7 +2138,11 @@ private:
     // and then write block failure flags MUST hold this, and AssertHeld turns
     // that from a comment into an enforced invariant. Satisfies Lockable, so
     // every existing lock_guard/unique_lock site is unchanged.
-    mutable AnnotatedRecursiveMutex activation_mutex_;  // Protects ActivateBestChain from concurrent entry
+    mutable AnnotatedRecursiveMutex activation_mutex_;  // Protects selected transitions and activation binding
+    // One root owns detached activation through capture, proof completion and
+    // selected binding. Competing roots defer; recursive selected-lock calls
+    // retain their existing consume-only path without acquiring this mutex.
+    std::mutex activation_prepare_mutex_;
     // Keep exclusive ownership, but install destruction only in the real
     // runtime factory. Backend-OFF services retain an empty owner and do not
     // reference a destructor whose implementation is absent from that build.

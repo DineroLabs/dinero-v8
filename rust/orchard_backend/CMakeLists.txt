@@ -418,34 +418,44 @@ if(TARGET dinero_chainstate)
     set_tests_properties(OrchardCompactHistoricalUndo PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;storage;mandatory")
     add_test(NAME OrchardCompactGlobalIndex COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactGlobalIndex.*)
     set_tests_properties(OrchardCompactGlobalIndex PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;storage;mandatory")
-    add_test(NAME OrchardCompactHeaderBinding COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactHeaderBinding.*)
-    set_tests_properties(OrchardCompactHeaderBinding PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
+    # Each case constructs and verifies genuine Orchard proofs and durable
+    # stores. A growing suite must not share one case's 180-second budget.
+    # Register the source cases automatically so new regressions cannot be
+    # omitted from CTest; keep the original assertions, labels and deadline.
+    include(GoogleTest)
+    function(dinero_add_compact_cases header labels)
+      gtest_add_tests(TARGET test_assumeutxo_replay
+        SOURCES "${ORCHARD_HOST_ROOT}/tests/daemon/${header}"
+        TEST_LIST cases)
+      if(NOT cases)
+        message(FATAL_ERROR "No compact regression cases found in ${header}")
+      endif()
+      set_tests_properties(${cases} PROPERTIES TIMEOUT 180
+        ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "${labels}")
+    endfunction()
+    dinero_add_compact_cases("orchard_compact_header_binding_checks.h" "daemon;orchard;storage;mandatory")
     add_test(NAME OrchardCompactHeaderRetention COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactHeaderRetention.*)
     set_tests_properties(OrchardCompactHeaderRetention PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
     add_test(NAME OrchardCompactHeaderTransition COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactHeaderTransition.*)
     set_tests_properties(OrchardCompactHeaderTransition PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
-    add_test(NAME OrchardCompactBoundaryAudit COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactBoundaryAudit.*)
-    set_tests_properties(OrchardCompactBoundaryAudit PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
-    add_test(NAME OrchardHistoricalSpendTransition COMMAND test_assumeutxo_replay --gtest_filter=OrchardHistoricalSpendTransition.*)
-    set_tests_properties(OrchardHistoricalSpendTransition PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
-    add_test(NAME OrchardHistoricalIndexOwner COMMAND test_assumeutxo_replay --gtest_filter=OrchardHistoricalIndexOwner.*)
-    set_tests_properties(OrchardHistoricalIndexOwner PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
-    add_test(NAME OrchardHistoricalController COMMAND test_assumeutxo_replay --gtest_filter=OrchardHistoricalController.*)
-    set_tests_properties(OrchardHistoricalController PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
-    add_test(NAME OrchardOutgoingHandoff COMMAND test_assumeutxo_replay --gtest_filter=OrchardOutgoingHandoff.*)
-    set_tests_properties(OrchardOutgoingHandoff PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
-    add_test(NAME OrchardCompactTransition COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactTransition.*)
-    set_tests_properties(OrchardCompactTransition PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
-    add_test(NAME OrchardCompactNetwork COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactNetwork.*)
-    set_tests_properties(OrchardCompactNetwork PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;p2p;storage;mandatory")
-    add_test(NAME OrchardCompactQueuedIngress COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactQueuedIngress.*)
-    set_tests_properties(OrchardCompactQueuedIngress PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
+    dinero_add_compact_cases("orchard_compact_boundary_audit_checks.h" "daemon;orchard;storage;mandatory")
+    # The boundary-audit and transition headers register each historical case
+    # separately. Suite-wide registrations would run those cases twice.
+    dinero_add_compact_cases("orchard_outgoing_handoff_checks.h" "daemon;orchard;storage;mandatory")
+    dinero_add_compact_cases("orchard_compact_transition_checks.h" "daemon;orchard;storage;mandatory")
+    # These continuous two-edge recovery cases pass in 102-106 seconds on
+    # Linux alone, but compete for the prover and durable-store I/O when
+    # scheduled together. Preserve their full history and 180-second limits.
+    set_tests_properties(
+      OrchardOutgoingHandoff.HistoricalRangeWriterTwoEdgesRoundTripAndAbandonment
+      OrchardCompactTransition.HistoricalCommittedPrefixReopensAndRetriesRemainingEdge
+      PROPERTIES RUN_SERIAL TRUE)
+    dinero_add_compact_cases("orchard_compact_network_checks.h" "daemon;orchard;p2p;storage;mandatory")
+    dinero_add_compact_cases("orchard_compact_queued_ingress_checks.h" "daemon;orchard;storage;mandatory")
     add_test(NAME OrchardCompactHeaderRestore COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactHeaderRestore.*)
     set_tests_properties(OrchardCompactHeaderRestore PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;headers;storage;mandatory")
-    add_test(NAME OrchardCompactStart COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactStart.*)
-    set_tests_properties(OrchardCompactStart PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
-    add_test(NAME OrchardCompactStartupAudit COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactStartupAudit.*)
-    set_tests_properties(OrchardCompactStartupAudit PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
+    dinero_add_compact_cases("orchard_compact_start_checks.h" "daemon;orchard;storage;mandatory")
+    dinero_add_compact_cases("orchard_compact_startup_audit_checks.h" "daemon;orchard;storage;mandatory")
     target_compile_definitions(test_assumeutxo_replay PRIVATE DINERO_TEST_ORCHARD_ORIGIN=1)
     target_link_libraries(test_assumeutxo_replay PRIVATE dinero_orchard_index_delivery)
   endif()

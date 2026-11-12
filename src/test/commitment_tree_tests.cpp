@@ -11,6 +11,9 @@
 
 #include <array>
 #include <cstdint>
+#include <algorithm>
+#include <thread>
+#include <utility>
 #include <vector>
 
 namespace dinero::consensus::shielded::testing {
@@ -23,6 +26,71 @@ Hash MakeHash(uint8_t seed) {
     Hash h{};
     h[0] = seed;
     return h;
+}
+
+// Independent oracle: the original uncached calculation, decoded from the
+// public wire frontier rather than any cached state or Root() invocation.
+Hash UncachedRoot(const CommitmentTree& tree) {
+    const auto wire = tree.SerializeFrontier();
+    uint64_t size = 0;
+    for (unsigned i = 0; i < 8; ++i) size |= uint64_t(wire[i]) << (8 * i);
+    const Hash zero{};
+    Hash empty = PoseidonHash2(zero, zero), current = empty;
+    for (size_t depth = 0; depth < TREE_DEPTH; ++depth) {
+        Hash frontier{};
+        std::copy_n(wire.begin() + 8 + depth * HASH_BYTES, HASH_BYTES, frontier.begin());
+        current = (size >> depth) & 1 ? PoseidonHash2(frontier, current)
+                                           : PoseidonHash2(current, empty);
+        empty = PoseidonHash2(empty, empty);
+    }
+    return current;
+}
+
+void ExpectOriginalRoot(const CommitmentTree& tree) {
+    const auto wire = tree.SerializeFrontier();
+    const auto expected = UncachedRoot(tree);
+    EXPECT_EQ(tree.Root(), expected);
+    EXPECT_EQ(tree.Root(), expected); // warm-cache read
+    EXPECT_EQ(tree.SerializeFrontier(), wire);
+}
+
+TEST(CommitmentTreeTest, CachedRootMatchesOriginalAcrossEveryMutationAndOwnershipTransfer) {
+    CommitmentTree tree;
+    ExpectOriginalRoot(tree);
+    for (uint8_t i = 1; i <= 8; ++i) {
+        tree.Append(MakeHash(i));
+        ExpectOriginalRoot(tree);
+    }
+    CommitmentTree copied(tree), assigned;
+    assigned.Append(MakeHash(99)); assigned.Root();
+    assigned = tree;
+    ExpectOriginalRoot(copied); ExpectOriginalRoot(assigned);
+    copied.Append(MakeHash(9)); ExpectOriginalRoot(copied); ExpectOriginalRoot(tree);
+    CommitmentTree moved(std::move(copied)), move_assigned;
+    move_assigned.Root(); move_assigned = std::move(assigned);
+    ExpectOriginalRoot(moved); ExpectOriginalRoot(move_assigned);
+    moved.Append(MakeHash(10)); ExpectOriginalRoot(moved);
+    ASSERT_TRUE(tree.Truncate(3)); ExpectOriginalRoot(tree);
+    const auto wire = tree.SerializeFrontier();
+    ASSERT_TRUE(moved.DeserializeFrontier(wire.data(), wire.size()));
+    ExpectOriginalRoot(moved);
+    EXPECT_FALSE(moved.DeserializeFrontier(wire.data(), wire.size() - 1));
+    ExpectOriginalRoot(moved);
+    EXPECT_FALSE(tree.Truncate(99)); ExpectOriginalRoot(tree);
+    ASSERT_TRUE(tree.Truncate(0)); ExpectOriginalRoot(tree);
+}
+
+TEST(CommitmentTreeTest, ConcurrentReadersUseTheSameRootWithoutChangingWireState) {
+    CommitmentTree tree;
+    tree.Append(MakeHash(7));
+    const auto expected = UncachedRoot(tree);
+    const auto wire = tree.SerializeFrontier();
+    std::vector<std::thread> readers;
+    for (unsigned i = 0; i < 4; ++i) readers.emplace_back([&] {
+        for (unsigned j = 0; j < 100; ++j) EXPECT_EQ(tree.Root(), expected);
+    });
+    for (auto& reader : readers) reader.join();
+    EXPECT_EQ(tree.SerializeFrontier(), wire);
 }
 
 TEST(CommitmentTreeTest, EmptyTreeRootIsDeterministic) {

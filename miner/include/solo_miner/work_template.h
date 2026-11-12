@@ -13,6 +13,9 @@ namespace solo {
  * Parsed block template from getblocktemplate RPC
  */
 struct WorkTemplate {
+    // Immutable jobs retain the daemon's exact header, including reserved bytes.
+    std::string job_id;
+    std::array<uint8_t, HEADER_SIZE> job_header{};
     // Header fields
     uint32_t version = 1;
     std::string prev_hash;          // Hex string (64 chars)

@@ -1,4 +1,5 @@
 import subprocess
+import hashlib
 import sys
 from pathlib import Path
 
@@ -58,6 +59,40 @@ def test_clean_tree_passes_stage0(tmp_path):
     repo = make_repo(tmp_path)
     r = check(repo, 0)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_exact_digest_is_stage_scoped_and_rejects_any_other_bytes(tmp_path):
+    repo = make_repo(tmp_path)
+    p = repo / "include/consensus/a.h"
+    reviewed = b"#pragma once\n// reviewed multiline replacement\nint value;\n"
+    digest = hashlib.sha256(reviewed).hexdigest()
+    with (repo / "allowed.txt").open("a") as f:
+        f.write("6 sha256 include/consensus/a.h " + digest + "\n")
+    p.write_bytes(reviewed)
+    assert check(repo, 5).returncode == 1
+    assert check(repo, 6).returncode == 0
+    for changed in (reviewed + b"\n", reviewed.replace(b"value", b"other"),
+                    reviewed.replace(b"\n", b"\r\n")):
+        p.write_bytes(changed)
+        assert check(repo, 6).returncode == 1
+    p.unlink()
+    assert check(repo, 6).returncode == 1
+
+
+def test_exact_digest_does_not_authorize_new_files(tmp_path):
+    repo = make_repo(tmp_path)
+    data = b"// new file\n"
+    (repo / "include/consensus/new.h").write_bytes(data)
+    with (repo / "allowed.txt").open("a") as f:
+        f.write("6 sha256 include/consensus/new.h " + hashlib.sha256(data).hexdigest() + "\n")
+    assert check(repo, 6).returncode == 1
+
+
+def test_exact_digest_malformed_input_fails_closed(tmp_path):
+    repo = make_repo(tmp_path)
+    for value in ("not-a-digest", "a" * 63, "A" * 64, "a" * 64 + " extra"):
+        (repo / "allowed.txt").write_text("6 sha256 include/consensus/a.h " + value + "\n")
+        assert check(repo, 6).returncode == 2
 
 
 def test_unlisted_change_fails(tmp_path):

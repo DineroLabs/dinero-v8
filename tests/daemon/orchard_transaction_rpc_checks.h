@@ -37,6 +37,17 @@ public:
         rocksdb::WriteBatch batch;batch.Delete(db.shieldedStateHandle(),key);
         if(db.writeBatch(token,std::move(batch),true)!=Status::Ok)throw std::runtime_error("handoff fixture row delete failed");
     }
+    // Serialized fault injection in disposable snapshot startup fixtures.
+    static void SnapshotCatalogFault(ChainDB& db,const ChainWriteToken& token,
+        const uint256& id,const std::optional<std::string>& bytes) {
+        const auto key=std::string("Morchard_catalog_v1/node/")+
+            std::string(reinterpret_cast<const char*>(id.data),32);
+        rocksdb::WriteBatch batch;
+        if(bytes)batch.Put(db.cf_[db.idx_utreexo_].get(),key,*bytes);
+        else batch.Delete(db.cf_[db.idx_utreexo_].get(),key);
+        if(db.writeBatch(token,std::move(batch),true)!=Status::Ok)
+            throw std::runtime_error("snapshot fixture catalog fault failed");
+    }
     static auto OrchardComparisonIterator(const ChainDB& db) {
         return std::unique_ptr<rocksdb::Iterator>(db.db_->NewIterator(
             rocksdb::ReadOptions(), db.shieldedStateHandle()));

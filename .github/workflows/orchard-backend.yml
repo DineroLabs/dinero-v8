@@ -231,7 +231,7 @@ jobs:
           log=open('snapshot-shutdown-execution.log').read()
           assert sorted(re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log))==['NotifyDrainWorker','OrchardSnapshotRuntime']
           for suite,cases in {
-              'OrchardSnapshotRuntime': ['FullNodeRejectsBadDnorst02WithCompactBootstrapOff','RealRegtestActivationFullAndCompactImportReopenAndFloor','DeferredV5WaitsForBurialBeforeLoaderAttempt','ActualServiceBootstrapExportAndRestartBothProfiles','IndependentLaterRegtestGatePreservesRoot1ThenExportsRoot2','DormantCoinbaseProfileV6FileImportsUnderH1Schedule','UnmarkedEmptyReadyStoreCannotSelfInitializeGenesis'],
+              'OrchardSnapshotRuntime': ['FullNodeRejectsBadDnorst02WithCompactBootstrapOff','RealRegtestActivationFullAndCompactImportReopenAndFloor','DeferredV5WaitsForBurialBeforeLoaderAttempt','ActualServiceBootstrapExportAndRestartBothProfiles','IndependentLaterRegtestGatePreservesRoot1ThenExportsRoot2','DormantCoinbaseProfileV6FileImportsUnderH1Schedule','QueuedDownloadedHeaderIsRevalidatedWithoutSelectedPublication','UnmarkedEmptyReadyStoreCannotSelfInitializeGenesis'],
               'NotifyDrainWorker': ['NotifierNeverBlocksOnSlowDrain','DrainRunsOnWorkerThread','NotifyDuringDrainIsNotLost','DrainsAllQueuedWorkWithoutFurtherNotifies','StopInterruptsContinuousProgress','StopJoinsPromptly'],
           }.items():
               assert sorted(re.findall(r'\[       OK \] '+suite+r'\.(\w+)',log))==sorted(cases),suite

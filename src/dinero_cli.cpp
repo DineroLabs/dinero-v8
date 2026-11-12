@@ -28,6 +28,8 @@
 #include <cstring>
 #include <cctype>
 #include <optional>
+#include <charconv>
+#include <string_view>
 
 // Default configuration
 static const char* DEFAULT_RPC_HOST = "127.0.0.1";
@@ -54,6 +56,7 @@ std::string join_path(const std::string& base, const std::string& child) {
 struct CliConfig {
     std::string host = DEFAULT_RPC_HOST;
     uint16_t port = DEFAULT_RPC_PORT;
+    int timeout_seconds = 30;
     std::string datadir = get_default_datadir();
     std::string username;
     std::string password;
@@ -74,6 +77,7 @@ void print_usage() {
     std::cout << "  -regtest              Use ~/.dinero/regtest and RPC port 20996 unless overridden\n";
     std::cout << "  -rpcport=<port>       RPC server port (default: 20998)\n";
     std::cout << "  -rpchost=<host>       RPC server host (default: 127.0.0.1)\n";
+    std::cout << "  -rpcclienttimeout=<n> RPC timeout in seconds, 1-7200 (default: 30)\n";
     std::cout << "  -rpcuser=<user>       RPC username (overrides cookie auth)\n";
     std::cout << "  -rpcpassword=<pass>   RPC password (overrides cookie auth)\n\n";
 
@@ -222,7 +226,17 @@ bool parse_args(int argc, char* argv[], CliConfig& config) {
             continue;
         }
 
-        if (arg.rfind("-rpcport=", 0) == 0) {
+        constexpr std::string_view timeout_prefix = "-rpcclienttimeout=";
+        if (arg.rfind(timeout_prefix, 0) == 0) {
+            int seconds = 0;
+            const auto end = arg.data() + arg.size();
+            const auto parsed = std::from_chars(arg.data() + timeout_prefix.size(), end, seconds);
+            if (parsed.ec != std::errc{} || parsed.ptr != end || seconds < 1 || seconds > 7200) {
+                std::cerr << "-rpcclienttimeout must be an integer between 1 and 7200 seconds\n";
+                return false;
+            }
+            config.timeout_seconds = seconds;
+        } else if (arg.rfind("-rpcport=", 0) == 0) {
             config.port = std::stoi(arg.substr(9));
             rpcport_explicit = true;
         } else if (arg.rfind("-rpchost=", 0) == 0) {
@@ -330,6 +344,7 @@ int main(int argc, char* argv[]) {
     } else {
         client = new dinero::rpc::RpcClient(config.host, config.port, config.username, config.password);
     }
+    client->set_timeout(config.timeout_seconds);
 
     // Connect to daemon
     if (!client->connect()) {

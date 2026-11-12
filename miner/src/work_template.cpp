@@ -48,6 +48,49 @@ std::optional<WorkTemplate> WorkTemplate::fromJson(const nlohmann::json& json) {
             return s.size() == len && isHexString(s);
         };
 
+        if (json.contains("job_id")) {
+            tmpl.job_id = json.at("job_id").get<std::string>();
+            const auto raw = json.at("header_hex").get<std::string>();
+            if (tmpl.job_id.empty() || !isHexLen(raw, 2 * HEADER_SIZE) ||
+                json.at("nonce_offset") != OFFSET_NONCE || json.at("nonce_size") != SIZE_NONCE ||
+                json.at("ntime_offset") != OFFSET_TIMESTAMP || json.at("ntime_size") != SIZE_TIMESTAMP)
+                return std::nullopt;
+            const auto bytes = hexToBytes(raw);
+            std::copy(bytes.begin(), bytes.end(), tmpl.job_header.begin());
+            const auto number = [&](size_t at, size_t size) {
+                uint64_t value = 0;
+                for (size_t i = 0; i < size; ++i) value |= uint64_t(bytes[at+i]) << (8*i);
+                return value;
+            };
+            const auto display = [&](size_t at) {
+                std::array<uint8_t, 32> value{};
+                std::reverse_copy(bytes.begin()+at, bytes.begin()+at+32, value.begin());
+                return bytesToHex(value.data(), value.size());
+            };
+            tmpl.version = uint32_t(number(OFFSET_VERSION, SIZE_VERSION));
+            tmpl.prev_hash = display(OFFSET_PREV_HASH);
+            tmpl.merkle_root = display(OFFSET_MERKLE_ROOT);
+            tmpl.utreexo_root = display(OFFSET_UTREEXO_ROOT);
+            tmpl.timestamp = number(OFFSET_TIMESTAMP, SIZE_TIMESTAMP);
+            tmpl.difficulty_bits = uint32_t(number(OFFSET_DIFFICULTY, SIZE_DIFFICULTY));
+            const auto height = json.at("height").get<int64_t>();
+            if (height <= 0 || uint64_t(height) > UINT32_MAX) return std::nullopt;
+            tmpl.height = uint32_t(height);
+            uint32_t bits = 0;
+            if (!parseHexU32Strict(json.at("bits").get<std::string>(), bits) ||
+                bits != tmpl.difficulty_bits || json.at("prev_hash") != tmpl.prev_hash)
+                return std::nullopt;
+            tmpl.target_hex = json.at("target").get<std::string>();
+            tmpl.target = compactToTarget(bits);
+            if (!isHexLen(tmpl.target_hex, 64) ||
+                hexToBytes(tmpl.target_hex) != std::vector<uint8_t>(tmpl.target.begin(), tmpl.target.end()) ||
+                std::all_of(tmpl.target.begin(), tmpl.target.end(), [](uint8_t b){ return b == 0; }))
+                return std::nullopt;
+            tmpl.coinbase_value = json.value("coinbase_value_una", uint64_t(0));
+            tmpl.longpollid = tmpl.prev_hash;
+            return tmpl.isValid() ? std::optional<WorkTemplate>(std::move(tmpl)) : std::nullopt;
+        }
+
         // Required fields - accept both "bits" and "difficulty" for compatibility
         if (!json.contains("previousblockhash") || !json.contains("height") ||
             !json.contains("curtime")) {
@@ -191,6 +234,11 @@ std::optional<WorkTemplate> WorkTemplate::fromJson(const nlohmann::json& json) {
 }
 
 std::array<uint8_t, HEADER_SIZE> WorkTemplate::buildHeader(uint32_t nonce) const {
+    if (!job_id.empty()) {
+        auto header = job_header;
+        for (unsigned i = 0; i < SIZE_NONCE; ++i) header[OFFSET_NONCE+i] = uint8_t(nonce >> (8*i));
+        return header;
+    }
     std::array<uint8_t, HEADER_SIZE> header{};
 
     // Version (4 bytes, little-endian)
@@ -249,6 +297,7 @@ std::array<uint8_t, HEADER_SIZE> WorkTemplate::buildHeader(uint32_t nonce) const
 }
 
 std::string WorkTemplate::buildBlock(uint32_t nonce) const {
+    if (!job_id.empty()) return {}; // Typed bodies remain owned by the daemon.
     // Build complete block: header + tx count + transactions
     std::string block_hex;
 
@@ -292,7 +341,7 @@ bool WorkTemplate::isValid() const {
            merkle_root.length() == 64 &&
            !utreexo_root.empty() &&
            utreexo_root.length() == 64 &&
-           !coinbase_txn_hex.empty() &&
+           (!job_id.empty() || !coinbase_txn_hex.empty()) &&
            height > 0 &&
            timestamp > 0 &&
            difficulty_bits != 0;

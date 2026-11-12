@@ -603,7 +603,7 @@ std::shared_ptr<consensus::HeaderChainSelector> OrchardSnapshotStore::CompletedA
     }));
     auto retained=std::make_shared<consensus::HeaderChainSelector>();
     retained->ReplaceFailedHeaderHashes(failed_roots);
-    SeedRetainedHeaders(db,*retained);
+    SeedRetainedHeaders(db,*retained,&store);
     const auto best=retained->GetBestHeaderValue();Require(best.has_value());
     std::vector<consensus::HeaderIndexEntry> ancestry;ancestry.reserve(uint64_t(best->height)+1);
     for(uint64_t h=0;h<=best->height;++h){consensus::HeaderIndexEntry value;Require(retained->GetHeaderAtHeightCopy(uint32_t(h),value));ancestry.push_back(value);}
@@ -1521,7 +1521,8 @@ void OrchardSnapshotStore::CreateFreshStore(const std::filesystem::path& destina
         if(owned){std::error_code ignored;fs::remove_all(temporary,ignored);}throw;
     }
 }
-void OrchardSnapshotStore::SeedRetainedHeaders(const ChainDB& db,consensus::HeaderChainSelector& headers) {
+void OrchardSnapshotStore::SeedRetainedHeaders(const ChainDB& db,consensus::HeaderChainSelector& headers,
+    consensus::HeaderStore* pending_headers) {
     struct RetainedHeader {
         int32_t height;
         uint256 hash;
@@ -1538,6 +1539,7 @@ void OrchardSnapshotStore::SeedRetainedHeaders(const ChainDB& db,consensus::Head
     std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b){
         return std::tie(a.height,a.hash)<std::tie(b.height,b.hash);
     });
+    const auto selected_tip=db.getTip();
     for(const auto& row:ordered) {
         const auto stored=db.getHeader(row.hash);
         if (!stored.ok()) {
@@ -1552,6 +1554,55 @@ void OrchardSnapshotStore::SeedRetainedHeaders(const ChainDB& db,consensus::Head
                 !(row.status_flags & (BLOCK_HAVE_DATA|BLOCK_HAVE_UNDO)) &&
                 !row.has_locator;
             if (pruned_failed_header_only) continue;
+            // Ordinary P2P download can persist a future body/metadata before
+            // connect writes its raw ChainDB header. HeaderStore already owns
+            // that header. Revalidate it with this selector, matching every
+            // identity/work field, without accepting the queued body or moving
+            // selected state. Missing selected/executed/undo rows still refuse.
+            const bool queued_header = stored.status()==Status::NotFound && pending_headers &&
+                selected_tip.ok() && row.height>selected_tip->height &&
+                (row.status_flags&BLOCK_VALID_HEADER) &&
+                !(row.status_flags&(BLOCK_VALID_TREE|BLOCK_VALID_TRANSACTIONS|BLOCK_VALID_SCRIPTS)) &&
+                !(row.status_flags&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD|BLOCK_HAVE_UNDO));
+            if (queued_header) {
+                consensus::HeaderIndexEntry pending;
+                const auto metadata=Need(db.getHeaderMetadata(row.hash));
+                Require(pending_headers->LoadHeader(row.hash,pending));
+                Require(pending.hash==row.hash && pending.header.GetHash()==row.hash &&
+                    pending.height==uint32_t(row.height) && pending.height==uint32_t(metadata.height) &&
+                    pending.prev_hash==metadata.parent_hash && pending.header.prev_block_hash==metadata.parent_hash &&
+                    pending.chainwork==metadata.chainwork);
+                // Bodies can arrive out of order: intervening future headers
+                // may exist only in HeaderStore, without any ChainDB metadata
+                // yet. Complete that header-only closure above the durable tip.
+                // Never use it to rescue missing selected/executed ancestry.
+                std::vector<consensus::HeaderIndexEntry> closure;
+                for(auto entry=pending;!headers.ContainsHeader(entry.hash);) {
+                    Require(entry.height>uint64_t(selected_tip->height)&&
+                        entry.hash==entry.header.GetHash()&&entry.prev_hash==entry.header.prev_block_hash);
+                    const auto claim=db.getHeaderMetadata(entry.hash);
+                    if(claim.ok()) {
+                        Require(claim->height==int32_t(entry.height)&&claim->parent_hash==entry.prev_hash&&
+                            claim->chainwork==entry.chainwork&&(claim->status_flags&BLOCK_VALID_HEADER)&&
+                            !(claim->status_flags&(BLOCK_VALID_TREE|BLOCK_VALID_TRANSACTIONS|BLOCK_VALID_SCRIPTS|
+                                BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD|BLOCK_HAVE_UNDO)));
+                    } else Require(claim.status()==Status::NotFound);
+                    closure.push_back(entry);
+                    if(headers.ContainsHeader(entry.prev_hash))break;
+                    consensus::HeaderIndexEntry parent;Require(pending_headers->LoadHeader(entry.prev_hash,parent));
+                    Require(parent.hash==entry.prev_hash&&uint64_t(parent.height)+1==entry.height);entry=std::move(parent);
+                }
+                for(auto it=closure.rbegin();it!=closure.rend();++it) {
+                    Require(headers.AddHeader(it->header));const auto checked=headers.GetHeaderValue(it->hash);
+                    Require(checked&&checked->height==it->height&&checked->chainwork==it->chainwork);
+                }
+                const auto checked=headers.GetHeaderValue(row.hash);
+                Require(checked&&checked->height==pending.height&&checked->chainwork==pending.chainwork);
+                continue;
+            }
+            throw std::runtime_error("Retained Orchard header unavailable at height "+
+                std::to_string(row.height)+" hash="+row.hash.GetHex()+
+                " status="+std::to_string(static_cast<int>(stored.status())));
         }
         const auto header=Need(std::move(stored));
         // Only genuinely validated headers enter the selector. Invalid or
@@ -1561,6 +1612,11 @@ void OrchardSnapshotStore::SeedRetainedHeaders(const ChainDB& db,consensus::Head
 }
 consensus::OrchardSnapshotSection OrchardSnapshotStore::Capture(const ChainDB& db,
     consensus::OrchardSnapshotProfile profile,const std::vector<uint8_t>& accumulator) {
+    return Capture(db,profile,accumulator,{});
+}
+consensus::OrchardSnapshotSection OrchardSnapshotStore::Capture(const ChainDB& db,
+    consensus::OrchardSnapshotProfile profile,const std::vector<uint8_t>& accumulator,
+    std::shared_ptr<const consensus::OrchardSnapshotCatalog> retained,bool project) {
     using namespace consensus;OrchardSnapshotSection s;s.profile=profile;s.accumulator=accumulator;
     s.state=Need(db.getOrchardState());s.retirement=Need(db.getLegacyRetirementState());
     s.base_catalog=storage::catalog::State::Decode(Need(db.getOrchardCatalogState(s.state.block_hash)));
@@ -1575,6 +1631,24 @@ consensus::OrchardSnapshotSection OrchardSnapshotStore::Capture(const ChainDB& d
         s.state.height>=Params().witness_commitment_enforcement_height).WireBytes();
     Need(db.forEachOrchardNullifier([&](const auto& nf,const auto& owner){s.nullifiers.push_back(nf);return true;}));
     Need(db.forEachOrchardAnchor([&](const auto& anchor,uint64_t refs){s.anchors.push_back({anchor,refs});return true;}));
+    if(retained) {
+        if(project)retained=OrchardSnapshotCatalog::Project(std::move(retained),s.parent_catalog,s.base_catalog,
+            [&](const uint256& id){return Need(db.getOrchardCatalogNode(id));});
+        // Reuse only the immutable decoded scratch bytes. The live store is
+        // freshly checked in key order, with no node-sized random-I/O copy and
+        // no authority from a cached existence/absence result. Missing, changed
+        // or unreadable source records still refuse before enrollment.
+        rocksdb::ReadOptions reads;reads.verify_checksums=true;reads.fill_cache=false;
+        std::unique_ptr<rocksdb::Iterator> it(db.db_->NewIterator(reads,db.cf_[db.idx_utreexo_].get()));
+        const std::string prefix="Morchard_catalog_v1/node/";it->Seek(prefix);
+        retained->ForEach([&](const uint256& id,const std::string& bytes) {
+            auto key=prefix;key.append(reinterpret_cast<const char*>(id.data),32);
+            while(it->Valid()&&it->key().compare(rocksdb::Slice(key))<0)it->Next();
+            Require(it->Valid()&&it->key()==rocksdb::Slice(key)&&it->value()==rocksdb::Slice(bytes));
+        });
+        Require(it->status().ok());s.disk_nodes=std::move(retained);
+        ValidateOrchardSnapshotSection(s);return s;
+    }
     const auto read=[&](const auto& id){return Need(db.getOrchardCatalogNode(id));};
     auto inventory=std::make_shared<OrchardSnapshotCatalog>(std::filesystem::path(db.db_->GetName()).parent_path());
     for(const auto* state:{&s.parent_catalog,&s.base_catalog}) {
@@ -2037,8 +2111,24 @@ bool OrchardSnapshotStore::RecoverBaseMarkers(AnnotatedRecursiveMutex& mutex,Cha
 }
 OrchardSnapshotStore::Publication OrchardSnapshotStore::Restore(AnnotatedRecursiveMutex& mutex,const ChainDB& db,
     const consensus::HeaderChainSelector& headers) {
+    return Restore(mutex,db,headers,StartupReads{});
+}
+OrchardSnapshotStore::Publication OrchardSnapshotStore::Restore(AnnotatedRecursiveMutex& mutex,const ChainDB& db,
+    const consensus::HeaderChainSelector& headers,const StartupReads& retained) {
     using namespace consensus;mutex.AssertHeld("restore authenticated Orchard snapshot");
-    const auto base=ReadBaseline(db);(void)Authenticate(base,headers,0);
+    const auto descriptor=storage::ReadOrchardSnapshotBase(db);Require(bool(descriptor));
+    auto baseline=retained.baseline;
+    if(baseline) {
+        Require(retained.base&&*retained.base==*descriptor);
+        crypto::CSHA256 hash;uint64_t loaded=0,part=0;
+        while(loaded<descriptor->proof_bytes) {
+            std::string bytes;Need(db.getRaw(storage::OrchardSnapshotProofKey(descriptor->proof_digest,part++),bytes));
+            Require(bytes.size()==std::min<uint64_t>(storage::OrchardSnapshotProofChunkBytes,descriptor->proof_bytes-loaded));
+            hash.Write(bytes);loaded+=bytes.size();
+        }
+        uint256 digest;hash.Finalize(digest.data);Require(digest==descriptor->proof_digest);
+    } else baseline=std::make_shared<const OrchardSnapshotSection>(ReadBaseline(db));
+    const auto& base=*baseline;(void)Authenticate(base,headers,0);
     const auto tip=Need(db.getTip()),consistent=Need(db.getValidatedTip());
     Require(tip.height>=int(base.state.height)&&tip.hash==consistent.hash&&tip.height==consistent.height);
     const auto selected=storage::catalog::State::Decode(Need(db.getOrchardCatalogState(tip.hash)));
@@ -2051,7 +2141,9 @@ OrchardSnapshotStore::Publication OrchardSnapshotStore::Restore(AnnotatedRecursi
             return headers.GetAncestorHashByHash(tip.hash,height,hash,selected_height)&&selected_height==uint32_t(tip.height);
         }));accumulator=restored.serializeCanonicalLeaves(ORCHARD_SNAPSHOT_MAX_SECTION_BYTES);
     }
-    const auto current=Capture(db,base.profile,accumulator);(void)Authenticate(current,headers,0,false);
+    const auto current=Capture(db,base.profile,accumulator,
+        retained.selected_nodes?retained.selected_nodes:base.disk_nodes,!retained.selected_nodes);
+    (void)Authenticate(current,headers,0,false);
     uint256 base_ancestor;uint32_t selected_height=0;
     Require(headers.GetAncestorHashByHash(tip.hash,base.state.height,base_ancestor,selected_height)&&
         selected_height==uint32_t(tip.height)&&base_ancestor==base.state.block_hash);
@@ -2063,6 +2155,7 @@ OrchardSnapshotStore::Publication OrchardSnapshotStore::Restore(AnnotatedRecursi
         legacy.height==tip.height&&legacy.block_hash==tip.hash&&legacy.shielded_root==current.retirement.record.tree_root&&
         legacy.tree_size==current.retirement.record.tree_size&&legacy.nullifier_count==current.retirement.record.nullifier_count);
     Publication publication;
+    publication.reads={descriptor,std::move(baseline),current.disk_nodes};
     if(compact) {
         Require(ReadCoins(db).empty()&&storage::ReadOrchardCompactStorageBinding(db)==
             storage::EncodeOrchardCompactStorageBinding(selected));

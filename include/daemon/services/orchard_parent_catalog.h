@@ -71,7 +71,11 @@ private:
     static void Require(bool ok){if(!ok)throw std::runtime_error("Orchard parent catalog unavailable");}
     void Check() const {
         const auto& p=Params();
-        Require(thread_==std::this_thread::get_id()&&consensus::OrchardProfileConfigurationValid(p)&&
+        // This catalog is immutable after Create, and reads use ChainDB's
+        // synchronized immutable-node lookup. The completed proof also checks
+        // the full original validation profile on every use.
+        (void)proof_.Record();
+        Require(consensus::OrchardProfileConfigurationValid(p)&&
             p.orchard_branch_id==record_.branch_id&&p.orchard_activation_height==record_.activation_height&&
             uint256::FromHexUnsafe(p.genesis_hash)==record_.genesis&&
             consensus::GetUtreexoMaturityLeafActivationHeight()==leaf_activation_);

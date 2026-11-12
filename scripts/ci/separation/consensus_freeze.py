@@ -23,6 +23,7 @@ stage <= N (union). Allowed-file lines ('#' comments, blank lines ignored):
   <stage> modify <path>            any change to an existing file
   <stage> remove <path>            the file may be deleted
   <stage> add <path>               the file may be added
+  <stage> sha256 <path> <digest>   an existing file may equal this exact byte hash
   <stage> hunk   <path>@<line> <regex>
                                    positional: baseline line <line> of <path> may be
                                    replaced 1:1 by a single line matching <regex>
@@ -102,7 +103,7 @@ def load_baseline(path):
 
 
 def load_allowed(path, stage):
-    modify, remove, add, hunks = set(), set(), set(), {}
+    modify, remove, add, hunks, pinned = set(), set(), set(), {}, {}
     try:
         text = open(path).read()
     except OSError as e:
@@ -115,8 +116,11 @@ def load_allowed(path, stage):
             st, kind, p = int(parts[0]), parts[1], parts[2]
         except (ValueError, IndexError):
             raise InputError("%s:%d: bad entry" % (path, n))
-        if kind not in ("modify", "remove", "add", "hunk", "insert"):
+        if kind not in ("modify", "remove", "add", "sha256", "hunk", "insert"):
             raise InputError("%s:%d: unknown kind %r" % (path, n, kind))
+        if kind == "sha256" and (len(parts) != 4 or
+                not re.fullmatch(r"[0-9a-f]{64}", parts[3])):
+            raise InputError("%s:%d: sha256 needs one lowercase byte digest" % (path, n))
         if kind in ("hunk", "insert"):
             m = re.match(r"^(.+)@([0-9]+)$", p)
             if not m or len(parts) < 4:
@@ -134,9 +138,11 @@ def load_allowed(path, stage):
             remove.add(p)
         elif kind == "add":
             add.add(p)
+        elif kind == "sha256":
+            pinned.setdefault(p, set()).add(parts[3])
         else:
             hunks.setdefault(p, []).append((kind, lineno, rx))
-    return modify, remove, add, hunks
+    return modify, remove, add, hunks, pinned
 
 
 def tree_files(repo):
@@ -180,7 +186,7 @@ def violations_for(p, old, new, rules):
 
 def check(args):
     commit, base = load_baseline(args.baseline)
-    modify, remove, add, hunks = load_allowed(args.allowed, args.stage)
+    modify, remove, add, hunks, pinned = load_allowed(args.allowed, args.stage)
     cur = tree_files(args.repo)
     bad = []
     for p in sorted(set(base) | set(cur)):
@@ -192,7 +198,7 @@ def check(args):
                 bad.append("ADDED %s" % p)
         else:
             data = open(cur[p], "rb").read()
-            if sha(data) == base[p] or p in modify:
+            if sha(data) == base[p] or p in modify or sha(data) in pinned.get(p, ()):
                 continue
             if p not in hunks:
                 bad.append("CHANGED %s" % p)

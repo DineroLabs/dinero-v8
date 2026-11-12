@@ -34,6 +34,22 @@ endif()
 # Tests (only if we have working test files)
 enable_testing()
 
+# Header metadata cold startup parses millions of hexadecimal hash bytes.
+# Compare the optimized codec with the released implementation, including
+# malformed input and the exact historical null-on-error behavior.
+add_executable(test_uint256_hex
+  tests/primitives/test_uint256_hex.cpp src/primitives/uint256.cpp)
+target_include_directories(test_uint256_hex PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME Uint256HexCompatibility COMMAND test_uint256_hex)
+set_tests_properties(Uint256HexCompatibility PROPERTIES
+  LABELS "unit;serialization;mandatory" TIMEOUT 30)
+
+if(TARGET dinero-cli)
+  add_test(NAME CliRpcTimeout
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_cli_rpc_timeout.py $<TARGET_FILE:dinero-cli>)
+  set_tests_properties(CliRpcTimeout PROPERTIES LABELS "integration;cli" TIMEOUT 45)
+endif()
+
 if(TARGET v7_p2mr_key_read_test)
   add_test(NAME WalletP2MRKeyRead COMMAND v7_p2mr_key_read_test)
   set_tests_properties(WalletP2MRKeyRead PROPERTIES
@@ -6071,6 +6087,13 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   if(DINERO_BUILD_ORCHARD_BACKEND)
     add_test(NAME OrchardCompactDownloadMode COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactDownloadMode.*)
     set_tests_properties(OrchardCompactDownloadMode PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;p2p;mandatory")
+    # The Orchard root build registers each header-binding case separately.
+    # K4's separation build needs the suite name as a consensus vector, but
+    # registering it in the root build runs every case twice.
+    if(DINERO_SEPARATION_GATES)
+      add_test(NAME OrchardCompactHeaderBinding COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactHeaderBinding.*)
+      set_tests_properties(OrchardCompactHeaderBinding PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;headers;mandatory")
+    endif()
   endif()
   add_test(NAME UtreexoBlockPayload COMMAND test_assumeutxo_replay --gtest_filter=UtreexoBlockPayload.*)
   set_tests_properties(UtreexoBlockPayload PROPERTIES TIMEOUT 180 LABELS "daemon;utreexo;p2p;mandatory")
@@ -6226,6 +6249,20 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(OrchardCanonicalPool PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;mempool;mandatory")
   add_test(NAME OrchardMiningRpc COMMAND test_assumeutxo_replay --gtest_filter=OrchardMiningRpc.*)
   set_tests_properties(OrchardMiningRpc PROPERTIES TIMEOUT 120 LABELS "orchard;mining;rpc")
+  if(UNIX AND DINERO_BUILD_MINER)
+    if(NOT DINERO_TEST_ORCHARD_HTTP_TRANSPORT)
+      target_sources(test_assumeutxo_replay PRIVATE src/daemon/http_rpc_server.cpp src/daemon/rpc_auth.cpp
+        src/daemon/legacy_globals_stub.cpp)
+      target_compile_definitions(test_assumeutxo_replay PRIVATE DINERO_CLI_VERSION="8.2.2")
+    endif()
+    target_link_libraries(test_assumeutxo_replay PRIVATE dinero-solo-miner)
+    target_compile_definitions(test_assumeutxo_replay PRIVATE DINERO_TEST_EMBEDDED_MINING=1)
+    if(MINER_ENABLE_METAL)
+      target_compile_definitions(test_assumeutxo_replay PRIVATE DINERO_TEST_EMBEDDED_METAL=1)
+    endif()
+    add_test(NAME OrchardEmbeddedMining COMMAND test_assumeutxo_replay --gtest_filter=OrchardEmbeddedMining.*)
+    set_tests_properties(OrchardEmbeddedMining PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE LABELS "orchard;mining;rpc;integration")
+  endif()
   add_test(NAME OrchardRawIngress COMMAND test_assumeutxo_replay --gtest_filter=OrchardRawIngress.*)
   set_tests_properties(OrchardRawIngress PROPERTIES LABELS "daemon;orchard;ingress;mandatory" TIMEOUT 120)
   add_test(NAME OrchardCanonicalCatalog COMMAND test_assumeutxo_replay --gtest_filter=OrchardCanonicalCatalog.*)

@@ -142,6 +142,7 @@ public:
 
 private:
     mutable std::mutex mutex_;
+    mutable std::optional<Hash> cached_root_;
     uint64_t size_ = 0;
     std::array<Hash, TREE_DEPTH> frontier_;  ///< One hash per level (left siblings)
     std::vector<Hash> leaves_;               ///< Full leaf set for wallet-side path building

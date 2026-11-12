@@ -1089,18 +1089,48 @@ size_t HeaderChainSelector::GetHeaderCount() const {
 // Private Methods
 // ============================================================================
 
+HeaderAsertContext HeaderAsertAncestryCache::ForParent(
+        const HeaderIndexEntry& parent,
+        std::optional<uint32_t> timing_anchor_height) {
+    const bool same_parent = populated_ && parent.hash == parent_hash_ &&
+        parent.height == context_.parent_height;
+    const bool continuation = populated_ && parent.parent &&
+        static_cast<uint64_t>(context_.parent_height) + 1 == parent.height &&
+        parent.parent->height == context_.parent_height &&
+        parent.parent->hash == parent_hash_ && parent.prev_hash == parent_hash_;
+    const bool same_ancestry = same_parent || continuation;
+
+    HeaderAsertContext next;
+    next.parent_height = parent.height;
+    // MTP changes on every header and is already bounded to eleven ancestors.
+    next.parent_mtp = static_cast<int64_t>(parent.GetMedianTimePast());
+    next.block1_time = same_ancestry && context_.parent_height >= 1
+        ? context_.block1_time : GetKnownAncestryTimestamp(nullptr, &parent, 1);
+    if (timing_anchor_height) {
+        if (same_ancestry && timing_anchor_height == timing_anchor_height_ &&
+                context_.timing_anchor) {
+            next.timing_anchor = context_.timing_anchor;
+        } else {
+            // A fork, changed schedule or newly reached anchor must be read
+            // from this parent's actual ancestry, never from another branch.
+            next.timing_anchor = GetKnownAncestryTimingAnchor(
+                nullptr, &parent, *timing_anchor_height);
+        }
+    }
+    parent_hash_ = parent.hash;
+    context_ = next;
+    timing_anchor_height_ = timing_anchor_height;
+    populated_ = true;
+    return next;
+}
+
 bool HeaderChainSelector::ValidateHeader(
     const BlockHeader& header, const HeaderIndexEntry* prev) {
     std::optional<HeaderAsertContext> parent;
     if (prev) {
-        parent.emplace();
-        parent->parent_height = prev->height;
-        parent->parent_mtp = static_cast<int64_t>(prev->GetMedianTimePast());
-        parent->block1_time = GetKnownAncestryTimestamp(nullptr, prev, 1);
         const auto consensus = GetConsensusForNetwork(dinero::Params());
-        if (const auto height = TimingUpgradeAnchorHeight(
-                static_cast<int32_t>(prev->height) + 1, consensus))
-            parent->timing_anchor = GetKnownAncestryTimingAnchor(nullptr, prev, *height);
+        parent = asert_ancestry_cache_.ForParent(*prev, TimingUpgradeAnchorHeight(
+            static_cast<int32_t>(prev->height) + 1, consensus));
     }
     return ValidateHistoricalHeader(header, parent);
 }

@@ -46,7 +46,7 @@ BlockChainStatus classifyBlockChainStatus(
  * Supports:
  * - Cookie authentication (preferred)
  * - Username/password authentication (fallback)
- * - getblocktemplate, submitblock, getmininginfo
+ * - immutable mining.getjob/mining.submit, legacy submitblock, getmininginfo
  */
 class RpcClient {
 public:
@@ -63,7 +63,7 @@ public:
     bool isConnected();
 
     /**
-     * Get block template for mining
+     * Get an immutable daemon-owned mining job (historical or Orchard)
      * @param address Payout address (required)
      * @return Template JSON or nullopt on error
      */
@@ -90,6 +90,7 @@ public:
      * @return true if accepted, false otherwise
      */
     bool submitBlock(const std::string& block_hex);
+    bool submitJob(const std::string& job_id, uint32_t nonce);
 
     /**
      * Reconcile an ambiguous submission against the active chain.
