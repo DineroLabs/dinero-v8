@@ -439,12 +439,8 @@ if(TARGET dinero_chainstate)
     add_test(NAME OrchardCompactHeaderTransition COMMAND test_assumeutxo_replay --gtest_filter=OrchardCompactHeaderTransition.*)
     set_tests_properties(OrchardCompactHeaderTransition PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
     dinero_add_compact_cases("orchard_compact_boundary_audit_checks.h" "daemon;orchard;storage;mandatory")
-    add_test(NAME OrchardHistoricalSpendTransition COMMAND test_assumeutxo_replay --gtest_filter=OrchardHistoricalSpendTransition.*)
-    set_tests_properties(OrchardHistoricalSpendTransition PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
-    add_test(NAME OrchardHistoricalIndexOwner COMMAND test_assumeutxo_replay --gtest_filter=OrchardHistoricalIndexOwner.*)
-    set_tests_properties(OrchardHistoricalIndexOwner PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
-    add_test(NAME OrchardHistoricalController COMMAND test_assumeutxo_replay --gtest_filter=OrchardHistoricalController.*)
-    set_tests_properties(OrchardHistoricalController PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;storage;mandatory")
+    # The boundary-audit and transition headers register each historical case
+    # separately. Suite-wide registrations would run those cases twice.
     dinero_add_compact_cases("orchard_outgoing_handoff_checks.h" "daemon;orchard;storage;mandatory")
     dinero_add_compact_cases("orchard_compact_transition_checks.h" "daemon;orchard;storage;mandatory")
     # These continuous two-edge recovery cases pass in 102-106 seconds on
