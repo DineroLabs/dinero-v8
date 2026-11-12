@@ -1245,6 +1245,11 @@ struct RelayWorld {
 
 }  // namespace
 
+namespace {
+void AddLegacyHint(P2PManager& manager, const std::array<uint8_t, 20>& target,
+                   std::vector<uint8_t> ip);
+}
+
 TEST(RelayRegistration, TargetsTwoRelaysInDistinctNetgroups) {
     dinero::p2p::AddressManager later_gossip;  // outlives the manager
     RelayWorld w;
@@ -1271,6 +1276,41 @@ TEST(RelayRegistration, TargetsTwoRelaysInDistinctNetgroups) {
     EXPECT_TRUE(ContainsEndpoint(relays, "8.8.10.1:20999"));
     EXPECT_TRUE(ContainsEndpoint(relays, "9.9.20.2:20999"));
     EXPECT_FALSE(ContainsEndpoint(relays, "8.8.20.2:20999"));
+}
+
+TEST(RelayRegistration, ConnectOnlyNeverDialsAmbientRelays) {
+    RelayWorld w;
+    w.manager->set_connect_only_targets(true, {{"92.118.190.62", 20999}});
+    w.manager->test_maybe_auto_register_with_relays();
+    EXPECT_TRUE(w.dialed.empty()) << "fleet auto-registration escaped connect=";
+    EXPECT_TRUE(w.Relays().empty());
+
+    // A connected configured peer can advertise a target through a relay.
+    // That must not create an additional virtual peer in connect-only mode.
+    w.Connect("92.118.190.62:20999", false);
+    AddLegacyHint(*w.manager, MakeNodeId(0x70), {92, 118, 190, 62});
+    w.manager->test_orchestrate_relay_dials();
+    EXPECT_EQ(w.Next("92.118.190.62:20999", "relaycon"), nullptr);
+}
+
+TEST(RelayRegistration, ConnectOnlyFencesDirectDialBeforeResolution) {
+    P2PManager manager(0);
+    manager.set_connect_only_targets(true, {{"allowed.example", 20999}});
+    std::vector<std::string> resolved;
+    manager.test_set_ipv4_resolver([&](const std::string& host) -> std::optional<std::string> {
+        resolved.push_back(host);
+        return std::nullopt;  // stop before any socket operation
+    });
+    EXPECT_FALSE(manager.connect_to_peer("other.example", 20999));
+    EXPECT_TRUE(resolved.empty()) << "an ambient target reached DNS";
+    EXPECT_FALSE(manager.connect_to_peer("allowed.example", 20999));
+    ASSERT_EQ(resolved.size(), 1u);
+    EXPECT_EQ(resolved.front(), "allowed.example");
+
+    manager.set_connect_only_targets(true, {});  // connect=0 sentinel
+    resolved.clear();
+    EXPECT_FALSE(manager.connect_to_peer("allowed.example", 20999));
+    EXPECT_TRUE(resolved.empty());
 }
 TEST(RelayRegistration, PrefersCommunityOverFleet) {
     // The fleet holds the slots until community relays have confirmed; then

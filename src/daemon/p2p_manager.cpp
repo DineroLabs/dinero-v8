@@ -1216,6 +1216,7 @@ void P2PManager::handle_relay_connect(const std::string& peer_address,
 // the path.
 void P2PManager::handle_relay_data(const std::string& peer_address,
                                    const P2PMessage& message) {
+    if (connect_only_) return;
     if (message.payload.size() < 9) {
         return;  // need at least circuit_id_8 + direction_1
     }
@@ -1480,6 +1481,7 @@ void P2PManager::RecomputeRelayBehindThrottle() {
 
 bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_address,
                                             const P2PMessage& message) {
+    if (connect_only_) return false;
     if (message.payload.size() < 9) {
         return false;
     }
@@ -1939,6 +1941,7 @@ bool P2PManager::relay_serving() const {
 }
 
 void P2PManager::set_relay_service_enabled(bool enabled) {
+    if (connect_only_) enabled = false;
     const bool was = relay_service_enabled_.exchange(enabled, std::memory_order_acq_rel);
     if (was && !enabled) {
         // Our registrants must not keep counting on a relay that left.
@@ -1967,6 +1970,7 @@ uint64_t P2PManager::SendRelayConnect(
     const std::array<uint8_t, 20>& target_node_id,
     std::function<void(bool ok, uint64_t circuit_id,
                        const std::string& msg)> callback) {
+    if (connect_only_) return 0;
     // Origin-side mainnet gate removed: the orchestrator's install path now
     // wires a QUIC client session on the resulting circuit, so the data
     // plane is encrypted end-to-end. RELAY_CONNECT itself rides the existing
@@ -2112,6 +2116,7 @@ std::string P2PManager::install_outbound_virtual_relay_peer(
     const std::array<uint8_t, 20>& target_node_id,
     const std::string& relay_peer_address,
     uint64_t circuit_id) {
+    if (connect_only_) return {};
     // Reply demultiplexing reconstructs this name from the acknowledged
     // numeric circuit ID. Use its canonical, fixed-width representation so
     // circuits with leading zero hex digits remain addressable.
@@ -2712,6 +2717,7 @@ void P2PManager::test_set_peer_services(const std::string& peer_key, uint64_t se
 #endif
 
 void P2PManager::OrchestrateRelayDials() {
+    if (connect_only_) return;
     if (!node_identity_) return;  // can't drive dineroid for the inner handshake
 
     // Snapshot the side-table + already-connected key set so the rest
@@ -4735,6 +4741,7 @@ constexpr std::pair<const char*, uint16_t> kMainnetRelayPeers[] = {
 }  // namespace
 
 void P2PManager::MaybeAutoRegisterWithRelays() {
+    if (connect_only_) return;
     // An operator pinned relays via relayregister= — never override them.
     if (relay_endpoints_from_config_.load(std::memory_order_acquire)) return;
 
@@ -5757,6 +5764,27 @@ bool P2PManager::connect_to_peer(const std::string& address, uint16_t port) {
     return connect_to_peer_impl(address, port, false);
 }
 
+void P2PManager::set_connect_only_targets(
+    bool enabled, std::vector<std::pair<std::string, uint16_t>> targets) {
+    connect_only_targets_.clear();
+    for (const auto& [host, port] : targets) {
+        std::string endpoint = dinero::network::FormatEndpoint(host, port);
+        std::transform(endpoint.begin(), endpoint.end(), endpoint.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        connect_only_targets_.insert(std::move(endpoint));
+    }
+    connect_only_ = enabled;
+    if (enabled) set_relay_service_enabled(false);
+}
+
+bool P2PManager::connect_only_allows(const std::string& address, uint16_t port) const {
+    if (!connect_only_) return true;
+    std::string endpoint = dinero::network::FormatEndpoint(address, port);
+    std::transform(endpoint.begin(), endpoint.end(), endpoint.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return connect_only_targets_.count(endpoint) != 0;
+}
+
 std::optional<std::string> P2PManager::resolve_ipv4_for_dial(
     const std::string& host, std::chrono::milliseconds timeout) const {
     struct in_addr ipv4 {};
@@ -5788,6 +5816,7 @@ unsigned P2PManager::test_resolver_in_flight() {
 bool P2PManager::connect_to_peer_impl(const std::string& address, uint16_t port,
                                       bool is_feeler,
                                       const std::optional<std::string>& pre_resolved_ip) {
+    if (!connect_only_allows(address, port)) return false;
     if (shutdown_requested_.load(std::memory_order_acquire) ||
         !network_active_.load(std::memory_order_acquire)) {
         return false;
@@ -6026,7 +6055,7 @@ void P2PManager::connection_manager_loop() {
         // TS2 COMPLIANT: Collect connection targets inside lock, connect outside lock
         std::vector<dinero::p2p::NetworkAddress> addrman_candidates;
         bool durable_outbound_full = false;
-        if (address_manager_) {
+        if (address_manager_ && !connect_only_) {
             // AddrMan also contains bootstrap endpoints. Draw an extra margin
             // so those duplicates cannot crowd learned community candidates
             // out of the randomized sample.
@@ -8498,6 +8527,7 @@ void P2PManager::SendPunchProbes(const std::vector<dinero::network::UdpAddr>& ta
 }
 
 void P2PManager::PunchTick() {
+    if (connect_only_) return;
     std::lock_guard<std::mutex> tick_lock(punch_tick_mutex_);
     if (!node_identity_ || shutdown_requested_.load(std::memory_order_acquire)) return;
     const PunchPeerId ours = node_identity_->get_node_id_bytes();
@@ -9020,6 +9050,7 @@ uint64_t P2PManager::send_reach_check(const std::string& peer_key,
 }
 
 void P2PManager::run_reachability_tick() {
+    if (connect_only_) return;
     const auto now = std::chrono::steady_clock::now();
     // Requests that never got an answer count as failures.
     {
@@ -9067,6 +9098,7 @@ void P2PManager::run_reachability_tick() {
 
 uint8_t P2PManager::dialback_probe(const std::string& ip, uint16_t port,
                                    const std::array<uint8_t, 20>& expected) {
+    if (connect_only_) return kReachRefusedRate;
     const int fd = create_client_socket(ip, port);
     if (fd < 0) return kReachConnectFailed;
     // Transient, never in connected_peers_: a feeler-style handshake that
@@ -9138,6 +9170,11 @@ void P2PManager::handle_reach_check(const std::string& peer_address, const P2PMe
         }
         send_to_peer(peer_address, res);
     };
+
+    if (connect_only_) {
+        reply(kReachRefusedRate, 0);
+        return;
+    }
 
     if (transport != static_cast<uint8_t>(dinero::p2p::Transport::Tcp) || via_relay || port == 0 ||
         (!dialback_private_targets_.load() && !IsAdvertisableAddress(target_ip, port))) {
@@ -9307,6 +9344,7 @@ void P2PManager::dial_quic_connect_targets() {
 bool P2PManager::connect_to_peer_quic(
     const std::string& ip, uint16_t port,
     std::optional<std::array<uint8_t, 20>> punch_expected_id) {
+    if (!connect_only_allows(ip, port)) return false;
     if (shutdown_requested_.load(std::memory_order_acquire) ||
         !network_active_.load(std::memory_order_acquire) ||
         !quic_endpoint_ || !quic_endpoint_->Listening()) {

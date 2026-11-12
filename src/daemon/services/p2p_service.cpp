@@ -683,6 +683,7 @@ std::string P2PService::RelayMode() const {
 }
 
 bool P2PService::IsRelayRoleEnabled() const {
+    if (config_ && !config_->GetString("p2p.connect", "").empty()) return false;
     std::string operator_mode;
     {
         std::lock_guard<std::mutex> lock(relay_service_mutex_);
@@ -699,6 +700,7 @@ P2PService::RelayServiceStatus P2PService::GetRelayServiceStatus() const {
     const std::string configured = RelayMode();
     status.enabled = RelayRoleEnabled(status.mode, configured, relay_active_.load(),
                                       relay_verified_.load());
+    if (config_ && !config_->GetString("p2p.connect", "").empty()) status.enabled = false;
     return status;
 }
 
@@ -2219,6 +2221,34 @@ bool P2PService::Start() {
 
         const std::string connect_config = config_ ? config_->GetString("p2p.connect", "") : "";
         const bool connect_only = !connect_config.empty();
+        std::vector<std::string> configured_connect_nodes;
+        std::vector<std::pair<std::string, uint16_t>> allowed_dials;
+        if (connect_only) {
+            const uint16_t default_port = Params().p2p_port;
+            std::istringstream ss(connect_config);
+            std::string entry;
+            while (std::getline(ss, entry, ',')) {
+                // connect=0 is used by offline diagnostic harnesses.
+                if (entry.empty() || entry == "0") continue;
+                configured_connect_nodes.push_back(entry);
+                std::string host;
+                uint16_t port = 0;
+                if (ParseEndpoint(entry, default_port, &host, &port)) {
+                    allowed_dials.emplace_back(host, port);
+                }
+            }
+            // An explicitly configured direct QUIC target is also an
+            // operator-selected peer, even when TCP connect= is active.
+            std::istringstream quic(config_->GetString("p2p.quic_connect", ""));
+            while (std::getline(quic, entry, ',')) {
+                std::string host;
+                uint16_t port = 0;
+                if (ParseEndpoint(entry, default_port, &host, &port)) {
+                    allowed_dials.emplace_back(host, port);
+                }
+            }
+        }
+        p2p_mgr_->set_connect_only_targets(connect_only, std::move(allowed_dials));
 
         if (address_manager_) {
             p2p_mgr_->set_address_manager(address_manager_->getManager());
@@ -2293,7 +2323,7 @@ bool P2PService::Start() {
             }
         }
 
-        for (const auto& seed : seed_nodes_) {
+        for (const auto& seed : connect_only ? configured_connect_nodes : seed_nodes_) {
             std::string host;
             uint16_t port = 0;
             if (ParseEndpoint(seed, p2p_port, &host, &port)) {

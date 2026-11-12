@@ -477,6 +477,11 @@ public:
         });
     }
 
+    // Configure before start(). A connect= list is an isolation policy, not
+    // only a bootstrap preference. Explicit quicconnect targets may be added.
+    void set_connect_only_targets(bool enabled,
+        std::vector<std::pair<std::string, uint16_t>> targets);
+
     // Peer management
     void add_seed_node(const std::string& address, uint16_t port);
     void add_anchor_node(const std::string& address, uint16_t port);
@@ -1227,6 +1232,8 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> shutdown_requested_{false};
     std::atomic<bool> network_active_{true};
+    bool connect_only_{false};  // immutable after start()
+    std::unordered_set<std::string> connect_only_targets_;
     // Direct QUIC transport. Lock order: the endpoint calls AcceptFn under its
     // own mutex and AcceptFn takes peers_mutex_, so never call into the
     // endpoint while holding peers_mutex_.
@@ -1707,6 +1714,7 @@ private:
     bool connect_to_peer_impl(const std::string& address, uint16_t port,
                               bool is_feeler,
                               const std::optional<std::string>& pre_resolved_ip = std::nullopt);
+    bool connect_only_allows(const std::string& address, uint16_t port) const;
     // Ring 3 Phase 4c: Changed to shared_ptr for TS1 compliance
     bool start_peer_handler_thread(std::shared_ptr<PeerInfo> peer);
     // Inbound caps shared by TCP and QUIC. Caller holds peers_mutex_.
