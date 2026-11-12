@@ -430,7 +430,7 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
 
     status.network_active = p2p_mgr_->is_network_active();
     status.listening = p2p_mgr_->IsListening();
-    status.listen_port = p2p_mgr_->get_listen_port();
+    status.listen_port = status.listening ? p2p_mgr_->get_listen_port() : 0;
     status.advertised_addresses = p2p_mgr_->get_advertised_addresses();
     // Explicit address or dial-back verified: what peers can actually dial.
     status.has_explicit_advertised = p2p_mgr_->has_proven_reachable();
@@ -581,8 +581,8 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
     if (p2p_mgr_) status.hole_punch = p2p_mgr_->punch_stats();
     if (p2p_mgr_ && p2p_mgr_->quic_endpoint()) {
         const auto* ep = p2p_mgr_->quic_endpoint();
-        status.quic_listening = ep->Listening();
-        status.quic_listen_port = ep->Port();
+        status.quic_listening = p2p_mgr_->accepts_inbound_quic();
+        status.quic_listen_port = status.quic_listening ? ep->Port() : 0;
         status.quic_sessions = ep->SessionCount();
     }
     return status;
@@ -683,6 +683,8 @@ std::string P2PService::RelayMode() const {
 }
 
 bool P2PService::IsRelayRoleEnabled() const {
+    if (config_ && !config_->GetString("p2p.connect", "").empty()) return false;
+    if (config_ && !config_->GetBool("p2p.listen", true)) return false;
     std::string operator_mode;
     {
         std::lock_guard<std::mutex> lock(relay_service_mutex_);
@@ -699,6 +701,8 @@ P2PService::RelayServiceStatus P2PService::GetRelayServiceStatus() const {
     const std::string configured = RelayMode();
     status.enabled = RelayRoleEnabled(status.mode, configured, relay_active_.load(),
                                       relay_verified_.load());
+    if (config_ && !config_->GetString("p2p.connect", "").empty()) status.enabled = false;
+    if (config_ && !config_->GetBool("p2p.listen", true)) status.enabled = false;
     return status;
 }
 
@@ -909,6 +913,19 @@ void P2PService::MaybeRunDynamicP2PActiveChurn(std::chrono::steady_clock::time_p
 //     used, and add_advertised_address gets the result.
 void P2PService::StartStunDiscoveryIfEnabled() {
     if (!p2p_mgr_) return;
+    // STUN contacts servers outside the configured peer list. A connect-only
+    // node must not make those ambient UDP requests. Without an inbound
+    // listener the discovered mapping cannot serve incoming peers either.
+    if (config_ && !config_->GetString("p2p.connect", "").empty()) {
+        std::lock_guard<std::mutex> lock(stun_status_mutex_);
+        stun_message_ = "disabled by connect-only";
+        return;
+    }
+    if (config_ && !config_->GetBool("p2p.listen", true)) {
+        std::lock_guard<std::mutex> lock(stun_status_mutex_);
+        stun_message_ = "disabled by listen=0";
+        return;
+    }
     const bool enabled = config_ ? config_->GetBool("p2p.stun.enabled", true) : true;
     if (!enabled) {
         std::lock_guard<std::mutex> lock(stun_status_mutex_);
@@ -1895,7 +1912,7 @@ bool P2PService::Init(DaemonContext& ctx) {
             const bool requested = network::TorOptInStore(
                 datadir + "/onion_service_enabled").Read().value_or(
                     config_->GetBool("p2p.listen_onion", false));
-            if (requested) {
+            if (requested && config_->GetBool("p2p.listen", true)) {
                 const auto embedded = embedded_tor_->Start();
                 if (embedded.running) {
                     onion_proxy_ = "127.0.0.1:" + std::to_string(embedded.socks_port);
@@ -1906,6 +1923,13 @@ bool P2PService::Init(DaemonContext& ctx) {
         }
         // Create P2PManager instance
         p2p_mgr_ = std::make_unique<::P2PManager>(listen_port_, external_ip_);
+        p2p_mgr_->set_listen_enabled(config_->GetBool("p2p.listen", true));
+        const int max_connections = config_->GetInt("p2p.maxconnections", 125);
+        if (max_connections < 1 || max_connections > 10000) {
+            logger_interface_->error("[P2PService] maxconnections must be between 1 and 10000");
+            return false;
+        }
+        p2p_mgr_->set_max_total_connections(static_cast<size_t>(max_connections));
         {
             ::P2PManager::RelayServiceLimits limits;
             limits.max_circuits = relay_service_status_.limits.max_circuits;
@@ -1997,7 +2021,8 @@ bool P2PService::Init(DaemonContext& ctx) {
         // simply won't engage on this node.
         {
             onion_service_requested_ =
-                config_ && config_->GetBool("p2p.listen_onion", false);
+                config_ && config_->GetBool("p2p.listen_onion", false) &&
+                config_->GetBool("p2p.listen", true);
             std::string control_host;
             uint16_t control_port = 0;
             const std::string control = config_->GetString(
@@ -2020,24 +2045,26 @@ bool P2PService::Init(DaemonContext& ctx) {
                 tor_onion_config_.control_host = "127.0.0.1";
                 tor_onion_config_.control_port = embedded_tor_->status().control_port;
             }
-            onion_runtime_ = std::make_unique<network::TorRuntimeController>(
-                network::TorOptInStore(datadir + "/onion_service_enabled"),
-                [this]() {
-                    return std::make_unique<network::TorOnionService>(tor_onion_config_);
-                },
-                [this](const std::string& address) {
-                    if (p2p_mgr_) p2p_mgr_->add_advertised_address(
-                        address, listen_port_, /*learned=*/true);
-                },
-                [this](const std::string& address) {
-                    if (p2p_mgr_) p2p_mgr_->remove_explicit_advertised_address(
-                        address, listen_port_);
-                });
-            const auto onion_status = onion_runtime_->Initialize(
-                onion_service_requested_);
-            onion_service_requested_ = onion_status.requested;
-            if (onion_status.requested && !onion_status.active) {
-                logger_interface_->warning("[P2PService] " + onion_status.message);
+            if (config_->GetBool("p2p.listen", true)) {
+                onion_runtime_ = std::make_unique<network::TorRuntimeController>(
+                    network::TorOptInStore(datadir + "/onion_service_enabled"),
+                    [this]() {
+                        return std::make_unique<network::TorOnionService>(tor_onion_config_);
+                    },
+                    [this](const std::string& address) {
+                        if (p2p_mgr_) p2p_mgr_->add_advertised_address(
+                            address, listen_port_, /*learned=*/true);
+                    },
+                    [this](const std::string& address) {
+                        if (p2p_mgr_) p2p_mgr_->remove_explicit_advertised_address(
+                            address, listen_port_);
+                    });
+                const auto onion_status = onion_runtime_->Initialize(
+                    onion_service_requested_);
+                onion_service_requested_ = onion_status.requested;
+                if (onion_status.requested && !onion_status.active) {
+                    logger_interface_->warning("[P2PService] " + onion_status.message);
+                }
             }
 
             auto node_identity = std::make_shared<dinero::daemon::NodeIdentity>();
@@ -2219,6 +2246,34 @@ bool P2PService::Start() {
 
         const std::string connect_config = config_ ? config_->GetString("p2p.connect", "") : "";
         const bool connect_only = !connect_config.empty();
+        std::vector<std::string> configured_connect_nodes;
+        std::vector<std::pair<std::string, uint16_t>> allowed_dials;
+        if (connect_only) {
+            const uint16_t default_port = Params().p2p_port;
+            std::istringstream ss(connect_config);
+            std::string entry;
+            while (std::getline(ss, entry, ',')) {
+                // connect=0 is used by offline diagnostic harnesses.
+                if (entry.empty() || entry == "0") continue;
+                configured_connect_nodes.push_back(entry);
+                std::string host;
+                uint16_t port = 0;
+                if (ParseEndpoint(entry, default_port, &host, &port)) {
+                    allowed_dials.emplace_back(host, port);
+                }
+            }
+            // An explicitly configured direct QUIC target is also an
+            // operator-selected peer, even when TCP connect= is active.
+            std::istringstream quic(config_->GetString("p2p.quic_connect", ""));
+            while (std::getline(quic, entry, ',')) {
+                std::string host;
+                uint16_t port = 0;
+                if (ParseEndpoint(entry, default_port, &host, &port)) {
+                    allowed_dials.emplace_back(host, port);
+                }
+            }
+        }
+        p2p_mgr_->set_connect_only_targets(connect_only, std::move(allowed_dials));
 
         if (address_manager_) {
             p2p_mgr_->set_address_manager(address_manager_->getManager());
@@ -2293,7 +2348,7 @@ bool P2PService::Start() {
             }
         }
 
-        for (const auto& seed : seed_nodes_) {
+        for (const auto& seed : connect_only ? configured_connect_nodes : seed_nodes_) {
             std::string host;
             uint16_t port = 0;
             if (ParseEndpoint(seed, p2p_port, &host, &port)) {
@@ -2568,7 +2623,7 @@ bool P2PService::Start() {
             // Relay data is still guarded by the P2PManager caps: 64 KB/s per
             // circuit, 5 MB/s global, and 50 GB/day.
             p2p_mgr_->set_service_flags_provider([this, prune_svc,
-                                                  bridge_enabled]() -> uint64_t {
+                                                  bridge_enabled, connect_only]() -> uint64_t {
                 uint64_t flags = ServiceFlags::NODE_UTREEXO | ServiceFlags::NODE_COMPACT_TIMING_V1;
 #ifdef DINERO_HAS_ORCHARD_P2P
                 flags |= ServiceFlags::NODE_ORCHARD_V1;
@@ -2588,7 +2643,9 @@ bool P2PService::Start() {
                     flags |= ServiceFlags::NODE_RELAY;
                 }
                 flags |= p2p_mgr_->local_quic_service_bits();
-                flags |= ServiceFlags::NODE_DIALBACK;  // we answer reachchk
+                if (!connect_only) {
+                    flags |= ServiceFlags::NODE_DIALBACK;  // we answer reachchk
+                }
                 return flags;
             });
             bool pruned = prune_svc && prune_svc->isEnabled();
@@ -2642,7 +2699,11 @@ bool P2PService::Start() {
         }
 
         logger_interface_->info("[P2PService] P2P networking started successfully");
-        logger_interface_->info("[P2PService] Listening on port " + std::to_string(listen_port_));
+        if (config_->GetBool("p2p.listen", true)) {
+            logger_interface_->info("[P2PService] Listening on port " + std::to_string(listen_port_));
+        } else {
+            logger_interface_->info("[P2PService] Inbound listeners disabled (listen=0)");
+        }
 
         // Stage B: surface QUIC relay-transport readiness at startup so the
         // operator can see whether encrypted relay DATA can flow on this binary

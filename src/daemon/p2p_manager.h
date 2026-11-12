@@ -469,6 +469,9 @@ public:
     bool IsListening() const noexcept {
         return socket_listening_.load(std::memory_order_acquire);
     }
+    void set_listen_enabled(bool enabled) { listen_enabled_ = enabled; }  // before start()
+    bool accepts_inbound_quic() const noexcept;
+    void set_max_total_connections(size_t limit) { max_total_connections_ = limit; }  // before start()
 
     bool WaitUntilListening(std::chrono::milliseconds timeout) {
         std::unique_lock<std::mutex> lock(ready_mutex_);
@@ -476,6 +479,11 @@ public:
             return socket_listening_.load(std::memory_order_acquire);
         });
     }
+
+    // Configure before start(). A connect= list is an isolation policy, not
+    // only a bootstrap preference. Explicit quicconnect targets may be added.
+    void set_connect_only_targets(bool enabled,
+        std::vector<std::pair<std::string, uint16_t>> targets);
 
     // Peer management
     void add_seed_node(const std::string& address, uint16_t port);
@@ -919,7 +927,8 @@ public:
         std::optional<std::array<uint8_t, 20>> punch_expected_id = std::nullopt);
     // NODE_P2P_QUIC while the endpoint is listening, else 0.
     uint64_t local_quic_service_bits() const;
-    // p2p.quic_connect: "ip:port" peers to keep connected over QUIC. Dialed by
+    // p2p.quic_connect: numeric IP or IPv4-resolvable hostname:port peers to
+    // keep connected over QUIC. Numeric IPv6 literals are also supported. Dialed by
     // the connection loop (dial_quic_connect_targets) whenever not connected.
     void set_quic_connect_targets(std::vector<std::string> targets);
     void dial_quic_connect_targets();
@@ -1227,6 +1236,9 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> shutdown_requested_{false};
     std::atomic<bool> network_active_{true};
+    bool listen_enabled_{true};  // immutable after start()
+    bool connect_only_{false};  // immutable after start()
+    std::unordered_set<std::string> connect_only_targets_;
     // Direct QUIC transport. Lock order: the endpoint calls AcceptFn under its
     // own mutex and AcceptFn takes peers_mutex_, so never call into the
     // endpoint while holding peers_mutex_.
@@ -1275,6 +1287,7 @@ private:
     std::atomic<bool> quic_connect_warned_{false};
     size_t max_inbound_ = MAX_INBOUND_CONNECTIONS;
     size_t max_inbound_per_ip_ = MAX_INBOUND_PER_IP;
+    size_t max_total_connections_ = MAX_INBOUND_CONNECTIONS;
 
     // Socket readiness observability (for deterministic tests)
     std::atomic<bool> socket_listening_{false};
@@ -1707,10 +1720,15 @@ private:
     bool connect_to_peer_impl(const std::string& address, uint16_t port,
                               bool is_feeler,
                               const std::optional<std::string>& pre_resolved_ip = std::nullopt);
+    bool connect_only_allows(const std::string& address, uint16_t port) const;
     // Ring 3 Phase 4c: Changed to shared_ptr for TS1 compliance
     bool start_peer_handler_thread(std::shared_ptr<PeerInfo> peer);
     // Inbound caps shared by TCP and QUIC. Caller holds peers_mutex_.
     bool inbound_slot_available_locked(const std::string& ip, std::string* why) const;
+    // Shared total-cap reserve for TCP, QUIC and relay-virtual inbound peers.
+    bool inbound_total_slot_available_locked(std::string* why = nullptr) const;
+    size_t active_peer_count_locked() const;
+    size_t reserved_peer_slots_locked() const;
     // Frame one message onto a QUIC peer's stream (relay circuit or direct).
     bool send_quic_stream_message(PeerInfo& peer, const P2PMessage& message);
     void peer_handler_loop(std::shared_ptr<PeerInfo> peer);

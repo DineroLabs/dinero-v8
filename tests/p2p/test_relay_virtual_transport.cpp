@@ -18,6 +18,8 @@
 #include "daemon/node_identity.h"
 #include "daemon/peer_send_health.h"
 #include "network/types.h"
+#include "network/quic_endpoint.h"
+#include "network/relay_tls_keypair.h"
 #include "p2p/addrman.h"
 #include "p2p/relay_hint_v2.h"
 
@@ -27,6 +29,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <ctime>
 #include <cstdint>
@@ -35,6 +38,7 @@
 #include <iomanip>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <optional>
 #include <sstream>
@@ -215,6 +219,16 @@ public:
     }
 
     int client_fd() const { return client_; }
+    int take_client_fd() {
+        const int fd = client_;
+        client_ = -1;
+        return fd;
+    }
+    int take_server_fd() {
+        const int fd = server_;
+        server_ = -1;
+        return fd;
+    }
     uint16_t port() const { return port_; }
 
     std::unique_ptr<P2PMessage> ReceiveMessage() {
@@ -265,6 +279,55 @@ private:
     int client_{-1};
     int server_{-1};
     uint16_t port_{0};
+};
+
+// Hold a real accepted TCP socket after it reserves a slot, but before its
+// handler installs the PeerInfo. This is the admission window shared with
+// relay and QUIC peers.
+class PausedIncomingConnection {
+public:
+    explicit PausedIncomingConnection(P2PManager& manager)
+        : manager_(manager), socket_(LoopbackSocketPair::Create()) {
+        manager_.test_set_before_peer_handler_start([this](int) {
+            std::unique_lock<std::mutex> lock(mutex_);
+            entered_ = true;
+            cv_.notify_all();
+            cv_.wait(lock, [this] { return released_; });
+        });
+        const int accepted_fd = socket_.take_server_fd();
+        worker_ = std::thread([this, accepted_fd] {
+            manager_.test_handle_incoming_connection(accepted_fd, "127.0.0.1");
+        });
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_.wait_for(lock, std::chrono::seconds(2), [this] { return entered_; });
+    }
+
+    PausedIncomingConnection(const PausedIncomingConnection&) = delete;
+    PausedIncomingConnection& operator=(const PausedIncomingConnection&) = delete;
+
+    ~PausedIncomingConnection() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            released_ = true;
+        }
+        cv_.notify_all();
+        if (worker_.joinable()) worker_.join();
+        manager_.test_set_before_peer_handler_start({});
+    }
+
+    bool entered() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return entered_;
+    }
+
+private:
+    P2PManager& manager_;
+    LoopbackSocketPair socket_;
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    bool entered_{false};
+    bool released_{false};
+    std::thread worker_;
 };
 
 std::shared_ptr<dinero::daemon::NodeIdentity> InstallNodeIdentity(P2PManager& manager) {
@@ -1245,6 +1308,11 @@ struct RelayWorld {
 
 }  // namespace
 
+namespace {
+void AddLegacyHint(P2PManager& manager, const std::array<uint8_t, 20>& target,
+                   std::vector<uint8_t> ip);
+}
+
 TEST(RelayRegistration, TargetsTwoRelaysInDistinctNetgroups) {
     dinero::p2p::AddressManager later_gossip;  // outlives the manager
     RelayWorld w;
@@ -1272,6 +1340,459 @@ TEST(RelayRegistration, TargetsTwoRelaysInDistinctNetgroups) {
     EXPECT_TRUE(ContainsEndpoint(relays, "9.9.20.2:20999"));
     EXPECT_FALSE(ContainsEndpoint(relays, "8.8.20.2:20999"));
 }
+
+TEST(RelayRegistration, ConnectOnlyNeverDialsAmbientRelays) {
+    RelayWorld w;
+    w.manager->set_connect_only_targets(true, {{"92.118.190.62", 20999}});
+    w.manager->test_maybe_auto_register_with_relays();
+    EXPECT_TRUE(w.dialed.empty()) << "fleet auto-registration escaped connect=";
+    EXPECT_TRUE(w.Relays().empty());
+
+    // A connected configured peer can advertise a target through a relay.
+    // That must not create an additional virtual peer in connect-only mode.
+    w.Connect("92.118.190.62:20999", false);
+    AddLegacyHint(*w.manager, MakeNodeId(0x70), {92, 118, 190, 62});
+    w.manager->test_orchestrate_relay_dials();
+    EXPECT_EQ(w.Next("92.118.190.62:20999", "relaycon"), nullptr);
+}
+
+TEST(P2PListenPolicy, ListenOffCannotRegisterAsRelayTarget) {
+    RelayWorld w;
+    w.manager->set_listen_enabled(false);
+    w.manager->test_maybe_auto_register_with_relays();
+    EXPECT_TRUE(w.dialed.empty()) << "outbound-only node dialed fleet relays to register";
+    EXPECT_TRUE(w.Relays().empty());
+
+    // Even an operator-pinned relay must not announce an inbound route when
+    // the node has disabled incoming P2P connections.
+    const std::string endpoint = "92.118.190.62:20999";
+    w.Connect(endpoint, false);
+    w.manager->set_configured_relay_endpoints({endpoint});
+    auto* peer = w.manager->get_peer_info(endpoint);
+    ASSERT_NE(peer, nullptr);
+    w.manager->SendRelayRegisterIfConfigured(peer);
+    EXPECT_EQ(w.Next(endpoint, "relayreg"), nullptr);
+    peer->is_our_relay = true;  // stale prior state must not refresh a route
+    peer->last_register_sent_at = w.clock->SteadyNow() - std::chrono::hours(2);
+    w.manager->test_refresh_relay_registrations();
+    EXPECT_EQ(w.Next(endpoint, "relayreg"), nullptr);
+    w.Connect("9.9.20.2:20999", false);
+    w.manager->test_set_peer_services("9.9.20.2:20999", dinero::ServiceFlags::NODE_DIALBACK);
+    w.manager->test_signed_relay_hints_tick();
+    EXPECT_EQ(w.Next("9.9.20.2:20999", "relayhn2"), nullptr)
+        << "outbound-only node advertised an inbound relay route";
+
+    RelayWorld connect_only;
+    connect_only.manager->set_connect_only_targets(true, {{"92.118.190.62", 20999}});
+    connect_only.Connect(endpoint, false);
+    connect_only.manager->set_configured_relay_endpoints({endpoint});
+    auto* pinned_peer = connect_only.manager->get_peer_info(endpoint);
+    ASSERT_NE(pinned_peer, nullptr);
+    connect_only.manager->SendRelayRegisterIfConfigured(pinned_peer);
+    EXPECT_EQ(connect_only.Next(endpoint, "relayreg"), nullptr)
+        << "connect-only announced a relay route that it refuses to serve";
+
+    RelayWorld listening;
+    listening.Connect(endpoint, false);
+    listening.manager->set_configured_relay_endpoints({endpoint});
+    auto* listening_peer = listening.manager->get_peer_info(endpoint);
+    ASSERT_NE(listening_peer, nullptr);
+    listening.manager->SendRelayRegisterIfConfigured(listening_peer);
+    EXPECT_NE(listening.Next(endpoint, "relayreg"), nullptr)
+        << "the control must prove relay registration remains available";
+}
+
+TEST(P2PListenPolicy, ListenOffRefusesInboundRelayVirtualPeer) {
+    auto relay = LoopbackSocketPair::Create();
+    const std::string relay_key = "127.0.0.1:" + std::to_string(relay.port());
+    P2PManager manager(0);
+    manager.set_listen_enabled(false);
+    manager.set_plaintext_relay_dev_override_for_tests(true);
+    manager.test_set_running(true);  // stop() must join the old-code inbound handler
+    manager.test_install_connected_direct_peer(
+        relay_key, relay.client_fd(), true, true, MakeNodeId(0x20));
+    auto* peer = manager.get_peer_info(relay_key);
+    ASSERT_NE(peer, nullptr);
+    peer->is_our_relay = true;  // an old registration may still be live
+
+    manager.handle_relay_data(relay_key, P2PMessage::create_relay_data(
+        0x42, P2PMessage::RelayDirection::ClientToTarget,
+        MakePing(1).serialize()));
+    EXPECT_EQ(manager.get_peer_info("relay:in:" + relay_key + ":0000000000000042"), nullptr)
+        << "listen=0 accepted an inbound relay circuit";
+
+    // Outbound relay traffic remains available for a private node.
+    const auto outbound = manager.install_outbound_virtual_relay_peer(
+        MakeNodeId(0x70), relay_key, 0x43);
+    EXPECT_FALSE(outbound.empty());
+    EXPECT_NE(manager.get_peer_info(outbound), nullptr);
+    manager.handle_relay_data(relay_key, P2PMessage::create_relay_data(
+        0x43, P2PMessage::RelayDirection::TargetToClient,
+        MakePing(2).serialize()));
+    auto reply = manager.test_receive_peer_message(outbound, std::chrono::milliseconds(50));
+    EXPECT_NE(reply, nullptr) << "listen=0 must preserve originated relay traffic";
+    if (reply) EXPECT_EQ(reply->command, "ping");
+    manager.stop();
+}
+
+TEST(RelayRegistration, ConnectOnlyFencesDirectDialBeforeResolution) {
+    P2PManager manager(0);
+    manager.set_connect_only_targets(true, {{"allowed.example", 20999}});
+    std::vector<std::string> resolved;
+    manager.test_set_ipv4_resolver([&](const std::string& host) -> std::optional<std::string> {
+        resolved.push_back(host);
+        return std::nullopt;  // stop before any socket operation
+    });
+    EXPECT_FALSE(manager.connect_to_peer("other.example", 20999));
+    EXPECT_TRUE(resolved.empty()) << "an ambient target reached DNS";
+    EXPECT_FALSE(manager.connect_to_peer("allowed.example", 20999));
+    ASSERT_EQ(resolved.size(), 1u);
+    EXPECT_EQ(resolved.front(), "allowed.example");
+
+    manager.set_connect_only_targets(true, {});  // connect=0 sentinel
+    resolved.clear();
+    EXPECT_FALSE(manager.connect_to_peer("allowed.example", 20999));
+    EXPECT_TRUE(resolved.empty());
+}
+
+TEST(RelayRegistration, ConnectOnlyFencesQuicHostnameBeforeResolution) {
+    P2PManager manager(0);
+    if (!manager.start_quic_endpoint(0)) {
+        GTEST_SKIP() << "direct QUIC not compiled in";
+    }
+    manager.set_connect_only_targets(true, {{"allowed.example", 20999}});
+    std::vector<std::string> resolved;
+    manager.test_set_ipv4_resolver([&](const std::string& host) -> std::optional<std::string> {
+        resolved.push_back(host);
+        return std::nullopt;  // stop before any socket operation
+    });
+    EXPECT_FALSE(manager.connect_to_peer_quic("other.example", 20999));
+    EXPECT_TRUE(resolved.empty()) << "an ambient QUIC target reached DNS";
+    EXPECT_FALSE(manager.connect_to_peer_quic("allowed.example", 20999));
+    ASSERT_EQ(resolved.size(), 1u);
+    EXPECT_EQ(resolved.front(), "allowed.example");
+    manager.stop();
+}
+
+TEST(P2PListenPolicy, ListenOffKeepsTcpClosedAndDoesNotAdvertiseQuic) {
+    P2PManager manager(0);
+    manager.set_listen_enabled(false);
+    manager.set_quic_enabled(true);
+    ASSERT_TRUE(manager.start());
+    EXPECT_FALSE(manager.WaitUntilListening(std::chrono::milliseconds(250)));
+    EXPECT_FALSE(manager.IsListening());
+    EXPECT_FALSE(manager.accepts_inbound_quic());
+    EXPECT_EQ(manager.local_quic_service_bits(), 0u);
+    if (auto* endpoint = manager.quic_endpoint(); endpoint && endpoint->Listening()) {
+        EXPECT_NE(endpoint->Port(), 0u) << "outbound QUIC requires an ephemeral UDP socket";
+    }
+    manager.stop();
+}
+
+TEST(P2PListenPolicy, ListenOffRefusesUnsolicitedQuicSession) {
+    P2PManager manager(0);
+    manager.set_listen_enabled(false);
+    manager.set_quic_enabled(true);
+    ASSERT_TRUE(manager.start());
+    auto* endpoint = manager.quic_endpoint();
+    if (!endpoint || !endpoint->Listening()) {
+        manager.stop();
+        GTEST_SKIP() << "direct QUIC not compiled in";
+    }
+    std::string cert, key;
+    ASSERT_TRUE(dinero::network::GenerateRelayTlsKeypair(&cert, &key, nullptr));
+    dinero::network::QuicSessionOptions opts;
+    opts.alpn = "dinero-p2p/1";
+    opts.certificate_pem = std::move(cert);
+    opts.private_key_pem = std::move(key);
+    dinero::network::QuicEndpoint client;
+    ASSERT_TRUE(client.Start(0, opts,
+        [](const dinero::network::UdpAddr&) { return false; },
+        [](std::shared_ptr<dinero::network::QuicSession>,
+           const dinero::network::UdpAddr&) {}));
+    const uint8_t loopback[4] = {127, 0, 0, 1};
+    auto session = client.Connect(
+        dinero::network::UdpAddr::FromIPv4(loopback, endpoint->Port()), opts);
+    ASSERT_NE(session, nullptr);
+    auto ready = session->WaitHandshakeReady();
+    const bool accepted = ready.wait_for(std::chrono::seconds(2)) == std::future_status::ready
+                              && ready.get();
+    EXPECT_FALSE(accepted);
+    EXPECT_EQ(endpoint->SessionCount(), 0u);
+    client.Stop();
+    manager.stop();
+}
+
+TEST(P2PConnectionLimit, TotalCapCountsInboundOutboundAndVirtualPeers) {
+    std::vector<LoopbackSocketPair> sockets;
+    P2PManager manager(0);
+    manager.set_max_total_connections(8);
+    for (int i = 0; i < 8; ++i) {
+        sockets.push_back(LoopbackSocketPair::Create());
+        manager.test_install_connected_direct_peer(
+            "198.51.100." + std::to_string(i + 1) + ":20999",
+            sockets.back().client_fd(), i == 0, false, {});
+    }
+    ASSERT_EQ(manager.get_peer_count(), 8u);
+    EXPECT_FALSE(manager.test_inbound_slot_available("203.0.113.8"));
+
+    P2PManager target(0);
+    target.set_quic_enabled(false);
+    ASSERT_TRUE(target.start());
+    ASSERT_TRUE(target.WaitUntilListening(std::chrono::seconds(5)));
+    EXPECT_FALSE(manager.connect_to_peer("127.0.0.1", target.get_listen_port()))
+        << "an eighth inbound plus one outbound escaped the total cap";
+    EXPECT_TRUE(manager.install_outbound_virtual_relay_peer(
+        MakeNodeId(0x60), "198.51.100.1:20999", 12345).empty());
+    target.stop();
+    manager.stop();
+}
+
+TEST(P2PConnectionLimit, PendingTcpAcceptBlocksOutboundRelayVirtualPeer) {
+    P2PManager manager(0);
+    manager.set_max_total_connections(1);
+    manager.test_set_running(true);
+    {
+        PausedIncomingConnection pending(manager);
+        ASSERT_TRUE(pending.entered());
+        EXPECT_FALSE(manager.test_inbound_slot_available("203.0.113.8"));
+        EXPECT_TRUE(manager.install_outbound_virtual_relay_peer(
+            MakeNodeId(0x60), kRelayPeer, 0x41).empty());
+    }
+    manager.stop();
+}
+
+TEST(P2PConnectionLimit, PendingTcpAcceptBlocksInboundRelayVirtualPeer) {
+    auto relay = LoopbackSocketPair::Create();
+    const std::string relay_key = "127.0.0.1:" + std::to_string(relay.port());
+    P2PManager manager(0);
+    manager.set_max_total_connections(2);
+    manager.test_set_running(true);
+    manager.set_plaintext_relay_dev_override_for_tests(true);
+    manager.test_install_connected_direct_peer(
+        relay_key, relay.take_client_fd(), true, true, MakeNodeId(0x20));
+    auto* relay_peer = manager.get_peer_info(relay_key);
+    ASSERT_NE(relay_peer, nullptr);
+    relay_peer->is_our_relay = true;
+    {
+        PausedIncomingConnection pending(manager);
+        ASSERT_TRUE(pending.entered());
+        EXPECT_FALSE(manager.test_inbound_slot_available("203.0.113.8"));
+        manager.handle_relay_data(relay_key, P2PMessage::create_relay_data(
+            0x42, P2PMessage::RelayDirection::ClientToTarget,
+            MakePing(1).serialize()));
+        EXPECT_EQ(manager.get_peer_info("relay:in:" + relay_key + ":0000000000000042"), nullptr);
+    }
+    manager.stop();
+}
+
+TEST(P2PConnectionLimit, MobileFourAllowsFourAndRefusesTheFifth) {
+    std::vector<LoopbackSocketPair> sockets;
+    P2PManager manager(0);
+    manager.set_max_total_connections(4);
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_TRUE(manager.test_inbound_slot_available("203.0.113.8"));
+        sockets.push_back(LoopbackSocketPair::Create());
+        manager.test_install_connected_direct_peer(
+            "198.51.100." + std::to_string(i + 1) + ":20999",
+            sockets.back().client_fd(), false, false, {});
+    }
+    EXPECT_FALSE(manager.test_inbound_slot_available("203.0.113.8"));
+    manager.stop();
+}
+
+TEST(P2PConnectionLimit, SinglePeerBudgetStillAllowsOneInbound) {
+    P2PManager manager(0);
+    manager.set_max_total_connections(1);
+    EXPECT_TRUE(manager.test_inbound_slot_available("203.0.113.8"));
+    manager.test_install_connected_direct_peer(
+        "198.51.100.1:20999", -1, false, false, {});
+    EXPECT_FALSE(manager.test_inbound_slot_available("203.0.113.8"));
+    manager.stop();
+}
+
+TEST(P2PConnectionLimit, DefaultCapReservesEightDurableOutboundSlots) {
+    P2PManager manager(0);  // default maxconnections=125
+    for (int i = 0; i < 117; ++i) {
+        ASSERT_TRUE(manager.test_inbound_slot_available("203.0.113.8")) << i;
+        manager.test_install_connected_direct_peer(
+            "198.51.100." + std::to_string(i + 1) + ":20999",
+            -1, false, false, {});
+    }
+    EXPECT_FALSE(manager.test_inbound_slot_available("203.0.113.8"));
+    manager.stop();
+}
+
+TEST(P2PConnectionLimit, InboundPeersLeaveRoomForDurableOutboundDials) {
+    P2PManager manager(0);
+    manager.set_max_total_connections(10);
+    manager.test_set_running(true);  // stop() joins the outbound handshake thread
+    for (int i = 0; i < 8; ++i) {
+        ASSERT_TRUE(manager.test_inbound_slot_available("203.0.113.8"));
+        manager.test_install_connected_direct_peer(
+            "198.51.100." + std::to_string(i + 1) + ":20999",
+            -1, false, false, {});
+    }
+    EXPECT_FALSE(manager.test_inbound_slot_available("203.0.113.8"))
+        << "inbound peers consumed both remaining durable outbound slots";
+
+    P2PManager target(0);
+    target.set_quic_enabled(false);
+    ASSERT_TRUE(target.start());
+    ASSERT_TRUE(target.WaitUntilListening(std::chrono::seconds(5)));
+    EXPECT_TRUE(manager.connect_to_peer("127.0.0.1", target.get_listen_port()))
+        << "the reserved slot must remain usable by an outbound dial";
+    target.stop();
+    manager.stop();
+}
+
+TEST(P2PConnectionLimit, InboundRelayPeerCannotConsumeOutboundReserve) {
+    auto relay = LoopbackSocketPair::Create();
+    const std::string relay_key = "127.0.0.1:" + std::to_string(relay.port());
+    P2PManager manager(0);
+    manager.set_max_total_connections(10);
+    manager.set_plaintext_relay_dev_override_for_tests(true);
+    manager.test_set_running(true);  // stop() joins a handler on the unfixed path
+    manager.test_install_connected_direct_peer(
+        relay_key, relay.client_fd(), true, true, MakeNodeId(0x20));
+    auto* relay_peer = manager.get_peer_info(relay_key);
+    ASSERT_NE(relay_peer, nullptr);
+    relay_peer->is_our_relay = true;
+    for (int i = 0; i < 8; ++i) {
+        manager.test_install_connected_direct_peer(
+            "198.51.100." + std::to_string(i + 1) + ":20999",
+            -1, false, false, {});
+        if (i == 6) {
+            EXPECT_TRUE(manager.test_inbound_slot_available("203.0.113.8"))
+                << "a durable outbound peer must release one reserved slot";
+        }
+    }
+    // One durable outbound is already present; the other still needs a slot.
+    manager.handle_relay_data(relay_key, P2PMessage::create_relay_data(
+        0x42, P2PMessage::RelayDirection::ClientToTarget,
+        MakePing(1).serialize()));
+    EXPECT_EQ(manager.get_peer_info("relay:in:" + relay_key + ":0000000000000042"), nullptr);
+    manager.stop();
+}
+
+TEST(P2PConnectionLimit, DirectQuicCannotOverfillTotalCap) {
+    auto socket = LoopbackSocketPair::Create();
+    P2PManager manager(0);
+    manager.set_max_total_connections(1);
+    manager.test_install_connected_direct_peer(
+        "198.51.100.1:20999", socket.client_fd(), true, false, {});
+    P2PManager target(0);
+    if (!manager.start_quic_endpoint(0) || !target.start_quic_endpoint(0)) {
+        manager.stop();
+        target.stop();
+        GTEST_SKIP() << "direct QUIC not compiled in";
+    }
+    EXPECT_FALSE(manager.connect_to_peer_quic(
+        "127.0.0.1", target.quic_endpoint()->Port()));
+    EXPECT_EQ(manager.get_peer_count(), 1u);
+    manager.stop();
+    target.stop();
+}
+
+TEST(P2PConnectionLimit, InboundQuicCannotConsumeOutboundReserve) {
+    P2PManager manager(0);
+    manager.set_max_total_connections(10);
+    manager.test_set_running(true);  // stop() joins a handler on the unfixed path
+    for (int i = 0; i < 8; ++i) {
+        manager.test_install_connected_direct_peer(
+            "198.51.100." + std::to_string(i + 1) + ":20999",
+            -1, false, false, {});
+    }
+    if (!manager.start_quic_endpoint(0)) {
+        manager.stop();
+        GTEST_SKIP() << "direct QUIC not compiled in";
+    }
+    std::string cert, key;
+    ASSERT_TRUE(dinero::network::GenerateRelayTlsKeypair(&cert, &key, nullptr));
+    dinero::network::QuicSessionOptions opts;
+    opts.alpn = "dinero-p2p/1";
+    opts.certificate_pem = std::move(cert);
+    opts.private_key_pem = std::move(key);
+    dinero::network::QuicEndpoint client;
+    ASSERT_TRUE(client.Start(0, opts,
+        [](const dinero::network::UdpAddr&) { return false; },
+        [](std::shared_ptr<dinero::network::QuicSession>,
+           const dinero::network::UdpAddr&) {}));
+    const uint8_t loopback[4] = {127, 0, 0, 1};
+    auto session = client.Connect(
+        dinero::network::UdpAddr::FromIPv4(loopback, manager.quic_endpoint()->Port()), opts);
+    ASSERT_NE(session, nullptr);
+    auto ready = session->WaitHandshakeReady();
+    const bool accepted = ready.wait_for(std::chrono::seconds(2)) == std::future_status::ready
+                              && ready.get();
+    EXPECT_FALSE(accepted);
+    EXPECT_EQ(manager.get_peer_count(), 8u);
+    client.Stop();
+    manager.stop();
+}
+
+TEST(P2PConnectionLimit, PendingInboundSocketReservesTheLastSlot) {
+    auto first = LoopbackSocketPair::Create();
+    auto second = LoopbackSocketPair::Create();
+    P2PManager manager(0);
+    manager.set_max_total_connections(1);
+    manager.set_quic_enabled(false);
+    ASSERT_TRUE(manager.start());
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool release_first = false;
+    bool first_in_hook = false;
+    std::atomic<int> hooks{0};
+    manager.test_set_before_peer_handler_start([&](int) {
+        if (++hooks != 1) return;
+        std::unique_lock<std::mutex> lock(mutex);
+        first_in_hook = true;
+        cv.notify_one();
+        cv.wait(lock, [&] { return release_first; });
+    });
+    std::thread pending([&] {
+        manager.test_handle_incoming_connection(first.client_fd(), "127.0.0.1");
+    });
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        if (!cv.wait_for(lock, std::chrono::seconds(2), [&] { return first_in_hook; })) {
+            release_first = true;
+            lock.unlock();
+            cv.notify_all();
+            pending.join();
+            FAIL() << "first inbound socket never reached handler startup";
+        }
+    }
+    manager.test_handle_incoming_connection(second.client_fd(), "127.0.0.1");
+    EXPECT_EQ(hooks.load(), 1) << "the second socket escaped the pending reservation";
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        release_first = true;
+    }
+    cv.notify_all();
+    pending.join();
+    manager.stop();
+}
+
+TEST(P2PConnectionLimit, FailedVirtualHandlerReleasesItsSlot) {
+    auto relay = LoopbackSocketPair::Create();
+    const std::string relay_key = "127.0.0.1:" + std::to_string(relay.port());
+    P2PManager manager(0);
+    manager.set_max_total_connections(2);
+    manager.set_plaintext_relay_dev_override_for_tests(true);
+    manager.test_install_connected_direct_peer(
+        relay_key, relay.client_fd(), true, true, MakeNodeId(0x20));
+    auto peer = manager.get_peer_info(relay_key);
+    ASSERT_NE(peer, nullptr);
+    peer->is_our_relay = true;
+    manager.begin_shutdown();  // makes peer-handler creation refuse deterministically
+    manager.handle_relay_data(relay_key, P2PMessage::create_relay_data(
+        0x42, P2PMessage::RelayDirection::ClientToTarget,
+        MakePing(1).serialize()));
+    EXPECT_TRUE(manager.test_inbound_slot_available("203.0.113.8"))
+        << "a virtual peer whose handler never started consumed the last slot";
+}
+
 TEST(RelayRegistration, PrefersCommunityOverFleet) {
     // The fleet holds the slots until community relays have confirmed; then
     // it is dropped (and no longer counted, refreshed or advertised).

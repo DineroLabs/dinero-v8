@@ -894,6 +894,24 @@ if(UNIX AND DINERO_ENABLE_QUIC AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_direc
     endif()
 endif()
 
+if(UNIX AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_p2p_connection_limit.sh)
+    find_program(DINERO_BASH_EXECUTABLE bash)
+    if(DINERO_BASH_EXECUTABLE)
+        add_test(
+            NAME P2PConnectionLimitIntegration
+            COMMAND ${CMAKE_COMMAND} -E env
+                "DINEROD=$<TARGET_FILE:dinerod>"
+                ${DINERO_BASH_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/test_p2p_connection_limit.sh
+        )
+        set_tests_properties(P2PConnectionLimitIntegration PROPERTIES
+            LABELS "p2p;network-control"
+            TIMEOUT 120
+            RUN_SERIAL TRUE
+        )
+    endif()
+endif()
+
 if(UNIX AND NOT APPLE AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_relay_nat_netns.sh)
     find_program(DINERO_BASH_EXECUTABLE bash)
     if(DINERO_BASH_EXECUTABLE)
