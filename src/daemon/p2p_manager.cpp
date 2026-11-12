@@ -1528,6 +1528,9 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
     }
 
     if (!is_local_endpoint) {
+        // A relay is another inbound transport. Outbound-only nodes may
+        // originate circuits, but must not accept a new target-side peer.
+        if (!listen_enabled_) return true;
         std::shared_ptr<PeerInfo> relay_peer;
         {
             std::lock_guard<std::mutex> lock(peers_mutex_);
@@ -2630,7 +2633,7 @@ void P2PManager::SignedRelayHintsTick(bool force) {
 
     // As a NAT'd target: one freshly signed hint per confirmed relay.
     std::vector<std::vector<uint8_t>> ours;
-    if (node_identity_) {
+    if (node_identity_ && listen_enabled_ && !connect_only_) {
         std::vector<std::pair<std::string, uint16_t>> relays;
         {
             std::lock_guard<std::mutex> lock(peers_mutex_);
@@ -3452,6 +3455,7 @@ void P2PManager::handle_relay_hints(const std::string& peer_address,
 // Lookup is O(N) over configured_relay_endpoints_ (capped at ~3 entries
 // in practice). Per-handshake cost is negligible.
 void P2PManager::SendRelayRegisterIfConfigured(PeerInfo* peer) {
+    if (connect_only_ || !listen_enabled_) return;
     if (!peer || !node_identity_) return;
     if (!peer->identity_proven) return;       // need dineroid to have run
 
@@ -3504,6 +3508,7 @@ void P2PManager::SendRelayRegisterIfConfigured(PeerInfo* peer) {
 // fine — slice 2 doesn't reject duplicates, and the connection is
 // still the same (replay-binding is per-connection).
 void P2PManager::RefreshRelayRegistrations() {
+    if (connect_only_ || !listen_enabled_) return;
     if (!node_identity_) return;
     {
         std::lock_guard<std::mutex> lock(relay_endpoints_mutex_);
@@ -4765,7 +4770,7 @@ constexpr std::pair<const char*, uint16_t> kMainnetRelayPeers[] = {
 }  // namespace
 
 void P2PManager::MaybeAutoRegisterWithRelays() {
-    if (connect_only_) return;
+    if (connect_only_ || !listen_enabled_) return;
     // An operator pinned relays via relayregister= — never override them.
     if (relay_endpoints_from_config_.load(std::memory_order_acquire)) return;
 

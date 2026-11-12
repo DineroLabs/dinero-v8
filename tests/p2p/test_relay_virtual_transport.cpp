@@ -1297,6 +1297,85 @@ TEST(RelayRegistration, ConnectOnlyNeverDialsAmbientRelays) {
     EXPECT_EQ(w.Next("92.118.190.62:20999", "relaycon"), nullptr);
 }
 
+TEST(P2PListenPolicy, ListenOffCannotRegisterAsRelayTarget) {
+    RelayWorld w;
+    w.manager->set_listen_enabled(false);
+    w.manager->test_maybe_auto_register_with_relays();
+    EXPECT_TRUE(w.dialed.empty()) << "outbound-only node dialed fleet relays to register";
+    EXPECT_TRUE(w.Relays().empty());
+
+    // Even an operator-pinned relay must not announce an inbound route when
+    // the node has disabled incoming P2P connections.
+    const std::string endpoint = "92.118.190.62:20999";
+    w.Connect(endpoint, false);
+    w.manager->set_configured_relay_endpoints({endpoint});
+    auto* peer = w.manager->get_peer_info(endpoint);
+    ASSERT_NE(peer, nullptr);
+    w.manager->SendRelayRegisterIfConfigured(peer);
+    EXPECT_EQ(w.Next(endpoint, "relayreg"), nullptr);
+    peer->is_our_relay = true;  // stale prior state must not refresh a route
+    peer->last_register_sent_at = w.clock->SteadyNow() - std::chrono::hours(2);
+    w.manager->test_refresh_relay_registrations();
+    EXPECT_EQ(w.Next(endpoint, "relayreg"), nullptr);
+    w.Connect("9.9.20.2:20999", false);
+    w.manager->test_set_peer_services("9.9.20.2:20999", dinero::ServiceFlags::NODE_DIALBACK);
+    w.manager->test_signed_relay_hints_tick();
+    EXPECT_EQ(w.Next("9.9.20.2:20999", "relayhn2"), nullptr)
+        << "outbound-only node advertised an inbound relay route";
+
+    RelayWorld connect_only;
+    connect_only.manager->set_connect_only_targets(true, {{"92.118.190.62", 20999}});
+    connect_only.Connect(endpoint, false);
+    connect_only.manager->set_configured_relay_endpoints({endpoint});
+    auto* pinned_peer = connect_only.manager->get_peer_info(endpoint);
+    ASSERT_NE(pinned_peer, nullptr);
+    connect_only.manager->SendRelayRegisterIfConfigured(pinned_peer);
+    EXPECT_EQ(connect_only.Next(endpoint, "relayreg"), nullptr)
+        << "connect-only announced a relay route that it refuses to serve";
+
+    RelayWorld listening;
+    listening.Connect(endpoint, false);
+    listening.manager->set_configured_relay_endpoints({endpoint});
+    auto* listening_peer = listening.manager->get_peer_info(endpoint);
+    ASSERT_NE(listening_peer, nullptr);
+    listening.manager->SendRelayRegisterIfConfigured(listening_peer);
+    EXPECT_NE(listening.Next(endpoint, "relayreg"), nullptr)
+        << "the control must prove relay registration remains available";
+}
+
+TEST(P2PListenPolicy, ListenOffRefusesInboundRelayVirtualPeer) {
+    auto relay = LoopbackSocketPair::Create();
+    const std::string relay_key = "127.0.0.1:" + std::to_string(relay.port());
+    P2PManager manager(0);
+    manager.set_listen_enabled(false);
+    manager.set_plaintext_relay_dev_override_for_tests(true);
+    manager.test_set_running(true);  // stop() must join the old-code inbound handler
+    manager.test_install_connected_direct_peer(
+        relay_key, relay.client_fd(), true, true, MakeNodeId(0x20));
+    auto* peer = manager.get_peer_info(relay_key);
+    ASSERT_NE(peer, nullptr);
+    peer->is_our_relay = true;  // an old registration may still be live
+
+    manager.handle_relay_data(relay_key, P2PMessage::create_relay_data(
+        0x42, P2PMessage::RelayDirection::ClientToTarget,
+        MakePing(1).serialize()));
+    EXPECT_EQ(manager.get_peer_info("relay:in:" + relay_key + ":0000000000000042"), nullptr)
+        << "listen=0 accepted an inbound relay circuit";
+
+    // Outbound relay traffic remains available for a private node.
+    const auto outbound = manager.install_outbound_virtual_relay_peer(
+        MakeNodeId(0x70), relay_key, 0x43);
+    EXPECT_FALSE(outbound.empty());
+    EXPECT_NE(manager.get_peer_info(outbound), nullptr);
+    manager.handle_relay_data(relay_key, P2PMessage::create_relay_data(
+        0x43, P2PMessage::RelayDirection::TargetToClient,
+        MakePing(2).serialize()));
+    auto reply = manager.test_receive_peer_message(outbound, std::chrono::milliseconds(50));
+    EXPECT_NE(reply, nullptr) << "listen=0 must preserve originated relay traffic";
+    if (reply) EXPECT_EQ(reply->command, "ping");
+    manager.stop();
+}
+
 TEST(RelayRegistration, ConnectOnlyFencesDirectDialBeforeResolution) {
     P2PManager manager(0);
     manager.set_connect_only_targets(true, {{"allowed.example", 20999}});

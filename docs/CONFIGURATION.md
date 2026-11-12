@@ -327,8 +327,10 @@ listen=true
 **Use Cases:**
 - `listen=true` - Public node (accepts inbound)
 - `listen=false` - Private node (outbound only). No TCP listener or inbound QUIC
-  sessions are accepted; direct outbound QUIC uses an ephemeral UDP socket.
-  Automatic STUN discovery is disabled because there is no inbound mapping to advertise.
+  sessions or relay-backed inbound peers are accepted. Direct outbound QUIC
+  uses an ephemeral UDP socket, and originated relay circuits remain available.
+  Automatic relay registration and STUN discovery are disabled because there
+  is no inbound route to advertise.
 
 ---
 
