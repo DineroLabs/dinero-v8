@@ -1604,7 +1604,7 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
         bool admitted = false;
         {
             std::lock_guard<std::mutex> lock(peers_mutex_);
-            if (active_peer_count_locked() < max_total_connections_) {
+            if (reserved_peer_slots_locked() < max_total_connections_) {
                 admitted = connected_peers_.emplace(virtual_peer_key, virtual_peer).second;
             }
         }
@@ -2194,7 +2194,7 @@ std::string P2PManager::install_outbound_virtual_relay_peer(
     bool admitted = false;
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
-        if (active_peer_count_locked() < max_total_connections_) {
+        if (reserved_peer_slots_locked() < max_total_connections_) {
             connected_peers_[virtual_peer_key] = peer;
             admitted = true;
         }
@@ -9541,7 +9541,7 @@ std::string P2PManager::install_direct_quic_peer(
         const bool live = it != connected_peers_.end() &&
             it->second->lifetime_state.load(std::memory_order_acquire) != PeerLifetimeState::STOPPING;
         if (live || connecting_peers_.count(key) ||
-            active_peer_count_locked() >= max_total_connections_) {
+            reserved_peer_slots_locked() >= max_total_connections_) {
             refused = true;
         } else {
             // Reserve the address until the handshake ends (the handler or

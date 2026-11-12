@@ -219,6 +219,16 @@ public:
     }
 
     int client_fd() const { return client_; }
+    int take_client_fd() {
+        const int fd = client_;
+        client_ = -1;
+        return fd;
+    }
+    int take_server_fd() {
+        const int fd = server_;
+        server_ = -1;
+        return fd;
+    }
     uint16_t port() const { return port_; }
 
     std::unique_ptr<P2PMessage> ReceiveMessage() {
@@ -269,6 +279,55 @@ private:
     int client_{-1};
     int server_{-1};
     uint16_t port_{0};
+};
+
+// Hold a real accepted TCP socket after it reserves a slot, but before its
+// handler installs the PeerInfo. This is the admission window shared with
+// relay and QUIC peers.
+class PausedIncomingConnection {
+public:
+    explicit PausedIncomingConnection(P2PManager& manager)
+        : manager_(manager), socket_(LoopbackSocketPair::Create()) {
+        manager_.test_set_before_peer_handler_start([this](int) {
+            std::unique_lock<std::mutex> lock(mutex_);
+            entered_ = true;
+            cv_.notify_all();
+            cv_.wait(lock, [this] { return released_; });
+        });
+        const int accepted_fd = socket_.take_server_fd();
+        worker_ = std::thread([this, accepted_fd] {
+            manager_.test_handle_incoming_connection(accepted_fd, "127.0.0.1");
+        });
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_.wait_for(lock, std::chrono::seconds(2), [this] { return entered_; });
+    }
+
+    PausedIncomingConnection(const PausedIncomingConnection&) = delete;
+    PausedIncomingConnection& operator=(const PausedIncomingConnection&) = delete;
+
+    ~PausedIncomingConnection() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            released_ = true;
+        }
+        cv_.notify_all();
+        if (worker_.joinable()) worker_.join();
+        manager_.test_set_before_peer_handler_start({});
+    }
+
+    bool entered() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return entered_;
+    }
+
+private:
+    P2PManager& manager_;
+    LoopbackSocketPair socket_;
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    bool entered_{false};
+    bool released_{false};
+    std::thread worker_;
 };
 
 std::shared_ptr<dinero::daemon::NodeIdentity> InstallNodeIdentity(P2PManager& manager) {
@@ -1486,6 +1545,44 @@ TEST(P2PConnectionLimit, TotalCapCountsInboundOutboundAndVirtualPeers) {
     EXPECT_TRUE(manager.install_outbound_virtual_relay_peer(
         MakeNodeId(0x60), "198.51.100.1:20999", 12345).empty());
     target.stop();
+    manager.stop();
+}
+
+TEST(P2PConnectionLimit, PendingTcpAcceptBlocksOutboundRelayVirtualPeer) {
+    P2PManager manager(0);
+    manager.set_max_total_connections(1);
+    manager.test_set_running(true);
+    {
+        PausedIncomingConnection pending(manager);
+        ASSERT_TRUE(pending.entered());
+        EXPECT_FALSE(manager.test_inbound_slot_available("203.0.113.8"));
+        EXPECT_TRUE(manager.install_outbound_virtual_relay_peer(
+            MakeNodeId(0x60), kRelayPeer, 0x41).empty());
+    }
+    manager.stop();
+}
+
+TEST(P2PConnectionLimit, PendingTcpAcceptBlocksInboundRelayVirtualPeer) {
+    auto relay = LoopbackSocketPair::Create();
+    const std::string relay_key = "127.0.0.1:" + std::to_string(relay.port());
+    P2PManager manager(0);
+    manager.set_max_total_connections(2);
+    manager.test_set_running(true);
+    manager.set_plaintext_relay_dev_override_for_tests(true);
+    manager.test_install_connected_direct_peer(
+        relay_key, relay.take_client_fd(), true, true, MakeNodeId(0x20));
+    auto* relay_peer = manager.get_peer_info(relay_key);
+    ASSERT_NE(relay_peer, nullptr);
+    relay_peer->is_our_relay = true;
+    {
+        PausedIncomingConnection pending(manager);
+        ASSERT_TRUE(pending.entered());
+        EXPECT_FALSE(manager.test_inbound_slot_available("203.0.113.8"));
+        manager.handle_relay_data(relay_key, P2PMessage::create_relay_data(
+            0x42, P2PMessage::RelayDirection::ClientToTarget,
+            MakePing(1).serialize()));
+        EXPECT_EQ(manager.get_peer_info("relay:in:" + relay_key + ":0000000000000042"), nullptr);
+    }
     manager.stop();
 }
 
