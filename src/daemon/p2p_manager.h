@@ -471,6 +471,7 @@ public:
     }
     void set_listen_enabled(bool enabled) { listen_enabled_ = enabled; }  // before start()
     bool accepts_inbound_quic() const noexcept;
+    void set_max_total_connections(size_t limit) { max_total_connections_ = limit; }  // before start()
 
     bool WaitUntilListening(std::chrono::milliseconds timeout) {
         std::unique_lock<std::mutex> lock(ready_mutex_);
@@ -1285,6 +1286,7 @@ private:
     std::atomic<bool> quic_connect_warned_{false};
     size_t max_inbound_ = MAX_INBOUND_CONNECTIONS;
     size_t max_inbound_per_ip_ = MAX_INBOUND_PER_IP;
+    size_t max_total_connections_ = MAX_INBOUND_CONNECTIONS;
 
     // Socket readiness observability (for deterministic tests)
     std::atomic<bool> socket_listening_{false};
@@ -1722,6 +1724,8 @@ private:
     bool start_peer_handler_thread(std::shared_ptr<PeerInfo> peer);
     // Inbound caps shared by TCP and QUIC. Caller holds peers_mutex_.
     bool inbound_slot_available_locked(const std::string& ip, std::string* why) const;
+    size_t active_peer_count_locked() const;
+    size_t reserved_peer_slots_locked() const;
     // Frame one message onto a QUIC peer's stream (relay circuit or direct).
     bool send_quic_stream_message(PeerInfo& peer, const P2PMessage& message);
     void peer_handler_loop(std::shared_ptr<PeerInfo> peer);

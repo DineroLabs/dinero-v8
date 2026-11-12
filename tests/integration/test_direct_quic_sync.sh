@@ -53,7 +53,8 @@ start() {  # start <name> <rpc> <p2p> <extra args...>
 [[ -x "${DINEROD}" ]] || fail "dinerod not found at ${DINEROD}"
 
 start a "${A_RPC}" "${A_P2P}" --listen=1 --quic="${A_QUIC}"
-start b "${B_RPC}" "${B_P2P}" --listen=0 --quicconnect="127.0.0.1:${A_P2P}"
+start b "${B_RPC}" "${B_P2P}" --listen=0 --maxconnections=1 \
+    --quicconnect="127.0.0.1:${A_P2P}"
 wait_rpc "${A_RPC}" "${WORK}/a" || fail "A RPC never came up"
 wait_rpc "${B_RPC}" "${WORK}/b" || fail "B RPC never came up"
 

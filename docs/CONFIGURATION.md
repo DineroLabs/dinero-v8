@@ -387,7 +387,7 @@ connect=192.168.1.101:20999
 **Type:** Integer
 **Default:** `125`
 **Status:** STABLE
-**Valid:** `8-10000`
+**Valid:** `1-10000`
 
 Maximum number of total connections (inbound + outbound).
 
@@ -397,7 +397,7 @@ maxconnections=125
 ```
 
 **Constraints:**
-- Minimum: 8 (required for network health)
+- Minimum: 1 (for isolated or resource-constrained nodes; 8 or more is recommended for public nodes)
 - Maximum: 10000 (theoretical limit)
 - Recommended: 125 (default)
 
@@ -824,7 +824,7 @@ Pruning:
 
 3. **Valid Range Changed**
    - Old range: `p2p.maxconnections=1-1000`
-   - New range: `p2p.maxconnections=8-10000`
+   - New range: `p2p.maxconnections=1-10000` (8 or more recommended for public nodes)
    - **Policy:** Reject invalid configs with clear error message
 
 4. **Option Removed**

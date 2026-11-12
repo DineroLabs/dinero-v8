@@ -29,6 +29,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <ctime>
 #include <cstdint>
@@ -37,6 +38,7 @@
 #include <iomanip>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <optional>
 #include <sstream>
@@ -1362,6 +1364,127 @@ TEST(P2PListenPolicy, ListenOffRefusesUnsolicitedQuicSession) {
     EXPECT_EQ(endpoint->SessionCount(), 0u);
     client.Stop();
     manager.stop();
+}
+
+TEST(P2PConnectionLimit, TotalCapCountsInboundOutboundAndVirtualPeers) {
+    std::vector<LoopbackSocketPair> sockets;
+    P2PManager manager(0);
+    manager.set_max_total_connections(8);
+    for (int i = 0; i < 8; ++i) {
+        sockets.push_back(LoopbackSocketPair::Create());
+        manager.test_install_connected_direct_peer(
+            "198.51.100." + std::to_string(i + 1) + ":20999",
+            sockets.back().client_fd(), i == 0, false, {});
+    }
+    ASSERT_EQ(manager.get_peer_count(), 8u);
+    EXPECT_FALSE(manager.test_inbound_slot_available("203.0.113.8"));
+
+    P2PManager target(0);
+    target.set_quic_enabled(false);
+    ASSERT_TRUE(target.start());
+    ASSERT_TRUE(target.WaitUntilListening(std::chrono::seconds(5)));
+    EXPECT_FALSE(manager.connect_to_peer("127.0.0.1", target.get_listen_port()))
+        << "an eighth inbound plus one outbound escaped the total cap";
+    EXPECT_TRUE(manager.install_outbound_virtual_relay_peer(
+        MakeNodeId(0x60), "198.51.100.1:20999", 12345).empty());
+    target.stop();
+    manager.stop();
+}
+
+TEST(P2PConnectionLimit, MobileFourAllowsFourAndRefusesTheFifth) {
+    std::vector<LoopbackSocketPair> sockets;
+    P2PManager manager(0);
+    manager.set_max_total_connections(4);
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_TRUE(manager.test_inbound_slot_available("203.0.113.8"));
+        sockets.push_back(LoopbackSocketPair::Create());
+        manager.test_install_connected_direct_peer(
+            "198.51.100." + std::to_string(i + 1) + ":20999",
+            sockets.back().client_fd(), false, false, {});
+    }
+    EXPECT_FALSE(manager.test_inbound_slot_available("203.0.113.8"));
+    manager.stop();
+}
+
+TEST(P2PConnectionLimit, DirectQuicCannotOverfillTotalCap) {
+    auto socket = LoopbackSocketPair::Create();
+    P2PManager manager(0);
+    manager.set_max_total_connections(1);
+    manager.test_install_connected_direct_peer(
+        "198.51.100.1:20999", socket.client_fd(), true, false, {});
+    P2PManager target(0);
+    if (!manager.start_quic_endpoint(0) || !target.start_quic_endpoint(0)) {
+        manager.stop();
+        target.stop();
+        GTEST_SKIP() << "direct QUIC not compiled in";
+    }
+    EXPECT_FALSE(manager.connect_to_peer_quic(
+        "127.0.0.1", target.quic_endpoint()->Port()));
+    EXPECT_EQ(manager.get_peer_count(), 1u);
+    manager.stop();
+    target.stop();
+}
+
+TEST(P2PConnectionLimit, PendingInboundSocketReservesTheLastSlot) {
+    auto first = LoopbackSocketPair::Create();
+    auto second = LoopbackSocketPair::Create();
+    P2PManager manager(0);
+    manager.set_max_total_connections(1);
+    manager.set_quic_enabled(false);
+    ASSERT_TRUE(manager.start());
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool release_first = false;
+    bool first_in_hook = false;
+    std::atomic<int> hooks{0};
+    manager.test_set_before_peer_handler_start([&](int) {
+        if (++hooks != 1) return;
+        std::unique_lock<std::mutex> lock(mutex);
+        first_in_hook = true;
+        cv.notify_one();
+        cv.wait(lock, [&] { return release_first; });
+    });
+    std::thread pending([&] {
+        manager.test_handle_incoming_connection(first.client_fd(), "127.0.0.1");
+    });
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        if (!cv.wait_for(lock, std::chrono::seconds(2), [&] { return first_in_hook; })) {
+            release_first = true;
+            lock.unlock();
+            cv.notify_all();
+            pending.join();
+            FAIL() << "first inbound socket never reached handler startup";
+        }
+    }
+    manager.test_handle_incoming_connection(second.client_fd(), "127.0.0.1");
+    EXPECT_EQ(hooks.load(), 1) << "the second socket escaped the pending reservation";
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        release_first = true;
+    }
+    cv.notify_all();
+    pending.join();
+    manager.stop();
+}
+
+TEST(P2PConnectionLimit, FailedVirtualHandlerReleasesItsSlot) {
+    auto relay = LoopbackSocketPair::Create();
+    const std::string relay_key = "127.0.0.1:" + std::to_string(relay.port());
+    P2PManager manager(0);
+    manager.set_max_total_connections(2);
+    manager.set_plaintext_relay_dev_override_for_tests(true);
+    manager.test_install_connected_direct_peer(
+        relay_key, relay.client_fd(), true, true, MakeNodeId(0x20));
+    auto peer = manager.get_peer_info(relay_key);
+    ASSERT_NE(peer, nullptr);
+    peer->is_our_relay = true;
+    manager.begin_shutdown();  // makes peer-handler creation refuse deterministically
+    manager.handle_relay_data(relay_key, P2PMessage::create_relay_data(
+        0x42, P2PMessage::RelayDirection::ClientToTarget,
+        MakePing(1).serialize()));
+    EXPECT_TRUE(manager.test_inbound_slot_available("203.0.113.8"))
+        << "a virtual peer whose handler never started consumed the last slot";
 }
 
 TEST(RelayRegistration, PrefersCommunityOverFleet) {

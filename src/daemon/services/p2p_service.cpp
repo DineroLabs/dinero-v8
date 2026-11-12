@@ -430,7 +430,7 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
 
     status.network_active = p2p_mgr_->is_network_active();
     status.listening = p2p_mgr_->IsListening();
-    status.listen_port = p2p_mgr_->get_listen_port();
+    status.listen_port = status.listening ? p2p_mgr_->get_listen_port() : 0;
     status.advertised_addresses = p2p_mgr_->get_advertised_addresses();
     // Explicit address or dial-back verified: what peers can actually dial.
     status.has_explicit_advertised = p2p_mgr_->has_proven_reachable();
@@ -1911,6 +1911,12 @@ bool P2PService::Init(DaemonContext& ctx) {
         // Create P2PManager instance
         p2p_mgr_ = std::make_unique<::P2PManager>(listen_port_, external_ip_);
         p2p_mgr_->set_listen_enabled(config_->GetBool("p2p.listen", true));
+        const int max_connections = config_->GetInt("p2p.maxconnections", 125);
+        if (max_connections < 1 || max_connections > 10000) {
+            logger_interface_->error("[P2PService] maxconnections must be between 1 and 10000");
+            return false;
+        }
+        p2p_mgr_->set_max_total_connections(static_cast<size_t>(max_connections));
         {
             ::P2PManager::RelayServiceLimits limits;
             limits.max_circuits = relay_service_status_.limits.max_circuits;
