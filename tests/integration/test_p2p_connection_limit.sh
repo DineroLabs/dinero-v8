@@ -17,7 +17,7 @@ cleanup() {
 trap cleanup EXIT
 fail() {
     echo "FAIL: $*" >&2
-    for name in a b c; do
+    for name in a b c d e; do
         [[ -f "${WORK}/${name}.log" ]] && tail -12 "${WORK}/${name}.log" >&2
     done
     exit 1
@@ -50,13 +50,33 @@ start() {
     mkdir -p "${WORK}/${name}"
     "${DINEROD}" --regtest --datadir="${WORK}/${name}" \
         --rpcport="${rpc_port}" --port="${p2p_port}" --quic=0 \
-        --p2p.stun.enabled=0 --portmap=0 "$@" >"${WORK}/${name}.log" 2>&1 &
+        --p2p.stun.servers=127.0.0.1:9 --portmap=0 "$@" >"${WORK}/${name}.log" 2>&1 &
     PIDS+=("$!")
+}
+stun_message() {
+    rpc "$1" "$2" getnetworkinfo | python3 -c '
+import json,sys
+print(json.load(sys.stdin)["result"]["stun"]["message"])'
 }
 
 [[ -x "${DINEROD}" ]] || fail "dinerod missing: ${DINEROD}"
 start a "$((BASE_PORT + 1))" "$((BASE_PORT + 101))" --connect=0 --maxconnections=1
 wait_rpc "$((BASE_PORT + 1))" "${WORK}/a" || fail "A did not start"
+stun_a="$(stun_message "$((BASE_PORT + 1))" "${WORK}/a")"
+[[ "${stun_a}" == "disabled by connect-only" ]] ||
+    fail "connect=0 dispatched ambient STUN discovery (status: ${stun_a})"
+start d "$((BASE_PORT + 4))" "$((BASE_PORT + 104))" \
+    --listen=0 --dnsseed=0 --fixedseeds=0
+wait_rpc "$((BASE_PORT + 4))" "${WORK}/d" || fail "D did not start"
+stun_d="$(stun_message "$((BASE_PORT + 4))" "${WORK}/d")"
+[[ "${stun_d}" == "disabled by listen=0" ]] ||
+    fail "listen=0 dispatched unnecessary STUN discovery (status: ${stun_d})"
+start e "$((BASE_PORT + 5))" "$((BASE_PORT + 105))" \
+    --dnsseed=0 --fixedseeds=0
+wait_rpc "$((BASE_PORT + 5))" "${WORK}/e" || fail "E did not start"
+stun_e="$(stun_message "$((BASE_PORT + 5))" "${WORK}/e")"
+[[ "${stun_e}" != disabled* ]] ||
+    fail "default listening node unexpectedly disabled STUN (status: ${stun_e})"
 start b "$((BASE_PORT + 2))" "$((BASE_PORT + 102))" \
     --connect="127.0.0.1:$((BASE_PORT + 101))" --listen=0
 wait_rpc "$((BASE_PORT + 2))" "${WORK}/b" || fail "B did not start"

@@ -328,6 +328,7 @@ listen=true
 - `listen=true` - Public node (accepts inbound)
 - `listen=false` - Private node (outbound only). No TCP listener or inbound QUIC
   sessions are accepted; direct outbound QUIC uses an ephemeral UDP socket.
+  Automatic STUN discovery is disabled because there is no inbound mapping to advertise.
 
 ---
 
@@ -377,6 +378,7 @@ connect=192.168.1.101:20999
 - Daemon dials only these nodes and any explicitly configured `quicconnect` targets
 - Disables DNS seed discovery
 - Disables automatic peer and relay discovery, dial-back probes, and hole punching
+- Disables automatic STUN discovery, including public fallback servers
 - Use for isolated/private networks
 
 ---

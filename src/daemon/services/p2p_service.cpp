@@ -913,6 +913,19 @@ void P2PService::MaybeRunDynamicP2PActiveChurn(std::chrono::steady_clock::time_p
 //     used, and add_advertised_address gets the result.
 void P2PService::StartStunDiscoveryIfEnabled() {
     if (!p2p_mgr_) return;
+    // STUN contacts servers outside the configured peer list. A connect-only
+    // node must not make those ambient UDP requests. Without an inbound
+    // listener the discovered mapping cannot serve incoming peers either.
+    if (config_ && !config_->GetString("p2p.connect", "").empty()) {
+        std::lock_guard<std::mutex> lock(stun_status_mutex_);
+        stun_message_ = "disabled by connect-only";
+        return;
+    }
+    if (config_ && !config_->GetBool("p2p.listen", true)) {
+        std::lock_guard<std::mutex> lock(stun_status_mutex_);
+        stun_message_ = "disabled by listen=0";
+        return;
+    }
     const bool enabled = config_ ? config_->GetBool("p2p.stun.enabled", true) : true;
     if (!enabled) {
         std::lock_guard<std::mutex> lock(stun_status_mutex_);
