@@ -24,6 +24,7 @@ datadir.mkdir()
 magic = 0xFABFB5DA
 compact = 1 << 29
 orchard = 1 << 30
+dialback = 1 << 33
 process = None
 output = None
 connections = []
@@ -73,6 +74,7 @@ def check_version(message):
     flags = struct.unpack_from("<Q", payload, 4)[0]
     assert bool(flags & compact), "Daemon omitted its existing compact/timing capability"
     assert bool(flags & orchard) == expect_orchard, "Actual service advertised the wrong Orchard capability"
+    assert not (flags & dialback), "Connect-only daemon advertised a dialback service it refuses"
     return flags
 
 

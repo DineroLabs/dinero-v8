@@ -2623,7 +2623,7 @@ bool P2PService::Start() {
             // Relay data is still guarded by the P2PManager caps: 64 KB/s per
             // circuit, 5 MB/s global, and 50 GB/day.
             p2p_mgr_->set_service_flags_provider([this, prune_svc,
-                                                  bridge_enabled]() -> uint64_t {
+                                                  bridge_enabled, connect_only]() -> uint64_t {
                 uint64_t flags = ServiceFlags::NODE_UTREEXO | ServiceFlags::NODE_COMPACT_TIMING_V1;
 #ifdef DINERO_HAS_ORCHARD_P2P
                 flags |= ServiceFlags::NODE_ORCHARD_V1;
@@ -2643,7 +2643,9 @@ bool P2PService::Start() {
                     flags |= ServiceFlags::NODE_RELAY;
                 }
                 flags |= p2p_mgr_->local_quic_service_bits();
-                flags |= ServiceFlags::NODE_DIALBACK;  // we answer reachchk
+                if (!connect_only) {
+                    flags |= ServiceFlags::NODE_DIALBACK;  // we answer reachchk
+                }
                 return flags;
             });
             bool pruned = prune_svc && prune_svc->isEnabled();

@@ -853,6 +853,85 @@ TEST(P2PManager_TS1_Integration, OutboundDialPassRunsNormallyWithoutStop) {
     EXPECT_TRUE(both_attempted);
 }
 
+TEST(P2PManager_TS1_Integration, ConnectOnlyAttemptsLaterTargetsAfterEarlyFailures) {
+    P2PManager manager(0);
+    manager.set_listen_enabled(false);
+    manager.set_quic_enabled(false);
+    constexpr uint16_t port = 20999;
+    const std::vector<std::pair<std::string, uint16_t>> targets = {
+        {"198.51.100.41", port},
+        {"198.51.100.42", port},
+        {"198.51.100.43", port},
+    };
+    manager.set_connect_only_targets(true, targets);
+    std::mutex gate_mutex;
+    std::condition_variable gate_cv;
+    std::vector<std::string> attempted;
+    manager.test_set_connection_manager_dial([&](const std::string& host, uint16_t) {
+        {
+            std::lock_guard<std::mutex> lock(gate_mutex);
+            attempted.push_back(host);
+        }
+        gate_cv.notify_all();
+        return false;  // Earlier configured peers are unavailable.
+    });
+    for (const auto& [host, target_port] : targets) {
+        manager.add_seed_node(host, target_port);
+    }
+    ASSERT_TRUE(manager.start());
+    bool third_attempted = false;
+    {
+        std::unique_lock<std::mutex> lock(gate_mutex);
+        third_attempted = gate_cv.wait_for(lock, std::chrono::seconds(3), [&] {
+            return attempted.size() >= targets.size();
+        });
+    }
+    manager.stop();
+    EXPECT_TRUE(third_attempted) << "explicit connect= targets must not use the two-seed bootstrap budget";
+    if (third_attempted) {
+        EXPECT_EQ(attempted[0], targets[0].first);
+        EXPECT_EQ(attempted[1], targets[1].first);
+        EXPECT_EQ(attempted[2], targets[2].first);
+    }
+}
+
+TEST(P2PManager_TS1_Integration, ConnectOnlyRotatesWhenTargetsExceedOutboundSlots) {
+    P2PManager manager(0);
+    manager.set_listen_enabled(false);
+    manager.set_quic_enabled(false);
+    constexpr uint16_t port = 20999;
+    std::vector<std::pair<std::string, uint16_t>> targets;
+    for (int last_octet = 41; last_octet <= 49; ++last_octet) {
+        targets.emplace_back("198.51.100." + std::to_string(last_octet), port);
+    }
+    manager.set_connect_only_targets(true, targets);
+    std::mutex gate_mutex;
+    std::condition_variable gate_cv;
+    std::vector<std::string> attempted;
+    manager.test_set_connection_manager_dial([&](const std::string& host, uint16_t) {
+        {
+            std::lock_guard<std::mutex> lock(gate_mutex);
+            attempted.push_back(host);
+        }
+        gate_cv.notify_all();
+        return false;
+    });
+    for (const auto& [host, target_port] : targets) {
+        manager.add_seed_node(host, target_port);
+    }
+    ASSERT_TRUE(manager.start());
+    bool last_attempted = false;
+    {
+        std::unique_lock<std::mutex> lock(gate_mutex);
+        last_attempted = gate_cv.wait_for(lock, std::chrono::seconds(13), [&] {
+            return std::find(attempted.begin(), attempted.end(), targets.back().first) !=
+                   attempted.end();
+        });
+    }
+    manager.stop();
+    EXPECT_TRUE(last_attempted) << "later explicit targets must not starve behind failed first-slot dials";
+}
+
 TEST(P2PManager_TS1_Integration, AnchorsRemainDistinctFromDynamicSeeds) {
     P2PManager manager(30002);
 
