@@ -35,6 +35,17 @@ class FullV6DockerCandidateTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
 
+    def test_fleet_publisher_key_is_in_source_and_pinned(self):
+        relative = Path("packaging/snapshot/fleet-publisher-ed25519.pub.pem")
+        key = ROOT / relative
+        self.assertTrue(key.is_file(), "clean release checkout lacks the publisher key")
+        self.assertEqual(hashlib.sha256(key.read_bytes()).hexdigest(),
+                         "993b978c9be80a67ab4bc47be47ce6c4e21f9ce635757ddff8b6eed3fb4ec385")
+        tracked = subprocess.run(["git", "ls-files", "--error-unmatch", "--", str(relative)],
+                                 cwd=ROOT, text=True, capture_output=True)
+        self.assertEqual(tracked.returncode, 0,
+                         "publisher key exists locally but is absent from the source checkout")
+
     def test_entrypoint_passes_all_four_fallbacks_to_daemon(self):
         primary = self.root / "primary.dat"
         primary.touch()
