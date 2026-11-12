@@ -89,6 +89,9 @@ struct Node {
     }
 };
 
+// This regression stages a real accepted POSIX socket at the handler-start
+// fence. Windows QUIC builds still compile the rest of this test target.
+#ifndef _WIN32
 class PausedAcceptedTcp {
 public:
     explicit PausedAcceptedTcp(P2PManager& manager) : manager_(manager) {
@@ -138,6 +141,7 @@ private:
     bool released_{false};
     std::thread worker_;
 };
+#endif
 
 std::string Hex(const std::array<uint8_t, 20>& id) {
     static const char* d = "0123456789abcdef";
@@ -280,6 +284,7 @@ TEST(QuicPeer, InboundLimitAppliesToQuic) {
     EXPECT_EQ(PeerCount(*b.mgr), 1u);
 }
 
+#ifndef _WIN32
 TEST(QuicPeer, PendingTcpAcceptBlocksDirectQuicInstall) {
     Node node("pending-tcp");
     node.mgr->set_max_total_connections(1);
@@ -293,6 +298,7 @@ TEST(QuicPeer, PendingTcpAcceptBlocksDirectQuicInstall) {
         EXPECT_EQ(node.mgr->get_peer_info("127.0.0.1:23042"), nullptr);
     }
 }
+#endif
 
 TEST(QuicPeer, BannedIpCannotConnectOverQuic) {
     Node a("ban-a"), b("ban-b");
