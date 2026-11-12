@@ -80,6 +80,7 @@ jobs:
         run: |
           python -B scripts/ci/test_snapshot_wiring.py -v
           python -B packaging/snapshot/test_desktop_primary_profile.py -v
+          python -B packaging/snapshot/test_wait_release_assets.py -v
 
       # Strip the leading "v" from the tag; fall back to the dispatch input,
       # else a dev marker so an unflagged run never embeds an empty version.
@@ -136,6 +137,12 @@ jobs:
           mkdir -p packaging/windows/dist
           PRIMARY_RELEASE="${{ steps.ver.outputs.release_tag }}"
           if [ -n "$PRIMARY_RELEASE" ]; then
+            # Creating a draft release can also create its tag. A tag push may
+            # start this job before the four signed snapshot inputs finish
+            # uploading; wait for complete, nonempty assets before download.
+            python packaging/snapshot/wait_release_assets.py \
+              --tag "$PRIMARY_RELEASE" --repo DineroLabs/dinero-v8 \
+              --timeout-seconds 900 --poll-seconds 10
             gh release download "$PRIMARY_RELEASE" --repo DineroLabs/dinero-v8 \
               --pattern 'dinero-assumeutxo-150521-v6-full.dat' \
               --pattern 'dinero-assumeutxo-150521-v6-full.dat.manifest.json' \
