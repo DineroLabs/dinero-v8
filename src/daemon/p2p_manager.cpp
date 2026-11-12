@@ -1604,7 +1604,7 @@ bool P2PManager::unwrap_relay_data_endpoint(const std::string& relay_peer_addres
         bool admitted = false;
         {
             std::lock_guard<std::mutex> lock(peers_mutex_);
-            if (active_peer_count_locked() < max_total_connections_) {
+            if (inbound_total_slot_available_locked()) {
                 admitted = connected_peers_.emplace(virtual_peer_key, virtual_peer).second;
             }
         }
@@ -2194,7 +2194,7 @@ std::string P2PManager::install_outbound_virtual_relay_peer(
     bool admitted = false;
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);
-        if (active_peer_count_locked() < max_total_connections_) {
+        if (reserved_peer_slots_locked() < max_total_connections_) {
             connected_peers_[virtual_peer_key] = peer;
             admitted = true;
         }
@@ -6080,6 +6080,7 @@ void P2PManager::listen_loop() {
 }
 
 void P2PManager::connection_manager_loop() {
+    size_t connect_only_seed_offset = 0;
     while (!shutdown_requested_) {
         if (!network_active_.load(std::memory_order_acquire)) {
             std::unique_lock<std::mutex> lock(connection_manager_mutex_);
@@ -6123,6 +6124,15 @@ void P2PManager::connection_manager_loop() {
             }
             has_durable_capacity = active_outbound < MAX_OUTBOUND_CONNECTIONS;
         }
+        // Every configured connect= endpoint is an operator-selected target,
+        // not a bootstrap introduction. Rotate the first choice so targets
+        // beyond the available outbound slots get a turn after failed dials.
+        if (connect_only_ && !seeds.empty()) {
+            std::rotate(seeds.begin(),
+                        seeds.begin() + (connect_only_seed_offset % seeds.size()),
+                        seeds.end());
+            ++connect_only_seed_offset;
+        }
 
         // Dial already-known numeric/onion peers before entering any DNS
         // waiter. A slow seed name must not starve a ready community or
@@ -6148,7 +6158,9 @@ void P2PManager::connection_manager_loop() {
             for (const auto& candidate : addrman_candidates) {
                 queue_candidate(candidate.ip);
             }
-            for (const auto& anchor : anchors) queue_candidate(anchor.first);
+            if (!connect_only_) {
+                for (const auto& anchor : anchors) queue_candidate(anchor.first);
+            }
             for (const auto& seed : seeds) queue_candidate(seed.first);
         }
         if (shutdown_requested_.load(std::memory_order_acquire)) break;
@@ -6275,27 +6287,33 @@ void P2PManager::connection_manager_loop() {
                     consider_candidate(candidate.ip, candidate.port);
                 }
 
-                size_t bootstrap_pending = 0;
-                for (const auto& endpoint : successful_bootstrap_in_pass) {
-                    if (connected_endpoints.count(endpoint) == 0) ++bootstrap_pending;
-                }
-                size_t bootstrap_budget = autonomy.max_bootstrap_hot >
-                        connected_bootstrap + bootstrap_pending
-                    ? autonomy.max_bootstrap_hot - connected_bootstrap - bootstrap_pending
-                    : 0;
-                const auto consider_bootstrap = [&](const std::string& address, uint16_t port) {
-                    if (bootstrap_budget == 0) return;
-                    const size_t before = seeds_to_connect.size();
-                    consider_candidate(address, port);
-                    if (seeds_to_connect.size() != before) {
-                        --bootstrap_budget;
+                if (connect_only_) {
+                    for (const auto& seed : seeds) {
+                        consider_candidate(seed.first, seed.second);
                     }
-                };
-                for (const auto& anchor : anchors) {
-                    consider_bootstrap(anchor.first, anchor.second);
-                }
-                for (const auto& seed : seeds) {
-                    consider_bootstrap(seed.first, seed.second);
+                } else {
+                    size_t bootstrap_pending = 0;
+                    for (const auto& endpoint : successful_bootstrap_in_pass) {
+                        if (connected_endpoints.count(endpoint) == 0) ++bootstrap_pending;
+                    }
+                    size_t bootstrap_budget = autonomy.max_bootstrap_hot >
+                            connected_bootstrap + bootstrap_pending
+                        ? autonomy.max_bootstrap_hot - connected_bootstrap - bootstrap_pending
+                        : 0;
+                    const auto consider_bootstrap = [&](const std::string& address, uint16_t port) {
+                        if (bootstrap_budget == 0) return;
+                        const size_t before = seeds_to_connect.size();
+                        consider_candidate(address, port);
+                        if (seeds_to_connect.size() != before) {
+                            --bootstrap_budget;
+                        }
+                    };
+                    for (const auto& anchor : anchors) {
+                        consider_bootstrap(anchor.first, anchor.second);
+                    }
+                    for (const auto& seed : seeds) {
+                        consider_bootstrap(seed.first, seed.second);
+                    }
                 }
             }
 
@@ -8270,12 +8288,43 @@ size_t P2PManager::reserved_peer_slots_locked() const {
     return slots;
 }
 
-bool P2PManager::inbound_slot_available_locked(const std::string& ip, std::string* why) const {
-    if (reserved_peer_slots_locked() >= max_total_connections_) {
+bool P2PManager::inbound_total_slot_available_locked(std::string* why) const {
+    const size_t occupied = reserved_peer_slots_locked();
+    if (occupied >= max_total_connections_) {
         if (why) *why = "Total connection limit reached (" +
                         std::to_string(max_total_connections_) + ")";
         return false;
     }
+
+    // Keep small peer budgets (including maxconnections=1 and the mobile
+    // four-peer profile) fully usable in either direction. Beyond the eight
+    // durable-outbound target, reserve the excess capacity for outbound sync,
+    // up to that target. Established durable outbound peers fill the reserve;
+    // feelers and relayed/punched home peers do not.
+    const size_t outbound_reserve = std::min(
+        MAX_OUTBOUND_CONNECTIONS,
+        max_total_connections_ > MAX_OUTBOUND_CONNECTIONS
+            ? max_total_connections_ - MAX_OUTBOUND_CONNECTIONS : size_t{0});
+    size_t durable_outbound = 0;
+    for (const auto& [_, peer] : connected_peers_) {
+        if (!peer || !peer->is_outbound || peer->is_feeler || peer->is_home_peer()) continue;
+        const auto state = peer->lifetime_state.load(std::memory_order_acquire);
+        if (state != PeerLifetimeState::STOPPING && state != PeerLifetimeState::JOINED) {
+            ++durable_outbound;
+        }
+    }
+    const size_t unfilled_reserve = outbound_reserve > durable_outbound
+        ? outbound_reserve - durable_outbound : 0;
+    if (unfilled_reserve >= max_total_connections_ - occupied) {
+        if (why) *why = "Connection slots reserved for durable outbound peers (" +
+                        std::to_string(unfilled_reserve) + ")";
+        return false;
+    }
+    return true;
+}
+
+bool P2PManager::inbound_slot_available_locked(const std::string& ip, std::string* why) const {
+    if (!inbound_total_slot_available_locked(why)) return false;
     size_t inbound_count = 0;
     size_t same_ip_count = 0;  // same IPv4 address or same IPv6 /64
     const std::string host_key = AddressLimitKey(ip);
@@ -9523,7 +9572,8 @@ std::string P2PManager::install_direct_quic_peer(
         const bool live = it != connected_peers_.end() &&
             it->second->lifetime_state.load(std::memory_order_acquire) != PeerLifetimeState::STOPPING;
         if (live || connecting_peers_.count(key) ||
-            active_peer_count_locked() >= max_total_connections_) {
+            (outbound ? reserved_peer_slots_locked() >= max_total_connections_
+                      : !inbound_total_slot_available_locked())) {
             refused = true;
         } else {
             // Reserve the address until the handshake ends (the handler or

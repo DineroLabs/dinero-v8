@@ -1725,6 +1725,8 @@ private:
     bool start_peer_handler_thread(std::shared_ptr<PeerInfo> peer);
     // Inbound caps shared by TCP and QUIC. Caller holds peers_mutex_.
     bool inbound_slot_available_locked(const std::string& ip, std::string* why) const;
+    // Shared total-cap reserve for TCP, QUIC and relay-virtual inbound peers.
+    bool inbound_total_slot_available_locked(std::string* why = nullptr) const;
     size_t active_peer_count_locked() const;
     size_t reserved_peer_slots_locked() const;
     // Frame one message onto a QUIC peer's stream (relay circuit or direct).

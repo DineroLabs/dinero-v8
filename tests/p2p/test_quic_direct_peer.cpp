@@ -12,10 +12,17 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
+
+#ifndef _WIN32
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -80,6 +87,56 @@ struct Node {
         std::error_code ec;
         std::filesystem::remove_all(dir, ec);
     }
+};
+
+class PausedAcceptedTcp {
+public:
+    explicit PausedAcceptedTcp(P2PManager& manager) : manager_(manager) {
+        int fds[2];
+        if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
+            throw std::runtime_error("socketpair failed");
+        }
+        remote_fd_ = fds[1];
+        manager_.test_set_before_peer_handler_start([this](int) {
+            std::unique_lock<std::mutex> lock(mutex_);
+            entered_ = true;
+            cv_.notify_all();
+            cv_.wait(lock, [this] { return released_; });
+        });
+        worker_ = std::thread([this, fd = fds[0]] {
+            manager_.test_handle_incoming_connection(fd, "198.51.100.1");
+        });
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_.wait_for(lock, std::chrono::seconds(2), [this] { return entered_; });
+    }
+
+    PausedAcceptedTcp(const PausedAcceptedTcp&) = delete;
+    PausedAcceptedTcp& operator=(const PausedAcceptedTcp&) = delete;
+
+    ~PausedAcceptedTcp() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            released_ = true;
+        }
+        cv_.notify_all();
+        if (worker_.joinable()) worker_.join();
+        manager_.test_set_before_peer_handler_start({});
+        ::close(remote_fd_);
+    }
+
+    bool entered() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return entered_;
+    }
+
+private:
+    P2PManager& manager_;
+    int remote_fd_{-1};
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    bool entered_{false};
+    bool released_{false};
+    std::thread worker_;
 };
 
 std::string Hex(const std::array<uint8_t, 20>& id) {
@@ -221,6 +278,20 @@ TEST(QuicPeer, InboundLimitAppliesToQuic) {
     ASSERT_TRUE(a2.mgr->connect_to_peer_quic("127.0.0.1", bp));
     EXPECT_FALSE(WaitConnected(*a2.mgr, LoopKey(bp), 5)) << "second inbound QUIC peer exceeded cap 1";
     EXPECT_EQ(PeerCount(*b.mgr), 1u);
+}
+
+TEST(QuicPeer, PendingTcpAcceptBlocksDirectQuicInstall) {
+    Node node("pending-tcp");
+    node.mgr->set_max_total_connections(1);
+    {
+        PausedAcceptedTcp pending(*node.mgr);
+        ASSERT_TRUE(pending.entered());
+        EXPECT_FALSE(node.mgr->test_inbound_slot_available("203.0.113.8"));
+        auto session = std::make_shared<QuicSession>([](std::vector<uint8_t>) {});
+        EXPECT_TRUE(node.mgr->install_direct_quic_peer(
+            session, Loopback(23042), /*outbound=*/false).empty());
+        EXPECT_EQ(node.mgr->get_peer_info("127.0.0.1:23042"), nullptr);
+    }
 }
 
 TEST(QuicPeer, BannedIpCannotConnectOverQuic) {
