@@ -279,8 +279,29 @@ public:
     // snapshot's complete live leaf coverage and selected post-base bodies,
     // then applies owned coins/history under one wallet transaction. Does not
     // replace keys or certify pre-base spent history/other wallet consumers.
+    // Native v6 recovery (stages B+C of the design,
+    // 2026-11-11-native-v6-wallet-recovery-design.md): with an Orchard-active
+    // selected tip AND a configured wallet_recovery_v5_source (a V5 container
+    // at exactly the activation parent), the base coin set comes from that
+    // container and the activation..tip transparent effects from the verified
+    // composed account replay (typed tail); reports the tip. While the replay
+    // is not yet available the refusal is transient (retryable), unlike the
+    // permanent no-source capability refusal. v6_partial_base_for_tests is
+    // harness-only (no RPC sets it): it skips the typed tail, recovers ONLY
+    // the PARTIAL base set (coins spent after activation still counted) and
+    // reports the activation parent, never a client-visible scope.
+    // Typed recovery outcome for the RPC layer (stage C step 4): the refusal
+    // class drives retryable classification instead of a string match, and
+    // composed_v6 marks the typed-tail composed recovery whose success scope
+    // is transparent-current-coins-and-post-snapshot-history-v6.
+    struct SnapshotRecoveryOutcome {
+        enum class Refusal { None, Transient, PermanentCapability };
+        Refusal refusal=Refusal::None;
+        bool composed_v6=false;
+    };
     std::optional<uint32_t> RecoverTransparentSnapshotWallet(
-        WalletManager&,std::string* error=nullptr,uint64_t expected_session=0);
+        WalletManager&,std::string* error=nullptr,uint64_t expected_session=0,
+        bool v6_partial_base_for_tests=false,SnapshotRecoveryOutcome* outcome=nullptr);
     // Exact fresh imported activation parent only. Checked source/seed-bound
     // candidate discovery, NOT wallet history/index completion or coin authority.
     // Caller retains WalletUse/WalletIndexUse and holds no SQLite/selected owner.

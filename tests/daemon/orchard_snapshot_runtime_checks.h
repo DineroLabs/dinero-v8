@@ -2,6 +2,9 @@
 #include "consensus/utreexo_delta_codec.h"
 #include "consensus/pow.hpp"
 #include "consensus/pow_context.h"
+#include "consensus/coin_type.h"
+#include "crypto/hd_keychain.h"
+#include "crypto/tagged_hash.h"
 #include "p2p/orchard_catalog_transfer.h"
 #include "p2p/orchard_catalog_server.h"
 #include "p2p/orchard_catalog_client.h"
@@ -777,6 +780,92 @@ void GenerateSdkActivationFixture(){
                 const auto header=mined->Header().SerializeForHash();result["header"]=util::hex({header.begin(),header.end()});
                 result["transactions"]=Json::Value(Json::arrayValue);
                 for(const auto& tx:mined->Transactions())result["transactions"].append(tx.GetTxid().AsUint256().GetHex());
+            }else if(op=="advance"){
+                // Adopt the crossing blocks on the native source without the
+                // funded 'mine' contract (which requires a pending mempool
+                // payment in the mined block). Idempotent refusal-free entry
+                // for tails that extend with mine_next afterwards.
+                ASSERT_TRUE(source.Submit(f.full.first->WireBytes()).connected);
+                ASSERT_TRUE(source.Submit(f.full.second->WireBytes()).connected);
+                result["height"]=source.f.service->GetActiveTip()->height;
+            }else if(op=="shield_funding"){
+                // Stage-D tail-spend: spend the funded height-101 coin (a
+                // recovery BASE coin) inside a real shield mined at the next
+                // height, with change to the wallet's first change script —
+                // the tail then both SPENDS a base coin and CREATES an owned
+                // coin. Keys are re-derived exactly as the wallet derives
+                // them (BIP86 m/86'/coin'/0'/0/0, canonical TapTweak keypath).
+                const auto& funding_tx=source.f.blocks.at(101).vtx.at(1);
+                const TxId funded_txid=funding_tx.GetTxid();
+                const auto funded_coin=source.f.db.getCoin(funded_txid.AsUint256(),0);
+                ASSERT_TRUE(funded_coin.ok());ASSERT_EQ(funded_coin->amount,1000000);
+                std::vector<uint8_t> funded_script;ASSERT_TRUE(util::unhex(funded_coin->script_pubkey,funded_script));
+                ASSERT_EQ(funded_script.size(),34u);ASSERT_EQ(funded_script[0],0x51);
+                std::vector<uint8_t> seed_bytes;
+                ASSERT_TRUE(bip39::MnemonicToSeed(
+                    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about","",seed_bytes));
+                const auto leaf=crypto::HDKeychain::fromSeed(seed_bytes)
+                    .derive(86|0x80000000).derive(consensus::DINERO_COIN_TYPE|0x80000000)
+                    .derive(0x80000000).derive(0u).derive(0u);
+                orchard::SigningDomain domain;domain.network_code=2;domain.branch_id=Params().orchard_branch_id;
+                const auto genesis_hash=uint256::FromHexUnsafe(Params().genesis_hash);
+                std::copy(genesis_hash.begin(),genesis_hash.end(),domain.genesis_wire.begin());
+                orchard::EnvelopeInput input{};
+                std::copy(funded_txid.AsUint256().begin(),funded_txid.AsUint256().end(),input.txid_wire.begin());
+                input.output_index=0;input.sequence=UINT32_MAX;
+                constexpr uint64_t fee=100000,shielded=200000;
+                const uint64_t change=1000000-fee-shielded;
+                // Change pays the wallet's FIRST change leaf (m/86'/coin'/0'/1/0):
+                // inside the restored gap-limit watch set, unlike the fixture's
+                // funding_change_script, which sits at change index 20.
+                const auto change_leaf=crypto::HDKeychain::fromSeed(seed_bytes)
+                    .derive(86|0x80000000).derive(consensus::DINERO_COIN_TYPE|0x80000000)
+                    .derive(0x80000000).derive(1u).derive(0u);
+                std::array<uint8_t,32> change_internal{},change_tweaked{};
+                std::copy(change_leaf.public_key.begin()+1,change_leaf.public_key.end(),change_internal.begin());
+                ASSERT_TRUE(TaprootKeys::ComputeTweakedPubkey(change_internal,change_tweaked));
+                std::vector<uint8_t> change_script{0x51,0x20};
+                change_script.insert(change_script.end(),change_tweaked.begin(),change_tweaked.end());
+                const std::vector<orchard::TransparentOutput> outputs{{change,change_script}};
+                const auto receiver=orchard::WalletKeys::FromSeed(std::array<uint8_t,64>{71},0);
+                const std::vector<orchard::WalletPayment> payments{{shielded,receiver.Receiver(orchard::WalletScope::External,{}),{}}};
+                const std::vector<orchard::ResolvedInput> resolved{{input.txid_wire,0,input.sequence,1000000,funded_script}};
+                const auto bundle=orchard::WalletBundlePlan::PrepareShield(receiver,payments)
+                    .Prove(orchard::SigningContext::Create(domain,0,resolved,outputs,fee));
+                const auto draft=orchard::TransactionEnvelope::Create(0,{input},outputs,fee,bundle.Bytes());
+                FirstBoundaryView view(*source.f.replay);
+                const auto snapshot=consensus::OrchardCoinSnapshot::ResolveUnderChainstateLock(draft,view);
+                const auto digest=consensus::OrchardTransparentSigningDigest(snapshot,domain,0);
+                std::unique_ptr<secp256k1_context,decltype(&secp256k1_context_destroy)> signing(
+                    secp256k1_context_create(SECP256K1_CONTEXT_SIGN|SECP256K1_CONTEXT_VERIFY),secp256k1_context_destroy);
+                secp256k1_keypair pair;ASSERT_EQ(secp256k1_keypair_create(signing.get(),&pair,leaf.private_key.data()),1);
+                secp256k1_xonly_pubkey internal{},output_key{};
+                std::array<uint8_t,33> serialized{};std::array<uint8_t,32> tweak{},output_bytes{};
+                ASSERT_EQ(secp256k1_keypair_xonly_pub(signing.get(),&internal,nullptr,&pair),1);
+                ASSERT_EQ(secp256k1_xonly_pubkey_serialize(signing.get(),serialized.data(),&internal),1);
+                crypto::TaggedHash("TapTweak",serialized.data(),32,tweak.data());
+                ASSERT_EQ(secp256k1_keypair_xonly_tweak_add(signing.get(),&pair,tweak.data()),1);
+                ASSERT_EQ(secp256k1_keypair_xonly_pub(signing.get(),&output_key,nullptr,&pair),1);
+                ASSERT_EQ(secp256k1_xonly_pubkey_serialize(signing.get(),output_bytes.data(),&output_key),1);
+                ASSERT_TRUE(std::equal(output_bytes.begin(),output_bytes.end(),funded_script.begin()+2))
+                    <<"derived tweaked key does not match the funded script";
+                std::vector<uint8_t> signature(64);orchard::Hash aux{};
+                ASSERT_EQ(secp256k1_schnorrsig_sign32(signing.get(),signature.data(),digest.data(),&pair,aux.data()),1);
+                input.witness={signature};
+                const auto body=MempoolTransaction::FromOrchard(
+                    orchard::TransactionEnvelope::Create(0,{input},outputs,fee,bundle.Bytes()));
+                const auto admission=source.f.ingress->SubmitBody(body,TxOrigin::P2P);
+                ASSERT_TRUE(admission.accepted())<<admission.message;
+                const auto before=source.f.service->GetActiveTip()->height;
+                BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+                const auto mined=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(mined);
+                ASSERT_EQ(mined->Height(),before+1);ASSERT_GT(mined->Transactions().size(),1u);
+                ASSERT_TRUE(source.Submit(mined->WireBytes()).connected);
+                result["body"]=util::hex(mined->WireBytes());result["hash"]=mined->Header().GetHash().GetHex();
+                const auto header=mined->Header().SerializeForHash();result["header"]=util::hex({header.begin(),header.end()});
+                result["height"]=mined->Height();result["spend_txid"]=body.GetTxid().AsUint256().GetHex();
+                result["change_una"]=Json::UInt64(change);
+                result["change_script"]=util::hex(change_script);
             }else if(op=="mine_next"){
                 // Real next-block coinbase to a public owned address. Ordinary
                 // assembler/consensus, never wallet-coin injection.

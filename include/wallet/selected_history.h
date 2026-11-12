@@ -1,5 +1,6 @@
 #pragma once
 #include "primitives/block.h"
+#include "wallet/recovery_tail_types.h"
 #include "wallet/snapshot_wallet_types.h"
 #include <memory>
 #include <optional>
@@ -39,6 +40,12 @@ public:
         void AddVerifiedLegacyOrigin(const uint256& txid, uint32_t output) {
             value_->verified_legacy_origins_.emplace(txid, output);
         }
+        // Typed per-block transparent deltas standing in for owned bodies
+        // (v6-recovery stage C): snapshot mode only, instead of AppendBlock,
+        // covering exactly first_height through tip.
+        void SetTypedTail(std::vector<RecoveryTailBlock> tail) {
+            value_->typed_tail_ = std::move(tail);
+        }
         // Validates structure; throws std::invalid_argument on violation.
         std::unique_ptr<const SelectedWalletHistory> Build() {
             auto& v = *value_;
@@ -56,6 +63,19 @@ public:
                 if (!snapshot && v.blocks_.front().GetHash() != v.genesis_)
                     throw std::invalid_argument("selected-history-genesis-mismatch");
             }
+            if (!v.typed_tail_.empty()) {
+                if (!snapshot || !v.blocks_.empty())
+                    throw std::invalid_argument("selected-history-typed-tail-mode");
+                if (v.typed_tail_.front().height != v.first_height_ ||
+                    v.typed_tail_.front().parent != v.snapshot_->base)
+                    throw std::invalid_argument("selected-history-typed-tail-base");
+                for (size_t i = 1; i < v.typed_tail_.size(); ++i)
+                    if (v.typed_tail_[i].parent != v.typed_tail_[i - 1].hash ||
+                        v.typed_tail_[i].height != v.typed_tail_[i - 1].height + 1)
+                        throw std::invalid_argument("selected-history-typed-tail-not-linked");
+                if (v.typed_tail_.back().hash != v.tip_)
+                    throw std::invalid_argument("selected-history-typed-tail-tip-mismatch");
+            }
             return std::unique_ptr<const SelectedWalletHistory>(value_.release());
         }
 
@@ -67,6 +87,9 @@ private:
     friend class WalletManager;
     SelectedWalletHistory() = default;
     std::vector<Block> blocks_; // exact first_height_ through captured tip
+    // Typed deltas covering the same range when owned raw bodies do not exist
+    // (v6-recovery stage C); mutually exclusive with blocks_.
+    std::vector<RecoveryTailBlock> typed_tail_;
     uint32_t first_height_=0;
     std::set<std::vector<uint8_t>> snapshot_scripts_;
     std::optional<SnapshotWalletSourceData> snapshot_;
