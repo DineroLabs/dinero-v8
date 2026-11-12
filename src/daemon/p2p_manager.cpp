@@ -9444,26 +9444,31 @@ void P2PManager::dial_quic_connect_targets() {
 bool P2PManager::connect_to_peer_quic(
     const std::string& ip, uint16_t port,
     std::optional<std::array<uint8_t, 20>> punch_expected_id) {
+    // Authorize the operator's configured name before resolving it. DNS must
+    // never turn an ambient target into an allowed connect-only dial.
     if (!connect_only_allows(ip, port)) return false;
     if (shutdown_requested_.load(std::memory_order_acquire) ||
         !network_active_.load(std::memory_order_acquire) ||
         !quic_endpoint_ || !quic_endpoint_->Listening()) {
         return false;
     }
+    const auto resolved_ip = resolve_ipv4_for_dial(ip);
+    if (!resolved_ip) return false;
     dinero::network::UdpAddr remote;
     uint8_t buf[16];
-    if (inet_pton(AF_INET, ip.c_str(), buf) == 1) {
+    if (inet_pton(AF_INET, resolved_ip->c_str(), buf) == 1) {
         remote = dinero::network::UdpAddr::FromIPv4(buf, port);
-    } else if (inet_pton(AF_INET6, ip.c_str(), buf) == 1) {
+    } else if (inet_pton(AF_INET6, resolved_ip->c_str(), buf) == 1) {
         remote = dinero::network::UdpAddr::FromIPv6(buf, port);
     } else {
         return false;
     }
     if (port == quic_endpoint_->Port() &&
-        ((!external_ip_.empty() && ip == external_ip_) || dinero::network::IsLocalInterfaceIp(ip))) {
+        ((!external_ip_.empty() && *resolved_ip == external_ip_) ||
+         dinero::network::IsLocalInterfaceIp(*resolved_ip))) {
         return false;  // ourselves
     }
-    if (is_peer_banned(ip, port)) return false;
+    if (is_peer_banned(ip, port) || is_peer_banned(*resolved_ip, port)) return false;
     const std::string key = dinero::network::FormatEndpoint(QuicRemoteHost(remote), port);
     {
         std::lock_guard<std::mutex> lock(peers_mutex_);

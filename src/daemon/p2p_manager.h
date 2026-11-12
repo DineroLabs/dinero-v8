@@ -927,7 +927,8 @@ public:
         std::optional<std::array<uint8_t, 20>> punch_expected_id = std::nullopt);
     // NODE_P2P_QUIC while the endpoint is listening, else 0.
     uint64_t local_quic_service_bits() const;
-    // p2p.quic_connect: "ip:port" peers to keep connected over QUIC. Dialed by
+    // p2p.quic_connect: numeric IP or IPv4-resolvable hostname:port peers to
+    // keep connected over QUIC. Numeric IPv6 literals are also supported. Dialed by
     // the connection loop (dial_quic_connect_targets) whenever not connected.
     void set_quic_connect_targets(std::vector<std::string> targets);
     void dial_quic_connect_targets();

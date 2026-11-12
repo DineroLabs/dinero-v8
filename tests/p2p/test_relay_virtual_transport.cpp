@@ -1317,6 +1317,25 @@ TEST(RelayRegistration, ConnectOnlyFencesDirectDialBeforeResolution) {
     EXPECT_TRUE(resolved.empty());
 }
 
+TEST(RelayRegistration, ConnectOnlyFencesQuicHostnameBeforeResolution) {
+    P2PManager manager(0);
+    if (!manager.start_quic_endpoint(0)) {
+        GTEST_SKIP() << "direct QUIC not compiled in";
+    }
+    manager.set_connect_only_targets(true, {{"allowed.example", 20999}});
+    std::vector<std::string> resolved;
+    manager.test_set_ipv4_resolver([&](const std::string& host) -> std::optional<std::string> {
+        resolved.push_back(host);
+        return std::nullopt;  // stop before any socket operation
+    });
+    EXPECT_FALSE(manager.connect_to_peer_quic("other.example", 20999));
+    EXPECT_TRUE(resolved.empty()) << "an ambient QUIC target reached DNS";
+    EXPECT_FALSE(manager.connect_to_peer_quic("allowed.example", 20999));
+    ASSERT_EQ(resolved.size(), 1u);
+    EXPECT_EQ(resolved.front(), "allowed.example");
+    manager.stop();
+}
+
 TEST(P2PListenPolicy, ListenOffKeepsTcpClosedAndDoesNotAdvertiseQuic) {
     P2PManager manager(0);
     manager.set_listen_enabled(false);

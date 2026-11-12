@@ -376,6 +376,7 @@ connect=192.168.1.101:20999
 
 **Behavior:**
 - Daemon dials only these nodes and any explicitly configured `quicconnect` targets
+- `quicconnect` accepts numeric IPv4/IPv6 endpoints and hostnames with IPv4 records
 - Disables DNS seed discovery
 - Disables automatic peer and relay discovery, dial-back probes, and hole punching
 - Disables automatic STUN discovery, including public fallback servers
