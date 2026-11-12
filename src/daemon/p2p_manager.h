@@ -469,6 +469,8 @@ public:
     bool IsListening() const noexcept {
         return socket_listening_.load(std::memory_order_acquire);
     }
+    void set_listen_enabled(bool enabled) { listen_enabled_ = enabled; }  // before start()
+    bool accepts_inbound_quic() const noexcept;
 
     bool WaitUntilListening(std::chrono::milliseconds timeout) {
         std::unique_lock<std::mutex> lock(ready_mutex_);
@@ -1232,6 +1234,7 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> shutdown_requested_{false};
     std::atomic<bool> network_active_{true};
+    bool listen_enabled_{true};  // immutable after start()
     bool connect_only_{false};  // immutable after start()
     std::unordered_set<std::string> connect_only_targets_;
     // Direct QUIC transport. Lock order: the endpoint calls AcceptFn under its

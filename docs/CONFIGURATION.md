@@ -326,7 +326,8 @@ listen=true
 
 **Use Cases:**
 - `listen=true` - Public node (accepts inbound)
-- `listen=false` - Private node (outbound only)
+- `listen=false` - Private node (outbound only). No TCP listener or inbound QUIC
+  sessions are accepted; direct outbound QUIC uses an ephemeral UDP socket.
 
 ---
 
@@ -373,9 +374,9 @@ connect=192.168.1.101:20999
 ```
 
 **Behavior:**
-- Daemon connects ONLY to these nodes
+- Daemon dials only these nodes and any explicitly configured `quicconnect` targets
 - Disables DNS seed discovery
-- Disables automatic peer discovery
+- Disables automatic peer and relay discovery, dial-back probes, and hole punching
 - Use for isolated/private networks
 
 ---

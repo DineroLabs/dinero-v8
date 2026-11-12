@@ -581,8 +581,8 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
     if (p2p_mgr_) status.hole_punch = p2p_mgr_->punch_stats();
     if (p2p_mgr_ && p2p_mgr_->quic_endpoint()) {
         const auto* ep = p2p_mgr_->quic_endpoint();
-        status.quic_listening = ep->Listening();
-        status.quic_listen_port = ep->Port();
+        status.quic_listening = p2p_mgr_->accepts_inbound_quic();
+        status.quic_listen_port = status.quic_listening ? ep->Port() : 0;
         status.quic_sessions = ep->SessionCount();
     }
     return status;
@@ -684,6 +684,7 @@ std::string P2PService::RelayMode() const {
 
 bool P2PService::IsRelayRoleEnabled() const {
     if (config_ && !config_->GetString("p2p.connect", "").empty()) return false;
+    if (config_ && !config_->GetBool("p2p.listen", true)) return false;
     std::string operator_mode;
     {
         std::lock_guard<std::mutex> lock(relay_service_mutex_);
@@ -701,6 +702,7 @@ P2PService::RelayServiceStatus P2PService::GetRelayServiceStatus() const {
     status.enabled = RelayRoleEnabled(status.mode, configured, relay_active_.load(),
                                       relay_verified_.load());
     if (config_ && !config_->GetString("p2p.connect", "").empty()) status.enabled = false;
+    if (config_ && !config_->GetBool("p2p.listen", true)) status.enabled = false;
     return status;
 }
 
@@ -1897,7 +1899,7 @@ bool P2PService::Init(DaemonContext& ctx) {
             const bool requested = network::TorOptInStore(
                 datadir + "/onion_service_enabled").Read().value_or(
                     config_->GetBool("p2p.listen_onion", false));
-            if (requested) {
+            if (requested && config_->GetBool("p2p.listen", true)) {
                 const auto embedded = embedded_tor_->Start();
                 if (embedded.running) {
                     onion_proxy_ = "127.0.0.1:" + std::to_string(embedded.socks_port);
@@ -1908,6 +1910,7 @@ bool P2PService::Init(DaemonContext& ctx) {
         }
         // Create P2PManager instance
         p2p_mgr_ = std::make_unique<::P2PManager>(listen_port_, external_ip_);
+        p2p_mgr_->set_listen_enabled(config_->GetBool("p2p.listen", true));
         {
             ::P2PManager::RelayServiceLimits limits;
             limits.max_circuits = relay_service_status_.limits.max_circuits;
@@ -1999,7 +2002,8 @@ bool P2PService::Init(DaemonContext& ctx) {
         // simply won't engage on this node.
         {
             onion_service_requested_ =
-                config_ && config_->GetBool("p2p.listen_onion", false);
+                config_ && config_->GetBool("p2p.listen_onion", false) &&
+                config_->GetBool("p2p.listen", true);
             std::string control_host;
             uint16_t control_port = 0;
             const std::string control = config_->GetString(
@@ -2022,24 +2026,26 @@ bool P2PService::Init(DaemonContext& ctx) {
                 tor_onion_config_.control_host = "127.0.0.1";
                 tor_onion_config_.control_port = embedded_tor_->status().control_port;
             }
-            onion_runtime_ = std::make_unique<network::TorRuntimeController>(
-                network::TorOptInStore(datadir + "/onion_service_enabled"),
-                [this]() {
-                    return std::make_unique<network::TorOnionService>(tor_onion_config_);
-                },
-                [this](const std::string& address) {
-                    if (p2p_mgr_) p2p_mgr_->add_advertised_address(
-                        address, listen_port_, /*learned=*/true);
-                },
-                [this](const std::string& address) {
-                    if (p2p_mgr_) p2p_mgr_->remove_explicit_advertised_address(
-                        address, listen_port_);
-                });
-            const auto onion_status = onion_runtime_->Initialize(
-                onion_service_requested_);
-            onion_service_requested_ = onion_status.requested;
-            if (onion_status.requested && !onion_status.active) {
-                logger_interface_->warning("[P2PService] " + onion_status.message);
+            if (config_->GetBool("p2p.listen", true)) {
+                onion_runtime_ = std::make_unique<network::TorRuntimeController>(
+                    network::TorOptInStore(datadir + "/onion_service_enabled"),
+                    [this]() {
+                        return std::make_unique<network::TorOnionService>(tor_onion_config_);
+                    },
+                    [this](const std::string& address) {
+                        if (p2p_mgr_) p2p_mgr_->add_advertised_address(
+                            address, listen_port_, /*learned=*/true);
+                    },
+                    [this](const std::string& address) {
+                        if (p2p_mgr_) p2p_mgr_->remove_explicit_advertised_address(
+                            address, listen_port_);
+                    });
+                const auto onion_status = onion_runtime_->Initialize(
+                    onion_service_requested_);
+                onion_service_requested_ = onion_status.requested;
+                if (onion_status.requested && !onion_status.active) {
+                    logger_interface_->warning("[P2PService] " + onion_status.message);
+                }
             }
 
             auto node_identity = std::make_shared<dinero::daemon::NodeIdentity>();
@@ -2672,7 +2678,11 @@ bool P2PService::Start() {
         }
 
         logger_interface_->info("[P2PService] P2P networking started successfully");
-        logger_interface_->info("[P2PService] Listening on port " + std::to_string(listen_port_));
+        if (config_->GetBool("p2p.listen", true)) {
+            logger_interface_->info("[P2PService] Listening on port " + std::to_string(listen_port_));
+        } else {
+            logger_interface_->info("[P2PService] Inbound listeners disabled (listen=0)");
+        }
 
         // Stage B: surface QUIC relay-transport readiness at startup so the
         // operator can see whether encrypted relay DATA can flow on this binary

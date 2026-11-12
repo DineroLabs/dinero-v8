@@ -1941,7 +1941,7 @@ bool P2PManager::relay_serving() const {
 }
 
 void P2PManager::set_relay_service_enabled(bool enabled) {
-    if (connect_only_) enabled = false;
+    if (connect_only_ || !listen_enabled_) enabled = false;
     const bool was = relay_service_enabled_.exchange(enabled, std::memory_order_acq_rel);
     if (was && !enabled) {
         // Our registrants must not keep counting on a relay that left.
@@ -5183,6 +5183,7 @@ bool P2PManager::probe_onion_proxy(std::string* message) {
 
 void P2PManager::add_advertised_address(const std::string& address, uint16_t port, bool learned,
                                         dinero::p2p::CandidateSource source) {
+    if (!listen_enabled_) return;
     if (IsLocalOrWildcardAddress(address) || port == 0) {
         std::cout << "[P2P] Skipping unroutable advertised address: "
                   << address << ":" << port << std::endl;
@@ -5336,13 +5337,18 @@ bool P2PManager::start() {
     shutdown_requested_ = false;
     network_active_.store(true, std::memory_order_release);
 
-    if (quic_enabled_ && relay_tls_ready_ && !start_quic_endpoint(listen_port_)) {
+    // Outbound direct QUIC still needs a local UDP socket when listen=0.
+    // Use an ephemeral port and refuse inbound sessions in AcceptFn below.
+    if (quic_enabled_ && relay_tls_ready_ &&
+        !start_quic_endpoint(listen_enabled_ ? listen_port_ : 0)) {
         std::cout << "[P2P] quic: direct QUIC peers unavailable (UDP " << listen_port_
                   << " not bound or QUIC not compiled in)" << std::endl;
     }
     
     // Start listen thread
-    listen_thread_ = std::make_unique<std::thread>(&P2PManager::listen_loop, this);
+    if (listen_enabled_) {
+        listen_thread_ = std::make_unique<std::thread>(&P2PManager::listen_loop, this);
+    }
 
     // Start connection manager thread
     connection_manager_thread_ = std::make_unique<std::thread>(&P2PManager::connection_manager_loop, this);
@@ -5356,7 +5362,9 @@ bool P2PManager::start() {
 
     running_ = true;
 
-    std::cout << "P2P manager started on port " << listen_port_ << " (async outbox + keepalive enabled)" << std::endl;
+    std::cout << "P2P manager started "
+              << (listen_enabled_ ? "on port " + std::to_string(listen_port_) : "outbound-only")
+              << " (async outbox + keepalive enabled)" << std::endl;
     return true;
 }
 
@@ -8221,7 +8229,7 @@ bool P2PManager::start_quic_endpoint(uint16_t port) {
         // Runs on the endpoint's socket thread under its mutex: no endpoint
         // calls from here, and is_peer_banned before taking peers_mutex_.
         [this](const dinero::network::UdpAddr& remote) {
-            if (shutdown_requested_.load(std::memory_order_acquire) ||
+            if (!listen_enabled_ || shutdown_requested_.load(std::memory_order_acquire) ||
                 !network_active_.load(std::memory_order_acquire)) {
                 return false;
             }
@@ -8245,7 +8253,9 @@ bool P2PManager::start_quic_endpoint(uint16_t port) {
         });
     if (!ok) return false;
     quic_endpoint_ = std::move(endpoint);
-    std::cout << "[P2P] quic: direct QUIC peers listening on UDP " << quic_endpoint_->Port()
+    std::cout << "[P2P] quic: direct QUIC "
+              << (listen_enabled_ ? "listening" : "outbound-only")
+              << " on UDP " << quic_endpoint_->Port()
               << std::endl;
     return true;
 }
@@ -8527,7 +8537,7 @@ void P2PManager::SendPunchProbes(const std::vector<dinero::network::UdpAddr>& ta
 }
 
 void P2PManager::PunchTick() {
-    if (connect_only_) return;
+    if (connect_only_ || !listen_enabled_) return;
     std::lock_guard<std::mutex> tick_lock(punch_tick_mutex_);
     if (!node_identity_ || shutdown_requested_.load(std::memory_order_acquire)) return;
     const PunchPeerId ours = node_identity_->get_node_id_bytes();
@@ -9050,7 +9060,7 @@ uint64_t P2PManager::send_reach_check(const std::string& peer_key,
 }
 
 void P2PManager::run_reachability_tick() {
-    if (connect_only_) return;
+    if (connect_only_ || !listen_enabled_) return;
     const auto now = std::chrono::steady_clock::now();
     // Requests that never got an answer count as failures.
     {
@@ -9303,9 +9313,13 @@ size_t P2PManager::test_reach_checks_sent() const {
 #endif
 
 uint64_t P2PManager::local_quic_service_bits() const {
-    return (quic_endpoint_ && quic_endpoint_->Listening())
+    return accepts_inbound_quic()
                ? (ServiceFlags::NODE_P2P_QUIC | ServiceFlags::NODE_HOLEPUNCH)
                : 0;
+}
+
+bool P2PManager::accepts_inbound_quic() const noexcept {
+    return listen_enabled_ && quic_endpoint_ && quic_endpoint_->Listening();
 }
 
 void P2PManager::set_quic_connect_targets(std::vector<std::string> targets) {

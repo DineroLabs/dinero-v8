@@ -18,6 +18,8 @@
 #include "daemon/node_identity.h"
 #include "daemon/peer_send_health.h"
 #include "network/types.h"
+#include "network/quic_endpoint.h"
+#include "network/relay_tls_keypair.h"
 #include "p2p/addrman.h"
 #include "p2p/relay_hint_v2.h"
 
@@ -1312,6 +1314,56 @@ TEST(RelayRegistration, ConnectOnlyFencesDirectDialBeforeResolution) {
     EXPECT_FALSE(manager.connect_to_peer("allowed.example", 20999));
     EXPECT_TRUE(resolved.empty());
 }
+
+TEST(P2PListenPolicy, ListenOffKeepsTcpClosedAndDoesNotAdvertiseQuic) {
+    P2PManager manager(0);
+    manager.set_listen_enabled(false);
+    manager.set_quic_enabled(true);
+    ASSERT_TRUE(manager.start());
+    EXPECT_FALSE(manager.WaitUntilListening(std::chrono::milliseconds(250)));
+    EXPECT_FALSE(manager.IsListening());
+    EXPECT_FALSE(manager.accepts_inbound_quic());
+    EXPECT_EQ(manager.local_quic_service_bits(), 0u);
+    if (auto* endpoint = manager.quic_endpoint(); endpoint && endpoint->Listening()) {
+        EXPECT_NE(endpoint->Port(), 0u) << "outbound QUIC requires an ephemeral UDP socket";
+    }
+    manager.stop();
+}
+
+TEST(P2PListenPolicy, ListenOffRefusesUnsolicitedQuicSession) {
+    P2PManager manager(0);
+    manager.set_listen_enabled(false);
+    manager.set_quic_enabled(true);
+    ASSERT_TRUE(manager.start());
+    auto* endpoint = manager.quic_endpoint();
+    if (!endpoint || !endpoint->Listening()) {
+        manager.stop();
+        GTEST_SKIP() << "direct QUIC not compiled in";
+    }
+    std::string cert, key;
+    ASSERT_TRUE(dinero::network::GenerateRelayTlsKeypair(&cert, &key, nullptr));
+    dinero::network::QuicSessionOptions opts;
+    opts.alpn = "dinero-p2p/1";
+    opts.certificate_pem = std::move(cert);
+    opts.private_key_pem = std::move(key);
+    dinero::network::QuicEndpoint client;
+    ASSERT_TRUE(client.Start(0, opts,
+        [](const dinero::network::UdpAddr&) { return false; },
+        [](std::shared_ptr<dinero::network::QuicSession>,
+           const dinero::network::UdpAddr&) {}));
+    const uint8_t loopback[4] = {127, 0, 0, 1};
+    auto session = client.Connect(
+        dinero::network::UdpAddr::FromIPv4(loopback, endpoint->Port()), opts);
+    ASSERT_NE(session, nullptr);
+    auto ready = session->WaitHandshakeReady();
+    const bool accepted = ready.wait_for(std::chrono::seconds(2)) == std::future_status::ready
+                              && ready.get();
+    EXPECT_FALSE(accepted);
+    EXPECT_EQ(endpoint->SessionCount(), 0u);
+    client.Stop();
+    manager.stop();
+}
+
 TEST(RelayRegistration, PrefersCommunityOverFleet) {
     // The fleet holds the slots until community relays have confirmed; then
     // it is dropped (and no longer counted, refreshed or advertised).

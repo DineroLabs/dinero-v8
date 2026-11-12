@@ -322,8 +322,9 @@ din::Json rpc_context_getnetworkinfo(const ExecutionContext& ctx, const din::Jso
         // compiled in AND the mainnet gate is open.
         q["relay_data_ready"] =
             quic.ngtcp2_available && quic.crypto_available && quic.mainnet_relay_ready;
-        // Direct QUIC peers (runtime): is the UDP endpoint bound, and how many
-        // sessions does it route.
+        // Direct QUIC peers (runtime): can the endpoint accept inbound
+        // sessions, and how many sessions does it route. An outbound-only
+        // endpoint may bind an ephemeral UDP port while listen=0.
         q["listening"] = status.quic_listening;
         q["listen_port"] = static_cast<int>(status.quic_listen_port);
         q["sessions"] = static_cast<Json::UInt64>(status.quic_sessions);
