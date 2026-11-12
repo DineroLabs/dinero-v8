@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
-# Full-v6 image source. The catalog remains H148375 until native H150521
-# import/restart qualifies; this build refuses the preliminary primary.
+# Full-v6 image source. H150521 is the primary only after final-source native
+# import/restart and public signed-asset qualification; older bases remain fallbacks.
 ARG DINERO_VERSION=8.2.3
 ARG PRIMARY_SNAPSHOT_RELEASE=v8.2.3
 ARG RECOVERY_SNAPSHOT_RELEASE=v8.2.2
