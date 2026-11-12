@@ -155,7 +155,7 @@ jobs:
 
       - name: Install Rust and build tools
         run: |
-          brew install ninja ccache gnupg
+          brew install ninja ccache gnupg openssl@3
 
       - name: Install the variant-specific Qt runtime
         uses: jurplel/install-qt-action@v4
@@ -219,8 +219,11 @@ jobs:
           SNAPSHOT_PAYLOAD_URL: ${{ inputs.snapshot_payload_url }}
           SNAPSHOT_MANIFEST_URL: ${{ inputs.snapshot_manifest_url }}
         run: |
+          # Keep OpenSSL 3 scoped to signature verification; CMake uses vendored 3.5.7.
+          OPENSSL_BIN="$(brew --prefix openssl@3)/bin"
+          "$OPENSSL_BIN/openssl" version | grep -Eq '^OpenSSL 3[.]'
           mkdir -p release-inputs
-          python3 packaging/snapshot/fetch_desktop_primary.py \
+          PATH="$OPENSSL_BIN:$PATH" python3 packaging/snapshot/fetch_desktop_primary.py \
             --payload-url "$SNAPSHOT_PAYLOAD_URL" \
             --manifest-url "$SNAPSHOT_MANIFEST_URL" \
             --destination release-inputs
@@ -293,7 +296,10 @@ jobs:
         env:
           DINERO_RELEASE_ARCH: ${{ matrix.arch }}
         run: |
-          bash packaging/mac/build-installer.sh \
+          # This stages the signed publisher manifest as well as the app.
+          OPENSSL_BIN="$(brew --prefix openssl@3)/bin"
+          "$OPENSSL_BIN/openssl" version | grep -Eq '^OpenSSL 3[.]'
+          PATH="$OPENSSL_BIN:$PATH" bash packaging/mac/build-installer.sh \
             --version "${{ steps.provenance.outputs.version }}" \
             --arch ${{ matrix.arch }} \
             --build-dir build-desktop

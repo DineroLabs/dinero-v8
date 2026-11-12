@@ -521,7 +521,7 @@ jobs:
 
       - name: Install Rust and build tools
         run: |
-          brew install ninja ccache gnupg qt
+          brew install ninja ccache gnupg qt openssl@3
           echo "$(brew --prefix qt)/bin" >> "$GITHUB_PATH"
           echo "QT_PREFIX=$(brew --prefix qt)" >> "$GITHUB_ENV"
 
@@ -642,7 +642,10 @@ jobs:
         env:
           DINERO_RELEASE_ARCH: x86_64
         run: |
-          bash packaging/mac/build-installer.sh \
+          # Scope the Ed25519 verifier to OpenSSL 3 without changing the build toolchain.
+          OPENSSL_BIN="$(brew --prefix openssl@3)/bin"
+          "$OPENSSL_BIN/openssl" version | grep -Eq '^OpenSSL 3[.]'
+          PATH="$OPENSSL_BIN:$PATH" bash packaging/mac/build-installer.sh \
             --version "${{ steps.provenance.outputs.version }}" \
             --arch x86_64 \
             --build-dir build-desktop
