@@ -25,6 +25,7 @@ void SelectSdkActivationFixture(Chain chain) {
 #include "p2p/orchard_catalog_transfer.h"
 #include "p2p/orchard_phone_history.h"
 #include "daemon/runtime_delivery_worker.h"
+#include "wallet/runtime_account_replay.h"
 namespace dinero {
 struct RuntimeDeliveryStartupTestAccess {
     static Json::Value Observe(DaemonApp& app){
@@ -159,6 +160,20 @@ Json::Value SdkActivationRecoveryBudget(const Json::Value& request){
         throw std::runtime_error("Invalid native recovery budget request");
     dinero::RuntimeDeliveryStartupTestAccess::SetRecoveryBudget(*s.app,1);
     return true;
+}
+
+// Native fixture only: hold a captured replay view (as a long reader would) so
+// a later capture finds the retained view shared; release drops it.
+std::shared_ptr<const dinero::RuntimeAccountReplay> held_replay;
+Json::Value SdkActivationHoldReplay(const Json::Value& request){
+    auto& s=state();std::lock_guard lock(s.mtx);
+    if(!s.running||!s.app||!request["hold"].isBool())throw std::runtime_error("Invalid replay hold request");
+    if(!request["hold"].asBool()){const bool had=bool(held_replay);held_replay.reset();return had;}
+    const auto chain=std::dynamic_pointer_cast<dinero::ChainstateService>(s.app->GetContext().chainstate);
+    if(!chain)throw std::runtime_error("Missing chainstate");
+    const auto replay=chain->getRuntimeAccountReplay();
+    if(!replay.ok())throw std::runtime_error("Replay capture refused");
+    held_replay=*replay;return Json::UInt64(held_replay->Head().sequence);
 }
 
 // Fixed-profile native test ONLY: replace untrusted DATA in an already present

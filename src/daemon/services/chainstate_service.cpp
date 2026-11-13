@@ -7547,7 +7547,9 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             if(!captured_head)captured_head=(*page)->head;
             return **page;
         };
-        std::lock_guard<std::mutex> retained(phone_replay_mutex_);
+        // Only phone nodes retain a replay; ordinary captures stay concurrent.
+        std::unique_lock<std::mutex> retained(phone_replay_mutex_,std::defer_lock);
+        if(orchard_phone_history_requested_.load())retained.lock();
         // Same adoption checks for a fresh or an extended replay; neither is
         // returned unless it ends exactly at the current target and outbox head.
         const auto adopt=[&](const std::shared_ptr<const RuntimeAccountReplay>& replay,
@@ -7572,7 +7574,7 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             if(!history||history->target!=*target)return {};
             return std::tuple{source,*target,std::move(download),std::move(history)};
         };
-        if(phone_replay_&&phone_replay_base_){
+        if(retained.owns_lock()&&phone_replay_&&phone_replay_base_){
             const auto ready=phone();
             if(!ready)return Status::Invalid;
             const auto& [source,target,download,history]=*ready;
@@ -7580,14 +7582,20 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             if(base.second==target.base&&base.first>=target.activation&&base.first<=target.height){
                 std::shared_ptr<const RuntimeAccountReplay> extended;
                 try{extended=RuntimeAccountReplay::ExtendTail(std::move(phone_replay_),read);}
+                // A read failure before ExtendTail took the view leaves it retained.
+                catch(const consensus::OrchardStateLookupError&){if(!phone_replay_)phone_replay_base_.reset();throw;}
                 catch(...){phone_replay_.reset();phone_replay_base_.reset();}
                 if(extended){
                     phone_replay_=extended;++phone_replay_extensions_;
                     return adopt(extended,source,target,download);
                 }
-                // Another holder is still reading the retained view: reuse it only
-                // while it is still current, never rebuild under contention.
-                if(phone_replay_)return adopt(phone_replay_,source,target,download);
+                // Another holder is still reading the retained view: reuse it while
+                // current; otherwise rebuild below and retain the new view instead.
+                if(phone_replay_){
+                    auto current=adopt(phone_replay_,source,target,download);
+                    if(current.ok())return current;
+                    phone_replay_.reset();phone_replay_base_.reset();
+                }
             }else{phone_replay_.reset();phone_replay_base_.reset();}
             captured_head.reset();
         }
@@ -7607,7 +7615,8 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             });
             // Retained even when this attempt loses the race to a new block:
             // the next capture then verifies only what arrived meanwhile.
-            phone_replay_=replay;phone_replay_base_=*base;++phone_replay_full_builds_;
+            if(retained.owns_lock()){phone_replay_=replay;phone_replay_base_=*base;}
+            ++phone_replay_full_builds_;
             return adopt(replay,source,target,download);
         }
         return RuntimeAccountReplay::Build(std::move(material));

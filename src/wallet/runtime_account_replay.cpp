@@ -8,6 +8,7 @@
 #include "consensus/orchard_validated_block.h"
 #include "consensus/orchard_header.h"
 #include "storage/orchard_catalog_state.h"
+#include <atomic>
 #include "primitives/block.h"
 #include <set>
 #include <list>
@@ -408,8 +409,12 @@ std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::ExtendTail(
     Require(bool(previous)&&bool(source));
     // Stores are reopened only while no other holder can observe them.
     if(previous.use_count()!=1||previous->data_.use_count()!=1)return nullptr;
+    // use_count is a relaxed load: order the last other holder's release before
+    // this thread reopens the stores.
+    std::atomic_thread_fence(std::memory_order_acquire);
+    // A source read failure leaves the view with the caller.
+    const auto old=previous->data_->head;auto page=source(old,128);
     auto data=std::const_pointer_cast<Data>(previous->data_);previous.reset();Require(data.use_count()==1);
-    const auto old=data->head;auto page=source(old,128);
     Require(page.head.sequence>=old.sequence&&page.head.sequence<UINT64_MAX);
     const auto at_eof=[&](const RuntimeOutboxPage& final){
         const auto last_handle=data->ReadEvent(data->head.sequence);const auto& last=*last_handle;

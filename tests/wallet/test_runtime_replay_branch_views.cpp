@@ -547,6 +547,23 @@ void ExtendTailMatchesFullBuild(const std::string& base) {
     Require(refused);
     std::cout<<"RuntimeReplayBranchViews ExtendTailRefusesBrokenChain PASS\n";
 
+    // New events are revalidated, not trusted because they chain correctly.
+    auto altered=all;++altered.back().orchard_replay->next.pool_balance;
+    LookupReject(Status::Corruption,[&]{(void)RuntimeAccountReplay::ExtendTail(
+        RuntimeAccountReplayTestAccess::Capture(early),RuntimeAccountReplayTestAccess::SourceOver(altered));});
+    std::cout<<"RuntimeReplayBranchViews ExtendTailRevalidatesNewEvents PASS\n";
+
+    // A source read failure leaves the view with the caller, still extensible.
+    auto kept=RuntimeAccountReplayTestAccess::Capture(early);
+    const RuntimeAccountReplay::Source failing=[](RuntimeOutboxCursor,size_t)->RuntimeOutboxPage{
+        throw consensus::OrchardStateLookupError(Status::Internal);};
+    bool failed=false;
+    try{(void)RuntimeAccountReplay::ExtendTail(std::move(kept),failing);}catch(const consensus::OrchardStateLookupError&){failed=true;}
+    Require(failed&&bool(kept)&&kept->Head()==early.back().cursor);
+    kept=RuntimeAccountReplay::ExtendTail(std::move(kept),RuntimeAccountReplayTestAccess::SourceOver(all));
+    Require(bool(kept)&&kept->Head()==full->Head());
+    std::cout<<"RuntimeReplayBranchViews ExtendTailKeepsViewOnSourceFailure PASS\n";
+
     // Nothing new: the same content comes back, still usable.
     auto same=RuntimeAccountReplay::ExtendTail(RuntimeAccountReplayTestAccess::Capture(all),
         RuntimeAccountReplayTestAccess::SourceOver(all));

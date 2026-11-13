@@ -256,6 +256,11 @@ try:
         time.sleep(.5)
     else:raise AssertionError(('tail recovery did not complete',tail_recoveries))
     assert tail_recovered['recovered_height']==104 and tail_recovered['scope']==recovered['scope'],tail_recovered
+    # Tip extension to 104 after adoption: extend the retained replay with the
+    # new events only, never re-verify the whole history from activation.
+    tail_builds,tail_extensions=replay_counts()
+    assert tail_builds==adopted_builds,('tail extension rebuilt the whole phone replay',adopted_builds,tail_builds)
+    assert tail_extensions>adopted_extensions,('tail extension did not reuse the retained replay',adopted_extensions,tail_extensions)
     tail_balance=call('rpc',method='wallet.getbalance',params=[])
     (root/'tail-balance.json').write_text(json.dumps(tail_balance,indent=2)+'\n')
     assert 'error' not in tail_balance,tail_balance
@@ -269,6 +274,10 @@ try:
     # real shield at 105, with change to the wallet's own first change script.
     # Recovery must mark the base coin spent (never overstate) and account the
     # owned change — the exact overstatement the partial base set would cause.
+    # A long reader keeps the retained view across the next block: the capture
+    # then finds it shared and stale and must rebuild rather than refuse.
+    held=call('sdk_activation_hold_replay',hold=True)
+    assert isinstance(held,int) and held>=1,held
     spend=native_call('shield_funding')
     assert spend['height']==105 and spend['change_una']>0,spend
     extend_chain(spend)
@@ -289,14 +298,11 @@ try:
         time.sleep(.5)
     else:raise AssertionError(('spend-tail recovery did not complete',spend_recoveries))
     assert spend_recovered['recovered_height']==105 and spend_recovered['scope']==recovered['scope'],spend_recovered
-    # Two tip extensions (104, 105) after adoption: every later capture must
-    # extend the retained replay with the new events only, never re-verify
-    # the whole history from activation.
     final_builds,final_extensions=replay_counts()
+    assert call('sdk_activation_hold_replay',hold=False) is True
     (root/'phone-replay-counts.json').write_text(json.dumps(dict(adopted=[adopted_builds,adopted_extensions],
-        final=[final_builds,final_extensions]))+'\n')
-    assert final_builds==adopted_builds,('tail extension rebuilt the whole phone replay',adopted_builds,final_builds)
-    assert final_extensions>adopted_extensions,('tail extension did not reuse the retained replay',adopted_extensions,final_extensions)
+        tail=[tail_builds,tail_extensions],final=[final_builds,final_extensions]))+'\n')
+    assert final_builds==tail_builds+1,('contended stale replay was not rebuilt exactly once',tail_builds,final_builds)
     final_confirmed=spend['change_una']/1e8;final_immature=mined5['amount_una']/1e8
     spend_balance=call('rpc',method='wallet.getbalance',params=[])
     (root/'spend-balance.json').write_text(json.dumps(spend_balance,indent=2)+'\n')
