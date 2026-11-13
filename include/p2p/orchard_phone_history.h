@@ -117,6 +117,15 @@ private:
             try{
                 const auto current=target_();
                 if(!current){discard();std::lock_guard lock(mutex_);progress_={};continue;}
+                // A pure tip extension (same base/activation, height advanced)
+                // is absorbed by ExtendSelectedTarget below with all verified
+                // progress retained. Mid-iteration rechecks must therefore
+                // defer extensions to this handler instead of discarding, or a
+                // steadily growing selected chain starves full verification.
+                const auto extends=[&](const std::optional<Target>& now){
+                    return now&&selected&&replay&&now->base==selected->base&&
+                        now->activation==selected->activation&&now->height>=selected->height;
+                };
                 if(selected&&*selected!=*current){
                     if(current->base==selected->base&&current->activation==selected->activation&&current->height>=selected->height&&replay){
                         replay->ExtendSelectedTarget(current->height,current->hash);selected=current;
@@ -126,7 +135,7 @@ private:
                 if(!replay){
                     proof=proof_();if(!proof)continue;
                     selected=current;replay=verify_(proof,*selected);if(!replay){discard();continue;}
-                    if(target_()!=selected){discard();continue;}
+                    if(const auto now=target_();now!=selected){if(!extends(now))discard();continue;}
                     if(cache_){const auto size=consensus::OrchardSnapshotSectionEncodedSize(*proof);
                         cache_->Put('p',proof->state.block_hash,size,consensus::ORCHARD_SNAPSHOT_MAX_SECTION_BYTES,
                             [&](const auto& sink){Data::Require(consensus::StreamOrchardSnapshotSection(*proof,sink)==size);});}
@@ -136,7 +145,7 @@ private:
                 if(next>selected->height){
                     if(!replay->AtSelectedTarget()||storage::catalog::Hash(replay->Catalog().Encode())!=selected->catalog)
                         throw std::runtime_error("phone history final catalog mismatch");
-                    if(target_()!=selected){discard();continue;}
+                    if(const auto now=target_();now!=selected){if(!extends(now))discard();continue;}
                     if(cache_)cache_->Check();
                     std::lock_guard lock(mutex_);if(stop_)break;
                     ready_=std::shared_ptr<const Data>(new Data(*selected,proof,corpus));progress_.ready=true;continue;
@@ -166,7 +175,8 @@ private:
                     const auto now=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
                     const auto checked=replay->Append(body,uint64_t(now));
                     if(!checked||checked->Context().height!=next||!checked->MatchesWire(body))throw std::runtime_error("phone history validation unavailable");
-                    if(stop_)break;if(target_()!=selected){discard();continue;}
+                    if(stop_)break;
+                    if(const auto now=target_();now!=selected){if(!extends(now)){discard();continue;}}
                     if(cache_&&!cached_packet)cache_->Put('b',expected,packet->size(),OrchardBlockCandidate::MaxWireSize(),
                         [&](const auto& sink){sink(*packet);});
                     corpus->Append(next,*packet);++next;awaiting=false;
