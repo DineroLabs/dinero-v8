@@ -7541,23 +7541,63 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             return parent;
         }
         std::optional<RuntimeOutboxCursor> captured_head;
-        auto material=RuntimeAccountReplay::ReadSource([this,&captured_head](RuntimeOutboxCursor cursor,size_t count) {
+        const RuntimeAccountReplay::Source read=[this,&captured_head](RuntimeOutboxCursor cursor,size_t count) {
             const auto page=getRuntimeDeliveryPageAtPrefix(captured_head,cursor,count,16*1024*1024);
             if(!page.ok())throw consensus::OrchardStateLookupError(page.status());
             if(!captured_head)captured_head=(*page)->head;
             return **page;
-        });
-        if(const auto base=RuntimeAccountReplay::ActivationPrefixBase(material)){
+        };
+        std::lock_guard<std::mutex> retained(phone_replay_mutex_);
+        // Same adoption checks for a fresh or an extended replay; neither is
+        // returned unless it ends exactly at the current target and outbox head.
+        const auto adopt=[&](const std::shared_ptr<const RuntimeAccountReplay>& replay,
+                const std::shared_ptr<ChainstateService>& source,const p2p::OrchardPhoneHistoryTarget& target,
+                const std::shared_ptr<p2p::OrchardPhoneHistoryDownload>& download)->StatusOr<std::shared_ptr<const RuntimeAccountReplay>> {
+            const auto head=replay->Head();const auto point=replay->Point(head).checkpoint;
+            const auto final=getRuntimeDeliveryPage(head,1);
+            if(source->PhoneHistoryTarget()!=target||!download->Ready()||point.height!=target.height||point.block_hash!=target.hash||
+                !final.ok()||(*final)->head!=head||!(*final)->events.empty()||(*final)->next!=head)return Status::Invalid;
+            return replay;
+        };
+        const auto phone=[&]()->std::optional<std::tuple<std::shared_ptr<ChainstateService>,p2p::OrchardPhoneHistoryTarget,
+                std::shared_ptr<p2p::OrchardPhoneHistoryDownload>,std::shared_ptr<const p2p::OrchardPhoneHistoryData>>> {
             const auto source=std::const_pointer_cast<ChainstateService>(weak_from_this().lock());
-            if(!source)return Status::Invalid;
+            if(!source)return {};
             const auto target=source->PhoneHistoryTarget();
             const auto* context=DaemonContext::instance();
-            if(!target||!context||context->chainstate.get()!=this||base->second!=target->base)return Status::Invalid;
+            if(!target||!context||context->chainstate.get()!=this)return {};
             const auto peers=std::dynamic_pointer_cast<P2PService>(context->p2p);
-            const auto download=peers?peers->PhoneHistoryDownload():nullptr;
-            const auto history=download?download->Ready():nullptr;
-            if(!history||history->target!=*target||base->first<target->activation||base->first>target->height)return Status::Invalid;
-            auto verifier=source->PreparePhoneHistoryVerifier(history->activation_proof,*target);
+            auto download=peers?peers->PhoneHistoryDownload():nullptr;
+            auto history=download?download->Ready():nullptr;
+            if(!history||history->target!=*target)return {};
+            return std::tuple{source,*target,std::move(download),std::move(history)};
+        };
+        if(phone_replay_&&phone_replay_base_){
+            const auto ready=phone();
+            if(!ready)return Status::Invalid;
+            const auto& [source,target,download,history]=*ready;
+            const auto base=*phone_replay_base_;
+            if(base.second==target.base&&base.first>=target.activation&&base.first<=target.height){
+                std::shared_ptr<const RuntimeAccountReplay> extended;
+                try{extended=RuntimeAccountReplay::ExtendTail(std::move(phone_replay_),read);}
+                catch(...){phone_replay_.reset();phone_replay_base_.reset();}
+                if(extended){
+                    phone_replay_=extended;++phone_replay_extensions_;
+                    return adopt(extended,source,target,download);
+                }
+                // Another holder is still reading the retained view: reuse it only
+                // while it is still current, never rebuild under contention.
+                if(phone_replay_)return adopt(phone_replay_,source,target,download);
+            }else{phone_replay_.reset();phone_replay_base_.reset();}
+            captured_head.reset();
+        }
+        auto material=RuntimeAccountReplay::ReadSource(read);
+        if(const auto base=RuntimeAccountReplay::ActivationPrefixBase(material)){
+            const auto ready=phone();
+            if(!ready)return Status::Invalid;
+            const auto& [source,target,download,history]=*ready;
+            if(base->second!=target.base||base->first<target.activation||base->first>target.height)return Status::Invalid;
+            auto verifier=source->PreparePhoneHistoryVerifier(history->activation_proof,target);
             if(!verifier)return Status::Invalid;
             auto replay=RuntimeAccountReplay::BuildWithActivationPrefix(std::move(material),[&](uint32_t height){
                 auto body=std::make_shared<const OrchardBlockCandidate>(OrchardBlockCandidate::DecodeExact(history->Body(height)));
@@ -7565,11 +7605,10 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
                 auto checked=verifier->Append(*body,uint64_t(now));
                 return RuntimeAccountReplay::VerifiedPrefixStep{std::move(body),std::move(checked)};
             });
-            const auto head=replay->Head();const auto point=replay->Point(head).checkpoint;
-            const auto final=getRuntimeDeliveryPage(head,1);
-            if(source->PhoneHistoryTarget()!=target||!download->Ready()||point.height!=target->height||point.block_hash!=target->hash||
-                !final.ok()||(*final)->head!=head||!(*final)->events.empty()||(*final)->next!=head)return Status::Invalid;
-            return replay;
+            // Retained even when this attempt loses the race to a new block:
+            // the next capture then verifies only what arrived meanwhile.
+            phone_replay_=replay;phone_replay_base_=*base;++phone_replay_full_builds_;
+            return adopt(replay,source,target,download);
         }
         return RuntimeAccountReplay::Build(std::move(material));
     } catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}

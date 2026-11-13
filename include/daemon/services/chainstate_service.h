@@ -1070,6 +1070,11 @@ public:
     // Explicit limits/missing origin material
     // refuse; this is not baseline certification or all-consumer readiness.
     StatusOr<std::shared_ptr<const RuntimeAccountReplay>> getRuntimeAccountReplay() const;
+    // Observational counters for the retained phone replay: full prefix builds
+    // versus tail-only extensions. No authority; diagnostics and tests only.
+    std::pair<uint64_t,uint64_t> PhoneReplayCaptureCounts() const{
+        return {phone_replay_full_builds_.load(),phone_replay_extensions_.load()};
+    }
     // Read-only archival source. No selected lock during proof work; a real
     // service-use pins DB/header lifetimes through shutdown and rechecks them.
     StatusOr<std::shared_ptr<const consensus::OrchardSnapshotSection>> captureOrchardActivationProof(
@@ -2108,6 +2113,13 @@ private:
     // ❌ DELETED: std::unique_ptr<ChainDB> chain_db_ (violated ONE DB Definition)
     // ChainDB is owned by global g_chain_manager, constructed by DaemonApp
     mutable std::mutex wallet_index_use_mutex_;
+    // One retained phone activation-prefix replay. Later captures extend its
+    // tail with new outbox events instead of re-verifying the whole history.
+    // Serializes replay capture; never held by a caller of activation_mutex_.
+    mutable std::mutex phone_replay_mutex_;
+    mutable std::shared_ptr<const RuntimeAccountReplay> phone_replay_;
+    mutable std::optional<std::pair<uint32_t,uint256>> phone_replay_base_;
+    mutable std::atomic<uint64_t> phone_replay_full_builds_{0},phone_replay_extensions_{0};
     mutable std::condition_variable wallet_index_use_changed_;
     std::map<std::thread::id,size_t> wallet_index_uses_by_thread_;
     size_t wallet_index_uses_=0;

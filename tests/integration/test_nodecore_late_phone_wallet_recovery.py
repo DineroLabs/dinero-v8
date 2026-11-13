@@ -195,6 +195,12 @@ try:
         assert isinstance(progress,dict) and 'error' not in progress,progress
         time.sleep(.25)
     else:raise AssertionError('late-phone account-0 recovery did not complete')
+    def replay_counts():
+        counts=call('sdk_activation_state').get('phone_replay',{})
+        assert 'full_builds' in counts and 'extensions' in counts,counts
+        return counts['full_builds'],counts['extensions']
+    adopted_builds,adopted_extensions=replay_counts()
+    assert adopted_builds>=1,('phone replay was never built',adopted_builds)
     # Native transparent recovery: composed V5 base + verified typed tail.
     recoveries=[];deadline=time.monotonic()+90
     while time.monotonic()<deadline:
@@ -283,6 +289,14 @@ try:
         time.sleep(.5)
     else:raise AssertionError(('spend-tail recovery did not complete',spend_recoveries))
     assert spend_recovered['recovered_height']==105 and spend_recovered['scope']==recovered['scope'],spend_recovered
+    # Two tip extensions (104, 105) after adoption: every later capture must
+    # extend the retained replay with the new events only, never re-verify
+    # the whole history from activation.
+    final_builds,final_extensions=replay_counts()
+    (root/'phone-replay-counts.json').write_text(json.dumps(dict(adopted=[adopted_builds,adopted_extensions],
+        final=[final_builds,final_extensions]))+'\n')
+    assert final_builds==adopted_builds,('tail extension rebuilt the whole phone replay',adopted_builds,final_builds)
+    assert final_extensions>adopted_extensions,('tail extension did not reuse the retained replay',adopted_extensions,final_extensions)
     final_confirmed=spend['change_una']/1e8;final_immature=mined5['amount_una']/1e8
     spend_balance=call('rpc',method='wallet.getbalance',params=[])
     (root/'spend-balance.json').write_text(json.dumps(spend_balance,indent=2)+'\n')

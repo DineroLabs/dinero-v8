@@ -124,6 +124,10 @@ Json::Value SdkActivationTestState(){
         row["network_active"]=peers->get().is_network_active();
         row["catalog_client"]=dinero::P2PServiceStopTestAccess::HasCatalogClient(*peers);
         row["proof_ready"]=bool(peers->ReadyActivationCatalog());row["peers"]=Json::Value(Json::arrayValue);
+        if(const auto chain=std::dynamic_pointer_cast<dinero::ChainstateService>(context.chainstate)){
+            const auto [full,extended]=chain->PhoneReplayCaptureCounts();
+            row["phone_replay"]["full_builds"]=Json::UInt64(full);row["phone_replay"]["extensions"]=Json::UInt64(extended);
+        }
         if(const auto history=peers->PhoneHistoryDownload()){
             const auto observed=history->Observe();auto& h=row["phone_history"];
             h["requested"]=observed.requested;h["ready"]=observed.ready;
