@@ -1,5 +1,6 @@
 #pragma once
 #include "daemon/runtime_block_outbox.h"
+#include "wallet/runtime_recovery_limits.h"
 #include <optional>
 #include <memory>
 #include <string>
@@ -68,7 +69,8 @@ public:
     // their caller: every one re-reads and reauthenticates the wallet and
     // index owners it touches against the projections it is handed, in its
     // own transaction, and throws on any divergence.
-    static std::unique_ptr<RuntimeWalletOriginProjection> CaptureOriginDomain(WalletManager&,uint64_t,UTXOIndex* = nullptr,bool existing_identity_only = false);
+    static std::unique_ptr<RuntimeWalletOriginProjection> CaptureOriginDomain(WalletManager&,uint64_t,UTXOIndex* = nullptr,
+        bool existing_identity_only = false,size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes);
     static void CheckOriginDomain(WalletManager&,const RuntimeWalletOriginProjection&,UTXOIndex* = nullptr);
     static void AdoptOrigin(WalletManager&,UTXOIndex&,const RuntimeWalletOriginProjection&);
     // Capture and restore before the producer takes its selected-source lock.

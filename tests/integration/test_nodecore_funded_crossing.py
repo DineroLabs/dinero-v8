@@ -41,6 +41,8 @@ mixed_balance_refusal=bool(os.environ.get('DINERO_SDK_MIXED_BALANCE_REFUSAL'))
 if mixed_balance_refusal:assert post_base_shield and not post_base_discovery_only
 mixed_baseline=bool(os.environ.get('DINERO_SDK_MIXED_BASELINE'))
 if mixed_baseline:assert post_base_shield and not post_base_discovery_only and not mixed_balance_refusal
+mixed_resource_limit=bool(os.environ.get('DINERO_SDK_MIXED_RESOURCE_LIMIT'))
+if mixed_resource_limit:assert mixed_baseline and not os.environ.get('DINERO_SDK_MIXED_BALANCE_READ')
 mixed_balance_read=bool(os.environ.get('DINERO_SDK_MIXED_BALANCE_READ'))
 if mixed_balance_read:assert mixed_baseline
 mixed_forward=bool(os.environ.get('DINERO_SDK_MIXED_FORWARD'))
@@ -995,6 +997,41 @@ try:
                     baseline_result=dict(result=baseline_reply,repeated=repeated_baseline,history_probe=probe,replies=baseline_replies,receipts=receipts,
                         ordinary_live=ordinary_live,index_live=index_live,balance_refusal=refused_balance,
                         scope='Genuine independent genesis-to-parent replay of public legacy body DATA plus actual canonical102..106 events, original audited coverage writer/index-first and FULL ordinary commits. Original imported cohort/anchor/lifecycle and encrypted owners unchanged. Captured two-store baseline only; NO live history promotion, general coin view, whole-wallet balance-read readiness or app/device/release qualification.')
+                    if mixed_resource_limit:
+                        # The real imported mixed source has earned both
+                        # receipts. A one-byte test budget makes its retained
+                        # history deterministically too large. Later periodic
+                        # passes must not replay that origin or earn a fallback.
+                        # The worker applies the mixed prefix on roughly its
+                        # 35th periodic slice after the baseline; hosted
+                        # runners can need more than 15 seconds for that
+                        # cadence, so the readiness bound is wall-clock 60s.
+                        deadline=time.monotonic()+60
+                        while time.monotonic()<deadline:
+                            ready_worker=call('sdk_activation_state').get('delivery_worker',{})
+                            if ready_worker.get('mixed_prefix'):break
+                            time.sleep(.05)
+                        assert ready_worker.get('mixed_prefix') and not ready_worker.get('orchard_only_prefix'),ready_worker
+                        before_rows=wallet_rows();before_receipts=mixed_runtime_receipts()
+                        assert call('sdk_activation_recovery_budget',bytes=1) is True
+                        deadline=time.monotonic()+20
+                        while time.monotonic()<deadline:
+                            first=call('sdk_activation_state').get('delivery_worker',{})
+                            if first.get('resource_limited') and first.get('slices',0)>0:break
+                            time.sleep(.02)
+                        assert first.get('resource_limited') and first.get('recovery_attempts')==1,first
+                        deadline=time.monotonic()+5
+                        while time.monotonic()<deadline:
+                            periodic=call('sdk_activation_state').get('delivery_worker',{})
+                            if periodic.get('slices',0)>=first['slices']+3:break
+                            time.sleep(.02)
+                        assert periodic.get('slices',0)>=first['slices']+3,periodic
+                        assert periodic['resource_limited'] and periodic['recovery_attempts']==1,periodic
+                        assert not periodic['orchard_only_prefix'] and not periodic['mixed_prefix'],periodic
+                        assert wallet_rows()==before_rows and mixed_runtime_receipts()==before_receipts
+                        assert original_lifecycle()==original
+                        (root/'mixed-resource-limit.json').write_text(json.dumps(dict(first=first,
+                            periodic=periodic,receipts=before_receipts),indent=2)+'\n')
                 mixed_balance=None
                 if mixed_balance_refusal:
                     # Genuine Orchard confirmation is NOT both transparent

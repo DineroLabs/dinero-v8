@@ -34,6 +34,7 @@
 #include "daemon/runtime_reorg_store.h"
 #include "daemon/runtime_block_outbox.h"
 #include "wallet/runtime_account_replay.h"
+#include "wallet/recovery_tail_effects.h"
 #include "wallet/orchard_account_catalog.h"
 #include "wallet/runtime_wallet_recovery.h"
 #include "daemon/orchard_chainstate_write.h"
@@ -7540,23 +7541,73 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             return parent;
         }
         std::optional<RuntimeOutboxCursor> captured_head;
-        auto material=RuntimeAccountReplay::ReadSource([this,&captured_head](RuntimeOutboxCursor cursor,size_t count) {
+        const RuntimeAccountReplay::Source read=[this,&captured_head](RuntimeOutboxCursor cursor,size_t count) {
             const auto page=getRuntimeDeliveryPageAtPrefix(captured_head,cursor,count,16*1024*1024);
             if(!page.ok())throw consensus::OrchardStateLookupError(page.status());
             if(!captured_head)captured_head=(*page)->head;
             return **page;
-        });
-        if(const auto base=RuntimeAccountReplay::ActivationPrefixBase(material)){
+        };
+        // Only phone nodes retain a replay; ordinary captures stay concurrent.
+        std::unique_lock<std::mutex> retained(phone_replay_mutex_,std::defer_lock);
+        if(orchard_phone_history_requested_.load())retained.lock();
+        // Same adoption checks for a fresh or an extended replay; neither is
+        // returned unless it ends exactly at the current target and outbox head.
+        const auto adopt=[&](const std::shared_ptr<const RuntimeAccountReplay>& replay,
+                const std::shared_ptr<ChainstateService>& source,const p2p::OrchardPhoneHistoryTarget& target,
+                const std::shared_ptr<p2p::OrchardPhoneHistoryDownload>& download)->StatusOr<std::shared_ptr<const RuntimeAccountReplay>> {
+            const auto head=replay->Head();const auto point=replay->Point(head).checkpoint;
+            const auto final=getRuntimeDeliveryPage(head,1);
+            if(source->PhoneHistoryTarget()!=target||!download->Ready()||point.height!=target.height||point.block_hash!=target.hash||
+                !final.ok()||(*final)->head!=head||!(*final)->events.empty()||(*final)->next!=head)return Status::Invalid;
+            return replay;
+        };
+        const auto phone=[&]()->std::optional<std::tuple<std::shared_ptr<ChainstateService>,p2p::OrchardPhoneHistoryTarget,
+                std::shared_ptr<p2p::OrchardPhoneHistoryDownload>,std::shared_ptr<const p2p::OrchardPhoneHistoryData>>> {
             const auto source=std::const_pointer_cast<ChainstateService>(weak_from_this().lock());
-            if(!source)return Status::Invalid;
+            if(!source)return {};
             const auto target=source->PhoneHistoryTarget();
             const auto* context=DaemonContext::instance();
-            if(!target||!context||context->chainstate.get()!=this||base->second!=target->base)return Status::Invalid;
+            if(!target||!context||context->chainstate.get()!=this)return {};
             const auto peers=std::dynamic_pointer_cast<P2PService>(context->p2p);
-            const auto download=peers?peers->PhoneHistoryDownload():nullptr;
-            const auto history=download?download->Ready():nullptr;
-            if(!history||history->target!=*target||base->first<target->activation||base->first>target->height)return Status::Invalid;
-            auto verifier=source->PreparePhoneHistoryVerifier(history->activation_proof,*target);
+            auto download=peers?peers->PhoneHistoryDownload():nullptr;
+            auto history=download?download->Ready():nullptr;
+            if(!history||history->target!=*target)return {};
+            return std::tuple{source,*target,std::move(download),std::move(history)};
+        };
+        if(retained.owns_lock()&&phone_replay_&&phone_replay_base_){
+            const auto ready=phone();
+            if(!ready)return Status::Invalid;
+            const auto& [source,target,download,history]=*ready;
+            const auto base=*phone_replay_base_;
+            if(base.second==target.base&&base.first>=target.activation&&base.first<=target.height){
+                std::shared_ptr<const RuntimeAccountReplay> extended;
+                try{extended=RuntimeAccountReplay::ExtendTail(std::move(phone_replay_),read);}
+                // Before ExtendTail takes the view only the first read can throw:
+                // keep the view and report it. After that, any failure (including
+                // continuity/validation Corruption) discards it and rebuilds below.
+                catch(const consensus::OrchardStateLookupError&){if(phone_replay_)throw;phone_replay_base_.reset();}
+                catch(...){phone_replay_.reset();phone_replay_base_.reset();}
+                if(extended){
+                    phone_replay_=extended;++phone_replay_extensions_;
+                    return adopt(extended,source,target,download);
+                }
+                // Another holder is still reading the retained view: reuse it while
+                // current; otherwise rebuild below and retain the new view instead.
+                if(phone_replay_){
+                    auto current=adopt(phone_replay_,source,target,download);
+                    if(current.ok())return current;
+                    phone_replay_.reset();phone_replay_base_.reset();
+                }
+            }else{phone_replay_.reset();phone_replay_base_.reset();}
+            captured_head.reset();
+        }
+        auto material=RuntimeAccountReplay::ReadSource(read);
+        if(const auto base=RuntimeAccountReplay::ActivationPrefixBase(material)){
+            const auto ready=phone();
+            if(!ready)return Status::Invalid;
+            const auto& [source,target,download,history]=*ready;
+            if(base->second!=target.base||base->first<target.activation||base->first>target.height)return Status::Invalid;
+            auto verifier=source->PreparePhoneHistoryVerifier(history->activation_proof,target);
             if(!verifier)return Status::Invalid;
             auto replay=RuntimeAccountReplay::BuildWithActivationPrefix(std::move(material),[&](uint32_t height){
                 auto body=std::make_shared<const OrchardBlockCandidate>(OrchardBlockCandidate::DecodeExact(history->Body(height)));
@@ -7564,11 +7615,11 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
                 auto checked=verifier->Append(*body,uint64_t(now));
                 return RuntimeAccountReplay::VerifiedPrefixStep{std::move(body),std::move(checked)};
             });
-            const auto head=replay->Head();const auto point=replay->Point(head).checkpoint;
-            const auto final=getRuntimeDeliveryPage(head,1);
-            if(source->PhoneHistoryTarget()!=target||!download->Ready()||point.height!=target->height||point.block_hash!=target->hash||
-                !final.ok()||(*final)->head!=head||!(*final)->events.empty()||(*final)->next!=head)return Status::Invalid;
-            return replay;
+            // Retained even when this attempt loses the race to a new block:
+            // the next capture then verifies only what arrived meanwhile.
+            if(retained.owns_lock()){phone_replay_=replay;phone_replay_base_=*base;}
+            ++phone_replay_full_builds_;
+            return adopt(replay,source,target,download);
         }
         return RuntimeAccountReplay::Build(std::move(material));
     } catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
@@ -7583,10 +7634,12 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
     bool pending=false;return captureRuntimeWalletOrigin(wallet,session,index,existing_identity_only,false,pending);
 }
 StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService::captureRuntimeWalletOrigin(
-        WalletManager& wallet,uint64_t session,UTXOIndex* index,bool existing_identity_only,bool public_history,bool& body_data_pending,bool retained_history) const {
+        WalletManager& wallet,uint64_t session,UTXOIndex* index,bool existing_identity_only,bool public_history,
+        bool& body_data_pending,bool retained_history,size_t material_limit_bytes) const {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     try {
-        auto result=RuntimeOrdinaryDelivery::CaptureOriginDomain(wallet,session,index,existing_identity_only);
+        auto result=RuntimeOrdinaryDelivery::CaptureOriginDomain(wallet,session,index,existing_identity_only,
+            material_limit_bytes);
         RuntimeOutboxCursor head;
         std::vector<uint256> ancestry;
         {
@@ -7686,7 +7739,8 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
         }
         RuntimeOrdinaryDelivery::CheckOriginDomain(wallet,*result,index);
         return std::shared_ptr<const RuntimeWalletOriginProjection>(result.release());
-    } catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
+    } catch(const RuntimeWalletCoverageMaterialLimit&){return Status::ResourceLimit;}
+      catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
       catch(...){return Status::Internal;}
 #else
     return Status::Internal;
@@ -7698,7 +7752,8 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
     bool pending=false;return captureRuntimeWalletCoverage(wallet,session,index,false,pending);
 }
 StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateService::captureRuntimeWalletCoverage(
-        WalletManager& wallet,uint64_t session,UTXOIndex& index,bool public_history,bool& body_data_pending,bool retained_history) const {
+        WalletManager& wallet,uint64_t session,UTXOIndex& index,bool public_history,bool& body_data_pending,
+        bool retained_history,size_t material_limit_bytes) const {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     if(activation_mutex_.HeldByCurrentThread())return Status::Invalid;
     try {
@@ -7717,9 +7772,10 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
         // authority; every projected coin is rebuilt from the owned source.
         const auto replay=getRuntimeAccountReplayForWallet(wallet,session);
         if(!replay.ok())return replay.status();
-        const auto origin=captureRuntimeWalletOrigin(wallet,session,&index,true,public_history,body_data_pending,retained_history);
+        const auto origin=captureRuntimeWalletOrigin(wallet,session,&index,true,public_history,body_data_pending,
+            retained_history,material_limit_bytes);
         if(!origin.ok())return origin.status();
-        const auto result=RuntimeWalletCoverageProjection::Build(*origin,*replay);
+        const auto result=RuntimeWalletCoverageProjection::Build(*origin,*replay,{},material_limit_bytes);
         {
             std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
             const auto page=getRuntimeDeliveryPage(result->Head(),1);
@@ -7731,7 +7787,8 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
             RuntimeOrdinaryDelivery::CheckOriginDomain(wallet,result->Origin(),&index);
         }
         return result;
-    } catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
+    } catch(const RuntimeWalletCoverageMaterialLimit&){return Status::ResourceLimit;}
+      catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
       catch(...){return Status::Internal;}
 #else
     (void)wallet;(void)session;(void)index;
@@ -15246,9 +15303,24 @@ std::optional<uint32_t> ChainstateService::RescanWalletFromSelectedHistory(
 
 
 std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
-        WalletManager& wallet,std::string* error,uint64_t expected_session){
+        WalletManager& wallet,std::string* error,uint64_t expected_session,
+        bool v6_partial_base_for_tests,SnapshotRecoveryOutcome* outcome){
     if(error)error->clear();
-    const auto fail=[&](const std::string& why)->std::optional<uint32_t>{if(error)*error=why;return {};};
+    if(outcome)*outcome={};
+    const auto fail=[&](const std::string& why)->std::optional<uint32_t>{
+        if(error)*error=why;
+        if(outcome)outcome->refusal=SnapshotRecoveryOutcome::Refusal::Transient;
+        return {};
+    };
+    // The capability refusal is permanent only when the capability is truly
+    // absent: an Orchard-active tip with NO configured V5 source. Everything
+    // else (no tip yet, safe mode, downloads pending, source churn) can clear
+    // and must stay retryable for the phones' 15-second loop.
+    const auto refuse_capability=[&]()->std::optional<uint32_t>{
+        const auto result=fail("transparent snapshot recovery requires a pre-Orchard selected source");
+        if(outcome)outcome->refusal=SnapshotRecoveryOutcome::Refusal::PermanentCapability;
+        return result;
+    };
     if(activation_mutex_.HeldByCurrentThread())return fail("snapshot recovery requires unowned selected source");
     try{
         auto index=AcquireWalletIndexUse(shared_from_this());
@@ -15272,17 +15344,42 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
         }
         const std::string network=Params().network_id;
         const uint256 genesis_hash=uint256::FromHexUnsafe(Params().genesis_hash);
-        uint256 tip;uint32_t base_height=0,target=0;BlockHeader base_header;std::string path;
+        uint256 tip;uint32_t base_height=0,target=0,recovery_base=0;BlockHeader base_header;std::string path;
+        bool v5_parent_mode=false;
         std::vector<std::pair<uint256,uint32_t>> ancestry;
         {
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
-            if(!active_tip_||safe_mode_active_||consensus::OrchardActiveForHeight(Params(),active_tip_->height))
-                return fail("transparent snapshot recovery requires a pre-Orchard selected source");
+            // Transient: the selected source exists but is not serviceable yet
+            // (startup, safe mode). Never reuse the permanent capability
+            // message here — phones poll on retryable and operators read the
+            // string.
+            if(!active_tip_||safe_mode_active_)
+                return fail("selected source is not ready for wallet recovery");
+            if(consensus::OrchardActiveForHeight(Params(),active_tip_->height)){
+                // Native v6 recovery (stages B+C of the design): the base coin
+                // set comes from a configured V5 container at the activation
+                // parent; the balance above it comes from the verified typed
+                // tail (composed account replay). The PARTIAL base-set path
+                // exists for the harness only (no RPC sets the flag) and never
+                // carries a client-visible scope.
+                const std::string v5=config_?config_->GetString("wallet_recovery_v5_source",""):"";
+                if(v5.empty())
+                    return refuse_capability();
+                if(Params().orchard_activation_height==0||Params().orchard_activation_height==UINT32_MAX)
+                    return refuse_capability();
+                v5_parent_mode=true;path=v5;
+                recovery_base=Params().orchard_activation_height-1;
+            }
             const auto current=UtreexoRpcSnapshotUnderLock();if(!current.ok())return fail("selected accumulator is unavailable for wallet recovery");
             base_height=GetSnapshotWalletRecoveryBaseHeight();target=active_tip_->height;
             if(!base_height||base_height>target||target-base_height>20000||!assumeutxo_lifecycle_)
                 return fail("snapshot recovery base/range unavailable or over capacity");
-            path=config_?config_->GetString("assumeutxo_snapshot",""):"";
+            if(!v5_parent_mode){
+                recovery_base=base_height;
+                path=config_?config_->GetString("assumeutxo_snapshot",""):"";
+            }else if(recovery_base>=base_height||base_height-recovery_base>20000||target-recovery_base>20000){
+                return fail("v5 activation-parent source out of range for this base");
+            }
             if(path.empty())return fail("retained snapshot file is unavailable");
             tip=active_tip_->hash;
             auto expected=tip;
@@ -15290,7 +15387,7 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
                 const auto header=chain_db_->getHeader(expected);const auto stored_height=chain_db_->getBlockHeight(expected);
                 if(!header.ok()||header->GetHash()!=expected||!stored_height.ok()||*stored_height<0||uint32_t(*stored_height)!=height)
                     return fail("selected snapshot recovery ancestry unavailable");
-                if(height==base_height){base_header=*header;break;}
+                if(height==recovery_base){base_header=*header;break;}
                 ancestry.emplace_back(expected,height);expected=header->prev_block_hash;
             }
         }
@@ -15303,8 +15400,32 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
         Transaction generation;if(!TransactionSerializer::Deserialize(generation,Params().genesis.genesisCoinbaseHex))
             return fail("compiled genesis transaction unavailable");
         genesis.vtx.push_back(generation);
-        auto snapshot_data=ReadSnapshotWalletSourceFile(path,base_header,base_height,genesis);
-        SelectedWalletHistory::Builder builder(network,genesis_hash,tip);
+        auto snapshot_data=ReadSnapshotWalletSourceFile(path,base_header,recovery_base,genesis);
+        const bool partial_base=v5_parent_mode&&v6_partial_base_for_tests;
+        // The composed tail (stage C): post-base blocks are typed Orchard
+        // candidates, so their transparent effects come from the verified
+        // account replay (activation prefix + outbox), not raw bodies. The
+        // replay is immutable; capture and extraction stay outside the final
+        // locks, and the tip binding is rechecked under them below.
+        std::vector<RecoveryTailBlock> typed_tail;
+        if(v5_parent_mode&&!partial_base){
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            const auto replay=getRuntimeAccountReplay();
+            if(!replay.ok())return fail("waiting for verified post-snapshot typed history");
+            auto effects=ReadRecoveryTailEffects(**replay);
+            if(effects.base_height!=recovery_base||effects.base_hash!=base_header.GetHash())
+                return fail("typed history base does not match the configured V5 source");
+            if(effects.blocks.empty()||effects.blocks.back().hash!=tip||effects.blocks.back().height!=target)
+                return fail("waiting for verified post-snapshot typed history");
+            typed_tail=std::move(effects.blocks);
+#else
+            return fail("waiting for verified post-snapshot typed history");
+#endif
+        }
+        // Partial v5-parent mode carries no post-base bodies: the history's
+        // captured tip IS the base header. The composed mode binds the real tip.
+        SelectedWalletHistory::Builder builder(network,genesis_hash,
+            partial_base?base_header.GetHash():tip);
         std::reverse(ancestry.begin(),ancestry.end());size_t material=0,missing=0;
         const auto* daemon=DaemonContext::instance();
         const auto peers=daemon&&daemon->chainstate.get()==this?std::dynamic_pointer_cast<P2PService>(daemon->p2p):nullptr;
@@ -15316,6 +15437,7 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
             if(!bytes)return {};return Block::Deserialize(*bytes);
         };
         for(const auto& [hash,height]:ancestry){
+            if(v5_parent_mode)break; // typed tail is stage C; linkage already checked
             const auto body=read_body(hash);
             if(!body){++missing;if(missing>=8)break;continue;}
             bool mutated=false;
@@ -15330,7 +15452,7 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
         // Follow hash-linked stored headers from this captured base; the live
         // header selector need not retain a second in-memory copy of the prefix.
         std::map<uint32_t,uint256> legacy_ancestry;
-        legacy_ancestry.emplace(base_height,base_header.GetHash());
+        legacy_ancestry.emplace(recovery_base,base_header.GetHash());
         for(const auto& coin:snapshot_data.coins){
             if(coin.maturity_bound||!scripts.contains(coin.script))continue;
             while(legacy_ancestry.begin()->first>coin.height){
@@ -15361,15 +15483,29 @@ std::optional<uint32_t> ChainstateService::RecoverTransparentSnapshotWallet(
         const auto current=UtreexoRpcSnapshotUnderLock();
         if(!current.ok()||current->block_hash!=tip||current->height!=target||
            GetSnapshotWalletRecoveryBaseHeight()!=base_height||
-           config_->GetString("assumeutxo_snapshot","")!=path)
+           config_->GetString(v5_parent_mode?"wallet_recovery_v5_source":"assumeutxo_snapshot","")!=path)
             return fail("selected wallet recovery source changed; retry");
-        auto lifetime=assumeutxo_lifecycle_->AcquireSnapshotUse(base_header.GetHash(),base_height);
-        if(!lifetime)return fail("snapshot lifecycle changed before wallet recovery");
-        builder.SetSnapshot(base_height+1,std::move(snapshot_data),std::move(scripts));
+        // The v5-parent source is a static preserved file whose coin set is
+        // root-bound to the base header at read time (no re-read happens after
+        // authentication), and the typed tail is an immutable verified replay:
+        // neither needs the live snapshot lifecycle pin, which remains the
+        // non-v5 mode's concern.
+        decltype(assumeutxo_lifecycle_->AcquireSnapshotUse(base_header.GetHash(),base_height)) lifetime{};
+        if(!v5_parent_mode){
+            lifetime=assumeutxo_lifecycle_->AcquireSnapshotUse(base_header.GetHash(),base_height);
+            if(!lifetime)return fail("snapshot lifecycle changed before wallet recovery");
+        }
+        builder.SetSnapshot(recovery_base+1,std::move(snapshot_data),std::move(scripts));
+        // Under the final locks the captured tip is unchanged, so a composed
+        // tail that ends exactly at that tip is the live selected chain.
+        if(!typed_tail.empty())builder.SetTypedTail(std::move(typed_tail));
         const auto immutable=builder.Build();
-        if(!wallet.RescanFromSelectedHistory(int(base_height+1),0,*immutable,session))
+        if(!wallet.RescanFromSelectedHistory(int(recovery_base+1),0,*immutable,session))
             return fail("authenticated snapshot wallet application failed");
-        return target;
+        // Partial mode reports the base it actually recovered to, never the
+        // Orchard-era tip it has not accounted for.
+        if(outcome)outcome->composed_v6=v5_parent_mode&&!partial_base;
+        return partial_base?recovery_base:target;
     }catch(const std::exception& e){return fail(e.what());}
 }
 
@@ -21786,9 +21922,11 @@ ChainstateService::reconcileImportedRuntimeWalletCoverage(WalletManager& wallet,
 }
 
 StatusOr<std::shared_ptr<const RuntimeImportedMixedRecoveryResult>>
-ChainstateService::resumeRuntimeImportedMixedRecovery(WalletManager& wallet,UTXOIndex& index,uint64_t session){
+ChainstateService::resumeRuntimeImportedMixedRecovery(WalletManager& wallet,UTXOIndex& index,uint64_t session,
+        size_t material_limit_bytes){
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
-    if(activation_mutex_.HeldByCurrentThread()||!session)return Status::Invalid;
+    if(activation_mutex_.HeldByCurrentThread()||!session||!material_limit_bytes||
+       material_limit_bytes>kWalletRecoveryMaterialLimitBytes)return Status::Invalid;
     try {
         {auto selected=AcquireBlockIngressActivationLock();
          if(!compact_startup_||!compact_startup_->imported_parent)
@@ -21798,9 +21936,12 @@ ChainstateService::resumeRuntimeImportedMixedRecovery(WalletManager& wallet,UTXO
         if(!RuntimeOrdinaryDelivery::ExistingCoverage(wallet,index,session))
             return std::shared_ptr<const RuntimeImportedMixedRecoveryResult>{};
         const auto orchard=resumeRuntimeImportedOrchardRecovery(wallet,index,session);
-        if(!orchard.ok()||!*orchard)return Status::Invalid;
-        bool pending=false;const auto captured=captureRuntimeWalletCoverage(wallet,session,index,false,pending,true);
-        if(!captured.ok()||pending)return Status::Invalid;
+        if(!orchard.ok())return orchard.status()==Status::ResourceLimit?Status::ResourceLimit:Status::Invalid;
+        if(!*orchard)return Status::Invalid;
+        bool pending=false;const auto captured=captureRuntimeWalletCoverage(wallet,session,index,false,pending,true,
+            material_limit_bytes);
+        if(!captured.ok())return captured.status()==Status::ResourceLimit?Status::ResourceLimit:Status::Invalid;
+        if(pending)return Status::Invalid;
         const auto& coverage=**captured;
         if((*orchard)->applied!=coverage.Head()||(*orchard)->observed_head!=coverage.Head())return Status::Invalid;
         const auto prepared=RuntimeOrdinaryDelivery::PrepareCoverage(wallet,coverage);
@@ -21837,9 +21978,10 @@ ChainstateService::resumeRuntimeImportedMixedRecovery(WalletManager& wallet,UTXO
         if(applied.cursor!=coverage.Head()||applied.tip_hash!=coverage.TipHash()||applied.tip_height!=coverage.TipHeight())
             return Status::Invalid;
         return std::make_shared<const RuntimeImportedMixedRecoveryResult>(RuntimeImportedMixedRecoveryResult{applied,coverage.Head()});
-    }catch(...){return Status::Invalid;}
+    }catch(const RuntimeWalletCoverageMaterialLimit&){return Status::ResourceLimit;}
+     catch(...){return Status::Invalid;}
 #else
-    (void)wallet;(void)index;(void)session;return Status::Internal;
+    (void)wallet;(void)index;(void)session;(void)material_limit_bytes;return Status::Internal;
 #endif
 }
 
