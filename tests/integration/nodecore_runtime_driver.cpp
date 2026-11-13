@@ -38,6 +38,7 @@
 #include <vector>
 #ifdef DINERO_TEST_SDK_ACTIVATION_SUBJECT
 Json::Value SdkActivationTestState();
+Json::Value SdkActivationRecoveryBudget(const Json::Value&);
 Json::Value SdkActivationSetProof(const Json::Value&);
 void InstallSdkActivationTestEvents();
 #endif
@@ -516,6 +517,7 @@ int main(int argc, char** argv) {
 #ifdef DINERO_TEST_SDK_ACTIVATION_SUBJECT
             if(operation=="sdk_activation_events"){InstallSdkActivationTestEvents();result=true;}else
             if(operation=="sdk_activation_state")result=SdkActivationTestState();else
+            if(operation=="sdk_activation_recovery_budget")result=SdkActivationRecoveryBudget(request);else
             if(operation=="sdk_activation_set_proof")result=SdkActivationSetProof(request);else
 #endif
             if (operation == "legacy_relay_readiness") {

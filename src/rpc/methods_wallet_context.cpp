@@ -7208,23 +7208,27 @@ din::Json rpc_context_wallet_recoversnapshot(const ExecutionContext& ctx,const d
             addresses.front().address!=params["expected_first_address"].asString()){
             result["error"]="Active wallet differs from requested recovery wallet";return result;
          }session=lease->Session();}
-        std::string error;const auto recovered=source->RecoverTransparentSnapshotWallet(wallet,&error,session);
+        std::string error;dinero::ChainstateService::SnapshotRecoveryOutcome outcome;
+        const auto recovered=source->RecoverTransparentSnapshotWallet(wallet,&error,session,false,&outcome);
         if(!recovered){
             result["error"]=error;
             // Permanent capability refusals must not be hot-retried: both
-            // phone apps retry any retryable error every 15 seconds, and the
-            // post-Orchard refusal cannot clear until the native v6 recovery
-            // path ships (2026-11-11-native-v6-wallet-recovery-design.md).
-            // Transient refusals (locks, sessions, missing bodies still
-            // downloading) stay retryable. Stage C replaces this string
-            // match with a typed signal from the recovery function.
-            const bool permanent_capability_refusal =
-                error=="transparent snapshot recovery requires a pre-Orchard selected source";
-            result["retryable"]=!permanent_capability_refusal;
+            // phone apps retry any retryable error every 15 seconds, and an
+            // Orchard-active node with NO configured V5 source cannot clear
+            // without provisioning (2026-11-11-native-v6-wallet-recovery-
+            // design.md). Everything else (locks, sessions, safe mode, typed
+            // history still downloading) stays retryable. The classification
+            // is the recovery function's typed outcome, not a string match.
+            result["retryable"]=outcome.refusal!=
+                dinero::ChainstateService::SnapshotRecoveryOutcome::Refusal::PermanentCapability;
             return result;
         }
         result["success"]=true;result["recovered_height"]=Json::UInt64(*recovered);
-        result["scope"]="transparent-current-coins-and-post-snapshot-history";
+        // The apps accept exactly this scope for a compact-v6 receipt; the
+        // legacy scope only qualifies a pre-Orchard base.
+        result["scope"]=outcome.composed_v6
+            ?"transparent-current-coins-and-post-snapshot-history-v6"
+            :"transparent-current-coins-and-post-snapshot-history";
         result["whole_wallet_certified"]=false;
         return result;
     }catch(const std::exception& e){result["error"]=e.what();return result;}

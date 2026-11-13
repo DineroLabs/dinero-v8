@@ -32,8 +32,22 @@ struct RuntimeDeliveryStartupTestAccess {
         const auto report=app.runtime_delivery_worker_->Snapshot();
         row["mixed_prefix"]=report.wallet==RuntimeDeliveryWorker::WalletOutcome::AppliedImportedMixedPrefix;
         row["orchard_only_prefix"]=report.wallet==RuntimeDeliveryWorker::WalletOutcome::AppliedOrchardPrefix;
+        row["resource_limited"]=report.wallet==RuntimeDeliveryWorker::WalletOutcome::ResourceLimited;
+        row["recovery_attempts"]=Json::UInt64(report.wallet_recovery_attempts);
+        row["slices"]=Json::UInt64(report.slices);
         if(report.wallet_head){row["sequence"]=Json::UInt64(report.wallet_head->sequence);row["digest"]=report.wallet_head->digest.GetHex();}
         return row;
+    }
+    static void SetRecoveryBudget(DaemonApp& app,size_t bytes){
+        auto& worker=app.runtime_delivery_worker_;
+        if(!worker)throw std::runtime_error("Missing native delivery worker");
+        worker->Stop();
+        const auto& context=app.GetContext();
+        auto source=std::dynamic_pointer_cast<ChainstateService>(context.chainstate);
+        if(!source||!context.wallet)throw std::runtime_error("Missing native recovery owners");
+        worker=std::make_unique<RuntimeDeliveryWorker>(source,context.wallet,
+            RuntimeDeliveryWorker::Limits{1,std::chrono::milliseconds(20),bytes});
+        worker->Start();
     }
 };
 struct P2PServiceStopTestAccess {
@@ -129,6 +143,18 @@ Json::Value SdkActivationTestState(){
         }
     }
     return row;
+}
+
+// Native fixture only: shrink the worker's retained material budget after a
+// genuine imported mixed baseline has been earned, without changing any
+// production configuration or the authenticated wallet/source data.
+Json::Value SdkActivationRecoveryBudget(const Json::Value& request){
+    auto& s=state();std::lock_guard lock(s.mtx);
+    if(!s.running||!s.app||dinero::Params().magic!=0x02a1c925||
+       !request["bytes"].isUInt64()||request["bytes"].asUInt64()!=1)
+        throw std::runtime_error("Invalid native recovery budget request");
+    dinero::RuntimeDeliveryStartupTestAccess::SetRecoveryBudget(*s.app,1);
+    return true;
 }
 
 // Fixed-profile native test ONLY: replace untrusted DATA in an already present

@@ -19,6 +19,7 @@
 #include "common/annotated_mutex.h"
 #include "wallet/utxo_index.h"
 #include "wallet/runtime_funding_candidates.h"
+#include "wallet/runtime_recovery_limits.h"
 #include "interfaces/wallet_notifier.h"  // Phase 3D: Wallet event notifications
 #include "consensus/utreexo_accumulator.h"  // v0.14.0.4: Utreexo enforcement
 #include "consensus/header_convergence.h"  // #439: HeaderConvergence + pure rule
@@ -279,8 +280,29 @@ public:
     // snapshot's complete live leaf coverage and selected post-base bodies,
     // then applies owned coins/history under one wallet transaction. Does not
     // replace keys or certify pre-base spent history/other wallet consumers.
+    // Native v6 recovery (stages B+C of the design,
+    // 2026-11-11-native-v6-wallet-recovery-design.md): with an Orchard-active
+    // selected tip AND a configured wallet_recovery_v5_source (a V5 container
+    // at exactly the activation parent), the base coin set comes from that
+    // container and the activation..tip transparent effects from the verified
+    // composed account replay (typed tail); reports the tip. While the replay
+    // is not yet available the refusal is transient (retryable), unlike the
+    // permanent no-source capability refusal. v6_partial_base_for_tests is
+    // harness-only (no RPC sets it): it skips the typed tail, recovers ONLY
+    // the PARTIAL base set (coins spent after activation still counted) and
+    // reports the activation parent, never a client-visible scope.
+    // Typed recovery outcome for the RPC layer (stage C step 4): the refusal
+    // class drives retryable classification instead of a string match, and
+    // composed_v6 marks the typed-tail composed recovery whose success scope
+    // is transparent-current-coins-and-post-snapshot-history-v6.
+    struct SnapshotRecoveryOutcome {
+        enum class Refusal { None, Transient, PermanentCapability };
+        Refusal refusal=Refusal::None;
+        bool composed_v6=false;
+    };
     std::optional<uint32_t> RecoverTransparentSnapshotWallet(
-        WalletManager&,std::string* error=nullptr,uint64_t expected_session=0);
+        WalletManager&,std::string* error=nullptr,uint64_t expected_session=0,
+        bool v6_partial_base_for_tests=false,SnapshotRecoveryOutcome* outcome=nullptr);
     // Exact fresh imported activation parent only. Checked source/seed-bound
     // candidate discovery, NOT wallet history/index completion or coin authority.
     // Caller retains WalletUse/WalletIndexUse and holds no SQLite/selected owner.
@@ -1148,7 +1170,8 @@ public:
     // Null ONLY for another source composition or BOTH absent baselines.
     // Every failed/partial/invalid mixed attempt remains closed, never fallback.
     StatusOr<std::shared_ptr<const RuntimeImportedMixedRecoveryResult>>
-        resumeRuntimeImportedMixedRecovery(WalletManager&,UTXOIndex&,uint64_t expected_session);
+        resumeRuntimeImportedMixedRecovery(WalletManager&,UTXOIndex&,uint64_t expected_session,
+            size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes);
     // Observation-only readmission fence at the genuinely empty activation
     // parent. Restores/rechecks every declared encrypted owner under the current
     // source; does not adopt transparent receipts or manufacture delivery.
@@ -1745,9 +1768,11 @@ private:
         const std::unique_lock<std::mutex>& snapshot, UTXOIndex&);
     struct ImportedOrchardDeliverySource;
     StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> captureRuntimeWalletOrigin(
-        WalletManager&,uint64_t,UTXOIndex*,bool existing_identity_only,bool public_history,bool& body_data_pending,bool retained_history = false) const;
+        WalletManager&,uint64_t,UTXOIndex*,bool existing_identity_only,bool public_history,bool& body_data_pending,
+        bool retained_history = false,size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes) const;
     StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> captureRuntimeWalletCoverage(
-        WalletManager&,uint64_t,UTXOIndex&,bool public_history,bool& body_data_pending,bool retained_history = false) const;
+        WalletManager&,uint64_t,UTXOIndex&,bool public_history,bool& body_data_pending,
+        bool retained_history = false,size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes) const;
     std::unique_ptr<const ImportedOrchardDeliverySource> CaptureImportedOrchardDeliveryUnderLock(
         const std::unique_lock<std::mutex>&,UTXOIndex&,const RuntimeAccountReplay&);
     // Transport is not storage authority. This narrower pre-boundary route

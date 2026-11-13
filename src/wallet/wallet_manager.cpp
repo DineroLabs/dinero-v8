@@ -7542,7 +7542,8 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
     uint32_t tip_height = 0;
     try {
         if (prepared) {
-            const auto end=uint64_t(prepared->first_height_)+prepared->blocks_.size();
+            const auto end=uint64_t(prepared->first_height_)+
+                (prepared->blocks_.empty()?prepared->typed_tail_.size():prepared->blocks_.size());
             if (!end || end>uint64_t(INT32_MAX)+1 ||
                 (!prepared->blocks_.empty()&&prepared->blocks_.back().GetHash()!=prepared->tip_))return false;
             tip_height=uint32_t(end-1);
@@ -7628,18 +7629,49 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
         // height cannot wrap to zero and repeatedly replay the source.
         for (uint64_t cursor = static_cast<uint32_t>(start_height); cursor <= tip_height; ++cursor) {
             const auto height = static_cast<uint32_t>(cursor);
+            // Three body sources, one writer: typed deltas (v6-recovery stage
+            // C), owned prepared bodies, or mutable archival reads.
+            const RecoveryTailBlock* delta = prepared && !prepared->typed_tail_.empty()
+                ? &prepared->typed_tail_[height-prepared->first_height_] : nullptr;
             std::optional<Block> legacy_body;
-            if (!prepared) {
-                const auto hash = view->GetBlockHashAtHeight(static_cast<int32_t>(height));
-                if (!hash) throw std::runtime_error("Block rescan source height unavailable");
-                auto source = view->ReadBlock(*hash);
-                if (!source) throw std::runtime_error("Block rescan source body unavailable");
-                legacy_body = std::move(*source);
+            const Block* block = nullptr;
+            if (!delta) {
+                if (!prepared) {
+                    const auto hash = view->GetBlockHashAtHeight(static_cast<int32_t>(height));
+                    if (!hash) throw std::runtime_error("Block rescan source height unavailable");
+                    auto source = view->ReadBlock(*hash);
+                    if (!source) throw std::runtime_error("Block rescan source body unavailable");
+                    legacy_body = std::move(*source);
+                    block = &*legacy_body;
+                } else {
+                    block = &prepared->blocks_[height-prepared->first_height_];
+                }
             }
-            const auto& block = prepared ? prepared->blocks_[height-prepared->first_height_] : *legacy_body;
-            for (size_t tx_index = 0; tx_index < block.vtx.size(); ++tx_index) {
-                const auto& tx = block.vtx[tx_index];
-                const std::string txid = tx.GetTxid().AsUint256().GetHex();
+            const uint32_t block_time = delta ? delta->timestamp : block->header.timestamp;
+            const size_t tx_count = delta ? delta->transactions.size() : block->vtx.size();
+            for (size_t tx_index = 0; tx_index < tx_count; ++tx_index) {
+                // Normalized transaction views: the SQL effects below stay
+                // single-sourced for raw bodies and typed deltas.
+                struct OutputView { uint64_t value_una; const std::vector<uint8_t>* script; bool confidential; };
+                struct InputView { TxId txid; uint32_t vout; };
+                std::string txid; std::vector<OutputView> outs; std::vector<InputView> ins;
+                if (delta) {
+                    const auto& tx = delta->transactions[tx_index];
+                    txid = tx.txid.AsUint256().GetHex();
+                    outs.reserve(tx.outputs.size());
+                    for (const auto& output : tx.outputs)
+                        outs.push_back({output.value_una, &output.script_pub_key, output.is_confidential});
+                    ins.reserve(tx.spends.size());
+                    for (const auto& spend : tx.spends) ins.push_back({spend.txid, spend.vout});
+                } else {
+                    const auto& tx = block->vtx[tx_index];
+                    txid = tx.GetTxid().AsUint256().GetHex();
+                    outs.reserve(tx.vout.size());
+                    for (const auto& output : tx.vout)
+                        outs.push_back({output.value.GetUna(), &output.scriptPubKey, output.is_confidential});
+                    ins.reserve(tx.vin.size());
+                    for (const auto& input : tx.vin) ins.push_back({input.prevout.txid, input.prevout.vout});
+                }
                 const bool coinbase = tx_index == 0;
                 std::map<std::string, int64_t> activity;
                 std::map<std::string, std::set<std::string>> obsolete_receipt_addresses;
@@ -7651,27 +7683,27 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                         throw std::runtime_error("Block rescan history amount out of range");
                     amount += value;
                 };
-                for (size_t vout = 0; vout < tx.vout.size(); ++vout) {
-                    const auto& output = tx.vout[vout];
-                    if (!scripts.count(output.scriptPubKey)) continue;
-                    if (output.is_confidential)
+                for (size_t vout = 0; vout < outs.size(); ++vout) {
+                    const auto& output = outs[vout];
+                    if (!scripts.count(*output.script)) continue;
+                    if (output.confidential)
                         throw std::runtime_error("Block rescan confidential history unsupported");
-                    if (output.value.GetUna() > uint64_t(INT64_MAX) || vout > UINT32_MAX)
+                    if (output.value_una > uint64_t(INT64_MAX) || vout > UINT32_MAX)
                         throw std::runtime_error("Block rescan owned output out of range");
                     std::string script;
                     static constexpr char hex[] = "0123456789abcdef";
-                    script.reserve(output.scriptPubKey.size() * 2);
-                    for (const auto byte : output.scriptPubKey) {
+                    script.reserve(output.script->size() * 2);
+                    for (const auto byte : *output.script) {
                         script.push_back(hex[byte >> 4]); script.push_back(hex[byte & 15]);
                     }
-                    std::string address = extractAddressFromScript(output.scriptPubKey);
+                    std::string address = extractAddressFromScript(*output.script);
                     if (address.empty()) address = "script:" + script.substr(0, 16);
-                    accumulate(address, static_cast<int64_t>(output.value.GetUna()));
+                    accumulate(address, static_cast<int64_t>(output.value_una));
                     // Earlier recovery used a Bech32 checksum for Taproot and
                     // a display-only script fallback for P2MR. Reconcile only
                     // aliases derived from this authenticated owned output.
-                    if (output.scriptPubKey.size()==34 && output.scriptPubKey[1]==0x20) {
-                        const auto& spk=output.scriptPubKey;
+                    if (output.script->size()==34 && (*output.script)[1]==0x20) {
+                        const auto& spk=*output.script;
                         if(spk[0]==0x51)
                             obsolete_receipt_addresses[address].insert(bech32::Encode("din",1,
                                 std::vector<uint8_t>(spk.begin()+2,spk.end()),bech32::Encoding::BECH32));
@@ -7687,7 +7719,7 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                     checked(sqlite3_bind_text(row.get(), 2, txid.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
                     checked(sqlite3_bind_int64(row.get(), 3, vout), SQLITE_OK);
                     checked(sqlite3_bind_text(row.get(), 4, address.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
-                    checked(sqlite3_bind_int64(row.get(), 5, output.value.GetUna()), SQLITE_OK);
+                    checked(sqlite3_bind_int64(row.get(), 5, output.value_una), SQLITE_OK);
                     checked(sqlite3_bind_text(row.get(), 6, script.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
                     checked(sqlite3_bind_int64(row.get(), 7, height), SQLITE_OK);
                     checked(sqlite3_bind_int(row.get(), 8, coinbase ? 1 : 0), SQLITE_OK);
@@ -7695,12 +7727,12 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                     checked(sqlite3_step(row.get()), SQLITE_DONE);
                 }
                 if (!coinbase) {
-                    for (const auto& input : tx.vin) {
-                        const auto previous = input.prevout.txid.AsUint256().GetHex();
+                    for (const auto& input : ins) {
+                        const auto previous = input.txid.AsUint256().GetHex();
                         auto owned = prepare("SELECT address,amount FROM utxos WHERE wallet_id=? AND txid=? AND vout=? AND is_spent=0");
                         checked(sqlite3_bind_int(owned.get(), 1, current_wallet_id_), SQLITE_OK);
                         checked(sqlite3_bind_text(owned.get(), 2, previous.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
-                        checked(sqlite3_bind_int64(owned.get(), 3, input.prevout.vout), SQLITE_OK);
+                        checked(sqlite3_bind_int64(owned.get(), 3, input.vout), SQLITE_OK);
                         const int found = sqlite3_step(owned.get());
                         if (found == SQLITE_ROW) {
                             const auto* address = reinterpret_cast<const char*>(sqlite3_column_text(owned.get(), 0));
@@ -7719,7 +7751,7 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                         checked(sqlite3_bind_int64(row.get(), 2, height), SQLITE_OK);
                         checked(sqlite3_bind_int(row.get(), 3, current_wallet_id_), SQLITE_OK);
                         checked(sqlite3_bind_text(row.get(), 4, previous.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
-                        checked(sqlite3_bind_int64(row.get(), 5, input.prevout.vout), SQLITE_OK);
+                        checked(sqlite3_bind_int64(row.get(), 5, input.vout), SQLITE_OK);
                         checked(sqlite3_step(row.get()), SQLITE_DONE);
                     }
                 }
@@ -7796,7 +7828,7 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                     checked(sqlite3_bind_int64(history.get(), 5, uint64_t(tip_height)-height+1), SQLITE_OK);
                     checked(sqlite3_bind_text(history.get(), 6, category.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
                     checked(sqlite3_bind_text(history.get(), 7, recovered_label.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
-                    checked(sqlite3_bind_int64(history.get(), 8, block.header.timestamp), SQLITE_OK);
+                    checked(sqlite3_bind_int64(history.get(), 8, block_time), SQLITE_OK);
                     checked(sqlite3_bind_int(history.get(), 9, coinbase ? 1 : 0), SQLITE_OK);
                     checked(sqlite3_bind_int64(history.get(), 10, height), SQLITE_OK);
                     checked(sqlite3_step(history.get()), SQLITE_DONE);
@@ -7806,7 +7838,7 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
             std::string error;
             // A transparent snapshot baseline does not qualify legacy shielded
             // discovery. Keep that consumer on the existing archival path only.
-            if (!(prepared&&prepared->snapshot_) && !wallet::shielded_ops::RescanConfirmedBlock(*this, height, block.vtx, &error))
+            if (!(prepared&&prepared->snapshot_) && !wallet::shielded_ops::RescanConfirmedBlock(*this, height, block->vtx, &error))
                 throw std::runtime_error("Block rescan shielded consumer failed: " + error);
             if ((cursor - start_height + 1) % 100 == 0 || height == tip_height) {
                 auto progress = prepare(R"(
@@ -7843,6 +7875,7 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
             };
             stamp(prepared->snapshot_->height,prepared->snapshot_->base);
             for(size_t i=0;i<prepared->blocks_.size();++i)stamp(prepared->first_height_+uint32_t(i),prepared->blocks_[i].GetHash());
+            for(const auto& applied:prepared->typed_tail_)stamp(applied.height,applied.hash);
             std::map<std::vector<uint8_t>,std::string> paths;
             {auto rows=prepare("SELECT script_pubkey,path FROM watch_scripts");int rc;
              while((rc=sqlite3_step(rows.get()))==SQLITE_ROW){const auto* data=static_cast<const uint8_t*>(sqlite3_column_blob(rows.get(),0));
