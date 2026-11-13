@@ -7582,8 +7582,10 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             if(base.second==target.base&&base.first>=target.activation&&base.first<=target.height){
                 std::shared_ptr<const RuntimeAccountReplay> extended;
                 try{extended=RuntimeAccountReplay::ExtendTail(std::move(phone_replay_),read);}
-                // A read failure before ExtendTail took the view leaves it retained.
-                catch(const consensus::OrchardStateLookupError&){if(!phone_replay_)phone_replay_base_.reset();throw;}
+                // Before ExtendTail takes the view only the first read can throw:
+                // keep the view and report it. After that, any failure (including
+                // continuity/validation Corruption) discards it and rebuilds below.
+                catch(const consensus::OrchardStateLookupError&){if(phone_replay_)throw;phone_replay_base_.reset();}
                 catch(...){phone_replay_.reset();phone_replay_base_.reset();}
                 if(extended){
                     phone_replay_=extended;++phone_replay_extensions_;
