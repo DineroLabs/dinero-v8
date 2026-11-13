@@ -195,6 +195,10 @@ public:
         std::shared_ptr<ChainstateService> source);
     // Classification only; does not certify a selected wallet's v3 receipt.
     bool HasFullArchiveWalletIndexV3() const;
+    // Source-side capability hint for a current recovered transparent wallet.
+    // Signing rechecks every condition and both wallet receipts under the
+    // selected lock; this alone never authorizes a payment.
+    bool RecoveredV3TransparentSendSourceReady();
 
     // Phase 39: ChainManager accessor (temporary - callers being migrated)
     ChainManager& chainManager();
