@@ -1007,6 +1007,22 @@ try:
                             ready_worker=call('sdk_activation_state').get('delivery_worker',{})
                             if ready_worker.get('mixed_prefix'):break
                             time.sleep(.05)
+                        if not ready_worker.get('mixed_prefix'):
+                            diag={'state':call('sdk_activation_state')}
+                            with sqlite3.connect('file:'+str(wallet_paths[0])+'?mode=ro',uri=True) as db:
+                                cols=[r[1] for r in db.execute('PRAGMA table_info(wallet_meta)')]
+                                diag['wallet_meta_cols']=cols
+                                want=[c for c in ('runtime_delivery_id','runtime_ordinary_receipt','runtime_ordinary_invalid') if c in cols]
+                                if want:
+                                    row=db.execute('SELECT '+','.join(want)+' FROM wallet_meta WHERE id=1').fetchone()
+                                    diag['wallet_meta']={k:(('blob:%d'%len(v)) if isinstance(v,bytes) else v) for k,v in zip(want,row)}
+                            with sqlite3.connect('file:'+str(datadir/'blockchain/utxo')+'?mode=ro',uri=True) as db:
+                                diag['index_tables']=[r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+                                for t in diag['index_tables']:
+                                    if 'receipt' in t or 'delivery' in t or 'coverage' in t:
+                                        diag.setdefault('index_receipts',{})[t]=db.execute('SELECT COUNT(*) FROM '+t).fetchone()[0]
+                            diag['receipts_fn']=mixed_runtime_receipts()
+                            assert False,('PREBUDGET-DIAG',ready_worker,diag)
                         assert ready_worker.get('mixed_prefix') and not ready_worker.get('orchard_only_prefix'),ready_worker
                         before_rows=wallet_rows();before_receipts=mixed_runtime_receipts()
                         assert call('sdk_activation_recovery_budget',bytes=1) is True
