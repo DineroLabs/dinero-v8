@@ -21879,15 +21879,18 @@ ChainstateService::resumeRuntimeImportedMixedRecovery(WalletManager& wallet,UTXO
        material_limit_bytes>kWalletRecoveryMaterialLimitBytes)return Status::Invalid;
     try {
         {auto selected=AcquireBlockIngressActivationLock();
-         if(!compact_startup_||!compact_startup_->imported_parent)
-             return std::shared_ptr<const RuntimeImportedMixedRecoveryResult>{};}
+         if(!compact_startup_||!compact_startup_->imported_parent){
+             std::cerr<<"[DIAG mixed] empty: no imported compact startup\n";
+             return std::shared_ptr<const RuntimeImportedMixedRecoveryResult>{};}}
         // Explicit pre-effect composition classification, not a failed mixed
         // recovery exception/fallback. Either invalid receipt remains CLOSED.
-        if(!RuntimeOrdinaryDelivery::ExistingCoverage(wallet,index,session))
-            return std::shared_ptr<const RuntimeImportedMixedRecoveryResult>{};
+        if(!RuntimeOrdinaryDelivery::ExistingCoverage(wallet,index,session)){
+            std::cerr<<"[DIAG mixed] empty: ExistingCoverage=false session="<<session<<"\n";
+            return std::shared_ptr<const RuntimeImportedMixedRecoveryResult>{};}
         const auto orchard=resumeRuntimeImportedOrchardRecovery(wallet,index,session);
-        if(!orchard.ok())return orchard.status()==Status::ResourceLimit?Status::ResourceLimit:Status::Invalid;
-        if(!*orchard)return Status::Invalid;
+        if(!orchard.ok()){std::cerr<<"[DIAG mixed] invalid: orchard resume not ok\n";
+            return orchard.status()==Status::ResourceLimit?Status::ResourceLimit:Status::Invalid;}
+        if(!*orchard){std::cerr<<"[DIAG mixed] invalid: orchard resume empty\n";return Status::Invalid;}
         bool pending=false;const auto captured=captureRuntimeWalletCoverage(wallet,session,index,false,pending,true,
             material_limit_bytes);
         if(!captured.ok())return captured.status()==Status::ResourceLimit?Status::ResourceLimit:Status::Invalid;

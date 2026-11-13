@@ -1,4 +1,5 @@
 #include "wallet/runtime_index_delivery.h"
+#include <iostream>
 #include "wallet/runtime_origin_projection.h"
 #include "wallet/orchard_account_delivery.h"
 #include "wallet/orchard_ownership_inventory.h"
@@ -463,11 +464,12 @@ OrdinaryOwnership OrdinaryScripts(WalletManager::DatabaseLease& lease) {
     result.digest=Digest(binding);return result;
 }
 std::optional<Receipt> OrdinaryRead(sqlite3* db,const std::string& identity,const uint256& scripts) {
-    if(!OrdinaryColumns(db))return {};
+    if(!OrdinaryColumns(db)){std::cerr<<"[DIAG read] ordinary columns absent\n";return {};}
     Statement query(db,"SELECT runtime_ordinary_receipt,runtime_ordinary_invalid FROM wallet_meta WHERE id=1");
     if(sqlite3_step(query.value)!=SQLITE_ROW)Fail("Ordinary delivery metadata unavailable");
     if(sqlite3_column_type(query.value,1)!=SQLITE_INTEGER || sqlite3_column_int64(query.value,1)!=0)Fail("Ordinary delivery invalidated; baseline reconciliation required");
     std::optional<Receipt> result;
+    if(sqlite3_column_type(query.value,0)==SQLITE_NULL)std::cerr<<"[DIAG read] ordinary receipt row NULL\n";
     if(sqlite3_column_type(query.value,0)!=SQLITE_NULL) {
         const auto* bytes=static_cast<const char*>(sqlite3_column_blob(query.value,0));const int n=sqlite3_column_bytes(query.value,0);
         if(sqlite3_column_type(query.value,0)!=SQLITE_BLOB || !bytes || n<1 || n>2048)Fail("Ordinary delivery receipt malformed");
@@ -1190,7 +1192,11 @@ std::optional<std::pair<RuntimeIndexProgress,RuntimeIndexProgress>> RuntimeOrdin
     const auto ordinary=OrdinaryRead(lease->Database(),identity,scripts.digest);
     const auto indexed=RuntimeIndexDelivery::Read(index,identity,&scripts.historical);
     if(bool(ordinary)!=bool(indexed))Fail("Incremental coverage requires BOTH existing baselines");
-    tx.Commit();if(!ordinary)return {};
+    tx.Commit();if(!ordinary){
+        std::cerr<<"[DIAG coverage] absent: identity="<<identity.substr(0,24)
+                 <<" scripts_digest="<<scripts.digest.GetHex().substr(0,16)
+                 <<" historical="<<scripts.historical.size()<<"\n";
+        return {};}
     return std::pair<RuntimeIndexProgress,RuntimeIndexProgress>{*indexed,ordinary->progress};
 }
 
