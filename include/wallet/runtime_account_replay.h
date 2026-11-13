@@ -66,10 +66,16 @@ public:
     };
     static std::shared_ptr<const RuntimeAccountReplay> BuildWithActivationPrefix(
         std::shared_ptr<Data>,const std::function<VerifiedPrefixStep(uint32_t)>&);
+    // Appends the source's events after this view's head and verifies ONLY
+    // those, exactly as a full build would. Consumes the view: returns null
+    // (view untouched) unless the caller held the only reference; any
+    // continuity or validation failure throws and the material is discarded.
+    static std::shared_ptr<const RuntimeAccountReplay> ExtendTail(
+        std::shared_ptr<const RuntimeAccountReplay>&&,const Source&);
 private:
     friend struct RuntimeAccountReplayTestAccess;
     static std::shared_ptr<const RuntimeAccountReplay> Capture(const Source&);
-    static std::shared_ptr<const RuntimeAccountReplay> BuildTail(std::shared_ptr<Data>);
+    static std::shared_ptr<const RuntimeAccountReplay> BuildTail(std::shared_ptr<Data>,uint64_t first=1);
     wallet::OrchardAccountDelivery::RestorePoint PointAt(const uint256&) const;
     explicit RuntimeAccountReplay(std::shared_ptr<const Data> data):data_(std::move(data)){}
     std::shared_ptr<const Data> data_;

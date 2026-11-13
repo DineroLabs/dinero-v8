@@ -327,8 +327,9 @@ std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::BuildWithActiv
     data->Position(0,e.context.parent_hash); // Actual outbox origin, NOT activation parent or an applied event.
     return BuildTail(std::move(data));
 }
-std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::BuildTail(std::shared_ptr<Data> data){
-    for(uint64_t sequence=1;sequence<=data->head.sequence;++sequence){
+std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::BuildTail(std::shared_ptr<Data> data,uint64_t first){
+    Require(first>=1&&first<=data->head.sequence+1);
+    for(uint64_t sequence=first;sequence<=data->head.sequence;++sequence){
         const auto event=data->ReadEvent(sequence);const auto& e=*event;
         Require(e.context.height>0&&e.context.activation_height==data->activation&&Domain(e.context.domain,data->domain)&&
             (e.direction==RuntimeBlockDirection::Connect||e.direction==RuntimeBlockDirection::Disconnect));
@@ -401,6 +402,42 @@ std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::BuildTail(std:
     data->index.Freeze();
     data->spool.Freeze();data->states.Freeze();data->authorizations.Freeze();
     return std::shared_ptr<const RuntimeAccountReplay>(new RuntimeAccountReplay(std::move(data)));
+}
+std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::ExtendTail(
+        std::shared_ptr<const RuntimeAccountReplay>&& previous,const Source& source) {
+    Require(bool(previous)&&bool(source));
+    // Stores are reopened only while no other holder can observe them.
+    if(previous.use_count()!=1||previous->data_.use_count()!=1)return nullptr;
+    auto data=std::const_pointer_cast<Data>(previous->data_);previous.reset();Require(data.use_count()==1);
+    const auto old=data->head;auto page=source(old,128);
+    Require(page.head.sequence>=old.sequence&&page.head.sequence<UINT64_MAX);
+    const auto at_eof=[&](const RuntimeOutboxPage& final){
+        const auto last_handle=data->ReadEvent(data->head.sequence);const auto& last=*last_handle;
+        const bool connect=last.direction==RuntimeBlockDirection::Connect;
+        Require(final.head==data->head&&final.events.empty()&&final.after_tip&&
+            final.after_tip->first==(connect?last.context.block_hash:last.context.parent_hash)&&
+            final.after_tip->second==(connect?last.context.height:last.context.height-1));
+    };
+    if(page.head==old){
+        Require(page.next==old);at_eof(page);
+        return std::shared_ptr<const RuntimeAccountReplay>(new RuntimeAccountReplay(std::move(data)));
+    }
+    data->index.Thaw();data->spool.Thaw();data->states.Thaw();data->authorizations.Thaw();
+    const auto head=page.head;RuntimeOutboxCursor after=old;
+    for(;;){
+        Require(page.head==head&&!page.events.empty()&&page.events.size()<=128);
+        wallet::detail::RuntimeReplaySpool::Batch batch(data->spool);
+        for(auto& e:page.events){
+            Require(e.cursor.sequence==after.sequence+1&&e.previous_digest==after.digest&&e.cursor.sequence<=head.sequence);
+            after=e.cursor;
+            data->spool.Insert(wallet::detail::replay_spool_codec::EventKey(e.cursor.sequence),
+                               wallet::detail::replay_spool_codec::Encode(e));
+        }
+        Require(page.next==after);batch.Commit();if(after==head)break;
+        page=source(after,128);
+    }
+    data->head=head;at_eof(source(head,1));
+    return BuildTail(std::move(data),old.sequence+1);
 }
 RuntimeOutboxCursor RuntimeAccountReplay::Head() const{return data_->head;}
 RuntimeAccountReplay::ProfileFacts RuntimeAccountReplay::Profile()const{return {data_->domain,data_->activation};}
