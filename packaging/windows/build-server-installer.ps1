@@ -25,8 +25,8 @@ param(
     [string]$SnapshotPath       = '',
     [string]$SnapshotManifestPath = '',
     [string]$SnapshotAssetName  = '',
-    [string]$SnapshotFileName   = 'dinero-assumeutxo-148375-v5.dat',
-    [string]$SnapshotReleaseTag = 'v8.2.2',
+    [string]$SnapshotFileName   = 'dinero-assumeutxo-150521-v6-full.dat',
+    [string]$SnapshotReleaseTag = 'v8.2.3',
     [switch]$SkipBuild,
     [switch]$CiOrchardQualification
 )
@@ -197,7 +197,7 @@ function Resolve-Snapshot {
     #   2. Cached copy at $DistDir\$SnapshotAssetName
     #   3. Download $SnapshotAssetName from the v8 release tagged by -SnapshotReleaseTag.
     #
-    # Default is the recent height-148375 v5 snapshot. The daemon
+    # Default is the height-150521 full-v6 snapshot. The daemon
     # verifies its checksum, selected header-chain commitment and burial.
     # Existing installs keep their prior dinero.conf and datadir snapshot, so an
     # in-progress older lifecycle is not rewritten by an installer upgrade. When
@@ -262,6 +262,20 @@ function Resolve-SnapshotManifest([string]$SnapshotSourcePath) {
         }
     }
     throw "No adjacent manifest found for AssumeUTXO snapshot asset $SnapshotAssetName"
+}
+
+function Resolve-PrimaryPublisherAsset([string]$SnapshotSourcePath, [string]$AssetName) {
+    $adjacent = Join-Path (Split-Path -Parent $SnapshotSourcePath) $AssetName
+    if (Test-Path $adjacent) { return (Resolve-Path $adjacent).Path }
+    $cached = Join-Path $DistDir $AssetName
+    if (Test-Path $cached) { return $cached }
+    $url = "https://github.com/DineroLabs/dinero-v8/releases/download/$SnapshotReleaseTag/$AssetName"
+    try { Invoke-WebRequest $url -OutFile $cached -ErrorAction Stop }
+    catch {
+        if (Test-Path $cached) { Remove-Item $cached -Force }
+        throw "Required publisher provenance unavailable: $AssetName"
+    }
+    return $cached
 }
 
 function Assert-SnapshotManifest([string]$DataPath, [string]$ManifestPath) {
@@ -389,6 +403,15 @@ Copy-Item $snapshot (Join-Path $Stage $SnapshotFileName)
 Write-Host "  $SnapshotFileName"
 $snapshotManifest = Resolve-SnapshotManifest $snapshot
 Assert-SnapshotManifest $snapshot $snapshotManifest
+# Qualify any full-v6 primary by its profile suffix, then let the exact catalog
+# pin reject a stale or unexpected height. An exact-name guard can silently
+# skip verification when the primary is retargeted for the next release.
+if ($SnapshotFileName -match '-v6-full\.dat$') {
+    $publisherManifest = Resolve-PrimaryPublisherAsset $snapshot "$SnapshotFileName.publisher.manifest.json"
+    $publisherSignature = Resolve-PrimaryPublisherAsset $snapshot "$SnapshotFileName.publisher.manifest.sig"
+    & python (Join-Path $ProjectRoot 'packaging\snapshot\check_desktop_primary.py') --payload $snapshot --manifest $snapshotManifest --expected-name $SnapshotFileName --publisher-manifest $publisherManifest --publisher-signature $publisherSignature
+    if ($LASTEXITCODE -ne 0) { throw 'Primary server snapshot is not the pinned full-v6 input.' }
+}
 Copy-Item $snapshotManifest (Join-Path $Stage "$SnapshotFileName.manifest.json")
 Write-Host "  $SnapshotFileName.manifest.json"
 

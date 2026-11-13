@@ -111,9 +111,10 @@ QStringList currentBootstrapAddnodes() {
 // All remain armed on every start. The daemon treats them as inert on an
 // ordinary synced datadir, but an interrupted first sync needs the exact old
 // artifact even after the app bundle has been upgraded.
-constexpr char kBundledSnapshotPrimary[] = "dinero-assumeutxo-148375-v5.dat";
-constexpr char kBundledSnapshotFallback[] = "dinero-assumeutxo-99677-v4.dat";
-constexpr char kBundledSnapshotLegacyFallback[] = "utxo-snapshot-65300.dat";
+constexpr char kBundledSnapshotPrimary[] = "dinero-assumeutxo-150521-v6-full.dat";
+constexpr char kBundledSnapshotFallback[] = "dinero-assumeutxo-148375-v5.dat";
+constexpr char kBundledSnapshotLegacyFallback[] = "dinero-assumeutxo-99677-v4.dat";
+constexpr char kBundledSnapshotOldestFallback[] = "utxo-snapshot-65300.dat";
 
 QString findBundledSnapshot(const char* filename) {
     // Locate a bundled snapshot across platform install layouts:
@@ -142,7 +143,8 @@ void appendAssumeUtxoSnapshotArgs(QStringList& args, const QString& datadir) {
     const auto selected = dinero::qt::SelectBundledSnapshots({
         findBundledSnapshot(kBundledSnapshotPrimary).toStdString(),
         findBundledSnapshot(kBundledSnapshotFallback).toStdString(),
-        findBundledSnapshot(kBundledSnapshotLegacyFallback).toStdString()});
+        findBundledSnapshot(kBundledSnapshotLegacyFallback).toStdString(),
+        findBundledSnapshot(kBundledSnapshotOldestFallback).toStdString()});
     const QString primary = QString::fromStdString(selected.primary);
     if (primary.isEmpty()) {
         qWarning() << "No bundled AssumeUTXO snapshot found — a fresh datadir will sync from genesis";

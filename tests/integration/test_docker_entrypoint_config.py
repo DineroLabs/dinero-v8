@@ -15,9 +15,12 @@ class DockerEntrypointConfig(unittest.TestCase):
         self.root=Path(self.temp.name);self.data=self.root/'data with spaces';self.data.mkdir()
         self.capture=self.root/'argv';stub=self.root/'bin';stub.mkdir()
         daemon=stub/'dinerod';daemon.write_text('#!/bin/sh\nprintf \'%s\\n\' "$@" > "$ARGV_CAPTURE"\n');daemon.chmod(0o700)
+        primary=self.root/'primary.dat';primary.touch()
+        fallbacks=[self.root/f'fallback-{i}.dat' for i in range(4)]
+        for fallback in fallbacks:fallback.touch()
         self.env={**os.environ,'PATH':str(stub)+os.pathsep+os.environ['PATH'],
-            'DINERO_DATADIR':str(self.data),'DINERO_SNAPSHOT':str(self.root/'missing.dat'),
-            'DINERO_SNAPSHOT_FALLBACKS':str(self.root/'missing-fallback.dat'),'ARGV_CAPTURE':str(self.capture)}
+            'DINERO_DATADIR':str(self.data),'DINERO_SNAPSHOT':str(primary),
+            'DINERO_SNAPSHOT_FALLBACKS':';'.join(map(str,fallbacks)),'ARGV_CAPTURE':str(self.capture)}
     def tearDown(self):
         self.temp.cleanup()
     def run_entrypoint(self,*args):

@@ -232,6 +232,9 @@ jobs:
           mkdir -p "$OUT"
           mkdir -p "$DEBUG_DIR"
           cp build-release/dinerod build-release/dinero-cli "$OUT/"
+          # Docker candidate and release-event qualification bind this archive
+          # to the exact source checkout, not merely a matching version string.
+          printf '%s\n' '${{ steps.ver.outputs.source_sha }}' > "$OUT/SOURCE_SHA"
           cmake --install build-release --component swap-tower --prefix "$PWD/swap-tower-install"
           cp swap-tower-install/bin/dinero-swap-tower "$OUT/"
 
@@ -263,16 +266,18 @@ jobs:
 
           python3 scripts/verify-swap-tower-binary.py "$OUT/dinero-swap-tower"
           python3 scripts/verify-orchard-package.py --daemon "$OUT/dinerod"
+          "$OUT/dinerod" --version | grep -Fx 'commit: ${{ steps.ver.outputs.source_sha }}'
           tar -czf "$OUT.tar.gz" "$OUT"
           mkdir -p tower-tar-check
           tar -xzf "$OUT.tar.gz" -C tower-tar-check
+          test "$(cat "tower-tar-check/$OUT/SOURCE_SHA")" = '${{ steps.ver.outputs.source_sha }}'
           python3 scripts/verify-swap-tower-binary.py "tower-tar-check/$OUT/dinero-swap-tower"
           python3 scripts/verify-orchard-package.py --daemon "tower-tar-check/$OUT/dinerod"
           # The symbols archive contains OUT/.debug/*.debug. Extracting both
           # archives in the same directory therefore gives GDB its standard
           # automatic debug-link layout without modifying the public binary.
           tar -czf "$DEBUG_ARCHIVE.tar.gz" -C "$DEBUG_STAGE" "$OUT"
-          sha256sum "$OUT.tar.gz" "$OUT/dinerod" "$OUT/dinero-cli" "$OUT/dinero-swap-tower" \
+          sha256sum "$OUT.tar.gz" "$OUT/dinerod" "$OUT/dinero-cli" "$OUT/dinero-swap-tower" "$OUT/SOURCE_SHA" \
             > "SHA256SUMS-linux-x86_64-$V"
           sha256sum "$DEBUG_ARCHIVE.tar.gz" > "SHA256SUMS-linux-x86_64-debug-symbols-$V"
           (

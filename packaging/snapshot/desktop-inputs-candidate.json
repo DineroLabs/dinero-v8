@@ -1,15 +1,24 @@
 {
   "schema": "dinero.desktop-snapshot-inputs.v1",
-  "purpose": "Candidate preparation only; native qualification and release admission remain required",
+  "purpose": "H150521 full-v6 desktop candidate; Linux native import/restart passed on Core 53c1eeda4, final merged release SHA still requires qualification",
   "primary": {
-    "filename": "dinero-assumeutxo-148375-v5.dat",
-    "height": 148375,
-    "format_version": 5,
-    "block_hash": "00000000af62aa1b504f2829c8c17c6b57c372267252677cf5f7d168b8437679",
-    "bytes": 68086356,
-    "sha256": "41b4bb8ee5b1b4a354b0d3bdd03b7dee4372cfecd1a8ef1bf5c01bff0ed991e7"
+    "filename": "dinero-assumeutxo-150521-v6-full.dat",
+    "height": 150521,
+    "format_version": 6,
+    "snapshot_profile": "full",
+    "block_hash": "00000003d288d8f065b63e51f83b10dcb2e2c73ddb7f90943f565d72b414fb75",
+    "bytes": 140788569,
+    "sha256": "16f66f67a814b6626481ab083aebbee7252a5d9f8381d08ed8c2d645c48175be"
   },
   "fallbacks": [
+    {
+      "filename": "dinero-assumeutxo-148375-v5.dat",
+      "height": 148375,
+      "format_version": 5,
+      "block_hash": "00000000af62aa1b504f2829c8c17c6b57c372267252677cf5f7d168b8437679",
+      "bytes": 68086356,
+      "sha256": "41b4bb8ee5b1b4a354b0d3bdd03b7dee4372cfecd1a8ef1bf5c01bff0ed991e7"
+    },
     {
       "filename": "dinero-assumeutxo-99677-v4.dat",
       "height": 99677,
