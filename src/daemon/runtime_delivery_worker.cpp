@@ -13,6 +13,7 @@
 #include <limits>
 #include <algorithm>
 #include <stdexcept>
+#include <iostream>
 
 namespace dinero {
 RuntimeDeliveryWorker::RuntimeDeliveryWorker(std::shared_ptr<ChainstateService> source,
@@ -23,7 +24,8 @@ RuntimeDeliveryWorker::RuntimeDeliveryWorker(std::shared_ptr<ChainstateService> 
     : source_(std::move(source)),wallet_(std::move(wallet)),limits_(limits) {
     if (!source_ || !limits_.intents_per_slice || limits_.intents_per_slice>1024 ||
         limits_.retry_interval<std::chrono::milliseconds(1) ||
-        limits_.retry_interval>std::chrono::minutes(1))
+        limits_.retry_interval>std::chrono::minutes(1) ||
+        !limits_.legacy_material_limit_bytes || limits_.legacy_material_limit_bytes>128*1024*1024)
         throw std::invalid_argument("Invalid runtime delivery worker owner or limits");
 }
 RuntimeDeliveryWorker::~RuntimeDeliveryWorker() { Stop(); }
@@ -93,8 +95,10 @@ void RuntimeDeliveryWorker::ObserveVault(Report& report,VaultObservationCache& l
         report.vault_height=last.height;report.vault_revision=last.revision;report.vault_tip=last.tip;
     } catch(...) {last={};/* Existing durable state remains owned; retry later. */}
 }
-void RuntimeDeliveryWorker::RecoverWallet(Report& report) const {
+void RuntimeDeliveryWorker::RecoverWallet(Report& report,
+        std::optional<uint64_t>& resource_blocked_session,uint64_t& recovery_attempts) const {
     report.wallet=WalletOutcome::Deferred;report.wallet_head.reset();
+    report.wallet_recovery_attempts=recovery_attempts;
     if (!wallet_) {report.wallet=WalletOutcome::ExplicitlyAbsent;return;}
     try {
         auto use=WalletService::AcquireWalletUse(wallet_);
@@ -104,22 +108,41 @@ void RuntimeDeliveryWorker::RecoverWallet(Report& report) const {
             if (!use->Wallet().hasActiveWallet()) {report.wallet=WalletOutcome::NoActiveWallet;return;}
             session=lease->Session();
         }
+        // The material bound is deterministic for this wallet/session. A
+        // periodic wake must not replay the full pre-activation chain again.
+        if(resource_blocked_session==session){report.wallet=WalletOutcome::ResourceLimited;return;}
+        resource_blocked_session.reset();
         auto index=ChainstateService::AcquireWalletIndexUse(source_);
+        const bool full_archive_v3=index->Index().IsFullArchiveV3MetadataOnly();
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
-        const auto mixed=source_->resumeRuntimeImportedMixedRecovery(use->Wallet(),index->Index(),session);
-        if(!mixed.ok())return;
-        if(*mixed){report.wallet=WalletOutcome::AppliedImportedMixedPrefix;
-            report.wallet_head=(*mixed)->observed_head;return;}
-        // Explicit source-composition routing, NEVER a catch/fallback after a
-        // mixed recovery failure. Imported failure remains closed/deferred.
-        const auto orchard=source_->resumeRuntimeImportedOrchardRecovery(use->Wallet(),index->Index(),session);
-        if(!orchard.ok())return;
-        if(*orchard){
-            report.wallet=WalletOutcome::AppliedOrchardPrefix;report.wallet_head=(*orchard)->observed_head;return;
+        if(!full_archive_v3) {
+            const auto mixed=source_->resumeRuntimeImportedMixedRecovery(use->Wallet(),index->Index(),session);
+            if(!mixed.ok())return;
+            if(*mixed){report.wallet=WalletOutcome::AppliedImportedMixedPrefix;
+                report.wallet_head=(*mixed)->observed_head;return;}
+            // Explicit source-composition routing, NEVER a catch/fallback
+            // after a mixed recovery failure.
+            const auto orchard=source_->resumeRuntimeImportedOrchardRecovery(use->Wallet(),index->Index(),session);
+            if(!orchard.ok())return;
+            if(*orchard){
+                report.wallet=WalletOutcome::AppliedOrchardPrefix;report.wallet_head=(*orchard)->observed_head;return;
+            }
         }
 #endif
-        const auto recovered=source_->resumeRuntimeWalletRecoveryIfNeeded(use->Wallet(),index->Index(),session);
-        if (!recovered.ok()) return;
+        if(recovery_attempts!=std::numeric_limits<uint64_t>::max())++recovery_attempts;
+        report.wallet_recovery_attempts=recovery_attempts;
+        const auto recovered=full_archive_v3 ?
+            source_->resumeRuntimeWalletRecoveryV3IfNeeded(use->Wallet(),index->Index(),session,
+                limits_.legacy_material_limit_bytes) :
+            source_->resumeRuntimeWalletRecoveryIfNeeded(use->Wallet(),index->Index(),session,
+                limits_.legacy_material_limit_bytes);
+        if (!recovered.ok()) {
+            if(recovered.status()==Status::ResourceLimit){
+                resource_blocked_session=session;report.wallet=WalletOutcome::ResourceLimited;
+                std::cerr << "[RuntimeDeliveryWorker] Wallet recovery material limit reached; financial reads remain unavailable\n";
+            }
+            return;
+        }
         if (!*recovered) {report.wallet=WalletOutcome::NoLog;return;}
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
         report.wallet=WalletOutcome::AppliedPrefix;report.wallet_head=(*recovered)->observed_head;
@@ -134,6 +157,14 @@ void RuntimeDeliveryWorker::RestoreRetiredLegacyPendingNotes() const {
         height = source_->getBlockHeight();
     }
     if (!consensus::OrchardActiveForHeight(Params(), height)) return;
+    // A full-archive v3 index is a metadata-only owner source. Its wallet
+    // recovery is transparent-only, including the locked/un-enrolled first
+    // pass. The legacy shielded restore opens and writes a separate sidecar,
+    // outside the v3 wallet receipt, so never run it for this source type.
+    {
+        auto index=ChainstateService::AcquireWalletIndexUse(source_);
+        if (index->Index().IsFullArchiveV3MetadataOnly()) return;
+    }
     // Read the committed tip before acquiring the wallet owner. The mempool's
     // block-connected update has evicted every retired legacy spend by now.
     auto use = WalletService::AcquireWalletUse(wallet_);
@@ -166,6 +197,8 @@ bool RuntimeDeliveryWorker::ReconcileSlice(Report& report) const {
 }
 void RuntimeDeliveryWorker::Run() noexcept {
     Report pass;VaultObservationCache vault_observation;bool continue_pass=false;uint64_t slices=0;
+    std::optional<uint64_t> resource_blocked_session;
+    uint64_t recovery_attempts=0;
     try {
         for(;;) {
             bool restart=false;
@@ -177,7 +210,7 @@ void RuntimeDeliveryWorker::Run() noexcept {
             }
             if (restart) {
                 pass=Report{};
-                RecoverWallet(pass);
+                RecoverWallet(pass,resource_blocked_session,recovery_attempts);
                 try { RestoreRetiredLegacyPendingNotes(); }
                 catch (...) { /* Keep the durable note state for the next retry. */ }
                 ObserveVault(pass,vault_observation);

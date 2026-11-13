@@ -16,6 +16,7 @@
  */
 
 #include "rpc/rpc_registry.h"
+#include "rpc/legacy_transparent_freshness.h"
 #include "daemon/daemon_context.h"
 #include "daemon/services/chainstate_service.h"
 #include "daemon/services/mempool_service.h"
@@ -149,6 +150,23 @@ WalletManager* AcquireWallet(const ExecutionContext& ctx, Json& err, bool requir
     if (!ws || !ws->hasActiveWallet()) {
         err["error"] = "No active wallet";
         return nullptr;
+    }
+    // All callers requiring an unlocked wallet are fund-moving handlers.
+    // The others report shielded balances/notes or cache a newly derived
+    // address. None can authenticate Orchard state from a transparent-only
+    // recovery, and EnsureWalletRuntime below may initialize Orchard tables.
+    if (require_unlocked) {
+        if (RefuseIfLegacyTransparentSpendUnavailable(ctx, ws, err)) return nullptr;
+    } else {
+        if (RefuseIfLegacyTransparentTipNotCurrent(ctx, ws, err)) return nullptr;
+        auto use=WalletService::AcquireWalletUse(ws);
+        auto lease=use->Wallet().AcquireDatabaseLease();
+        if (lease->LegacyTransparentState()!=WalletManager::LegacyTransparentState::Absent) {
+            err["error"]="Shielded wallet state is unavailable for a transparent-only recovered wallet";
+            err["error_code"]="wallet_transparent_only_shielded_unavailable";
+            err["wallet_scope"]="legacy_transparent_only";
+            return nullptr;
+        }
     }
     auto& wm = ws->get();
     if (require_unlocked && wm.isWalletLocked()) {
@@ -1504,6 +1522,7 @@ Json rpc_wallet_shieldedbalance(const ExecutionContext& ctx, const Json& params)
     if (RejectIfShieldedNotActive(result)) return result;
     auto* wm = AcquireWallet(ctx, result, false);
     if (!wm) return result;
+    result["walletname"] = wm->current();
 
     std::string init_error;
     if (!ops::EnsureWalletRuntime(*wm, &init_error)) {

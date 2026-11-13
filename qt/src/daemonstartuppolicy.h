@@ -12,6 +12,23 @@ enum class DaemonBootstrapOwner {
     MainWindow,
 };
 
+// A verified full-archive v3 index has a complete local chain source.
+// Bundled AssumeUTXO flags belong only to the legacy/fresh-install path;
+// passing them to v3 startup changes the source profile and is refused.
+enum class WalletIndexStartupMode {
+    LegacyOrUnavailable,
+    FullArchiveV3,
+};
+
+constexpr bool ShouldArmBundledSnapshot(WalletIndexStartupMode mode) noexcept {
+    return mode != WalletIndexStartupMode::FullArchiveV3;
+}
+
+constexpr bool ShouldOfferWalletIndexV3Upgrade(bool eligibleV2,
+                                               bool explicitPilotOptIn) noexcept {
+    return eligibleV2 && explicitPilotOptIn;
+}
+
 inline constexpr DaemonBootstrapOwner kProductionDaemonBootstrapOwner =
     DaemonBootstrapOwner::ApplicationMain;
 

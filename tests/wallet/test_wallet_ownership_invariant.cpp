@@ -20,10 +20,14 @@
 #include <filesystem>
 #include <fstream>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <stdexcept>
+#include <string_view>
 
 #include "wallet/utxo_index.h"
+#include "wallet/wallet_index_v3_schema.h"
 #include "wallet/canonical_wallet_utxo.h"
 #include "wallet/taproot_tx_signer.h"
 #include "wallet/bip143_signer.h"
@@ -477,6 +481,398 @@ TEST_F(WalletOwnershipInvariantTest, TypedReadsPreserveMetadataAndRefuseIncomple
     EXPECT_THROW((void)utxo_index_->GetUTXO(coin.txid,coin.vout),std::runtime_error);
     sqlite3_set_authorizer(db,nullptr,nullptr);
     EXPECT_TRUE(utxo_index_->GetUTXO(coin.txid,coin.vout));EXPECT_EQ(utxo_index_->GetUnspentUTXOs().size(),2u);
+}
+
+TEST(WalletIndexV3Schema, MixedLegacyRowsAndMetadataSurviveTheVersionedUpgrade) {
+    const auto root=std::filesystem::temp_directory_path()/
+        ("wallet-index-v3-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    struct Cleanup { std::filesystem::path path; ~Cleanup(){std::error_code ec;std::filesystem::remove_all(path,ec);} } cleanup{root};
+    const auto path=root/"utxo";
+    const auto script=[](uint8_t marker){std::vector<uint8_t> s{0x51,0x20};s.insert(s.end(),32,marker);return s;};
+    {
+        UTXOIndex index(path.string());ASSERT_TRUE(index.Initialize());
+        for(int n=0;n<2;++n){
+            auto spk=script(uint8_t(n+1));const std::string route="m/86'/1448'/0'/0/"+std::to_string(n);
+            index.RegisterAddress(spk,route);
+            WalletUTXO row(TxId(uint256::FromHexUnsafe(std::string(64,char('a'+n)))),0,
+                AmountUna::Una(uint64_t(n+1)*100000),spk,route,100+n);
+            ASSERT_TRUE(index.AddUTXO(row));
+        }
+        ASSERT_TRUE(index.SetMetadata("v3-test-chainstate-marker","preserve-me"));
+    }
+    {
+        sqlite3* db=nullptr;
+        ASSERT_EQ(sqlite3_open_v2(path.string().c_str(),&db,SQLITE_OPEN_READWRITE,nullptr),SQLITE_OK);
+        ASSERT_EQ(sqlite3_exec(db,R"(
+            CREATE INDEX wallet_v2_custom_height ON wallet_utxos(height,value);
+            CREATE TRIGGER wallet_v2_custom_change AFTER UPDATE ON wallet_utxos BEGIN
+                INSERT OR REPLACE INTO utxo_metadata(key,value) VALUES('v2-custom-change','seen');
+            END;
+        )",nullptr,nullptr,nullptr),SQLITE_OK);
+        ASSERT_EQ(sqlite3_close(db),SQLITE_OK);
+    }
+    const auto inspect=[](const std::filesystem::path& file,const char* sql){
+        sqlite3* db=nullptr;
+        if(sqlite3_open_v2(file.string().c_str(),&db,SQLITE_OPEN_READONLY,nullptr)!=SQLITE_OK)
+            throw std::runtime_error("index inspection open failed");
+        std::unique_ptr<sqlite3,decltype(&sqlite3_close)> close(db,sqlite3_close);
+        sqlite3_stmt* raw=nullptr;
+        if(sqlite3_prepare_v2(db,sql,-1,&raw,nullptr)!=SQLITE_OK)
+            throw std::runtime_error("index inspection prepare failed");
+        std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> stmt(raw,sqlite3_finalize);
+        std::string rows;int rc;
+        while((rc=sqlite3_step(stmt.get()))==SQLITE_ROW){
+            for(int col=0;col<sqlite3_column_count(stmt.get());++col){
+                const auto type=sqlite3_column_type(stmt.get(),col);rows+=char('0'+type);
+                if(type==SQLITE_INTEGER){rows+=std::to_string(sqlite3_column_int64(stmt.get(),col))+":";continue;}
+                const auto* bytes=static_cast<const char*>(sqlite3_column_blob(stmt.get(),col));
+                const int size=sqlite3_column_bytes(stmt.get(),col);
+                rows+=std::to_string(size)+":";
+                if(bytes&&size>0)rows.append(bytes,size);
+            }
+            rows.push_back('\n');
+        }
+        if(rc!=SQLITE_DONE)throw std::runtime_error("index inspection incomplete");
+        return rows;
+    };
+    const auto old_rows=inspect(path,"SELECT * FROM wallet_utxos ORDER BY txid,vout");
+    const auto old_metadata=inspect(path,"SELECT key,value FROM utxo_metadata ORDER BY key");
+    {
+        UTXOIndex premature(path.string());
+        EXPECT_FALSE(premature.InitializeFullArchiveV3MetadataOnly());
+        EXPECT_EQ(inspect(path,"PRAGMA user_version"),"12:\n");
+    }
+    const auto upgraded=UpgradeFullArchiveWalletIndexSchemaToV3(path);
+    EXPECT_EQ(upgraded.quarantined_rows,2u);
+    EXPECT_TRUE(std::filesystem::exists(upgraded.rollback_backup));
+    EXPECT_EQ(inspect(upgraded.rollback_backup,"PRAGMA user_version"),"12:\n");
+    EXPECT_EQ(inspect(upgraded.rollback_backup,"SELECT * FROM wallet_utxos ORDER BY txid,vout"),old_rows);
+    EXPECT_EQ(inspect(path,"PRAGMA user_version"),"13:\n");
+    EXPECT_EQ(inspect(path,"SELECT * FROM wallet_utxos_legacy_v2 ORDER BY txid,vout"),old_rows);
+    EXPECT_EQ(inspect(path,"SELECT key,value FROM utxo_metadata WHERE key NOT LIKE 'wallet_index_v3:%' ORDER BY key"),old_metadata);
+    EXPECT_EQ(inspect(path,"SELECT count(*) FROM utxo_metadata WHERE key='wallet_index_v3:rollback_backup_digest'"),"11:\n");
+    EXPECT_TRUE(inspect(path,"SELECT * FROM wallet_utxos").empty());
+    {
+        UTXOIndex metadata(path.string());
+        ASSERT_TRUE(metadata.InitializeFullArchiveV3MetadataOnly());
+        EXPECT_EQ(metadata.GetMetadata("v3-test-chainstate-marker"),"preserve-me");
+        EXPECT_FALSE(metadata.GetMetadata("truly-absent-reorg-marker"));
+        auto* metadata_db=UTXOIndexSchemaTestAccess::Connection(metadata);
+        ASSERT_EQ(sqlite3_set_authorizer(metadata_db,[](void*,int action,const char* table,const char*,const char*,const char*) {
+            return action==SQLITE_READ && table && std::string_view(table)=="utxo_metadata" ? SQLITE_DENY : SQLITE_OK;
+        },nullptr),SQLITE_OK);
+        EXPECT_THROW((void)metadata.GetMetadata("reorg_in_progress"),std::runtime_error);
+        ASSERT_EQ(sqlite3_set_authorizer(metadata_db,nullptr,nullptr),SQLITE_OK);
+        ASSERT_TRUE(metadata.SetMetadata("assumeutxo_v3_probe","startup"));
+        EXPECT_EQ(metadata.ReadAssumedStartupMetadata().at("assumeutxo_v3_probe"),"startup");
+        EXPECT_THROW((void)metadata.GetMetadata("runtime_delivery:v1:receipt"),std::runtime_error);
+        EXPECT_THROW((void)metadata.GetUnspentUTXOs(),std::runtime_error);
+        EXPECT_THROW((void)metadata.GetBalance(),std::runtime_error);
+        EXPECT_THROW((void)metadata.GetUTXOCount(),std::runtime_error);
+        EXPECT_THROW((void)metadata.ClearAll(),std::runtime_error);
+        EXPECT_THROW((void)metadata.BeginTransaction(),std::runtime_error);
+        EXPECT_FALSE(metadata.Initialize()); // Cannot change mode under a live handle.
+        EXPECT_FALSE(metadata.SetMetadata("wallet_index_v3:rollback_backup_digest","forged"));
+        ASSERT_TRUE(metadata.DeleteMetadata("assumeutxo_v3_probe"));
+    }
+    {
+        UTXOIndex reopened(path.string());
+        ASSERT_TRUE(reopened.InitializeFullArchiveV3MetadataOnly());
+        EXPECT_EQ(reopened.GetMetadata("v3-test-chainstate-marker"),"preserve-me");
+        EXPECT_FALSE(reopened.GetMetadata("assumeutxo_v3_probe"));
+        EXPECT_EQ(inspect(path,"SELECT count(*) FROM wallet_index_receipts_v3"),"10:\n");
+        // No wallet owner has been enrolled. Metadata availability is not a
+        // claim that any quarantined coin belongs to the selected wallet.
+    }
+    {
+        UTXOIndex old_binary(path.string());
+        EXPECT_FALSE(old_binary.Initialize()); // v2 must refuse, not reinterpret, v3 rows.
+    }
+    EXPECT_EQ(inspect(path,"SELECT type,name FROM sqlite_schema WHERE tbl_name='wallet_utxos_legacy_v2' "
+                          "AND name LIKE 'wallet_v2_custom_%' ORDER BY name"),
+              inspect(upgraded.rollback_backup,"SELECT type,name FROM sqlite_schema WHERE tbl_name='wallet_utxos' "
+                          "AND name LIKE 'wallet_v2_custom_%' ORDER BY name"));
+    {
+        // The rollback artifact must remain consumable by the v2 index code.
+        UTXOIndex old_binary(upgraded.rollback_backup.string());
+        ASSERT_TRUE(old_binary.Initialize());
+        EXPECT_EQ(old_binary.GetUnspentUTXOs().size(),2u);
+    }
+    EXPECT_EQ(UpgradeFullArchiveWalletIndexSchemaToV3(path).quarantined_rows,2u);
+    {
+        sqlite3* db=nullptr;
+        ASSERT_EQ(sqlite3_open_v2(path.string().c_str(),&db,SQLITE_OPEN_READWRITE,nullptr),SQLITE_OK);
+        ASSERT_EQ(sqlite3_exec(db,"DROP TRIGGER runtime_delivery_v3_insert",nullptr,nullptr,nullptr),SQLITE_OK);
+        ASSERT_EQ(sqlite3_close(db),SQLITE_OK);
+    }
+    EXPECT_THROW(UpgradeFullArchiveWalletIndexSchemaToV3(path),std::runtime_error);
+}
+
+TEST(WalletIndexV3Schema, OptionalRealIndexCopiesReadOnlyBeforeMigration) {
+    const char* supplied=std::getenv("DINERO_V3_READONLY_PILOT_INDEX");
+    if(!supplied||!*supplied)GTEST_SKIP() << "No read-only pilot index supplied";
+    const std::filesystem::path source_path=std::filesystem::u8path(supplied);
+    const auto root=std::filesystem::temp_directory_path()/
+        ("wallet-index-v3-pilot-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    struct Cleanup {std::filesystem::path path;~Cleanup(){std::error_code ec;std::filesystem::remove_all(path,ec);}} cleanup{root};
+    const auto copy=std::filesystem::canonical(root)/"utxo";
+    const auto source_utf8=source_path.u8string();
+    const std::string source_name(reinterpret_cast<const char*>(source_utf8.data()),source_utf8.size());
+    sqlite3 *source=nullptr,*target=nullptr;
+    ASSERT_EQ(sqlite3_open_v2(source_name.c_str(),&source,SQLITE_OPEN_READONLY|SQLITE_OPEN_NOFOLLOW,nullptr),SQLITE_OK);
+    std::unique_ptr<sqlite3,decltype(&sqlite3_close)> source_db(source,sqlite3_close);
+    ASSERT_EQ(sqlite3_db_readonly(source_db.get(),"main"),1);
+    const auto count=[&](sqlite3* db,const char* query){
+        sqlite3_stmt* raw=nullptr;
+        if(sqlite3_prepare_v2(db,query,-1,&raw,nullptr)!=SQLITE_OK)throw std::runtime_error("pilot query unavailable");
+        std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> q(raw,sqlite3_finalize);
+        if(sqlite3_step(q.get())!=SQLITE_ROW||sqlite3_column_type(q.get(),0)!=SQLITE_INTEGER)
+            throw std::runtime_error("pilot count unavailable");
+        const auto n=sqlite3_column_int64(q.get(),0);
+        if(n<0||sqlite3_step(q.get())!=SQLITE_DONE)throw std::runtime_error("pilot count incomplete");
+        return n;
+    };
+    ASSERT_EQ(count(source_db.get(),"PRAGMA user_version"),2);
+    const auto original_rows=count(source_db.get(),"SELECT count(*) FROM wallet_utxos");
+    ASSERT_GT(original_rows,0);
+    ASSERT_EQ(sqlite3_open_v2(copy.string().c_str(),&target,
+        SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE|SQLITE_OPEN_NOFOLLOW,nullptr),SQLITE_OK);
+    std::unique_ptr<sqlite3,decltype(&sqlite3_close)> target_db(target,sqlite3_close);
+    sqlite3_backup* backup=sqlite3_backup_init(target_db.get(),"main",source_db.get(),"main");
+    ASSERT_NE(backup,nullptr);
+    const auto copied=sqlite3_backup_step(backup,-1);
+    const auto finished=sqlite3_backup_finish(backup);
+    ASSERT_EQ(copied,SQLITE_DONE);
+    ASSERT_EQ(finished,SQLITE_OK);
+    ASSERT_EQ(count(target_db.get(),"SELECT count(*) FROM wallet_utxos"),original_rows);
+    target_db.reset(); // The upgrade owns a fresh, exclusive scratch connection.
+    const auto migrated=UpgradeFullArchiveWalletIndexSchemaToV3(copy);
+    EXPECT_EQ(migrated.quarantined_rows,uint64_t(original_rows));
+    {
+        UTXOIndex old(copy.string());EXPECT_FALSE(old.Initialize());
+        UTXOIndex metadata(copy.string());ASSERT_TRUE(metadata.InitializeFullArchiveV3MetadataOnly());
+        EXPECT_THROW((void)metadata.GetUnspentUTXOs(),std::runtime_error);
+    }
+    {
+        UTXOIndex rollback(migrated.rollback_backup.string());ASSERT_TRUE(rollback.Initialize());
+        EXPECT_EQ(count(source_db.get(),"SELECT count(*) FROM wallet_utxos"),original_rows);
+        EXPECT_EQ(count(source_db.get(),"PRAGMA user_version"),2);
+    }
+}
+
+TEST(WalletIndexV3Schema, NonAsciiIndexPathUsesTheSameDatabaseOnEveryPlatform) {
+    const auto root=std::filesystem::temp_directory_path()/
+        ("wallet-index-v3-unicode-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    struct Cleanup { std::filesystem::path path; ~Cleanup(){std::error_code ec;std::filesystem::remove_all(path,ec);} } cleanup{root};
+    const auto ascii=root/"source.sqlite";
+    const auto unicode=root/std::filesystem::path(u8"Rückkehr-钱包.sqlite");
+    {
+        UTXOIndex index(ascii.string());ASSERT_TRUE(index.Initialize());
+        ASSERT_TRUE(index.SetMetadata("unicode-path-check","kept"));
+    }
+    auto open_utf8=[](const std::filesystem::path& path,int flags){
+        const auto bytes=path.u8string();
+        const std::string utf8(reinterpret_cast<const char*>(bytes.data()),bytes.size());
+        sqlite3* db=nullptr;
+        if(sqlite3_open_v2(utf8.c_str(),&db,flags,nullptr)!=SQLITE_OK){sqlite3_close(db);return static_cast<sqlite3*>(nullptr);}
+        return db;
+    };
+    sqlite3* source=open_utf8(ascii,SQLITE_OPEN_READONLY);
+    sqlite3* destination=open_utf8(unicode,SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE);
+    ASSERT_NE(source,nullptr);ASSERT_NE(destination,nullptr);
+    sqlite3_backup* copy=sqlite3_backup_init(destination,"main",source,"main");
+    ASSERT_NE(copy,nullptr);
+    EXPECT_EQ(sqlite3_backup_step(copy,-1),SQLITE_DONE);
+    EXPECT_EQ(sqlite3_backup_finish(copy),SQLITE_OK);
+    EXPECT_EQ(sqlite3_close(source),SQLITE_OK);EXPECT_EQ(sqlite3_close(destination),SQLITE_OK);
+    const auto upgraded=UpgradeFullArchiveWalletIndexSchemaToV3(unicode);
+    EXPECT_TRUE(std::filesystem::is_regular_file(upgraded.rollback_backup));
+    const auto unicode_bytes=unicode.u8string();
+    const std::string unicode_name(reinterpret_cast<const char*>(unicode_bytes.data()),unicode_bytes.size());
+    {
+        UTXOIndex metadata(unicode_name);
+        ASSERT_TRUE(metadata.InitializeFullArchiveV3MetadataOnly());
+        EXPECT_EQ(metadata.GetMetadata("unicode-path-check"),"kept");
+    }
+    {
+        UTXOIndex reopened(unicode_name);
+        ASSERT_TRUE(reopened.InitializeFullArchiveV3MetadataOnly());
+        EXPECT_EQ(reopened.GetMetadata("unicode-path-check"),"kept");
+    }
+    sqlite3* current=open_utf8(unicode,SQLITE_OPEN_READONLY);
+    ASSERT_NE(current,nullptr);
+    sqlite3_stmt* version=nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(current,"PRAGMA user_version",-1,&version,nullptr),SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(version),SQLITE_ROW);EXPECT_EQ(sqlite3_column_int(version,0),3);
+    EXPECT_EQ(sqlite3_finalize(version),SQLITE_OK);
+    EXPECT_EQ(sqlite3_close(current),SQLITE_OK);
+}
+
+TEST(WalletIndexV3Schema, MetadataOpenRefusesLeafLinkBeforeChangingItsTarget) {
+    const auto root=std::filesystem::temp_directory_path()/
+        ("wallet-index-v3-link-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    struct Cleanup {std::filesystem::path path;~Cleanup(){std::error_code ec;std::filesystem::remove_all(path,ec);}} cleanup{root};
+    const auto target=root/"target.sqlite",link=root/"linked.sqlite";
+    sqlite3* db=nullptr;
+    ASSERT_EQ(sqlite3_open_v2(target.string().c_str(),&db,SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE,nullptr),SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(db,"CREATE TABLE untouched(value TEXT); INSERT INTO untouched VALUES('keep')",nullptr,nullptr,nullptr),SQLITE_OK);
+    ASSERT_EQ(sqlite3_close(db),SQLITE_OK);
+    std::error_code link_error;
+    std::filesystem::create_symlink(target,link,link_error);
+    if(link_error)GTEST_SKIP() << "Leaf symlinks unavailable on this host";
+    auto journal_mode=[&](){
+        sqlite3* opened=nullptr;
+        if(sqlite3_open_v2(target.string().c_str(),&opened,SQLITE_OPEN_READONLY,nullptr)!=SQLITE_OK)
+            throw std::runtime_error("Link target read unavailable");
+        sqlite3_stmt* q=nullptr;
+        if(sqlite3_prepare_v2(opened,"PRAGMA journal_mode",-1,&q,nullptr)!=SQLITE_OK)
+            throw std::runtime_error("Link target journal read unavailable");
+        if(sqlite3_step(q)!=SQLITE_ROW)throw std::runtime_error("Link target journal row unavailable");
+        const std::string result(reinterpret_cast<const char*>(sqlite3_column_text(q,0)));
+        sqlite3_finalize(q);sqlite3_close(opened);return result;
+    };
+    ASSERT_EQ(journal_mode(),"delete");
+    UTXOIndex metadata(link.string());
+    EXPECT_FALSE(metadata.InitializeFullArchiveV3MetadataOnly());
+    EXPECT_EQ(journal_mode(),"delete");
+    EXPECT_FALSE(std::filesystem::exists(target.string()+"-wal"));
+    EXPECT_FALSE(std::filesystem::exists(target.string()+"-shm"));
+}
+
+TEST(WalletIndexV3Schema, RetryAfterV2WritePreservesTheFirstRollbackCopy) {
+    const auto root=std::filesystem::temp_directory_path()/
+        ("wallet-index-v3-retry-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    struct Cleanup { std::filesystem::path path; ~Cleanup(){std::error_code ec;std::filesystem::remove_all(path,ec);} } cleanup{root};
+    const auto first=root/"first.sqlite",retry=root/"retry.sqlite";
+    {
+        UTXOIndex index(first.string());ASSERT_TRUE(index.Initialize());
+        ASSERT_TRUE(index.SetMetadata("retry-fixture","before"));
+    }
+    sqlite3* from=nullptr;sqlite3* to=nullptr;
+    ASSERT_EQ(sqlite3_open_v2(first.string().c_str(),&from,SQLITE_OPEN_READONLY,nullptr),SQLITE_OK);
+    ASSERT_EQ(sqlite3_open_v2(retry.string().c_str(),&to,SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE,nullptr),SQLITE_OK);
+    sqlite3_backup* copy=sqlite3_backup_init(to,"main",from,"main");ASSERT_NE(copy,nullptr);
+    ASSERT_EQ(sqlite3_backup_step(copy,-1),SQLITE_DONE);
+    ASSERT_EQ(sqlite3_backup_finish(copy),SQLITE_OK);
+    ASSERT_EQ(sqlite3_close(from),SQLITE_OK);ASSERT_EQ(sqlite3_close(to),SQLITE_OK);
+    const auto first_upgrade=UpgradeFullArchiveWalletIndexSchemaToV3(first);
+    auto stale_backup=retry;
+    stale_backup+=first_upgrade.rollback_backup.filename().string().substr(first.filename().string().size());
+    ASSERT_TRUE(std::filesystem::copy_file(first_upgrade.rollback_backup,stale_backup));
+    {
+        UTXOIndex index(retry.string());ASSERT_TRUE(index.Initialize());
+        ASSERT_TRUE(index.SetMetadata("retry-fixture","after"));
+    }
+    const auto retry_upgrade=UpgradeFullArchiveWalletIndexSchemaToV3(retry);
+    EXPECT_NE(retry_upgrade.rollback_backup,stale_backup);
+    EXPECT_TRUE(std::filesystem::is_regular_file(stale_backup));
+    EXPECT_TRUE(std::filesystem::is_regular_file(retry_upgrade.rollback_backup));
+    EXPECT_EQ(UpgradeFullArchiveWalletIndexSchemaToV3(retry).rollback_backup,retry_upgrade.rollback_backup);
+    {
+        UTXOIndex old(stale_backup.string());ASSERT_TRUE(old.Initialize());
+        EXPECT_EQ(old.GetMetadata("retry-fixture"),"before");
+    }
+    {
+        UTXOIndex current(retry_upgrade.rollback_backup.string());ASSERT_TRUE(current.Initialize());
+        EXPECT_EQ(current.GetMetadata("retry-fixture"),"after");
+    }
+    const auto blocked=root/"blocked.sqlite";
+    ASSERT_TRUE(std::filesystem::copy_file(retry_upgrade.rollback_backup,blocked));
+    auto blocked_backup=blocked;
+    blocked_backup+=retry_upgrade.rollback_backup.filename().string().substr(retry.filename().string().size());
+    ASSERT_TRUE(std::filesystem::create_directory(blocked_backup));
+    EXPECT_THROW(UpgradeFullArchiveWalletIndexSchemaToV3(blocked),std::exception);
+    {
+        UTXOIndex still_v2(blocked.string());ASSERT_TRUE(still_v2.Initialize());
+        EXPECT_EQ(still_v2.GetMetadata("retry-fixture"),"after");
+        EXPECT_FALSE(still_v2.GetMetadata("wallet_index_v3:rollback_backup_digest"));
+    }
+    ASSERT_TRUE(std::filesystem::remove(blocked_backup));
+    EXPECT_TRUE(std::filesystem::is_regular_file(UpgradeFullArchiveWalletIndexSchemaToV3(blocked).rollback_backup));
+}
+
+TEST(WalletIndexV3Schema, GuardOnlyV2ChangeCannotReuseOrSilentlyReopenWithOldBackup) {
+    const auto root=std::filesystem::temp_directory_path()/
+        ("wallet-index-v3-guard-retry-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    struct Cleanup {std::filesystem::path path;~Cleanup(){std::error_code ec;std::filesystem::remove_all(path,ec);}} cleanup{root};
+    const auto first=root/"first.sqlite",retry=root/"retry.sqlite";
+    {UTXOIndex index(first.string());ASSERT_TRUE(index.Initialize());}
+    sqlite3* old=nullptr;
+    ASSERT_EQ(sqlite3_open_v2(first.string().c_str(),&old,SQLITE_OPEN_READWRITE,nullptr),SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(old,"CREATE INDEX wallet_guard_probe ON wallet_utxos(height)",nullptr,nullptr,nullptr),SQLITE_OK);
+    ASSERT_EQ(sqlite3_close(old),SQLITE_OK);
+    sqlite3 *from=nullptr,*to=nullptr;
+    ASSERT_EQ(sqlite3_open_v2(first.string().c_str(),&from,SQLITE_OPEN_READONLY,nullptr),SQLITE_OK);
+    ASSERT_EQ(sqlite3_open_v2(retry.string().c_str(),&to,SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE,nullptr),SQLITE_OK);
+    auto* copy=sqlite3_backup_init(to,"main",from,"main");ASSERT_NE(copy,nullptr);
+    ASSERT_EQ(sqlite3_backup_step(copy,-1),SQLITE_DONE);ASSERT_EQ(sqlite3_backup_finish(copy),SQLITE_OK);
+    ASSERT_EQ(sqlite3_close(from),SQLITE_OK);ASSERT_EQ(sqlite3_close(to),SQLITE_OK);
+    const auto first_upgrade=UpgradeFullArchiveWalletIndexSchemaToV3(first);
+    auto stale_backup=retry;
+    stale_backup+=first_upgrade.rollback_backup.filename().string().substr(first.filename().string().size());
+    ASSERT_TRUE(std::filesystem::copy_file(first_upgrade.rollback_backup,stale_backup));
+    ASSERT_EQ(sqlite3_open_v2(retry.string().c_str(),&old,SQLITE_OPEN_READWRITE,nullptr),SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(old,"DROP INDEX wallet_guard_probe; CREATE INDEX wallet_guard_probe ON wallet_utxos(value)",
+        nullptr,nullptr,nullptr),SQLITE_OK);
+    ASSERT_EQ(sqlite3_close(old),SQLITE_OK);
+    const auto retried=UpgradeFullArchiveWalletIndexSchemaToV3(retry);
+    EXPECT_NE(retried.rollback_backup,stale_backup);
+    EXPECT_TRUE(std::filesystem::is_regular_file(stale_backup));
+    EXPECT_EQ(RequireFullArchiveWalletIndexV3(retry).rollback_backup,retried.rollback_backup);
+    ASSERT_EQ(sqlite3_open_v2(retry.string().c_str(),&old,SQLITE_OPEN_READWRITE,nullptr),SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(old,"DROP INDEX wallet_guard_probe; CREATE INDEX wallet_guard_probe ON wallet_utxos_legacy_v2(height)",
+        nullptr,nullptr,nullptr),SQLITE_OK);
+    ASSERT_EQ(sqlite3_close(old),SQLITE_OK);
+    EXPECT_THROW((void)RequireFullArchiveWalletIndexV3(retry),std::runtime_error);
+}
+
+TEST(WalletIndexV3Schema, DistinctWalletRowsAndEmptyReceiptAreInvalidatedByChainReset) {
+    const auto root=std::filesystem::temp_directory_path()/
+        ("wallet-index-v3-reset-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    struct Cleanup { std::filesystem::path path; ~Cleanup(){std::error_code ec;std::filesystem::remove_all(path,ec);} } cleanup{root};
+    const auto path=root/"utxo";
+    {UTXOIndex index(path.string());ASSERT_TRUE(index.Initialize());ASSERT_TRUE(index.SetMetadata("chain-marker","retained-in-backup"));}
+    const auto upgraded=UpgradeFullArchiveWalletIndexSchemaToV3(path);
+    const auto a=std::string(64,'a'),b=std::string(64,'b'),c=std::string(64,'c');
+    sqlite3* db=nullptr;ASSERT_EQ(sqlite3_open_v2(path.string().c_str(),&db,SQLITE_OPEN_READWRITE,nullptr),SQLITE_OK);
+    const auto run=[&](const std::string& sql){return sqlite3_exec(db,sql.c_str(),nullptr,nullptr,nullptr);};
+    const auto one=[&](const std::string& sql){
+        sqlite3_stmt* q=nullptr;if(sqlite3_prepare_v2(db,sql.c_str(),-1,&q,nullptr)!=SQLITE_OK)throw std::runtime_error("v3 test prepare failed");
+        const auto rc=sqlite3_step(q);
+        if(rc!=SQLITE_ROW||sqlite3_column_type(q,0)!=SQLITE_INTEGER){sqlite3_finalize(q);throw std::runtime_error("v3 test row missing");}
+        const auto value=sqlite3_column_int64(q,0);sqlite3_finalize(q);return value;
+    };
+    const auto coin=[&](const std::string& owner,int value){
+        return "INSERT INTO wallet_utxos(wallet_identity,txid,vout,value,spk,path,height) VALUES(X'"+owner+
+            "',printf('%064x',77),0,"+std::to_string(value)+",X'51201122','m/86/0',101)";
+    };
+    EXPECT_NE(run(coin(std::string(64,'0'),999)),SQLITE_OK);
+    ASSERT_EQ(run(coin(a,100)),SQLITE_OK);ASSERT_EQ(run(coin(b,200)),SQLITE_OK);
+    EXPECT_EQ(one("SELECT value FROM wallet_utxos WHERE wallet_identity=X'"+a+"'"),100);
+    EXPECT_EQ(one("SELECT value FROM wallet_utxos WHERE wallet_identity=X'"+b+"'"),200);
+    EXPECT_EQ(one("SELECT count(*) FROM wallet_utxos"),2);
+    for(const auto& owner:{a,b,c})
+        ASSERT_EQ(run("INSERT INTO wallet_index_receipts_v3(wallet_identity,receipt) VALUES(X'"+owner+"',X'01')"),SQLITE_OK);
+    ASSERT_EQ(run("UPDATE wallet_utxos SET value=101 WHERE wallet_identity=X'"+a+"'"),SQLITE_OK);
+    EXPECT_EQ(one("SELECT invalidated FROM wallet_index_receipts_v3 WHERE wallet_identity=X'"+a+"'"),1);
+    EXPECT_EQ(one("SELECT invalidated FROM wallet_index_receipts_v3 WHERE wallet_identity=X'"+b+"'"),0);
+    EXPECT_EQ(one("SELECT invalidated FROM wallet_index_receipts_v3 WHERE wallet_identity=X'"+c+"'"),0);
+    ASSERT_EQ(sqlite3_close(db),SQLITE_OK);
+    ResetFullArchiveWalletIndexV3(path);
+    ASSERT_EQ(sqlite3_open_v2(path.string().c_str(),&db,SQLITE_OPEN_READONLY,nullptr),SQLITE_OK);
+    EXPECT_EQ(one("SELECT count(*) FROM wallet_utxos"),0);
+    EXPECT_EQ(one("SELECT count(*) FROM wallet_index_receipts_v3"),0);
+    EXPECT_EQ(one("SELECT count(*) FROM utxo_metadata WHERE key='chain-marker'"),0);
+    EXPECT_EQ(one("SELECT count(*) FROM utxo_metadata WHERE key='wallet_index_v3:rollback_backup_digest'"),1);
+    ASSERT_EQ(sqlite3_close(db),SQLITE_OK);
+    EXPECT_EQ(UpgradeFullArchiveWalletIndexSchemaToV3(path).rollback_backup,upgraded.rollback_backup);
 }
 } // namespace dinero::wallet::test
 

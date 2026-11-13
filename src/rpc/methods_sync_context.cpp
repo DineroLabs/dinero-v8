@@ -21,12 +21,33 @@
 
 #include "din_json.h"
 #include "rpc/rpc_registry.h"
+#include "rpc/legacy_transparent_freshness.h"
 #include "daemon/daemon_context.h"
 #include "daemon/services/wallet_service.h"
 #include "daemon/services/chainstate_service.h"
 #include "common/logger.h"
 #include <memory>
 #include <chrono>
+
+namespace {
+bool RefuseStaleLegacyWalletBalance(const ExecutionContext& ctx,
+        const std::shared_ptr<dinero::WalletService>& service, din::Json& result,
+        bool financial_status = true) {
+    din::Json refusal;
+    if (!RefuseIfLegacyTransparentTipNotCurrent(ctx, service, refusal)) return false;
+    result["balance_available"] = false;
+    result["balance_error"] = refusal["error"];
+    // A sync-only reply must retain its non-financial progress fields. The
+    // HTTP dispatcher promotes any `error` member to a top-level RPC error
+    // and otherwise discards the whole result. Financial status keeps its
+    // existing refusal; sync progress carries the refusal in balance_error.
+    if (financial_status) result["error"] = refusal["error"];
+    result["error_code"] = refusal["error_code"];
+    result["retryable"] = refusal["retryable"];
+    result["code"] = -32091;
+    return true;
+}
+}
 
 // ═══════════════════════════════════════════════════════════════
 // CONTEXT-AWARE SYNC RPC HANDLERS (Week 2 Pattern)
@@ -74,7 +95,6 @@ din::Json rpc_context_wallet_getsyncstate(const ExecutionContext& ctx, const din
         }
 
         const auto scan_status = wallet_service->get().GetScanStatus(chain_height);
-        const auto balance = wallet_service->get().getBalance();
 
         result["wallet_loaded"] = true;
         result["is_syncing"] = scan_status.is_scanning;
@@ -86,8 +106,22 @@ din::Json rpc_context_wallet_getsyncstate(const ExecutionContext& ctx, const din
             static_cast<Json::UInt>(scan_status.chain_height > scan_status.scan_height
                 ? (scan_status.chain_height - scan_status.scan_height)
                 : 0);
-        result["utxos_discovered"] = balance.utxo_count;
-        result["balance_discovered"] = balance.total;
+        // Sync progress remains useful while a legacy wallet is being
+        // reconciled. A refused financial read must never appear as zero.
+        try {
+            if (!RefuseStaleLegacyWalletBalance(ctx, wallet_service, result, false)) {
+                const auto balance = wallet_service->get().getBalance();
+                if (!RefuseStaleLegacyWalletBalance(ctx, wallet_service, result, false)) {
+                    result["utxos_discovered"] = balance.utxo_count;
+                    result["balance_discovered"] = balance.total;
+                    result["balance_available"] = true;
+                }
+            }
+        } catch (const std::exception& e) {
+            result["balance_available"] = false;
+            result["balance_error"] = e.what();
+            result["code"] = -32091;
+        }
 
     } catch (const std::exception& e) {
         result["error"] = std::string("getsyncstate error: ") + e.what();
@@ -138,40 +172,54 @@ din::Json rpc_context_wallet_getstatus(const ExecutionContext& ctx, const din::J
 
         // Get balance via context
         try {
-            auto balance = wallet.getBalance();
-            // WalletManager::getBalance() already returns DIN-denominated values.
-            // Re-scaling here underreported balances by 1e8 in wallet.getstatus.
-            result["balance"] = balance.confirmed;
-            result["confirmed_balance"] = balance.confirmed;
-            result["unconfirmed_balance"] = balance.unconfirmed;
-            result["immature_balance"] = balance.immature;
-            result["spendable_balance"] = balance.spendable;
-            result["total_balance"] = balance.total;
-            result["utxo_count"] = balance.utxo_count;
-            result["immature_utxo_count"] = balance.immature_utxo_count;
-            result["confidential_balance"] = 0.0;
-            result["total_with_confidential"] = balance.total;
-
-            if (ctx.daemon->chainstate) {
-                auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
-                if (chainstate && chainstate->utxoIndex()) {
-                    const int64_t conf_balance_una = chainstate->utxoIndex()->GetConfidentialBalance().GetInt64();
-                    const double conf_balance_din = static_cast<double>(conf_balance_una) / 1e8;
-                    result["confidential_balance"] = conf_balance_din;
-                    result["total_with_confidential"] = balance.total + conf_balance_din;
+            if (!RefuseStaleLegacyWalletBalance(ctx, wallet_service, result)) {
+                const auto balance = wallet.getBalance();
+                if (!RefuseStaleLegacyWalletBalance(ctx, wallet_service, result)) {
+                    // WalletManager::getBalance() already returns DIN.
+                    bool transparent_only = false;
+                    {
+                        auto lease = wallet.AcquireDatabaseLease();
+                        transparent_only = lease->LegacyTransparentState() ==
+                            dinero::WalletManager::LegacyTransparentState::Complete;
+                    }
+                    result["balance"] = balance.confirmed;
+                    result["confirmed_balance"] = balance.confirmed;
+                    result["unconfirmed_balance"] = balance.unconfirmed;
+                    result["immature_balance"] = balance.immature;
+                    result["spendable_balance"] = transparent_only
+                        ? din::Json(Json::nullValue) : din::Json(balance.spendable);
+                    result["total_balance"] = balance.total;
+                    result["utxo_count"] = balance.utxo_count;
+                    result["immature_utxo_count"] = balance.immature_utxo_count;
+                    result["confidential_balance"] = transparent_only
+                        ? din::Json(Json::nullValue) : din::Json(0.0);
+                    result["total_with_confidential"] = transparent_only
+                        ? din::Json(Json::nullValue) : din::Json(balance.total);
+                    result["balance_available"] = true;
+                    if (transparent_only) {
+                        result["wallet_scope"] = "legacy_transparent_only";
+                        result["balance_scope"] = "transparent_current_tip";
+                        result["whole_wallet_ready"] = false;
+                        result["send_ready"] = false;
+                        result["send_unavailable_reason"] =
+                            "Orchard wallet enrollment is required before sending";
+                    }
+                    if (!transparent_only && ctx.daemon->chainstate) {
+                        auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+                        if (chainstate && chainstate->utxoIndex()) {
+                            const int64_t conf_balance_una = chainstate->utxoIndex()->GetConfidentialBalance().GetInt64();
+                            const double conf_balance_din = static_cast<double>(conf_balance_una) / 1e8;
+                            result["confidential_balance"] = conf_balance_din;
+                            result["total_with_confidential"] = balance.total + conf_balance_din;
+                        }
+                    }
                 }
             }
-        } catch (...) {
-            result["balance"] = 0.0;
-            result["confirmed_balance"] = 0.0;
-            result["unconfirmed_balance"] = 0.0;
-            result["immature_balance"] = 0.0;
-            result["spendable_balance"] = 0.0;
-            result["total_balance"] = 0.0;
-            result["utxo_count"] = 0;
-            result["immature_utxo_count"] = 0;
-            result["confidential_balance"] = 0.0;
-            result["total_with_confidential"] = 0.0;
+        } catch (const std::exception& e) {
+            result["balance_available"] = false;
+            result["balance_error"] = e.what();
+            result["error"] = e.what();
+            result["code"] = -32091;
         }
 
         // Get address count

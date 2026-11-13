@@ -1997,7 +1997,7 @@ jobs:
           python3 - <<'PYTEST'
           from pathlib import Path
           log=Path('wallet-canonical-recovery-execution.log').read_text()
-          for case in ['MissingOwnersAndConfiguredUnavailableSourceDefer', 'UnsetProfileAndBorrowedLeasePreserveHistoricalWallet', 'EarnedPrefixAndEncryptedUnlockRestoreActualNote', 'ActualStartupResumesLaggingStoresWithoutHeightReset', 'MissingBaselineNeverEnrollsOrUsesLegacySnapshotPath', 'RequiredWriteFailureRetainsPrefixForRetry']:
+          for case in ['MissingOwnersAndConfiguredUnavailableSourceDefer', 'UnsetProfileAndBorrowedLeasePreserveHistoricalWallet', 'LegacyTransparentWalletEarnsActualCoinbaseWithoutCatalog', 'V3IndexWritesOnlySelectedWalletAndPreservesForeignSameOutpoint', 'WalletSwitchNeverClaimsAnotherWalletIndexReceipt', 'EmptyPreactivationHistoryRecoversTwoRealCoinbasesAndRestart', 'EncryptedLegacyTransparentWalletWaitsForActualUnlock', 'EncryptedUnlockReportsSourceGapWithoutPublishingBalance', 'CompletedTransparentWalletRefusesStaleSelectedTipBalances', 'MissingHistoricalBodyKeepsLegacyMigrationPending', 'EarnedPrefixAndEncryptedUnlockRestoreActualNote', 'ActualStartupResumesLaggingStoresWithoutHeightReset', 'MissingBaselineNeverEnrollsOrUsesLegacySnapshotPath', 'RequiredWriteFailureRetainsPrefixForRetry']:
               assert log.count('[       OK ] WalletCanonicalRecovery.'+case+' (')==1
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
@@ -2329,7 +2329,7 @@ jobs:
           python3 - <<'PYCODE'
           from pathlib import Path
           log=Path('runtime-delivery-worker-execution.log').read_text()
-          for case in ['RequiredOwnersLimitsAndActualUnavailableSource', 'HistoricalWalletNoLogAndStoppedOwnerRemainDistinct', 'StartupAndRestartRecoverEncryptedEarnedWalletPrefix', 'MissingBaselineRemainsDeferredWithoutEnrollment', 'BoundedSlicesDrainRetainedPlansWithoutCallbackAndRestartFromOrigin', 'LaterCommittedPrefixIsRevisitedAfterWake']:
+          for case in ['RequiredOwnersLimitsAndActualUnavailableSource', 'HistoricalWalletNoLogAndStoppedOwnerRemainDistinct', 'StartupAndRestartRecoverEncryptedEarnedWalletPrefix', 'MissingBaselineRemainsDeferredWithoutEnrollment', 'ResourceLimitRefusesWithoutRepeatedOriginReplay', 'BoundedSlicesDrainRetainedPlansWithoutCallbackAndRestartFromOrigin', 'LaterCommittedPrefixIsRevisitedAfterWake']:
               assert log.count('[       OK ] RuntimeDeliveryWorker.'+case+' (')==1
           PYCODE
       - name: Authenticate immutable vault creation anchor
@@ -3174,7 +3174,7 @@ jobs:
           if owned != ['SelectedWalletHistory.ValidatesBeforeEffectsAndUsesOwnedBodies']:
               raise SystemExit('Selected wallet history service case did not execute exactly once')
           projection = re.findall(r'\[ RUN\s+\] (RuntimeOriginProjection\.\S+)', open('orchard-history-replay-execution.log').read())
-          if sorted(projection) != ['RuntimeOriginProjection.BindsCapturedWalletAndScriptDomain', 'RuntimeOriginProjection.KeepsSpentCoinsAndExactTransactionHistory']:
+          if sorted(projection) != ['RuntimeOriginProjection.ArchivalBudgetRequiresExplicitBoundedSelection', 'RuntimeOriginProjection.BindsCapturedWalletAndScriptDomain', 'RuntimeOriginProjection.KeepsSpentCoinsAndExactTransactionHistory']:
               raise SystemExit('Origin projection case did not execute exactly once')
           PYTEST
       - name: Require and execute wallet recovery key ownership

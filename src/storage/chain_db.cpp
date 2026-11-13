@@ -379,6 +379,12 @@ Status ChainDB::initReadOnlyForHandoff(const std::filesystem::path& dir) {
     return initAttempt(dir_,false,true);
 }
 
+Status ChainDB::initReadOnlyForWalletIndexMaintenance(const std::filesystem::path& dir) {
+    if (!storage::OrchardHandoffControlsAbsent(dir.parent_path()))
+        return Status::Corruption;
+    return initReadOnlyForHandoff(dir);
+}
+
 Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_recovery, bool read_only,
     const SelectedHandoffOpen* selected) {
     if(selected&&(read_only||allow_lock_recovery||selected->directory!=dir))return Status::Invalid;

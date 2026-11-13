@@ -23,6 +23,7 @@
 // so the forward declaration gets replaced with the full definition
 #include "din_json.h"
 #include "rpc/rpc_registry.h"
+#include "rpc/legacy_transparent_freshness.h"
 #include "daemon/daemon_context.h"  // Full DaemonContext definition (replaces forward decl)
 #include "daemon/services/chainstate_service.h"
 #include "daemon/services/p2p_service.h"
@@ -2667,8 +2668,10 @@ din::Json rpc_context_generate(const ExecutionContext& ctx, const din::Json& par
     // Phase W.1.1: Get mining address from wallet (or use fallback)
     std::string address = "";
     if (ctx.daemon && ctx.daemon->wallet) {
+        auto wallet_svc = std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
+        if (wallet_svc && wallet_svc->hasActiveWallet() &&
+            RefuseIfLegacyTransparentAddressMutation(ctx, wallet_svc, result)) return result;
         try {
-            auto wallet_svc = std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
             if (wallet_svc) {
                 auto& mgr = wallet_svc->get();
                 address = mgr.getNewAddress("mining", "taproot");

@@ -31,9 +31,30 @@ public:
     // caller captures the intended session before releasing wallet ownership.
     static std::optional<RuntimeIndexProgress> ReadForWallet(WalletManager&, UTXOIndex&, uint64_t expected_session);
     static RuntimeIndexProgress ApplyForWallet(WalletManager&, UTXOIndex&, uint64_t expected_session, const RuntimeOutboxEvent&);
+    // Full-archive v3 only. Reconciles one wallet's proved rows and seals its
+    // own receipt; no legacy global rows or receipt are read. This is INDEX
+    // progress only. The coordinator must commit ordinary coverage second.
+    // Chainstate owns its activation lock before entering this call, then the
+    // caller's callback verifies the selected source and invokes the
+    // supplied commit closure while still holding its selected-source lock.
+    // Returning without invoking commit rolls back the index transaction.
+    using V3SourceCommit = std::function<void(const std::function<void()>& commit_under_source_lock)>;
+    static RuntimeIndexProgress ReconcileCoverageV3(WalletManager&, UTXOIndex& metadata_index,
+        const RuntimeWalletCoverageProjection&,const V3SourceCommit& source_commit);
+    static std::optional<RuntimeIndexProgress> ReadForWalletV3(WalletManager&, UTXOIndex& metadata_index,
+        uint64_t expected_session);
+    static std::optional<RuntimeIndexProgress> ReadForWalletV3(UTXOIndex& metadata_index,
+        WalletManager::DatabaseLease& current_lease);
+    // Applies one checked typed event to the selected wallet's v3 index only.
+    // Ordinary delivery follows in a separate commit; a retry recognizes an
+    // already-applied exact event without borrowing another wallet's receipt.
+    static RuntimeIndexProgress ApplyForWalletV3(WalletManager&,UTXOIndex& metadata_index,
+        uint64_t expected_session,const RuntimeOutboxEvent&,const V3SourceCommit& source_commit);
 private:
     friend struct RuntimeIndexDeliveryTestAccess;
     friend class RuntimeOrdinaryDelivery;
+    static void WithCurrentV3Receipt(WalletManager::DatabaseLease&,UTXOIndex& metadata_index,
+        const RuntimeWalletCoverageProjection&,const uint256& index_scripts,const std::function<void()>& publish);
     using HistoricalScripts = std::map<std::vector<uint8_t>,std::string>;
     static bool CoverageRequired(UTXOIndex&,const std::string&,const HistoricalScripts* = nullptr);
     static void ReconcileCoverage(UTXOIndex&,const RuntimeWalletCoverageProjection&,
@@ -68,7 +89,8 @@ public:
     // their caller: every one re-reads and reauthenticates the wallet and
     // index owners it touches against the projections it is handed, in its
     // own transaction, and throws on any divergence.
-    static std::unique_ptr<RuntimeWalletOriginProjection> CaptureOriginDomain(WalletManager&,uint64_t,UTXOIndex* = nullptr,bool existing_identity_only = false);
+    static std::unique_ptr<RuntimeWalletOriginProjection> CaptureOriginDomain(WalletManager&,uint64_t,UTXOIndex* = nullptr,
+        bool existing_identity_only = false,size_t material_limit_bytes = 64*1024*1024);
     static void CheckOriginDomain(WalletManager&,const RuntimeWalletOriginProjection&,UTXOIndex* = nullptr);
     static void AdoptOrigin(WalletManager&,UTXOIndex&,const RuntimeWalletOriginProjection&);
     // Capture and restore before the producer takes its selected-source lock.
@@ -77,6 +99,19 @@ public:
         WalletManager&,const RuntimeWalletCoverageProjection&);
     static void ReconcileCoverage(WalletManager&,UTXOIndex&,const RuntimeWalletCoverageProjection&,
         const wallet::OrchardCatalogCapture&,const std::function<void()>& source_before_commit = {});
+    // Full archival wallets created before the Orchard delivery identity was
+    // introduced have no Orchard account inventory to authenticate. Rebuild
+    // only their transparent stores from the checked historical+typed source;
+    // the durable migration class keeps Orchard consumers closed.
+    static void ReconcileLegacyTransparentCoverage(WalletManager&,UTXOIndex&,
+        const RuntimeWalletCoverageProjection&,const std::function<void()>& source_before_commit);
+    // Full-archive v3 only. The index receipt commits first under its wallet
+    // identity; the ordinary wallet and completion marker commit second. A
+    // crash between them leaves Pending and resumes from proved source bytes.
+    // Chainstate owns its activation lock before entering this call; this
+    // preserves the established activation -> wallet -> index lock order.
+    static void ReconcileLegacyTransparentCoverageV3(WalletManager&,UTXOIndex& metadata_index,
+        const RuntimeWalletCoverageProjection&,const RuntimeIndexDelivery::V3SourceCommit& source_commit);
     // Strict classification: only BOTH genuinely absent is the Orchard-only
     // composition. Invalidated/corrupt/one-store partial coverage throws.
     static std::optional<std::pair<RuntimeIndexProgress,RuntimeIndexProgress>> ExistingCoverage(
