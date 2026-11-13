@@ -2099,7 +2099,7 @@ TEST(OrchardHistoryCache, ValidDataChecksumCannotCertifyCorruptSelectedBody){
     EXPECT_FALSE(host.Observe().error.empty());EXPECT_FALSE(host.Ready());EXPECT_EQ(sends.load(),0u);host.Stop();
     EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(source.f.db),unchanged);
 }
-TEST(OrchardPhoneHistory, ExtensionSeenMidIterationPreservesVerifiedPrefix){
+static void HistoryExtensionMidIterationCase(unsigned flip_call,const std::string& tag){
     using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;using Download=p2p::OrchardPhoneHistoryDownload;
     CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
     MutableParams().state_commitment_burial_depth=0;
@@ -2113,23 +2113,21 @@ TEST(OrchardPhoneHistory, ExtensionSeenMidIterationPreservesVerifiedPrefix){
     const auto second=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(second);
     ASSERT_TRUE(source.Submit(second->WireBytes()).connected);ASSERT_TRUE(headers->AddHeader(second->Header()));
     const auto b=source.f.db.getOrchardCatalogState(second->Header().GetHash());ASSERT_TRUE(b.ok());
-    const auto root=history_cache_test::Root("extend-mid");daemon::DatadirGuard guard;std::string error;
+    const auto root=history_cache_test::Root("extend-"+tag);daemon::DatadirGuard guard;std::string error;
     ASSERT_TRUE(guard.Acquire(root,error))<<error;auto cache=std::make_shared<p2p::OrchardHistoryCache>(guard);
     const auto body=first->WireBytes();
     cache->Put('b',first->Header().GetHash(),body.size(),OrchardBlockCandidate::MaxWireSize(),[&](const auto& sink){sink(body);});
     ASSERT_TRUE(cache->Has('b',first->Header().GetHash()));
-    {uint256 h;uint32_t f=0;ASSERT_TRUE(headers->GetAncestorHashByHash(first->Header().GetHash(),102,h,f));
-     ASSERT_EQ(h,first->Header().GetHash());ASSERT_EQ(f,102u);}
     const Download::Target one{102,102,first->Header().GetHash(),storage::catalog::Hash(*a),first->Header().GetHash()};
     const Download::Target two{102,103,second->Header().GetHash(),storage::catalog::Hash(*b),first->Header().GetHash()};
-    // Armed call sequence is strictly single-threaded: loop-top(1) and the
-    // creation recheck(2) see the first target; the post-append recheck(3)
-    // sees the pure extension. Verified progress and the one verifier must
-    // survive it; a rebuild would call the verifier factory again.
+    // Armed worker calls are strictly single-threaded: loop-top(1), the
+    // creation recheck(2), the post-append recheck(3). Flipping to the pure
+    // extension at exactly flip_call exercises one mid-iteration site; the
+    // single verifier-factory call proves no discard/rebuild happened.
     std::mutex mutex;std::condition_variable cv;std::deque<std::vector<uint8_t>> requests;
     std::atomic<bool> armed{false};std::atomic<unsigned> calls{0},verifies{0};
     Download host(headers,root,[&]()->std::optional<Download::Target>{
-            if(!armed)return std::nullopt;return ++calls>=3?std::optional(two):std::optional(one);},
+            if(!armed)return std::nullopt;return ++calls>=flip_call?std::optional(two):std::optional(one);},
         [&]{return proof;},
         [&](auto p,const auto& t){++verifies;return Access::ReplayActivation(std::move(p),headers,t.height,t.hash);},
         []{return std::vector<Download::Peer>{{"archive",91,ServiceFlags::NODE_NETWORK}};},
@@ -2141,12 +2139,9 @@ TEST(OrchardPhoneHistory, ExtensionSeenMidIterationPreservesVerifiedPrefix){
         ASSERT_TRUE(cv.wait_for(lock,std::chrono::seconds(5),[&]{return !requests.empty();}));
         std::vector<uint8_t> expected{1,2,0,0,0};const auto hash=second->Header().GetHash();
         expected.insert(expected.end(),hash.begin(),hash.end());
-        std::vector<uint8_t> first_request{1,2,0,0,0};const auto first_hash=first->Header().GetHash();
-        first_request.insert(first_request.end(),first_hash.begin(),first_hash.end());
         EXPECT_EQ(requests.front(),expected)
             <<"worker error: "<<host.Observe().error
             <<" verified: "<<host.Observe().verified_height
-            <<" re-requested-first: "<<(requests.front()==first_request)
             <<" verifies: "<<verifies.load()<<" calls: "<<calls.load();
         requests.pop_front();
     }
@@ -2158,6 +2153,12 @@ TEST(OrchardPhoneHistory, ExtensionSeenMidIterationPreservesVerifiedPrefix){
     EXPECT_EQ(complete->Body(103),second->WireBytes());
     EXPECT_EQ(host.Observe().verified_height,103u);EXPECT_TRUE(host.Observe().error.empty());
     EXPECT_EQ(verifies.load(),1u);host.Stop();
+}
+TEST(OrchardPhoneHistory, ExtensionSeenAtCreationRecheckPreservesInitialization){
+    HistoryExtensionMidIterationCase(2,"creation");
+}
+TEST(OrchardPhoneHistory, ExtensionSeenMidIterationPreservesVerifiedPrefix){
+    HistoryExtensionMidIterationCase(3,"append");
 }
 #endif
 TEST(OrchardPhoneHistory, SequentialBodiesExtendWithoutSkippingAndReadyDataIsNotState){

@@ -135,7 +135,10 @@ private:
                 if(!replay){
                     proof=proof_();if(!proof)continue;
                     selected=current;replay=verify_(proof,*selected);if(!replay){discard();continue;}
-                    if(const auto now=target_();now!=selected){if(!extends(now))discard();continue;}
+                    // On a pure extension, creation MUST still complete below
+                    // (corpus/next are not yet initialized); the loop top
+                    // absorbs the new height on the next iteration.
+                    if(const auto now=target_();now!=selected){if(!extends(now)){discard();continue;}}
                     if(cache_){const auto size=consensus::OrchardSnapshotSectionEncodedSize(*proof);
                         cache_->Put('p',proof->state.block_hash,size,consensus::ORCHARD_SNAPSHOT_MAX_SECTION_BYTES,
                             [&](const auto& sink){Data::Require(consensus::StreamOrchardSnapshotSection(*proof,sink)==size);});}
