@@ -7584,10 +7584,12 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
     bool pending=false;return captureRuntimeWalletOrigin(wallet,session,index,existing_identity_only,false,pending);
 }
 StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService::captureRuntimeWalletOrigin(
-        WalletManager& wallet,uint64_t session,UTXOIndex* index,bool existing_identity_only,bool public_history,bool& body_data_pending,bool retained_history) const {
+        WalletManager& wallet,uint64_t session,UTXOIndex* index,bool existing_identity_only,bool public_history,
+        bool& body_data_pending,bool retained_history,size_t material_limit_bytes) const {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     try {
-        auto result=RuntimeOrdinaryDelivery::CaptureOriginDomain(wallet,session,index,existing_identity_only);
+        auto result=RuntimeOrdinaryDelivery::CaptureOriginDomain(wallet,session,index,existing_identity_only,
+            material_limit_bytes);
         RuntimeOutboxCursor head;
         std::vector<uint256> ancestry;
         {
@@ -7687,7 +7689,8 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
         }
         RuntimeOrdinaryDelivery::CheckOriginDomain(wallet,*result,index);
         return std::shared_ptr<const RuntimeWalletOriginProjection>(result.release());
-    } catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
+    } catch(const RuntimeWalletCoverageMaterialLimit&){return Status::ResourceLimit;}
+      catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
       catch(...){return Status::Internal;}
 #else
     return Status::Internal;
@@ -7699,7 +7702,8 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
     bool pending=false;return captureRuntimeWalletCoverage(wallet,session,index,false,pending);
 }
 StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateService::captureRuntimeWalletCoverage(
-        WalletManager& wallet,uint64_t session,UTXOIndex& index,bool public_history,bool& body_data_pending,bool retained_history) const {
+        WalletManager& wallet,uint64_t session,UTXOIndex& index,bool public_history,bool& body_data_pending,
+        bool retained_history,size_t material_limit_bytes) const {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     if(activation_mutex_.HeldByCurrentThread())return Status::Invalid;
     try {
@@ -7718,9 +7722,10 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
         // authority; every projected coin is rebuilt from the owned source.
         const auto replay=getRuntimeAccountReplayForWallet(wallet,session);
         if(!replay.ok())return replay.status();
-        const auto origin=captureRuntimeWalletOrigin(wallet,session,&index,true,public_history,body_data_pending,retained_history);
+        const auto origin=captureRuntimeWalletOrigin(wallet,session,&index,true,public_history,body_data_pending,
+            retained_history,material_limit_bytes);
         if(!origin.ok())return origin.status();
-        const auto result=RuntimeWalletCoverageProjection::Build(*origin,*replay);
+        const auto result=RuntimeWalletCoverageProjection::Build(*origin,*replay,{},material_limit_bytes);
         {
             std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
             const auto page=getRuntimeDeliveryPage(result->Head(),1);
@@ -7732,7 +7737,8 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
             RuntimeOrdinaryDelivery::CheckOriginDomain(wallet,result->Origin(),&index);
         }
         return result;
-    } catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
+    } catch(const RuntimeWalletCoverageMaterialLimit&){return Status::ResourceLimit;}
+      catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
       catch(...){return Status::Internal;}
 #else
     (void)wallet;(void)session;(void)index;
@@ -21866,9 +21872,11 @@ ChainstateService::reconcileImportedRuntimeWalletCoverage(WalletManager& wallet,
 }
 
 StatusOr<std::shared_ptr<const RuntimeImportedMixedRecoveryResult>>
-ChainstateService::resumeRuntimeImportedMixedRecovery(WalletManager& wallet,UTXOIndex& index,uint64_t session){
+ChainstateService::resumeRuntimeImportedMixedRecovery(WalletManager& wallet,UTXOIndex& index,uint64_t session,
+        size_t material_limit_bytes){
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
-    if(activation_mutex_.HeldByCurrentThread()||!session)return Status::Invalid;
+    if(activation_mutex_.HeldByCurrentThread()||!session||!material_limit_bytes||
+       material_limit_bytes>kWalletRecoveryMaterialLimitBytes)return Status::Invalid;
     try {
         {auto selected=AcquireBlockIngressActivationLock();
          if(!compact_startup_||!compact_startup_->imported_parent)
@@ -21878,9 +21886,12 @@ ChainstateService::resumeRuntimeImportedMixedRecovery(WalletManager& wallet,UTXO
         if(!RuntimeOrdinaryDelivery::ExistingCoverage(wallet,index,session))
             return std::shared_ptr<const RuntimeImportedMixedRecoveryResult>{};
         const auto orchard=resumeRuntimeImportedOrchardRecovery(wallet,index,session);
-        if(!orchard.ok()||!*orchard)return Status::Invalid;
-        bool pending=false;const auto captured=captureRuntimeWalletCoverage(wallet,session,index,false,pending,true);
-        if(!captured.ok()||pending)return Status::Invalid;
+        if(!orchard.ok())return orchard.status()==Status::ResourceLimit?Status::ResourceLimit:Status::Invalid;
+        if(!*orchard)return Status::Invalid;
+        bool pending=false;const auto captured=captureRuntimeWalletCoverage(wallet,session,index,false,pending,true,
+            material_limit_bytes);
+        if(!captured.ok())return captured.status()==Status::ResourceLimit?Status::ResourceLimit:Status::Invalid;
+        if(pending)return Status::Invalid;
         const auto& coverage=**captured;
         if((*orchard)->applied!=coverage.Head()||(*orchard)->observed_head!=coverage.Head())return Status::Invalid;
         const auto prepared=RuntimeOrdinaryDelivery::PrepareCoverage(wallet,coverage);
@@ -21917,9 +21928,10 @@ ChainstateService::resumeRuntimeImportedMixedRecovery(WalletManager& wallet,UTXO
         if(applied.cursor!=coverage.Head()||applied.tip_hash!=coverage.TipHash()||applied.tip_height!=coverage.TipHeight())
             return Status::Invalid;
         return std::make_shared<const RuntimeImportedMixedRecoveryResult>(RuntimeImportedMixedRecoveryResult{applied,coverage.Head()});
-    }catch(...){return Status::Invalid;}
+    }catch(const RuntimeWalletCoverageMaterialLimit&){return Status::ResourceLimit;}
+     catch(...){return Status::Invalid;}
 #else
-    (void)wallet;(void)index;(void)session;return Status::Internal;
+    (void)wallet;(void)index;(void)session;(void)material_limit_bytes;return Status::Internal;
 #endif
 }
 

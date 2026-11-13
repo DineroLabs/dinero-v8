@@ -19,6 +19,7 @@
 #include "common/annotated_mutex.h"
 #include "wallet/utxo_index.h"
 #include "wallet/runtime_funding_candidates.h"
+#include "wallet/runtime_recovery_limits.h"
 #include "interfaces/wallet_notifier.h"  // Phase 3D: Wallet event notifications
 #include "consensus/utreexo_accumulator.h"  // v0.14.0.4: Utreexo enforcement
 #include "consensus/header_convergence.h"  // #439: HeaderConvergence + pure rule
@@ -1169,7 +1170,8 @@ public:
     // Null ONLY for another source composition or BOTH absent baselines.
     // Every failed/partial/invalid mixed attempt remains closed, never fallback.
     StatusOr<std::shared_ptr<const RuntimeImportedMixedRecoveryResult>>
-        resumeRuntimeImportedMixedRecovery(WalletManager&,UTXOIndex&,uint64_t expected_session);
+        resumeRuntimeImportedMixedRecovery(WalletManager&,UTXOIndex&,uint64_t expected_session,
+            size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes);
     // Observation-only readmission fence at the genuinely empty activation
     // parent. Restores/rechecks every declared encrypted owner under the current
     // source; does not adopt transparent receipts or manufacture delivery.
@@ -1766,9 +1768,11 @@ private:
         const std::unique_lock<std::mutex>& snapshot, UTXOIndex&);
     struct ImportedOrchardDeliverySource;
     StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> captureRuntimeWalletOrigin(
-        WalletManager&,uint64_t,UTXOIndex*,bool existing_identity_only,bool public_history,bool& body_data_pending,bool retained_history = false) const;
+        WalletManager&,uint64_t,UTXOIndex*,bool existing_identity_only,bool public_history,bool& body_data_pending,
+        bool retained_history = false,size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes) const;
     StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> captureRuntimeWalletCoverage(
-        WalletManager&,uint64_t,UTXOIndex&,bool public_history,bool& body_data_pending,bool retained_history = false) const;
+        WalletManager&,uint64_t,UTXOIndex&,bool public_history,bool& body_data_pending,
+        bool retained_history = false,size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes) const;
     std::unique_ptr<const ImportedOrchardDeliverySource> CaptureImportedOrchardDeliveryUnderLock(
         const std::unique_lock<std::mutex>&,UTXOIndex&,const RuntimeAccountReplay&);
     // Transport is not storage authority. This narrower pre-boundary route
