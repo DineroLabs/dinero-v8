@@ -1002,7 +1002,11 @@ try:
                         # receipts. A one-byte test budget makes its retained
                         # history deterministically too large. Later periodic
                         # passes must not replay that origin or earn a fallback.
-                        deadline=time.monotonic()+15
+                        # The worker applies the mixed prefix on roughly its
+                        # 35th periodic slice after the baseline; hosted
+                        # runners can need more than 15 seconds for that
+                        # cadence, so the readiness bound is wall-clock 60s.
+                        deadline=time.monotonic()+60
                         while time.monotonic()<deadline:
                             ready_worker=call('sdk_activation_state').get('delivery_worker',{})
                             if ready_worker.get('mixed_prefix'):break
