@@ -4,6 +4,7 @@
 #include "wallet/orchard_ownership_inventory.h"
 #include "wallet/runtime_account_replay.h"
 #include "wallet/runtime_wallet_balance.h"
+#include "wallet/runtime_recovery_limits.h"
 #include "wallet/wallet_manager.h"
 #include "primitives/orchard_block_reader.h"
 #include "primitives/block.h"
@@ -624,9 +625,10 @@ void RuntimeWalletOriginProjection::AppendValidated(const Block& block,uint32_t 
     // this only AFTER owned consensus replay of this body, and body ordering /
     // chain linkage stay the producer's burden, rechecked by CheckOriginDomain.
     // Failure discards the entire in-memory projection, never wallet state.
-    constexpr size_t limit=64*1024*1024;
     const auto charge=[&](size_t n) {
-        if(n>limit-retained_bytes_)Fail("Origin projection material limit");
+        if(retained_bytes_>kWalletRecoveryMaterialLimitBytes ||
+           n>kWalletRecoveryMaterialLimitBytes-retained_bytes_)
+            Fail("Origin projection material limit");
         retained_bytes_+=n;
     };
     if(block.header.timestamp>uint64_t(INT64_MAX))Fail("Origin projection time out of range");
@@ -683,8 +685,12 @@ std::shared_ptr<const RuntimeWalletCoverageProjection> RuntimeWalletCoverageProj
     // Operational retained-material bound, not a resident-memory certificate.
     // Charge the whole traversal, including activity subsequently disconnected.
     size_t charged=result->origin_->retained_bytes_;
-    constexpr size_t limit=64*1024*1024;
-    const auto charge=[&](size_t n){if(charged>limit || n>limit-charged)Fail("Coverage material limit");charged+=n;};
+    const auto charge=[&](size_t n){
+        if(charged>kWalletRecoveryMaterialLimitBytes ||
+           n>kWalletRecoveryMaterialLimitBytes-charged)
+            Fail("Coverage material limit");
+        charged+=n;
+    };
     const auto activity=[&](const Effect& e,uint32_t height) {
         Activity h{e.id,height,e.time,e.coinbase,e.spent,{}};
         charge(sizeof(Activity));

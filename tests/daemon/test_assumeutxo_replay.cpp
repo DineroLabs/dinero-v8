@@ -189,6 +189,7 @@ struct RuntimeOriginProjectionTestAccess {
         p->scripts_[script]="fixture";return p;
     }
     static void Append(RuntimeWalletOriginProjection& p,const Block& b,uint32_t height) {p.AppendValidated(b,height);}
+    static void SetRetainedCharge(RuntimeWalletOriginProjection& p,size_t bytes) {p.retained_bytes_=bytes;}
     static auto PrepareCoverage(WalletManager& wallet,const RuntimeWalletCoverageProjection& source){
         return RuntimeOrdinaryDelivery::PrepareCoverage(wallet,source);
     }
@@ -920,6 +921,18 @@ TEST(RuntimeOriginProjection, KeepsSpentCoinsAndExactTransactionHistory) {
     auto unsupported=source[0];unsupported.vtx[0].vout[0].is_confidential=true;
     auto other=RuntimeOriginProjectionTestAccess::Create(owned);
     EXPECT_THROW(RuntimeOriginProjectionTestAccess::Append(*other,unsupported,1),std::runtime_error);
+}
+
+TEST(RuntimeOriginProjection, PhoneRecoveryMaterialBoundIs128MiB) {
+    auto source=BuildDeterministicChain(1);ASSERT_EQ(source.size(),1u);
+    const auto owned=source[0].vtx[0].vout[0].scriptPubKey;
+    auto within=RuntimeOriginProjectionTestAccess::Create(owned);
+    RuntimeOriginProjectionTestAccess::SetRetainedCharge(*within,64*1024*1024);
+    EXPECT_NO_THROW(RuntimeOriginProjectionTestAccess::Append(*within,source[0],1));
+    EXPECT_EQ(within->Transactions().size(),1u);
+    auto over=RuntimeOriginProjectionTestAccess::Create(owned);
+    RuntimeOriginProjectionTestAccess::SetRetainedCharge(*over,128*1024*1024-1);
+    EXPECT_THROW(RuntimeOriginProjectionTestAccess::Append(*over,source[0],1),std::runtime_error);
 }
 
 #else
