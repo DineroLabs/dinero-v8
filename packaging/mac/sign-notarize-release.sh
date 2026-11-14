@@ -118,6 +118,28 @@ if [[ "$VARIANT" == "ventura-qt6.5" ]]; then
             exit 1
         }
     fi
+    QT_CORE="$APP/Contents/Frameworks/QtCore.framework/QtCore"
+    QT_CORE_PLIST="$APP/Contents/Frameworks/QtCore.framework/Resources/Info.plist"
+    [[ -f "$QT_CORE" && -f "$QT_CORE_PLIST" ]] || {
+        echo "ERROR: staged Ventura QtCore framework is missing." >&2
+        exit 1
+    }
+    QT_CORE_VERSION="$(python3 - "$QT_CORE_PLIST" <<'PY'
+import plistlib
+import sys
+with open(sys.argv[1], "rb") as source:
+    print(plistlib.load(source).get("CFBundleVersion", ""))
+PY
+)"
+    [[ "$QT_CORE_VERSION" == "6.5.3" ]] || {
+        echo "ERROR: staged Ventura QtCore version is $QT_CORE_VERSION, expected 6.5.3." >&2
+        exit 1
+    }
+    QT_CORE_SELF_ID="$(otool -L "$QT_CORE" | sed -n '2p')"
+    [[ "$QT_CORE_SELF_ID" == *"QtCore.framework/Versions/A/QtCore (compatibility version 6.0.0, current version 6.5.3)"* ]] || {
+        echo "ERROR: staged Ventura QtCore binary version is not 6.5.3." >&2
+        exit 1
+    }
 fi
 
 guard_args=(--version "$VERSION" --app "$APP")

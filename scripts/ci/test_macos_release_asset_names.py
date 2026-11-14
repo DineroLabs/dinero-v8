@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Keep the standard Intel and Ventura release filenames disjoint."""
 
+import os
 import pathlib
+import plistlib
 import shutil
 import subprocess
 import tempfile
@@ -13,9 +15,10 @@ SCRIPT = ROOT / "packaging/mac/sign-notarize-release.sh"
 SOURCE = "a" * 40
 
 
-def run_script(script: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
+def run_script(script: pathlib.Path, *args: str,
+               env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["bash", str(script), "--version", "8.2.3", *args],
-                          text=True, capture_output=True, check=False)
+                          text=True, capture_output=True, check=False, env=env)
 
 
 class MacReleaseAssetNames(unittest.TestCase):
@@ -86,7 +89,33 @@ class MacReleaseAssetNames(unittest.TestCase):
 
             receipt.write_text(f"variant=x86_64-ventura-qt6.5\narchitecture=x86_64\n"
                                f"qt_version=6.5.3\nsource_commit={SOURCE}\n")
-            valid = run_script(script, *args)
+            missing_framework = run_script(script, *args)
+            self.assertEqual(missing_framework.returncode, 1)
+            self.assertIn("QtCore framework is missing", missing_framework.stderr)
+
+            qt_core = package_dir / "dist/stage/dinero-qt.app/Contents/Frameworks/QtCore.framework"
+            (qt_core / "Resources").mkdir(parents=True)
+            (qt_core / "QtCore").write_bytes(b"test-only Mach-O placeholder")
+            plist = qt_core / "Resources/Info.plist"
+            plist.write_bytes(plistlib.dumps({"CFBundleVersion": "6.9.1"}))
+            wrong_framework = run_script(script, *args)
+            self.assertEqual(wrong_framework.returncode, 1)
+            self.assertIn("QtCore version is 6.9.1", wrong_framework.stderr)
+
+            plist.write_bytes(plistlib.dumps({"CFBundleVersion": "6.5.3"}))
+            fake_bin = temp / "fake-bin"
+            fake_bin.mkdir()
+            fake_otool = fake_bin / "otool"
+            fake_otool.write_text("#!/bin/sh\nprintf '%s\\n' \"$2:\" \"\\t@executable_path/../Frameworks/QtCore.framework/Versions/A/QtCore (compatibility version 6.0.0, current version ${FAKE_QT_BINARY_VERSION})\"\n")
+            fake_otool.chmod(0o755)
+            env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                   "FAKE_QT_BINARY_VERSION": "6.9.1"}
+            wrong_binary = run_script(script, *args, env=env)
+            self.assertEqual(wrong_binary.returncode, 1)
+            self.assertIn("QtCore binary version is not 6.5.3", wrong_binary.stderr)
+
+            env["FAKE_QT_BINARY_VERSION"] = "6.5.3"
+            valid = run_script(script, *args, env=env)
             self.assertEqual(valid.returncode, 73, valid.stderr)
             self.assertIn("REACHED_SIGNING_GUARD", valid.stderr)
 
