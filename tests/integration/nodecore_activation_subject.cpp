@@ -128,6 +128,7 @@ Json::Value SdkActivationTestState(){
         if(const auto chain=std::dynamic_pointer_cast<dinero::ChainstateService>(context.chainstate)){
             const auto [full,extended]=chain->PhoneReplayCaptureCounts();
             row["phone_replay"]["full_builds"]=Json::UInt64(full);row["phone_replay"]["extensions"]=Json::UInt64(extended);
+            row["phone_replay"]["source_reads"]=Json::UInt64(chain->PhoneReplaySourceReads());
         }
         if(const auto history=peers->PhoneHistoryDownload()){
             const auto observed=history->Observe();auto& h=row["phone_history"];

@@ -90,10 +90,25 @@ public:
         {std::lock_guard lock(mutex_);stop_=true;flight_.reset();packet_.reset();ready_.reset();}
         cv_.notify_all();if(worker_.joinable())worker_.join();
     }
+    // Idle workers (no selected target, or history ready for it) wait up to IdleWait instead
+    // of polling every 50 ms; any request, packet or stop still wakes them.
+    static constexpr std::chrono::milliseconds IdleWait{1000},ActiveWait{50};
+    uint64_t Iterations()const{return iterations_.load();}
+
 private:
     const std::shared_ptr<const consensus::HeaderChainSelector> headers_;const std::filesystem::path work_;
     const TargetSource target_;const ProofSource proof_;const Verifier verify_;const Peers peers_;const Send send_;
     const std::shared_ptr<OrchardHistoryCache> cache_;
+    // The public cache is an optimization over revalidated bytes. Its first
+    // refusal (for example records written under another datadir root
+    // identity) retires it for this download: bodies are then fetched from
+    // peers instead of retrying the same refused record forever.
+    std::atomic<bool> cache_retired_{false};std::atomic<uint64_t> iterations_{0};
+    bool Cached()const{return cache_&&!cache_retired_.load();}
+    // Retire only for a record-level refusal: if the cache root itself no
+    // longer checks out (datadir replaced, lock lost) keep failing closed
+    // instead of refetching all history from peers in a loop.
+    void RetireCache(){cache_->Check();cache_retired_.store(true);}
     mutable std::mutex mutex_;std::mutex join_;std::condition_variable cv_;
     std::optional<Peer> flight_;uint256 wanted_;std::optional<Bytes> packet_;
     bool body_received_=false;
@@ -110,13 +125,14 @@ private:
             if(peer){if(cooldown.size()>=32)cooldown.erase(cooldown.begin());cooldown[peer->address]=Clock::now()+std::chrono::minutes(1);}
             peer.reset();awaiting=false;std::lock_guard lock(mutex_);flight_.reset();packet_.reset();
         };
+        bool idle=false;
         for(;;){
             std::optional<Bytes> packet;
-            {std::unique_lock lock(mutex_);cv_.wait_for(lock,std::chrono::milliseconds(50),[&]{return stop_||packet_.has_value();});
-             if(stop_)break;if(packet_){packet=std::move(packet_);packet_.reset();}}
+            {std::unique_lock lock(mutex_);cv_.wait_for(lock,idle?IdleWait:ActiveWait,[&]{return stop_||packet_.has_value();});
+             if(stop_)break;if(packet_){packet=std::move(packet_);packet_.reset();}}++iterations_;idle=false;
             try{
                 const auto current=target_();
-                if(!current){discard();std::lock_guard lock(mutex_);progress_={};continue;}
+                if(!current){discard();idle=true;std::lock_guard lock(mutex_);progress_={};continue;}
                 // A pure tip extension (same base/activation, height advanced)
                 // is absorbed by ExtendSelectedTarget below with all verified
                 // progress retained. Mid-iteration rechecks must therefore
@@ -139,9 +155,10 @@ private:
                     // (corpus/next are not yet initialized); the loop top
                     // absorbs the new height on the next iteration.
                     if(const auto now=target_();now!=selected){if(!extends(now)){discard();continue;}}
-                    if(cache_){const auto size=consensus::OrchardSnapshotSectionEncodedSize(*proof);
+                    if(Cached())try{const auto size=consensus::OrchardSnapshotSectionEncodedSize(*proof);
                         cache_->Put('p',proof->state.block_hash,size,consensus::ORCHARD_SNAPSHOT_MAX_SECTION_BYTES,
                             [&](const auto& sink){Data::Require(consensus::StreamOrchardSnapshotSection(*proof,sink)==size);});}
+                        catch(...){RetireCache();}
                     corpus=std::make_shared<Data::Corpus>(work_);next=selected->activation;
                 }
                 {std::lock_guard lock(mutex_);progress_={true,false,next-1,selected->height,selected->hash,{}};}
@@ -151,17 +168,19 @@ private:
                     if(const auto now=target_();now!=selected){if(!extends(now))discard();continue;}
                     if(cache_)cache_->Check();
                     std::lock_guard lock(mutex_);if(stop_)break;
-                    ready_=std::shared_ptr<const Data>(new Data(*selected,proof,corpus));progress_.ready=true;continue;
+                    ready_=std::shared_ptr<const Data>(new Data(*selected,proof,corpus));progress_.ready=true;idle=true;continue;
                 }
                 bool cached_packet=false;
-                if(!packet&&!awaiting&&cache_){
+                if(!packet&&!awaiting&&Cached()){
                     uint256 hash;uint32_t found=0;
                     if(!headers_->GetAncestorHashByHash(selected->hash,next,hash,found)||found!=selected->height)
                         throw std::runtime_error("phone cache selected header unavailable");
-                    if(cache_->Has('b',hash)){
-                        cache_->Read('b',hash,OrchardBlockCandidate::MaxWireSize(),[&](uint64_t size,const auto& read){
-                            packet=Bytes(size);read(*packet);});cached_packet=true;
-                    }
+                    try{
+                        if(cache_->Has('b',hash)){
+                            cache_->Read('b',hash,OrchardBlockCandidate::MaxWireSize(),[&](uint64_t size,const auto& read){
+                                packet=Bytes(size);read(*packet);});cached_packet=true;
+                        }
+                    }catch(...){RetireCache();packet.reset();cached_packet=false;}
                 }
                 if(packet){
                     if(!cached_packet&&(!awaiting||!peer))continue;
@@ -180,8 +199,8 @@ private:
                     if(!checked||checked->Context().height!=next||!checked->MatchesWire(body))throw std::runtime_error("phone history validation unavailable");
                     if(stop_)break;
                     if(const auto now=target_();now!=selected){if(!extends(now)){discard();continue;}}
-                    if(cache_&&!cached_packet)cache_->Put('b',expected,packet->size(),OrchardBlockCandidate::MaxWireSize(),
-                        [&](const auto& sink){sink(*packet);});
+                    if(Cached()&&!cached_packet)try{cache_->Put('b',expected,packet->size(),OrchardBlockCandidate::MaxWireSize(),
+                        [&](const auto& sink){sink(*packet);});}catch(...){RetireCache();}
                     corpus->Append(next,*packet);++next;awaiting=false;
                     {std::lock_guard lock(mutex_);flight_.reset();}
                     // Read the next body from the cache before any peer request.

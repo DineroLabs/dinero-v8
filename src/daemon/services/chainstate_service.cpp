@@ -7585,8 +7585,11 @@ StatusOr<wallet::OrchardAccount0RecoveryProgress> ChainstateService::recoverOrch
             // A late v6 snapshot is a selected state, NOT an activation-origin
             // wallet history. Request a separate untrusted full-body source;
             // never fabricate canonical events/cursors or publish an account.
-            const auto target=PhoneHistoryTarget(false);if(!target)return captured.status();
-            UTXOIndex* index=nullptr;
+            // No target while the selected source has not converged. An
+            // already recovered account0 still reports itself; only an
+            // unrecovered wallet keeps the refusal.
+            const auto target=PhoneHistoryTarget(false);
+            UTXOIndex* index=nullptr;bool already_recovered=false;
             {std::lock_guard<std::mutex> lock(wallet_index_use_mutex_);
              if(!wallet_index_uses_by_thread_.count(std::this_thread::get_id())||!utxo_index_)return Status::Invalid;
              index=utxo_index_.get();}
@@ -7603,16 +7606,32 @@ StatusOr<wallet::OrchardAccount0RecoveryProgress> ChainstateService::recoverOrch
                                  !sqlite3_get_autocommit(db))std::terminate();}
                 } tx{db};
                 auto seed=lease->CopyRecoverySeed(expected_session);
-                (void)wallet::OrchardAccountCatalog::RequireUnknownEmpty(db,seed->Bytes());
-                if(wallet.getSetting("wallet_initial_owner_v1").empty())return Status::Invalid;
-                std::vector<uint8_t> bytes(seed->Bytes().begin(),seed->Bytes().end());
-                struct Wipe{std::vector<uint8_t>& b;~Wipe(){OPENSSL_cleanse(b.data(),b.size());}} wipe{bytes};
-                if(wallet.InitialPqMasterPresentInTransaction(bytes))return Status::Invalid;
+                // An already recovered account0 waits for the same history to
+                // resume delivery; it reports progress, it is not a new owner.
+                const auto catalog=wallet::OrchardAccountCatalog::Read(db,seed->Bytes());
+                already_recovered=catalog&&catalog->recovered.has_value();
+                if(!already_recovered&&!target)return captured.status();
+                if(already_recovered){if(restart)return Status::Invalid;}
+                else {
+                    (void)wallet::OrchardAccountCatalog::RequireUnknownEmpty(db,seed->Bytes());
+                    if(wallet.getSetting("wallet_initial_owner_v1").empty())return Status::Invalid;
+                    std::vector<uint8_t> bytes(seed->Bytes().begin(),seed->Bytes().end());
+                    struct Wipe{std::vector<uint8_t>& b;~Wipe(){OPENSSL_cleanse(b.data(),b.size());}} wipe{bytes};
+                    if(wallet.InitialPqMasterPresentInTransaction(bytes))return Status::Invalid;
+                }
                 // The ownership check requires a FULL transaction even though
                 // this path never stages/adopts wallet state. Release it before
                 // the selected-source and network callbacks below.
                 if(sqlite3_exec(db,"COMMIT",nullptr,nullptr,nullptr)!=SQLITE_OK)return Status::Invalid;
                 tx.committed=true;
+            }
+            if(!target){
+                // Request history now so the download starts as soon as the
+                // source converges, even if the caller does not poll again.
+                orchard_phone_history_requested_.store(true);
+                wallet::OrchardAccount0RecoveryProgress progress;
+                progress.already_recovered=true;progress.awaiting_history_source=true;
+                return progress; // complete=false; history resumes once the source converges.
             }
             if(PhoneHistoryTarget(false)!=target)return Status::Invalid;
             const auto* context=DaemonContext::instance();
@@ -7622,6 +7641,7 @@ StatusOr<wallet::OrchardAccount0RecoveryProgress> ChainstateService::recoverOrch
             orchard_phone_history_requested_.store(true);
             const auto observed=download->Observe();const auto ready=download->Ready();
             wallet::OrchardAccount0RecoveryProgress progress;
+            progress.already_recovered=already_recovered;
             progress.history_requested=true;progress.history_ready=bool(ready&&ready->target==*target);
             progress.history_target_height=target->height;progress.history_target_hash=target->hash;
             if(observed.requested&&observed.target_height==target->height&&observed.target_hash==target->hash)
@@ -7861,12 +7881,12 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
     if(activation_mutex_.HeldByCurrentThread())return Status::Invalid;
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     try {
-        bool empty=false;
+        bool empty=false;RuntimeOutboxCursor outbox_head{};
         {
             std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
             const auto first=getRuntimeDeliveryPage({},1);
             if(!first.ok())return first.status();
-            empty=!(*first)->head.sequence;
+            empty=!(*first)->head.sequence;outbox_head=(*first)->head;
         }
         if(empty){
             auto self=std::const_pointer_cast<ChainstateService>(weak_from_this().lock());
@@ -7936,10 +7956,14 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             }else{phone_replay_.reset();phone_replay_base_.reset();}
             captured_head.reset();
         }
+        {std::lock_guard memo(phone_prefix_pending_mutex_);
+         if(phone_prefix_pending_head_&&*phone_prefix_pending_head_==std::pair{outbox_head.sequence,outbox_head.digest}&&!phone())return Status::Invalid;}
+        ++phone_replay_source_reads_;
         auto material=RuntimeAccountReplay::ReadSource(read);
         if(const auto base=RuntimeAccountReplay::ActivationPrefixBase(material)){
             const auto ready=phone();
-            if(!ready)return Status::Invalid;
+            if(!ready){std::lock_guard memo(phone_prefix_pending_mutex_);phone_prefix_pending_head_=std::pair{outbox_head.sequence,outbox_head.digest};return Status::Invalid;}
+            {std::lock_guard memo(phone_prefix_pending_mutex_);phone_prefix_pending_head_.reset();}
             const auto& [source,target,download,history]=*ready;
             if(base->second!=target.base||base->first<target.activation||base->first>target.height)return Status::Invalid;
             auto verifier=source->PreparePhoneHistoryVerifier(history->activation_proof,target);

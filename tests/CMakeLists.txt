@@ -10237,6 +10237,12 @@ if(TARGET nodecore_ffi)
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_late_phone_wallet_recovery.py)
     set_tests_properties(NodeCoreLatePhoneWalletRecovery PROPERTIES TIMEOUT 420 RUN_SERIAL TRUE
       LABELS "integration;nodecore;orchard;snapshot-v5;restart;wallet;recovery")
+    add_test(NAME NodeCoreLatePhoneMultiStepPrefixRecovery COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
+      ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_late_phone_multistep_prefix.py)
+    set_tests_properties(NodeCoreLatePhoneMultiStepPrefixRecovery PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE
+      LABELS "integration;nodecore;orchard;history;wallet;recovery")
     add_test(NAME NodeCoreAssumedFundedCrossing COMMAND ${CMAKE_COMMAND} -E env
       NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
       ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>

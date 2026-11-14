@@ -226,6 +226,10 @@ din::Json rpc_context_wallet_orchard_recoveraccount0(const ExecutionContext& ctx
             result["history_target_height"]=Json::UInt64(recovered->history_target_height);
             result["history_target_hash"]=recovered->history_target_hash.GetHex();
             result["phase"]=recovered->history_ready?"authenticated_history_not_yet_adopted":"downloading_authenticated_history";
+        }else if(recovered->awaiting_history_source){
+            // Recovered account0 without a selected history source yet.
+            result["history_requested"]=false;result["history_ready"]=false;
+            result["phase"]="awaiting_history_source";
         }
 #else
         (void)ctx;throw std::runtime_error("Orchard wallet backend unavailable");

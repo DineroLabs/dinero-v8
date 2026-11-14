@@ -267,7 +267,7 @@ jobs:
           import re
           log=open('orchard-input-proof-execution.log').read()
           assert re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log)==['WalletFundingDownload']
-          cases=['NewInputProofCodecBounds','InputRequestOutpointUsesWireFieldOrder','NewInputRequestCapacityAndStop','CurrentSourceChangeCancelsBlockedInputFlight','BoundedRequestsAndStoppedOwner','CurrentFullSourceInputProofAndExactSessionDownload','ActualCreationMetadataAndMerkleComparison','ExactSessionAndBodyDataOnly']
+          cases=['NewInputProofCodecBounds','InputRequestOutpointUsesWireFieldOrder','NewInputRequestCapacityAndStop','CurrentSourceChangeCancelsBlockedInputFlight','BoundedRequestsAndStoppedOwner','CurrentFullSourceInputProofAndExactSessionDownload','ActualCreationMetadataAndMerkleComparison','ExactSessionAndBodyDataOnly','IdleHistoryWorkersWaitAndRequestsWakeImmediately','IdleOrchardHistoryWorkersWait']
           assert sorted(re.findall(r'\[       OK \] WalletFundingDownload\.(\w+)',log))==sorted(cases)
           PYINPUT
       - name: Exercise phone migration, rollback cleanup, CSN reconnect and pruned header reconsider
