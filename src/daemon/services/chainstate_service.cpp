@@ -7348,6 +7348,9 @@ StatusOr<wallet::OrchardAccount0RecoveryProgress> ChainstateService::recoverOrch
                 tx.committed=true;
             }
             if(!target){
+                // Request history now so the download starts as soon as the
+                // source converges, even if the caller does not poll again.
+                orchard_phone_history_requested_.store(true);
                 wallet::OrchardAccount0RecoveryProgress progress;
                 progress.already_recovered=true;progress.awaiting_history_source=true;
                 return progress; // complete=false; history resumes once the source converges.

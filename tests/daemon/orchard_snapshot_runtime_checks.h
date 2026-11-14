@@ -760,6 +760,10 @@ void GenerateSdkActivationFixture(){
         if(unserved){
             const auto header=unserved->Header().SerializeForHash();
             row["unserved_header"]=util::hex({header.begin(),header.end()});
+            const auto body_path=f.root/"untrusted-late-successor-body.bin";std::ofstream out(body_path,std::ios::binary);ASSERT_TRUE(out);
+            const auto& bytes=unserved->WireBytes();out.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());
+            out.close();ASSERT_TRUE(out);row["unserved_body"]=body_path.string();
+            row["unserved_hash"]=unserved->Header().GetHash().GetHex();
         }
     }
     const auto proof_file=f.root/"untrusted-catalog-section.bin";
@@ -2274,6 +2278,37 @@ TEST(OrchardPhoneHistory, RefusedCacheFromAnotherRootFetchesFromPeers){
     const auto complete=host.Ready();
     EXPECT_TRUE(complete)<<"worker error: "<<host.Observe().error<<" verified: "<<host.Observe().verified_height;
     if(complete){EXPECT_EQ(complete->Body(102),first->WireBytes());EXPECT_EQ(complete->Body(103),second->WireBytes());}
+    host.Stop();
+}
+TEST(OrchardPhoneHistory, ReplacedCacheRootFailsClosedWithoutPeerRefetch){
+    // A record refusal retires the cache only while the cache ROOT still
+    // checks out. If the guarded datadir root itself was replaced, the
+    // download keeps failing closed locally instead of refetching all
+    // history from peers in a loop.
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;using Download=p2p::OrchardPhoneHistoryDownload;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    source.f.service->setRuntimeBlockNotifications(std::make_shared<CanonicalPoolNotices>());
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));
+    auto proof=std::make_shared<const OrchardSnapshotSection>(Access::CaptureActivation(source.f.db,*headers));
+    const auto a=source.f.db.getOrchardCatalogState(first->Header().GetHash());ASSERT_TRUE(a.ok());
+    const auto root=history_cache_test::Root("replaced-root");std::string error;
+    daemon::DatadirGuard guard;ASSERT_TRUE(guard.Acquire(root,error))<<error;
+    auto cache=std::make_shared<p2p::OrchardHistoryCache>(guard);
+    {const auto body=first->WireBytes();
+     cache->Put('b',first->Header().GetHash(),body.size(),OrchardBlockCandidate::MaxWireSize(),[&](const auto& sink){sink(body);});}
+    std::filesystem::rename(root,root.string()+"-preserved");std::filesystem::create_directory(root);
+    const Download::Target one{102,102,first->Header().GetHash(),storage::catalog::Hash(*a),first->Header().GetHash()};
+    std::atomic<unsigned> sends=0;
+    Download host(headers,root,[&]{return std::optional(one);},[&]{return proof;},
+        [&](auto p,const auto& t){return Access::ReplayActivation(std::move(p),headers,t.height,t.hash);},
+        []{return std::vector<Download::Peer>{{"archive",95,ServiceFlags::NODE_NETWORK}};},
+        [&](const auto&,const auto&,const auto&){++sends;return true;},cache);
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    EXPECT_EQ(sends.load(),0u)<<"worker error: "<<host.Observe().error;
+    EXPECT_FALSE(host.Ready());
     host.Stop();
 }
 TEST(OrchardPhoneHistory, ExtensionSeenAtCreationRecheckPreservesInitialization){

@@ -105,7 +105,10 @@ private:
     // peers instead of retrying the same refused record forever.
     std::atomic<bool> cache_retired_{false};std::atomic<uint64_t> iterations_{0};
     bool Cached()const{return cache_&&!cache_retired_.load();}
-    void RetireCache(){cache_retired_.store(true);}
+    // Retire only for a record-level refusal: if the cache root itself no
+    // longer checks out (datadir replaced, lock lost) keep failing closed
+    // instead of refetching all history from peers in a loop.
+    void RetireCache(){cache_->Check();cache_retired_.store(true);}
     mutable std::mutex mutex_;std::mutex join_;std::condition_variable cv_;
     std::optional<Peer> flight_;uint256 wanted_;std::optional<Bytes> packet_;
     bool body_received_=false;

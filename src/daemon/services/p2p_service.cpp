@@ -2169,7 +2169,7 @@ void P2PService::StartOrchardHistoryWorkers() {
                     if(!cache||proof_cache_retired->load())return {};
                     try{
                         if(headers->GetHeaderAtHeightCopy(Params().orchard_activation_height,first)&&cache->Has('p',first.hash))return first.hash;
-                    }catch(...){proof_cache_retired->store(true);}
+                    }catch(...){cache->Check();proof_cache_retired->store(true);}
                     return {};
                 };
                 auto download=std::make_shared<p2p::OrchardCatalogDownload>(
@@ -2202,7 +2202,7 @@ void P2PService::StartOrchardHistoryWorkers() {
                                     proof=std::make_shared<const consensus::OrchardSnapshotSection>(
                                         consensus::ReadOrchardSnapshotSection(size,read,std::filesystem::path(config_->DataDir())));});
                                 return proof; // Untrusted until PreparePhoneHistoryVerifier reauthenticates.
-                            }catch(...){proof_cache_retired->store(true);}
+                            }catch(...){cache->Check();proof_cache_retired->store(true);}
                         }
                         return ReadyActivationCatalog();
                     },

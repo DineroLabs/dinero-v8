@@ -201,12 +201,26 @@ try:
         (root/'online-progress.json').write_text(json.dumps(online,indent=2)+'\n')
         assert isinstance(progress,dict) and 'error' not in progress,('completed account refused before convergence',progress)
         assert progress.get('already_recovered') is True and progress.get('complete') is False,progress
-        assert progress.get('history_ready') is False,progress
-        assert progress.get('history_requested') is False and progress.get('phase')=='awaiting_history_source',progress
+        # First the account reports that no history source is selected. Its
+        # request then lets authenticated history acquisition start without
+        # convergence; adoption still waits for a converged source.
+        if len(online)==1:
+            assert progress.get('history_requested') is False and progress.get('history_ready') is False,progress
+            assert progress.get('phase')=='awaiting_history_source',progress
         time.sleep(.5)
     time.sleep(3)
     reads_after=call('sdk_activation_state')['phone_replay']['source_reads']
     assert reads_after-reads_before<=1,('not-ready replay re-read the outbox repeatedly',reads_before,reads_after)
+    # The awaiting reply requested history: once the source converges the
+    # download must select the new target WITHOUT another account-0 call.
+    bodies[bytes.fromhex(fixture['unserved_hash'])[::-1]]=Path(fixture['unserved_body']).read_bytes()
+    deadline=time.monotonic()+60
+    while time.monotonic()<deadline:
+        assert not failures,failures
+        state=call('sdk_activation_state');history=state.get('phone_history',{})
+        if call('rpc',method='getblockcount',params=[])==105 and history.get('requested') and history.get('target_height')==105:break
+        time.sleep(.25)
+    else:raise AssertionError(('history not requested after convergence',state.get('phone_history')))
     assert call('stop')==0
     process.stdin.close();process.wait(timeout=30);assert process.returncode==0,process.returncode
     success=True
