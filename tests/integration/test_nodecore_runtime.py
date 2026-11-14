@@ -361,7 +361,9 @@ def storage_readiness(node):
     started = node.start(linked, network="mainnet", sync_profile="ios_utreexo")
     check("linked blockchain refuses before embedded services start", started != 0, started)
     report = node.call("status")
-    check("linked blockchain leaves embedded node stopped", not report["running"], report)
+    # The C ABI returns no status JSON when startup refused before services
+    # become queryable; the driver serializes that nullptr as JSON null.
+    check("linked blockchain leaves embedded node stopped", report is None, report)
     check("refusal does not publish separated layout", not layout(linked) and not (linked/"blockchain"/"chaindb.legacy-v1").exists())
     check("refusal keeps canonical source", source_digests() == original_source)
     check("refusal keeps wallet seed", seeds(linked) == original_seeds)
