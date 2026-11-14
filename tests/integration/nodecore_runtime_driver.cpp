@@ -549,6 +549,7 @@ int main(int argc, char** argv) {
                 Json::Value sample;
                 long long slowest_ms = 0;
                 bool saw_starting = false;
+                Json::Value starting_versions(Json::arrayValue);
                 while (!done.load()) {
                     const auto begin = std::chrono::steady_clock::now();
                     char* raw = nodecore_get_status_json();
@@ -556,7 +557,17 @@ int main(int argc, char** argv) {
                         std::chrono::steady_clock::now() - begin).count();
                     if (!done.load()) {
                         slowest_ms = std::max<long long>(slowest_ms, ms);
-                        if (raw) { sample = Parse(raw); saw_starting = saw_starting || sample.get("starting", false).asBool(); }
+                        if (raw) {
+                            sample = Parse(raw);
+                            if (sample.get("starting", false).asBool()) {
+                                saw_starting = true;
+                                // Record each distinct version a busy reply carried (null if absent).
+                                const auto version = sample.isMember("version") ? sample["version"] : Json::Value();
+                                bool seen = false;
+                                for (const auto& v : starting_versions) seen = seen || v == version;
+                                if (!seen) starting_versions.append(version);
+                            }
+                        }
                     }
                     if (raw) nodecore_free_string(raw);
                     std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -565,6 +576,11 @@ int main(int argc, char** argv) {
                 result["start_result"] = start_result;
                 result["slowest_status_ms_during_start"] = Json::Int64(slowest_ms);
                 result["saw_starting"] = saw_starting;
+                result["starting_versions"] = starting_versions;
+                if (char* after = nodecore_get_status_json()) {
+                    result["running_version"] = Parse(after).get("version", Json::Value());
+                    nodecore_free_string(after);
+                }
             } else if (operation == "stop") {
                 result = nodecore_stop();
             } else if(operation=="watch_script"){

@@ -991,6 +991,9 @@ char* nodecore_get_status_json(void) {
         Json::Value busy;
         busy["running"] = false;
         busy["starting"] = true;
+        // Hosts check the Core identity on every status reply; the version is
+        // a compile-time constant, so report it here too (no lock needed).
+        busy["version"] = DINERO_VERSION_STRING;
         Json::StreamWriterBuilder busy_writer;
         busy_writer["indentation"] = "";
         return strdup_c(Json::writeString(busy_writer, busy));

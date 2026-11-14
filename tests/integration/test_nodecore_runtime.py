@@ -182,6 +182,12 @@ def status_during_start(node):
     check("start under status polling succeeds", probe["start_result"] == 0, probe)
     check("status reports starting while a start runs", probe["saw_starting"], probe)
     check("status answers at once during start", probe["slowest_status_ms_during_start"] < 200, probe)
+    # Hosts compare the reported Core identity to the one they were built
+    # with; a busy reply without a version was misread as a mismatch.
+    running = probe.get("running_version")
+    check("running status reports a version", isinstance(running, str) and running, probe)
+    check("every busy starting reply reports the running version",
+          probe.get("starting_versions") == [running], probe)
     check("status-during-start stop", node.call("stop") == 0)
 
 
