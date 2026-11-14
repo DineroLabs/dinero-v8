@@ -35,6 +35,7 @@ protected:
         service=std::make_shared<dinero::WalletService>();daemon.wallet=service;
         ASSERT_TRUE(service->Init(daemon));
         index=std::make_unique<dinero::UTXOIndex>((root/"index.db").string());
+        ASSERT_TRUE(index->Initialize());
         auto& w=service->get();w.setUTXOIndex(index.get());
         w.create("other");w.create("owner");w.encryptWallet("owner-password");w.unlockWallet("owner-password",0);
         ctx.daemon=&daemon;ctx.walletName="owner";registerV7PqWalletMethods();
