@@ -149,6 +149,27 @@ TEST(WalletV3Spend, RecoveredTransparentCoinUsesOwnedChangeAndRetainsReservation
     EXPECT_TRUE(ready_balance["send_ready"].asBool()) << ready_balance.toStyledString();
     EXPECT_EQ(ready_balance["send_scope"].asString(), "transparent_recovered_v3");
     EXPECT_GT(ready_balance["spendable"].asDouble(), 0.0);
+    // HTTP requests do not name the selected wallet. The status handler must
+    // pin that selection before it delegates to the balance reader.
+    auto http_request = request;
+    http_request.walletName.clear();
+    const auto ready_status = rpc_context_wallet_getstatus(http_request, din::obj());
+    ASSERT_FALSE(ready_status.isMember("error")) << ready_status.toStyledString();
+    EXPECT_TRUE(ready_status["send_ready"].asBool()) << ready_status.toStyledString();
+    EXPECT_EQ(ready_status["send_scope"].asString(), "transparent_recovered_v3");
+    EXPECT_DOUBLE_EQ(ready_status["spendable_balance"].asDouble(),
+                     ready_balance["spendable"].asDouble());
+    // The status-only count is one immature mined coin in this fixture.
+    // getbalance's frozen schema does not expose this diagnostic field.
+    EXPECT_EQ(ready_status["immature_utxo_count"].asUInt(), 1u);
+    EXPECT_FALSE(ready_balance.isMember("immature_utxo_count"));
+    EXPECT_FALSE(ready_status.isMember("send_unavailable_reason"));
+    auto wrong_wallet = request;
+    wrong_wallet.walletName = "different-wallet";
+    const auto wrong_status = rpc_context_wallet_getstatus(wrong_wallet, din::obj());
+    EXPECT_EQ(wrong_status["error_code"].asString(), "wallet_balance_not_current")
+        << wrong_status.toStyledString();
+    EXPECT_FALSE(wrong_status.isMember("spendable_balance"));
     din::Json payment = din::obj();
     payment["address"] = OrchardMiningPayout;
     payment["amount_una"] = Json::UInt64(100000);
@@ -195,6 +216,10 @@ TEST(WalletV3Spend, RecoveredTransparentCoinUsesOwnedChangeAndRetainsReservation
     ASSERT_FALSE(snapshot_balance.isMember("error")) << snapshot_balance.toStyledString();
     EXPECT_FALSE(snapshot_balance["send_ready"].asBool()) << snapshot_balance.toStyledString();
     EXPECT_TRUE(snapshot_balance["spendable"].isNull()) << snapshot_balance.toStyledString();
+    const auto snapshot_status = rpc_context_wallet_getstatus(request, din::obj());
+    ASSERT_FALSE(snapshot_status.isMember("error")) << snapshot_status.toStyledString();
+    EXPECT_FALSE(snapshot_status["send_ready"].asBool()) << snapshot_status.toStyledString();
+    EXPECT_TRUE(snapshot_status["spendable_balance"].isNull()) << snapshot_status.toStyledString();
     for (const bool preview : {true, false}) {
         if (preview) payment["preview"] = true;
         else payment.removeMember("preview");

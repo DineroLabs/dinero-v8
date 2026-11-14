@@ -29,7 +29,21 @@
 #include <memory>
 #include <chrono>
 
+din::Json rpc_context_wallet_getbalance(const ExecutionContext&, const din::Json&);
+
 namespace {
+din::Json RefuseChangedStatusWallet() {
+    din::Json result;
+    result["error"] = "Wallet selection changed during status read";
+    result["balance_error"] = result["error"];
+    result["balance_available"] = false;
+    result["error_code"] = "wallet_balance_not_current";
+    result["retryable"] = true;
+    result["code"] = -32091;
+    result["rpc_schema"] = "din.wallet.v1";
+    return result;
+}
+
 bool RefuseStaleLegacyWalletBalance(const ExecutionContext& ctx,
         const std::shared_ptr<dinero::WalletService>& service, din::Json& result,
         bool financial_status = true) {
@@ -164,53 +178,127 @@ din::Json rpc_context_wallet_getstatus(const ExecutionContext& ctx, const din::J
             return result;
         }
 
-        auto& wallet = wallet_service->get();
+        auto wallet_use = dinero::WalletService::AcquireWalletUse(wallet_service);
+        auto& wallet = wallet_use->Wallet();
+        std::string selected_status_wallet;
+        uint64_t selected_status_session = 0;
+        bool transparent_status = false;
+        {
+            auto lease = wallet.AcquireDatabaseLease();
+            selected_status_wallet = lease->WalletName();
+            selected_status_session = lease->Session();
+        }
+        if (selected_status_wallet.empty() ||
+            (!ctx.walletName.empty() && ctx.walletName != selected_status_wallet))
+            return RefuseChangedStatusWallet();
         result["wallet_loaded"] = true;
 
         result["encrypted"] = wallet.isWalletEncrypted();
         result["locked"] = wallet.isWalletLocked();
 
+        const auto selected_status_wallet_current = [&] {
+            try {
+                auto lease = wallet.AcquireDatabaseLease();
+                return lease->WalletName() == selected_status_wallet &&
+                       lease->Session() == selected_status_session;
+            } catch (...) {
+                return false;
+            }
+        };
+
         // Get balance via context
         try {
             if (!RefuseStaleLegacyWalletBalance(ctx, wallet_service, result)) {
-                const auto balance = wallet.getBalance();
-                if (!RefuseStaleLegacyWalletBalance(ctx, wallet_service, result)) {
-                    // WalletManager::getBalance() already returns DIN.
-                    bool transparent_only = false;
-                    {
-                        auto lease = wallet.AcquireDatabaseLease();
-                        transparent_only = lease->LegacyTransparentState() ==
-                            dinero::WalletManager::LegacyTransparentState::Complete;
-                    }
-                    result["balance"] = balance.confirmed;
-                    result["confirmed_balance"] = balance.confirmed;
-                    result["unconfirmed_balance"] = balance.unconfirmed;
-                    result["immature_balance"] = balance.immature;
-                    result["spendable_balance"] = transparent_only
-                        ? din::Json(Json::nullValue) : din::Json(balance.spendable);
-                    result["total_balance"] = balance.total;
-                    result["utxo_count"] = balance.utxo_count;
-                    result["immature_utxo_count"] = balance.immature_utxo_count;
-                    result["confidential_balance"] = transparent_only
-                        ? din::Json(Json::nullValue) : din::Json(0.0);
-                    result["total_with_confidential"] = transparent_only
-                        ? din::Json(Json::nullValue) : din::Json(balance.total);
-                    result["balance_available"] = true;
-                    if (transparent_only) {
+                bool transparent_only = false;
+                {
+                    auto lease = wallet.AcquireDatabaseLease();
+                    if (lease->WalletName() != selected_status_wallet ||
+                        lease->Session() != selected_status_session)
+                        return RefuseChangedStatusWallet();
+                    transparent_only = lease->LegacyTransparentState() ==
+                        dinero::WalletManager::LegacyTransparentState::Complete;
+                }
+                if (transparent_only) {
+                    transparent_status = true;
+                    // The v3 spend capability and reservation-aware amount are
+                    // certified by the same selected-tip read as getbalance.
+                    // Do not rederive either from the old wallet row balance.
+                    auto selected_context = ctx;
+                    selected_context.walletName = selected_status_wallet;
+                    const auto current = rpc_context_wallet_getbalance(selected_context, din::obj());
+                    if (!selected_status_wallet_current() ||
+                        (current.isMember("walletname") &&
+                         current["walletname"].asString() != selected_status_wallet))
+                        return RefuseChangedStatusWallet();
+                    if (current.isMember("error")) {
+                        result["balance_available"] = false;
+                        result["balance_error"] = current["error"];
+                        result["error"] = current["error"];
+                        for (const char* key : {"error_code", "retryable", "code"}) {
+                            if (current.isMember(key)) result[key] = current[key];
+                        }
+                    } else {
+                        result["balance"] = current["confirmed"];
+                        result["confirmed_balance"] = current["confirmed"];
+                        result["unconfirmed_balance"] = current["unconfirmed"];
+                        result["immature_balance"] = current["immature"];
+                        // An imported-runtime ordinary balance may be readable
+                        // without authorizing a v3 transparent send. Require an
+                        // explicit send certificate before exposing spendable.
+                        const bool send_ready = current.isMember("send_ready") &&
+                            current["send_ready"].asBool() &&
+                            current["send_scope"].asString() == "transparent_recovered_v3";
+                        result["spendable_balance"] = send_ready
+                            ? current["spendable"] : din::Json(Json::nullValue);
+                        result["total_balance"] = current["total"];
+                        result["utxo_count"] = current["utxo_count"];
+                        // Keep this status-only diagnostic without extending
+                        // getbalance's frozen public RPC schema. Its financial
+                        // amounts and send capability come from the certified
+                        // getbalance read above.
+                        result["immature_utxo_count"] =
+                            wallet.getBalance().immature_utxo_count;
+                        result["confidential_balance"] = din::Json(Json::nullValue);
+                        result["total_with_confidential"] = din::Json(Json::nullValue);
+                        result["balance_available"] = true;
                         result["wallet_scope"] = "legacy_transparent_only";
-                        result["balance_scope"] = "transparent_current_tip";
                         result["whole_wallet_ready"] = false;
-                        result["send_ready"] = false;
-                        result["send_unavailable_reason"] =
-                            "Orchard wallet enrollment is required before sending";
+                        result["send_ready"] = send_ready;
+                        if (!send_ready)
+                            result["send_unavailable_reason"] =
+                                "Transparent wallet send source is not ready";
+                        for (const char* key : {"wallet_scope", "balance_scope",
+                                                "whole_wallet_ready"}) {
+                            if (current.isMember(key)) result[key] = current[key];
+                        }
+                        if (send_ready) {
+                            result["send_scope"] = current["send_scope"];
+                            result.removeMember("send_unavailable_reason");
+                        }
                     }
-                    if (!transparent_only && ctx.daemon->chainstate) {
-                        auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
-                        if (chainstate && chainstate->utxoIndex()) {
-                            const int64_t conf_balance_una = chainstate->utxoIndex()->GetConfidentialBalance().GetInt64();
-                            const double conf_balance_din = static_cast<double>(conf_balance_una) / 1e8;
-                            result["confidential_balance"] = conf_balance_din;
-                            result["total_with_confidential"] = balance.total + conf_balance_din;
+                } else {
+                    const auto balance = wallet.getBalance();
+                    if (!RefuseStaleLegacyWalletBalance(ctx, wallet_service, result)) {
+                        // WalletManager::getBalance() already returns DIN.
+                        result["balance"] = balance.confirmed;
+                        result["confirmed_balance"] = balance.confirmed;
+                        result["unconfirmed_balance"] = balance.unconfirmed;
+                        result["immature_balance"] = balance.immature;
+                        result["spendable_balance"] = balance.spendable;
+                        result["total_balance"] = balance.total;
+                        result["utxo_count"] = balance.utxo_count;
+                        result["immature_utxo_count"] = balance.immature_utxo_count;
+                        result["confidential_balance"] = 0.0;
+                        result["total_with_confidential"] = balance.total;
+                        result["balance_available"] = true;
+                        if (ctx.daemon->chainstate) {
+                            auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+                            if (chainstate && chainstate->utxoIndex()) {
+                                const int64_t conf_balance_una = chainstate->utxoIndex()->GetConfidentialBalance().GetInt64();
+                                const double conf_balance_din = static_cast<double>(conf_balance_una) / 1e8;
+                                result["confidential_balance"] = conf_balance_din;
+                                result["total_with_confidential"] = balance.total + conf_balance_din;
+                            }
                         }
                     }
                 }
@@ -232,6 +320,24 @@ din::Json rpc_context_wallet_getstatus(const ExecutionContext& ctx, const din::J
 
         // Include sync state
         result["sync_state"] = rpc_context_wallet_getsyncstate(ctx, params);
+
+        if (!selected_status_wallet_current())
+            return RefuseChangedStatusWallet();
+        if (transparent_status) {
+            din::Json stale;
+            auto selected_context = ctx;
+            selected_context.walletName = selected_status_wallet;
+            try {
+                if (RefuseStaleLegacyWalletBalance(selected_context, wallet_service, stale)) {
+                    stale["rpc_schema"] = "din.wallet.v1";
+                    return stale;
+                }
+            } catch (...) {
+                return RefuseChangedStatusWallet();
+            }
+        }
+        if (!selected_status_wallet_current())
+            return RefuseChangedStatusWallet();
 
         result["rpc_schema"] = "din.wallet.v1";
 
