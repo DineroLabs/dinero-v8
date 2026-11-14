@@ -210,7 +210,9 @@ try:
         time.sleep(.5)
     time.sleep(3)
     reads_after=call('sdk_activation_state')['phone_replay']['source_reads']
-    assert reads_after-reads_before<=1,('not-ready replay re-read the outbox repeatedly',reads_before,reads_after)
+    # At most one refused read plus one full build once history becomes
+    # ready inside this window (the awaiting reply requests history).
+    assert reads_after-reads_before<=2,('not-ready replay re-read the outbox repeatedly',reads_before,reads_after)
     # The awaiting reply requested history: once the source converges the
     # download must select the new target WITHOUT another account-0 call.
     bodies[bytes.fromhex(fixture['unserved_hash'])[::-1]]=Path(fixture['unserved_body']).read_bytes()
