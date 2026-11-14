@@ -2102,9 +2102,9 @@ MainWindow::MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
           secs < 180
             ? "Opening your local chain data. Please keep the app open; the wallet "
               "connects automatically when the node is ready."
-            : "Still opening your local chain data. A one-time upgrade of a large "
-              "existing database can take an hour or longer. Please keep the app "
-              "open; the wallet connects automatically when the node is ready.");
+            : "Still waiting for the local node. A large database may take "
+              "several minutes to check, including after a restart. Keep the "
+              "app open; the wallet connects when the node is ready.");
     };
     render(*elapsed);
 
@@ -14113,15 +14113,13 @@ void MainWindow::onStartupWatchdogTimeout() {
   qWarning() << "Startup watchdog: no daemon RPC connection after 180s";
 
   QMessageBox box(this);
-  box.setIcon(QMessageBox::Warning);
-  box.setWindowTitle("Still Waiting for Daemon");
-  box.setText("Dinero has been waiting 180 seconds for the daemon (dinerod) "
-              "and is still not connected — the daemon may have failed.");
+  box.setIcon(QMessageBox::Information);
+  box.setWindowTitle("Node Still Starting");
+  box.setText("Dinero has not connected to its local node after three minutes.");
   box.setInformativeText(
-    "Common causes:\n"
-    "  • Port 20998 is held by another process (lsof -i :20998)\n"
-    "  • Another Dinero instance is using the same data directory\n\n"
-    "You can keep waiting, open the daemon log, or quit.");
+    "A large database may still be checking saved chain data. If the node "
+    "stopped or could not open its port, Show Log provides the cause. "
+    "Keep Waiting lets startup continue; Quit closes Dinero.");
   box.setDetailedText(daemonDebugLogTail(datadir));
   QPushButton* showLogBtn = box.addButton("Show Log", QMessageBox::ActionRole);
   QPushButton* waitBtn = box.addButton("Keep Waiting", QMessageBox::AcceptRole);
