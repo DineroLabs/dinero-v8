@@ -149,7 +149,8 @@ try:
     # Completed-account reopen while the activation history cannot become
     # ready (offline, public body cache removed): account-0 recovery must
     # report the already-recovered account and history progress, never refuse.
-    shutil.rmtree(datadir/'.orchard-phone-history-v1',ignore_errors=True)
+    assert (datadir/'.orchard-phone-history-v1').is_dir(),'public history cache missing before reopen'
+    shutil.rmtree(datadir/'.orchard-phone-history-v1')
     (datadir/'dinero.conf').write_text('p2p.offline=1\nlisten=0\nrpc.port=0\nwallet.socket.enable=0\nassumeutxo_bg_stall_timeout=3600\n')
     reply.close();replies=root/'cold-replies.jsonl';replies.touch();reply=replies.open()
     output.close();output=(root/'cold-nodecore.log').open('xb')
@@ -165,6 +166,7 @@ try:
         (root/'cold-progress.json').write_text(json.dumps(cold,indent=2)+'\n')
         assert isinstance(progress,dict) and 'error' not in progress,('completed account refused on reopen',progress)
         assert progress.get('already_recovered') is True,progress
+        assert progress.get('history_requested') is True and progress.get('complete') is False,progress
         time.sleep(.5)
     assert call('stop')==0
     process.stdin.close();process.wait(timeout=30);assert process.returncode==0,process.returncode
