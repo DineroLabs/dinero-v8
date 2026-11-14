@@ -170,6 +170,39 @@ try:
         time.sleep(.5)
     assert call('stop')==0
     process.stdin.close();process.wait(timeout=30);assert process.returncode==0,process.returncode
+    # Completed-account reopen ONLINE before the node has converged: the peer
+    # announces a valid header 105 but never serves its body, so the best
+    # header leads the active tip and there is no selected history target.
+    # The completed account must still report itself, never refuse.
+    (datadir/'dinero.conf').write_text('listen=0\nrpc.port=0\nwallet.socket.enable=0\nassumeutxo_bg_stall_timeout=3600\n')
+    headers.append(bytes.fromhex(fixture['unserved_header']))
+    reply.close();replies=root/'online-replies.jsonl';replies.touch();reply=replies.open()
+    output.close();output=(root/'online-nodecore.log').open('xb')
+    process=subprocess.Popen([str(driver),str(replies)],stdin=subprocess.PIPE,text=True,stdout=output,stderr=subprocess.STDOUT)
+    assert call('start',datadir=str(datadir),config=dict(network='regtest',sync_profile='ios_utreexo',
+        addnode=f'127.0.0.1:{port}',max_peers=1,verbose_logging=True))==0
+    deadline=time.monotonic()+60
+    while time.monotonic()<deadline:
+        assert not failures,failures
+        info=call('rpc',method='getblockchaininfo',params=[])
+        if isinstance(info,dict) and info.get('headers',0)>=105:break
+        time.sleep(.25)
+    else:raise AssertionError(('header 105 not accepted',info))
+    assert call('rpc',method='getblockcount',params=[])==104
+    assert call('rpc',method='wallet.open',params=['late-phone-multistep-owner'])['success'] is True
+    binding=call('rpc',method='wallet.orchard.getwalletbinding',params=dict(wallet_name='late-phone-multistep-owner'))
+    bound=dict(wallet_binding=binding['wallet_binding'])
+    online=[]
+    for _ in range(6):
+        progress=call('rpc',method='wallet.orchard.recoveraccount0',params=bound);online.append(progress)
+        (root/'online-progress.json').write_text(json.dumps(online,indent=2)+'\n')
+        assert isinstance(progress,dict) and 'error' not in progress,('completed account refused before convergence',progress)
+        assert progress.get('already_recovered') is True and progress.get('complete') is False,progress
+        assert progress.get('history_ready') is False,progress
+        assert progress.get('history_requested') is False and progress.get('phase')=='awaiting_history_source',progress
+        time.sleep(.5)
+    assert call('stop')==0
+    process.stdin.close();process.wait(timeout=30);assert process.returncode==0,process.returncode
     success=True
     print('PASS late-phone account-0 recovery over a two-step activation prefix (102..103, floor 103)',flush=True)
 finally:

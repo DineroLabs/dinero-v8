@@ -707,7 +707,7 @@ void GenerateSdkActivationFixture(){
         // steps (102,103), like mainnet's 150000..150074 prefix.
         const bool above=std::getenv("DINERO_SDK_LATE_FLOOR_ABOVE_ACTIVATION")!=nullptr;
         std::unique_ptr<CanonicalPoolFixture> tail;std::optional<consensus::OrchardSnapshotSection> floor_proof;
-        std::shared_ptr<const CatalogSolvedTemplate> tip;
+        std::shared_ptr<const CatalogSolvedTemplate> tip,unserved;
         if(above){
             ASSERT_FALSE(funded);
             tail=std::make_unique<CanonicalPoolFixture>(true);
@@ -722,6 +722,11 @@ void GenerateSdkActivationFixture(){
             BlockAssembler assembler(&tail->f.db);WireOrchardAssembler(assembler,tail->f);
             tip=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(tip);
             ASSERT_EQ(tip->Height(),104u);ASSERT_TRUE(tail->Submit(tip->WireBytes()).connected);
+            // A real successor whose HEADER alone a test peer may announce, so
+            // the best header leads the active tip (not converged).
+            BlockAssembler successor(&tail->f.db);WireOrchardAssembler(successor,tail->f);
+            unserved=SolveCatalogTemplate(successor.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(unserved);
+            ASSERT_EQ(unserved->Height(),105u);
         }
         const auto& floor=above?f.full.second:f.full.first;
         const auto late=f.root/"late-phone";ASSERT_TRUE(std::filesystem::create_directory(late));
@@ -751,6 +756,10 @@ void GenerateSdkActivationFixture(){
             const auto header=tip->Header().SerializeForHash();
             row["late_tip"]=tip_path.string();row["late_tip_hash"]=tip->Header().GetHash().GetHex();
             row["late_tip_header"]=util::hex({header.begin(),header.end()});
+        }
+        if(unserved){
+            const auto header=unserved->Header().SerializeForHash();
+            row["unserved_header"]=util::hex({header.begin(),header.end()});
         }
     }
     const auto proof_file=f.root/"untrusted-catalog-section.bin";

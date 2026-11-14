@@ -7307,7 +7307,10 @@ StatusOr<wallet::OrchardAccount0RecoveryProgress> ChainstateService::recoverOrch
             // A late v6 snapshot is a selected state, NOT an activation-origin
             // wallet history. Request a separate untrusted full-body source;
             // never fabricate canonical events/cursors or publish an account.
-            const auto target=PhoneHistoryTarget(false);if(!target)return captured.status();
+            // No target while the selected source has not converged. An
+            // already recovered account0 still reports itself; only an
+            // unrecovered wallet keeps the refusal.
+            const auto target=PhoneHistoryTarget(false);
             UTXOIndex* index=nullptr;bool already_recovered=false;
             {std::lock_guard<std::mutex> lock(wallet_index_use_mutex_);
              if(!wallet_index_uses_by_thread_.count(std::this_thread::get_id())||!utxo_index_)return Status::Invalid;
@@ -7329,6 +7332,7 @@ StatusOr<wallet::OrchardAccount0RecoveryProgress> ChainstateService::recoverOrch
                 // resume delivery; it reports progress, it is not a new owner.
                 const auto catalog=wallet::OrchardAccountCatalog::Read(db,seed->Bytes());
                 already_recovered=catalog&&catalog->recovered.has_value();
+                if(!already_recovered&&!target)return captured.status();
                 if(already_recovered){if(restart)return Status::Invalid;}
                 else {
                     (void)wallet::OrchardAccountCatalog::RequireUnknownEmpty(db,seed->Bytes());
@@ -7342,6 +7346,11 @@ StatusOr<wallet::OrchardAccount0RecoveryProgress> ChainstateService::recoverOrch
                 // the selected-source and network callbacks below.
                 if(sqlite3_exec(db,"COMMIT",nullptr,nullptr,nullptr)!=SQLITE_OK)return Status::Invalid;
                 tx.committed=true;
+            }
+            if(!target){
+                wallet::OrchardAccount0RecoveryProgress progress;
+                progress.already_recovered=true;progress.awaiting_history_source=true;
+                return progress; // complete=false; history resumes once the source converges.
             }
             if(PhoneHistoryTarget(false)!=target)return Status::Invalid;
             const auto* context=DaemonContext::instance();
