@@ -144,10 +144,10 @@ jobs:
               --tag "$PRIMARY_RELEASE" --repo DineroLabs/dinero-v8 \
               --timeout-seconds 900 --poll-seconds 10
             gh release download "$PRIMARY_RELEASE" --repo DineroLabs/dinero-v8 \
-              --pattern 'dinero-assumeutxo-150521-v6-full.dat' \
-              --pattern 'dinero-assumeutxo-150521-v6-full.dat.manifest.json' \
-              --pattern 'dinero-assumeutxo-150521-v6-full.dat.publisher.manifest.json' \
-              --pattern 'dinero-assumeutxo-150521-v6-full.dat.publisher.manifest.sig' \
+              --pattern 'dinero-assumeutxo-153051-v6-full.dat' \
+              --pattern 'dinero-assumeutxo-153051-v6-full.dat.manifest.json' \
+              --pattern 'dinero-assumeutxo-153051-v6-full.dat.publisher.manifest.json' \
+              --pattern 'dinero-assumeutxo-153051-v6-full.dat.publisher.manifest.sig' \
               --dir packaging/windows/dist --clobber
           else
             python packaging/snapshot/fetch_desktop_primary.py \
@@ -168,11 +168,11 @@ jobs:
             --pattern 'utxo-snapshot-65300.dat.manifest.json' \
             --dir packaging/windows/dist --clobber
           python packaging/snapshot/check_desktop_primary.py \
-            --payload packaging/windows/dist/dinero-assumeutxo-150521-v6-full.dat \
-            --manifest packaging/windows/dist/dinero-assumeutxo-150521-v6-full.dat.manifest.json \
-            --publisher-manifest packaging/windows/dist/dinero-assumeutxo-150521-v6-full.dat.publisher.manifest.json \
-            --publisher-signature packaging/windows/dist/dinero-assumeutxo-150521-v6-full.dat.publisher.manifest.sig \
-            --expected-name dinero-assumeutxo-150521-v6-full.dat
+            --payload packaging/windows/dist/dinero-assumeutxo-153051-v6-full.dat \
+            --manifest packaging/windows/dist/dinero-assumeutxo-153051-v6-full.dat.manifest.json \
+            --publisher-manifest packaging/windows/dist/dinero-assumeutxo-153051-v6-full.dat.publisher.manifest.json \
+            --publisher-signature packaging/windows/dist/dinero-assumeutxo-153051-v6-full.dat.publisher.manifest.sig \
+            --expected-name dinero-assumeutxo-153051-v6-full.dat
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -380,8 +380,8 @@ jobs:
             -BuildDir 'build-msvc-server' `
             -VcpkgRoot "$env:VCPKG_INSTALLATION_ROOT" `
             -VcpkgBin "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" `
-            -SnapshotPath 'packaging\windows\dist\dinero-assumeutxo-150521-v6-full.dat' `
-            -SnapshotManifestPath 'packaging\windows\dist\dinero-assumeutxo-150521-v6-full.dat.manifest.json'
+            -SnapshotPath 'packaging\windows\dist\dinero-assumeutxo-153051-v6-full.dat' `
+            -SnapshotManifestPath 'packaging\windows\dist\dinero-assumeutxo-153051-v6-full.dat.manifest.json'
 
       - name: Stage GUI installer and portable operator archive
         shell: powershell
@@ -393,8 +393,8 @@ jobs:
             -QtBin "$env:QT_ROOT_DIR\bin" `
             -CudaBin "$env:CUDA_PATH\bin" `
             -Sv2BuildDir 'dinero-sv2\target\release' `
-            -SnapshotPath 'packaging\windows\dist\dinero-assumeutxo-150521-v6-full.dat' `
-            -SnapshotManifestPath 'packaging\windows\dist\dinero-assumeutxo-150521-v6-full.dat.manifest.json' `
+            -SnapshotPath 'packaging\windows\dist\dinero-assumeutxo-153051-v6-full.dat' `
+            -SnapshotManifestPath 'packaging\windows\dist\dinero-assumeutxo-153051-v6-full.dat.manifest.json' `
             -SnapshotFallbackPath 'packaging\windows\dist\dinero-assumeutxo-148375-v5.dat' `
             -SnapshotFallbackManifestPath 'packaging\windows\dist\dinero-assumeutxo-148375-v5.dat.manifest.json' `
             -SnapshotLegacyFallbackPath 'packaging\windows\dist\dinero-assumeutxo-99677-v4.dat' `
@@ -511,7 +511,7 @@ jobs:
           try {
             & 'C:\Program Files (x86)\NSIS\makensis.exe' "/DVERSION=$version" "/DVERSION_NUMERIC=$numericVersion" dinero-installer.nsi
             if ($LASTEXITCODE -ne 0) { throw 'GUI NSIS rebuild failed' }
-            & 'C:\Program Files (x86)\NSIS\makensis.exe' "/DVERSION=$version" "/DVERSION_NUMERIC=$numericVersion" "/DSNAPSHOT_FILE=dinero-assumeutxo-150521-v6-full.dat" dinero-server-installer.nsi
+            & 'C:\Program Files (x86)\NSIS\makensis.exe' "/DVERSION=$version" "/DVERSION_NUMERIC=$numericVersion" "/DSNAPSHOT_FILE=dinero-assumeutxo-153051-v6-full.dat" dinero-server-installer.nsi
             if ($LASTEXITCODE -ne 0) { throw 'server NSIS rebuild failed' }
           } finally { Pop-Location }
 

@@ -16,7 +16,7 @@ if [[ "${DINERO_SKIP_SNAPSHOTS:-0}" == "1" ]]; then
     exit 0
 fi
 
-PRIMARY_NAME="dinero-assumeutxo-150521-v6-full.dat"
+PRIMARY_NAME="dinero-assumeutxo-153051-v6-full.dat"
 FALLBACK_NAME="dinero-assumeutxo-148375-v5.dat"
 LEGACY_FALLBACK_NAME="dinero-assumeutxo-99677-v4.dat"
 OLDEST_FALLBACK_NAME="utxo-snapshot-65300.dat"

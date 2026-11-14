@@ -11,11 +11,9 @@ class SnapshotWiring(unittest.TestCase):
     def setUp(self):
         catalog = json.loads((ROOT / 'packaging/snapshot/desktop-inputs-candidate.json').read_text(encoding='utf-8'))
         pinned = [catalog['primary']['filename'], *(e['filename'] for e in catalog['fallbacks'])]
-        # The public catalog remains at v5 until the H150521 full-v6 export is
-        # natively qualified. Wiring is tested against the provisional name;
-        # package admission still refuses an unpinned primary.
-        self.names = (["dinero-assumeutxo-150521-v6-full.dat", *pinned]
-                      if catalog['primary']['format_version'] == 5 else pinned)
+        # Package defaults must follow the exact pinned primary and three
+        # older recovery inputs. Native admission is qualified separately.
+        self.names = pinned
         self.assertEqual(len(self.names), 4)
 
     def test_gui_selection_and_windows_derivation_cover_all_four(self):
