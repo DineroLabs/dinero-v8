@@ -24,9 +24,12 @@ constexpr bool ShouldArmBundledSnapshot(WalletIndexStartupMode mode) noexcept {
     return mode != WalletIndexStartupMode::FullArchiveV3;
 }
 
-constexpr bool ShouldOfferWalletIndexV3Upgrade(bool eligibleV2,
-                                               bool explicitPilotOptIn) noexcept {
-    return eligibleV2 && explicitPilotOptIn;
+// The offline daemon status check has already verified that this is an
+// upgradeable full-archive v2 index. The user still chooses whether to run the
+// upgrade in the startup dialog; a development-only environment flag must not
+// hide that choice from installed wallets.
+constexpr bool ShouldOfferWalletIndexV3Upgrade(bool eligibleV2) noexcept {
+    return eligibleV2;
 }
 
 inline constexpr DaemonBootstrapOwner kProductionDaemonBootstrapOwner =

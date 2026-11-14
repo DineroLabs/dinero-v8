@@ -1272,25 +1272,21 @@ offerFullArchiveWalletIndexUpgrade(const QString& datadir) {
   }
   if (ready) return WalletIndexStartupMode::FullArchiveV3;
   if (!available) return WalletIndexStartupMode::LegacyOrUnavailable;
-  // Recovery currently publishes transparent history but cannot yet make the
-  // legacy wallet spend-ready after Orchard. Never offer this as an ordinary
-  // wallet upgrade. An explicit pilot environment is required until the
-  // authenticated send path and its qualification are complete.
-  if (!dinero::qt::ShouldOfferWalletIndexV3Upgrade(
-          available, qEnvironmentVariable("DINERO_QT_V3_WALLET_PILOT") == QStringLiteral("1")))
+  if (!dinero::qt::ShouldOfferWalletIndexV3Upgrade(available))
     return WalletIndexStartupMode::LegacyOrUnavailable;
 
   QMessageBox choice;
-  choice.setIcon(QMessageBox::Warning);
+  choice.setIcon(QMessageBox::Information);
   choice.setWindowTitle(QStringLiteral("Update wallet history"));
-  choice.setText(QStringLiteral("Pilot: recover transparent wallet history"));
+  choice.setText(QStringLiteral("Update full-node wallet history"));
   choice.setInformativeText(QStringLiteral(
-      "This pilot can display transparent mining rewards after Orchard, but "
-      "the recovered wallet cannot send funds until its Orchard spend path is qualified. "
-      "Dinero will make a separate rollback copy before changing the index. "
-      "Your wallet keys are not changed. The daemon will start after the update.\n\n"
-      "If you continue without updating, recent mining rewards may be missing "
-      "from the wallet display. Do not use this pilot for a spending wallet."));
+      "Your existing wallet index needs an offline update to show transparent "
+      "payments and mining rewards received after Orchard activation. Dinero "
+      "will verify the source and make a separate rollback copy before changing "
+      "the index. Your wallet keys are not changed. The daemon starts after "
+      "the update.\n\n"
+      "If you choose Not now, your wallet data stays unchanged, but recent "
+      "rewards and sending may remain unavailable until history is updated."));
   auto* upgrade = choice.addButton(QStringLiteral("Update history"), QMessageBox::AcceptRole);
   auto* later = choice.addButton(QStringLiteral("Not now"), QMessageBox::RejectRole);
   choice.setDefaultButton(later);
@@ -1404,8 +1400,8 @@ int main(int argc, char** argv) {
     return 0;
   }
 
-  // An already verified v3 source needs a snapshot-free daemon launch. The
-  // v2-to-v3 upgrade prompt is pilot-only until the spend path is qualified.
+  // An already verified v3 source needs a snapshot-free daemon launch. An
+  // eligible v2 full-archive source offers a user-confirmed offline upgrade.
   // A healthy externally managed daemon is adopted without changing its data.
   const auto walletIndexMode = offerFullArchiveWalletIndexUpgrade(datadir);
   if (!walletIndexMode) return 1;

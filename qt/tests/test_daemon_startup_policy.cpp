@@ -17,20 +17,18 @@ static_assert(ShouldArmBundledSnapshot(WalletIndexStartupMode::LegacyOrUnavailab
               "fresh and legacy installs still need bundled snapshot recovery");
 static_assert(!ShouldArmBundledSnapshot(WalletIndexStartupMode::FullArchiveV3),
               "a verified full-archive v3 source must not receive snapshot flags");
-static_assert(!ShouldOfferWalletIndexV3Upgrade(true, false),
-              "an eligible wallet must never be upgraded without pilot opt-in");
-static_assert(!ShouldOfferWalletIndexV3Upgrade(false, true),
-              "pilot opt-in cannot make an ineligible source upgradeable");
-static_assert(ShouldOfferWalletIndexV3Upgrade(true, true),
-              "a pilot may explicitly opt into an eligible offline upgrade");
+static_assert(!ShouldOfferWalletIndexV3Upgrade(false),
+              "an ineligible source must not be offered the offline upgrade");
+static_assert(ShouldOfferWalletIndexV3Upgrade(true),
+              "an eligible installed wallet must be offered the offline upgrade");
 
 int main() {
     return (!ShouldScheduleWindowDaemonStart(kProductionDaemonBootstrapOwner) &&
             ShouldScheduleWindowDaemonStart(DaemonBootstrapOwner::MainWindow) &&
             ShouldArmBundledSnapshot(WalletIndexStartupMode::LegacyOrUnavailable) &&
             !ShouldArmBundledSnapshot(WalletIndexStartupMode::FullArchiveV3) &&
-            !ShouldOfferWalletIndexV3Upgrade(true, false) &&
-            ShouldOfferWalletIndexV3Upgrade(true, true))
+            !ShouldOfferWalletIndexV3Upgrade(false) &&
+            ShouldOfferWalletIndexV3Upgrade(true))
                ? 0
                : 1;
 }
