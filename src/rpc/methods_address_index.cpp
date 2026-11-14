@@ -468,6 +468,56 @@ struct ScannedTransaction {
     dinero::Transaction tx;
     dinero::uint256 txid;
 };
+// What a canonical history scan actually read. history_complete is a
+// full-history claim, so any height whose hash or block body could not be
+// read, any spent output that could not be resolved, or a canonical chain
+// change during the scan makes it false. Stopping at the caller's count is
+// a requested bound, not missing data: it is reported as stop_reason
+// count_limit and leaves history_complete unchanged, because paging clients
+// treat a short page as exhaustion.
+struct HistoryCoverage {
+    static constexpr size_t kMaxListedHeights = 32;
+    int scan_from_height = -1;
+    int lowest_scanned_height = -1;
+    bool stopped_at_limit = false;
+    uint64_t skipped_heights = 0;
+    std::vector<int> skipped_height_list;
+    uint64_t unresolved_inputs = 0;
+    bool chain_changed = false;
+    std::optional<dinero::uint256> start_hash;
+
+    void Begin(const dinero::ChainDB& chain_db, int height) {
+        scan_from_height = height;
+        if (height < 0) return;
+        auto hash = chain_db.getBlockHashByHeight(height);
+        if (hash.ok()) start_hash = hash.value();
+    }
+    void Skip(int height) {
+        ++skipped_heights;
+        if (skipped_height_list.size() < kMaxListedHeights) skipped_height_list.push_back(height);
+    }
+    void Finish(const dinero::ChainDB& chain_db) {
+        if (scan_from_height < 0) return;
+        auto hash = chain_db.getBlockHashByHeight(scan_from_height);
+        chain_changed = !start_hash || !hash.ok() || hash.value() != *start_hash;
+    }
+    bool Complete(bool assumed_utxo) const {
+        return !assumed_utxo && skipped_heights == 0 && unresolved_inputs == 0 && !chain_changed;
+    }
+    Json ToJson(bool assumed_utxo) const {
+        Json out(::Json::objectValue);
+        out["scan_from_height"] = scan_from_height;
+        out["lowest_scanned_height"] = lowest_scanned_height;
+        out["stop_reason"] = assumed_utxo ? "assumed_utxo" : stopped_at_limit ? "count_limit" : "genesis";
+        out["skipped_heights"] = static_cast<::Json::Value::UInt64>(skipped_heights);
+        Json listed(::Json::arrayValue);
+        for (int height : skipped_height_list) listed.append(height);
+        out["skipped_height_list"] = listed;
+        out["unresolved_inputs"] = static_cast<::Json::Value::UInt64>(unresolved_inputs);
+        out["chain_changed"] = chain_changed;
+        return out;
+    }
+};
 #if DINERO_WALLET_RAW_ORCHARD
 // A scanning view only: the transparent inputs/outputs of an Orchard
 // envelope, for script matching. It is not the transaction (no Orchard
@@ -589,12 +639,15 @@ Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
         // AssumeUTXO proves current spendable state but does not promise that
         // pre-base block bodies are locally available. Report this explicitly
         // instead of returning a deceptively complete empty history.
+        HistoryCoverage coverage;
+        coverage.Begin(*chain_db, assumed_utxo ? -1 : from_height);
         for (int h = assumed_utxo ? -1 : from_height; h >= 0 && found < count; --h) {
+            coverage.lowest_scanned_height = h;
             auto hash_result = chain_db->getBlockHashByHeight(h);
-            if (!hash_result.ok()) continue;
+            if (!hash_result.ok()) { coverage.Skip(h); continue; }
 
             std::vector<ScannedTransaction> scanned;
-            if (!ReadScannedBlock(*chainstate, hash_result.value(), h, scanned)) continue;
+            if (!ReadScannedBlock(*chainstate, hash_result.value(), h, scanned)) { coverage.Skip(h); continue; }
 
             for (const auto& [tx, real_txid] : scanned) {
                 bool has_output = false;
@@ -640,6 +693,8 @@ Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
                                     visible_amount -= static_cast<int64_t>(spent_output.value.GetUna());
                                 }
                             }
+                        } else {
+                            ++coverage.unresolved_inputs;
                         }
                     }
                 }
@@ -683,10 +738,13 @@ Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
             }
         }
 
+        coverage.stopped_at_limit = found >= count;
+        coverage.Finish(*chain_db);
         result["address"] = address;
         result["from_height"] = from_height;
         result["transactions"] = txs_arr;
-        result["history_complete"] = !assumed_utxo;
+        result["history_complete"] = coverage.Complete(assumed_utxo);
+        result["history_coverage"] = coverage.ToJson(assumed_utxo);
 
     } catch (const std::exception& e) {
         result["error"]["code"] = -1;
@@ -769,6 +827,9 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
         const int tip_height = assumed_utxo
             ? static_cast<int>(chainstate->getBlockHeight())
             : tip_result.value().height;
+        // Pin the canonical start while the selected chain is still held.
+        HistoryCoverage coverage;
+        coverage.Begin(*chain_db, assumed_utxo ? -1 : tip_height);
         bool scan_timed_out = false;
         size_t visited = 0;
         const auto keep_scanning = [&] {
@@ -831,10 +892,11 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
                 result["error"]["message"] = "batch discovery timed out";
                 return result;
             }
+            coverage.lowest_scanned_height = height;
             auto hash_result = chain_db->getBlockHashByHeight(height);
-            if (!hash_result.ok()) continue;
+            if (!hash_result.ok()) { coverage.Skip(height); continue; }
             std::vector<ScannedTransaction> scanned;
-            if (!ReadScannedBlock(*chainstate, hash_result.value(), height, scanned)) continue;
+            if (!ReadScannedBlock(*chainstate, hash_result.value(), height, scanned)) { coverage.Skip(height); continue; }
             for (const auto& [tx, real_txid] : scanned) {
                 struct Match {
                     bool input = false;
@@ -870,7 +932,7 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
                     for (const auto& input : tx.vin) {
                         const auto previous = PreviousOutput(*chain_db, *chainstate,
                             input.prevout.txid.AsUint256(), input.prevout.vout);
-                        if (!previous) continue;
+                        if (!previous) { ++coverage.unresolved_inputs; continue; }
                         const auto& output = *previous;
                         tx_has_conf_inputs = tx_has_conf_inputs || output.is_confidential;
                         auto found = script_to_index.find(bytesToHex(output.scriptPubKey));
@@ -924,8 +986,11 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
             item["transactions"] = state.transactions;
             address_results[state.address] = item;
         }
+        coverage.stopped_at_limit = history_transactions >= static_cast<size_t>(count);
+        coverage.Finish(*chain_db);
         result["tip_height"] = tip_height;
-        result["history_complete"] = !assumed_utxo;
+        result["history_complete"] = coverage.Complete(assumed_utxo);
+        result["history_coverage"] = coverage.ToJson(assumed_utxo);
         result["history_count"] = count;
         result["history_limit"] = MAX_BATCH_HISTORY;
         result["history_scope"] = "wallet_global";

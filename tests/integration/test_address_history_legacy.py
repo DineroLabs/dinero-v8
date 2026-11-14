@@ -50,7 +50,28 @@ def main():
         batch, berror = call("blockchain.getaddressbatch", {"addresses": [payee]})
         ok = error is None and txid in str(history) and berror is None and txid in str(batch)
         print(("PASS" if ok else "FAIL") + f" legacy address history lists {txid}: history={str(history)[:120]} batch_err={berror}")
-        return 0 if ok else 1
+        if not ok: return 1
+        # Positive control for the fail-closed coverage contract: every body of
+        # this real chain is readable, so the full scan is complete to genesis.
+        tip = call("getblockcount")[0]
+        for name, reply in (("history", history), ("batch", batch)):
+            coverage = reply.get("history_coverage") or {}
+            want = {"scan_from_height": tip, "lowest_scanned_height": 0, "stop_reason": "genesis",
+                    "skipped_heights": 0, "skipped_height_list": [], "unresolved_inputs": 0, "chain_changed": False}
+            if reply.get("history_complete") is not True or any(coverage.get(k) != v for k, v in want.items()):
+                print(f"FAIL {name} full-chain coverage: complete={reply.get('history_complete')} coverage={coverage}")
+                return 1
+        # The caller's count is a requested bound, not missing data: it is
+        # reported as count_limit and must not flip history_complete, since
+        # paging clients read a short page as exhaustion.
+        limited, lerror = call("getaddresshistory", [payee, 1])
+        coverage = (limited or {}).get("history_coverage") or {}
+        if lerror is not None or limited.get("history_complete") is not True or \
+                coverage.get("stop_reason") != "count_limit" or coverage.get("skipped_heights") != 0:
+            print(f"FAIL count-limited history: error={lerror} reply={str(limited)[:300]}")
+            return 1
+        print("PASS address history coverage: full chain complete to genesis; count limit reported, not incomplete")
+        return 0
     finally:
         proc.terminate(); proc.wait(60)
 

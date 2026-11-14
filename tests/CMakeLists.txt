@@ -17951,6 +17951,15 @@ if(UNIX AND TARGET dinerod AND NOT DINERO_BUILD_ORCHARD_BACKEND)
     TIMEOUT 150 RUN_SERIAL TRUE LABELS "orchard;storage;regression;mandatory")
 endif()
 
+# Real regtest chain: address history lists a payment, reports full coverage
+# to genesis, and reports the caller's count bound without claiming missing data.
+if(UNIX AND TARGET dinerod)
+  add_test(NAME AddressHistoryCoverage COMMAND python3
+    ${CMAKE_SOURCE_DIR}/tests/integration/test_address_history_legacy.py $<TARGET_FILE:dinerod>)
+  set_tests_properties(AddressHistoryCoverage PROPERTIES
+    TIMEOUT 300 RUN_SERIAL TRUE LABELS "rpc;wallet;regression;mandatory")
+endif()
+
 # Reproduce wingdi.h's ERROR macro on every compiler, including non-Windows CI.
 add_executable(test_monitor_macro_hygiene tests/consensus/test_monitor_macro_hygiene.cpp)
 target_include_directories(test_monitor_macro_hygiene PRIVATE
