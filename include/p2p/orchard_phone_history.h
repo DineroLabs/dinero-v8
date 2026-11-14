@@ -90,6 +90,11 @@ public:
         {std::lock_guard lock(mutex_);stop_=true;flight_.reset();packet_.reset();ready_.reset();}
         cv_.notify_all();if(worker_.joinable())worker_.join();
     }
+    // Idle workers (no selected target, or history ready for it) wait up to IdleWait instead
+    // of polling every 50 ms; any request, packet or stop still wakes them.
+    static constexpr std::chrono::milliseconds IdleWait{1000},ActiveWait{50};
+    uint64_t Iterations()const{return iterations_.load();}
+
 private:
     const std::shared_ptr<const consensus::HeaderChainSelector> headers_;const std::filesystem::path work_;
     const TargetSource target_;const ProofSource proof_;const Verifier verify_;const Peers peers_;const Send send_;
@@ -98,7 +103,7 @@ private:
     // refusal (for example records written under another datadir root
     // identity) retires it for this download: bodies are then fetched from
     // peers instead of retrying the same refused record forever.
-    std::atomic<bool> cache_retired_{false};
+    std::atomic<bool> cache_retired_{false};std::atomic<uint64_t> iterations_{0};
     bool Cached()const{return cache_&&!cache_retired_.load();}
     void RetireCache(){cache_retired_.store(true);}
     mutable std::mutex mutex_;std::mutex join_;std::condition_variable cv_;
@@ -117,13 +122,14 @@ private:
             if(peer){if(cooldown.size()>=32)cooldown.erase(cooldown.begin());cooldown[peer->address]=Clock::now()+std::chrono::minutes(1);}
             peer.reset();awaiting=false;std::lock_guard lock(mutex_);flight_.reset();packet_.reset();
         };
+        bool idle=false;
         for(;;){
             std::optional<Bytes> packet;
-            {std::unique_lock lock(mutex_);cv_.wait_for(lock,std::chrono::milliseconds(50),[&]{return stop_||packet_.has_value();});
-             if(stop_)break;if(packet_){packet=std::move(packet_);packet_.reset();}}
+            {std::unique_lock lock(mutex_);cv_.wait_for(lock,idle?IdleWait:ActiveWait,[&]{return stop_||packet_.has_value();});
+             if(stop_)break;if(packet_){packet=std::move(packet_);packet_.reset();}}++iterations_;idle=false;
             try{
                 const auto current=target_();
-                if(!current){discard();std::lock_guard lock(mutex_);progress_={};continue;}
+                if(!current){discard();idle=true;std::lock_guard lock(mutex_);progress_={};continue;}
                 // A pure tip extension (same base/activation, height advanced)
                 // is absorbed by ExtendSelectedTarget below with all verified
                 // progress retained. Mid-iteration rechecks must therefore
@@ -159,7 +165,7 @@ private:
                     if(const auto now=target_();now!=selected){if(!extends(now))discard();continue;}
                     if(cache_)cache_->Check();
                     std::lock_guard lock(mutex_);if(stop_)break;
-                    ready_=std::shared_ptr<const Data>(new Data(*selected,proof,corpus));progress_.ready=true;continue;
+                    ready_=std::shared_ptr<const Data>(new Data(*selected,proof,corpus));progress_.ready=true;idle=true;continue;
                 }
                 bool cached_packet=false;
                 if(!packet&&!awaiting&&Cached()){
