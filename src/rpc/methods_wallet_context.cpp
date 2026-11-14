@@ -855,39 +855,66 @@ static void MarkLegacyTransparentLimitedScope(din::Json& result) {
     result["send_unavailable_reason"] = "Orchard wallet enrollment is required before sending";
 }
 
+static bool RefuseLegacyTransparentWalletOwnership(din::Json& result,
+                                                   const char* error) {
+    // These helpers are JSON preflights. A failed lease must stop the caller
+    // before it reaches signing or address mutation, without escaping past an
+    // RPC adapter that normally returns an error object.
+    result = din::Json(Json::objectValue);
+    result["error"] = error;
+    return true;
+}
+
 bool RefuseIfLegacyTransparentSpendUnavailable(
     const ExecutionContext& ctx, const std::shared_ptr<dinero::WalletService>& service,
     din::Json& result) {
-    if (RefuseIfLegacyTransparentTipNotCurrent(ctx, service, result)) return true;
-    auto use = dinero::WalletService::AcquireWalletUse(service);
-    auto lease = use->Wallet().AcquireDatabaseLease();
-    if (lease->WalletName().empty() ||
-        (!ctx.walletName.empty() && lease->WalletName() != ctx.walletName))
-        throw std::runtime_error("Wallet request selection changed");
-    if (lease->LegacyTransparentState() !=
-        dinero::WalletManager::LegacyTransparentState::Complete) return false;
-    // Address/change derivation changes the ordinary script domain and
-    // invalidates the receipt. This class has no Orchard catalog from which
-    // the postactivation payment path can re-establish that authority.
-    result["error"] = "Transparent-only recovered wallet cannot sign or send without Orchard wallet enrollment";
-    result["error_code"] = "wallet_transparent_only_send_unavailable";
-    MarkLegacyTransparentLimitedScope(result);
-    return true;
+    try {
+        // Preserve the adapter's selected-wallet error before the freshness
+        // probe, which also checks the name but reports only a generic read
+        // ownership failure. Release this lease before reading chain state.
+        if (!ctx.walletName.empty()) {
+            auto selected_use = dinero::WalletService::AcquireWalletUse(service);
+            auto selected_lease = selected_use->Wallet().AcquireDatabaseLease();
+            if (selected_lease->WalletName() != ctx.walletName)
+                return RefuseLegacyTransparentWalletOwnership(result, "wallet_selection_changed");
+        }
+        if (RefuseIfLegacyTransparentTipNotCurrent(ctx, service, result)) return true;
+        auto use = dinero::WalletService::AcquireWalletUse(service);
+        auto lease = use->Wallet().AcquireDatabaseLease();
+        if (lease->WalletName().empty() ||
+            (!ctx.walletName.empty() && lease->WalletName() != ctx.walletName))
+            return RefuseLegacyTransparentWalletOwnership(result, "wallet_selection_changed");
+        if (lease->LegacyTransparentState() !=
+            dinero::WalletManager::LegacyTransparentState::Complete) return false;
+        // Address/change derivation changes the ordinary script domain and
+        // invalidates the receipt. This class has no Orchard catalog from which
+        // the postactivation payment path can re-establish that authority.
+        result["error"] = "Transparent-only recovered wallet cannot sign or send without Orchard wallet enrollment";
+        result["error_code"] = "wallet_transparent_only_send_unavailable";
+        MarkLegacyTransparentLimitedScope(result);
+        return true;
+    } catch (const std::exception&) {
+        return RefuseLegacyTransparentWalletOwnership(result, "wallet_ownership_unavailable");
+    }
 }
 
 bool RefuseIfLegacyTransparentAddressMutation(
     const ExecutionContext& ctx, const std::shared_ptr<dinero::WalletService>& service,
     din::Json& result) {
-    auto use = dinero::WalletService::AcquireWalletUse(service);
-    auto lease = use->Wallet().AcquireDatabaseLease();
-    if (lease->WalletName().empty() ||
-        (!ctx.walletName.empty() && lease->WalletName() != ctx.walletName))
-        throw std::runtime_error("Wallet request selection changed");
-    if (lease->LegacyTransparentState() ==
-        dinero::WalletManager::LegacyTransparentState::Absent) return false;
-    result["error"] = "Recovered transparent-only wallet cannot issue new addresses during migration";
-    result["error_code"] = "wallet_transparent_only_address_unavailable";
-    return true;
+    try {
+        auto use = dinero::WalletService::AcquireWalletUse(service);
+        auto lease = use->Wallet().AcquireDatabaseLease();
+        if (lease->WalletName().empty() ||
+            (!ctx.walletName.empty() && lease->WalletName() != ctx.walletName))
+            return RefuseLegacyTransparentWalletOwnership(result, "wallet_selection_changed");
+        if (lease->LegacyTransparentState() ==
+            dinero::WalletManager::LegacyTransparentState::Absent) return false;
+        result["error"] = "Recovered transparent-only wallet cannot issue new addresses during migration";
+        result["error_code"] = "wallet_transparent_only_address_unavailable";
+        return true;
+    } catch (const std::exception&) {
+        return RefuseLegacyTransparentWalletOwnership(result, "wallet_ownership_unavailable");
+    }
 }
 
 din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::Json& params) {
