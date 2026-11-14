@@ -20,13 +20,13 @@ def main():
                              "-discover=0", "-dnsseed=0", "-fixedseeds=0"],
                             stdout=open(os.path.join(root, "log"), "wb"), stderr=subprocess.STDOUT)
 
-    def call(method, params=None):
+    def call(method, params=None, timeout=30):
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}).encode()
         req = urllib.request.Request(f"http://127.0.0.1:{ports[0]}/", data=body, headers={
             "content-type": "application/json", "authorization": "Basic " + base64.b64encode(b"t:t").decode()})
         for _ in range(60):
             try:
-                reply = json.load(urllib.request.urlopen(req, timeout=30))
+                reply = json.load(urllib.request.urlopen(req, timeout=timeout))
                 return reply.get("result"), reply.get("error")
             except urllib.error.HTTPError as e:
                 if e.code != 429: raise
@@ -40,7 +40,9 @@ def main():
         call("wallet.createhd", ["w"])
         miner = call("wallet.getnewaddress", ["taproot", "m"])[0]
         miner = miner["address"] if isinstance(miner, dict) else miner
-        call("generatetoaddress", [101, miner])
+        # Mining the maturity prefix can exceed a short RPC timeout on a
+        # slower CI host; the test's CTest deadline still bounds the run.
+        call("generatetoaddress", [101, miner], timeout=180)
         payee = call("wallet.getnewaddress", ["taproot", "p"])[0]
         payee = payee["address"] if isinstance(payee, dict) else payee
         txid = call("wallet.sendtoaddress", [payee, 1.0])[0]
