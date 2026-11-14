@@ -1359,7 +1359,7 @@ jobs:
           import re
           from pathlib import Path
           log=Path('wallet-script-reconciliation-execution.log').read_text()
-          expected=['ExpandedScriptDomainPreservesPendingAndAccountOwners', 'PreparationCommitRefusalLeavesBothStoresUnchanged', 'OrdinaryCommitRefusalRetainsIndexPrefixForRetry', 'UnknownCoinAndUnavailableKeyInventoryRefuseBeforeIndex', 'NormalRecoveryReconcilesNewScriptAndPreservesReadyHistory', 'ProvedDisconnectAndReinclusionPreserveLocalHistory', 'MissingOriginatedHistoryRefusesWithoutChangingEitherStore', 'CurrentOrchardReservationRequiresProvedSourceCoin', 'FreshSourceRefusalBeforeIndexCommitLeavesBothOwnersUnchanged', 'FreshSourceRefusalBeforeOrdinaryCommitRetainsOnlyGenuineIndexPrefix']
+          expected=['ExpandedScriptDomainPreservesPendingAndAccountOwners', 'PreparationCommitRefusalLeavesBothStoresUnchanged', 'OrdinaryCommitRefusalRetainsIndexPrefixForRetry', 'UnknownCoinAndUnavailableKeyInventoryRefuseBeforeIndex', 'NormalRecoveryReconcilesNewScriptAndPreservesReadyHistory', 'ProvedDisconnectAndReinclusionPreserveLocalHistory', 'MissingOriginatedHistoryRefusesWithoutChangingEitherStore', 'CurrentOrchardReservationRequiresProvedSourceCoin', 'FreshSourceRefusalBeforeIndexCommitLeavesBothOwnersUnchanged', 'FreshSourceRefusalBeforeOrdinaryCommitRetainsOnlyGenuineIndexPrefix', 'CoverageMaterialLimitStopsEnrolledRecoveryAsResourceLimit']
           actual=re.findall(r'\[       OK \] WalletScriptReconciliation\.(\w+) \(',log)
           assert sorted(actual)==sorted(expected)
           assert '100% tests passed, 0 tests failed out of 1' in log
