@@ -6106,6 +6106,10 @@ void MainWindow::updateSendModeUi() {
   if (!btnSend_ || !edtRecipient_ || !edtAmount_) return;
 
   const QString mode = currentSendMode();
+  if (walletTransparentV3SendReady_) {
+    btnSend_->setEnabled(mode == "public_transfer" && !currentWalletName_.isEmpty() &&
+        walletUnlocked_ && !walletRescanning_ && !sendSubmissionPending_);
+  }
   const bool publicMode = isSendModePublic(mode);
   const bool confidentialMode = isSendModeConfidential(mode);
   const bool privateMode = isSendModePrivate(mode);
@@ -6195,7 +6199,8 @@ void MainWindow::updateSendModeUi() {
   if (btnHardwareWalletSend_) {
     btnHardwareWalletSend_->setVisible(!contractMode && !privateComposer);
     const bool hwSupported = (mode == "public_transfer");
-    btnHardwareWalletSend_->setEnabled(hwSupported && btnSend_ && btnSend_->isEnabled());
+    btnHardwareWalletSend_->setEnabled(!walletTransparentV3SendReady_ &&
+        hwSupported && btnSend_ && btnSend_->isEnabled());
     btnHardwareWalletSend_->setToolTip(hwSupported
       ? hardwareWalletPsbtTooltip()
       : "Hardware-wallet signing is currently wired only for public Taproot transfers");
@@ -6213,6 +6218,7 @@ void MainWindow::updateSendModeUi() {
       // The per-mode hints below, so switching tabs or modes replaces them.
       status == "Create an on-chain contract with spending rules." ||
       status == "Send DIN publicly from transparent Taproot/P2MR funds." ||
+      status == "This recovered wallet supports public transfers only." ||
       status.startsWith("From Pay: ");
     if (isModeHint) {
       if (privateComposer) {
@@ -6233,6 +6239,11 @@ void MainWindow::updateSendModeUi() {
       }
       lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
     }
+  }
+  if (walletTransparentV3SendReady_ && mode != "public_transfer") {
+    btnSend_->setToolTip("This recovered wallet supports public transfers only");
+    if (lblSendStatus_)
+      lblSendStatus_->setText("This recovered wallet supports public transfers only.");
   }
   if (!walletSendReady_) {
     btnSend_->setEnabled(false);
@@ -6305,6 +6316,7 @@ void MainWindow::updateCovenantReview() {
   else if (walletRescanning_) blockers << "Wait for the wallet rescan to finish";
   else if (!walletUnlocked_) blockers << "Unlock your wallet";
   else if (!walletSendReady_) blockers << walletSendUnavailableReason_;
+  else if (walletTransparentV3SendReady_) blockers << "Recovered wallet supports public transfers only";
   else if (sendSubmissionPending_) blockers << "Wait for the previous transaction to be sent";
   if (!review.blocker.isEmpty()) blockers << review.blocker;
   if (blockers.isEmpty()) {
@@ -6319,13 +6331,17 @@ void MainWindow::updateCovenantReview() {
 void MainWindow::updateWalletBalanceDisplay() {
   if (lblBalanceScope_) {
     const bool stale = walletBalanceAccepted_ && walletBalanceUnavailable_;
-    const bool limited = walletBalanceAccepted_ && (!walletSendReady_ || stale);
+    const bool limited = walletBalanceAccepted_ &&
+        (!walletSendReady_ || walletTransparentV3SendReady_ || stale);
     lblBalanceScope_->setVisible(limited);
     if (stale) {
       const QString verifiedAt = QDateTime::fromMSecsSinceEpoch(walletBalanceVerifiedAtMs_)
                                      .toUTC().toString("yyyy-MM-dd HH:mm:ss 'UTC'");
       lblBalanceScope_->setText(QString("Last verified %1 · waiting for current wallet balance · Sending paused")
                                     .arg(verifiedAt));
+    } else if (walletTransparentV3SendReady_) {
+      lblBalanceScope_->setText(
+          "Recovered transparent balance · Public sends supported · Orchard/private actions unavailable");
     } else if (limited) {
       lblBalanceScope_->setText("Balance observed · Sending paused: " + walletSendUnavailableReason_);
     }
@@ -6362,7 +6378,9 @@ void MainWindow::updateWalletBalanceDisplay() {
 
   if (lblBalance_) {
     lblBalance_->setText(din(total) + lockedNote);
-    lblBalance_->setToolTip(walletSendReady_
+    lblBalance_->setToolTip(walletTransparentV3SendReady_
+        ? "Recovered transparent balance; only verified public sends are available."
+        : walletSendReady_
         ? "Total wallet balance: public and shielded funds, including covenant-locked value."
         : "Observed wallet balance; sending is unavailable: " + walletSendUnavailableReason_);
   }
@@ -6371,7 +6389,9 @@ void MainWindow::updateWalletBalanceDisplay() {
   }
   if (lblTransparentTaprootBalance_) {
     lblTransparentTaprootBalance_->setText(din(taproot));
-    lblTransparentTaprootBalance_->setToolTip(walletSendReady_
+    lblTransparentTaprootBalance_->setToolTip(walletTransparentV3SendReady_
+        ? "Recovered public Taproot balance; available coins can be sent publicly."
+        : walletSendReady_
         ? "Public Taproot spendable balance"
         : "Observed public Taproot balance; sending is unavailable");
   }
@@ -6413,6 +6433,7 @@ void MainWindow::updateWalletBalanceDisplay() {
 void MainWindow::showWalletBalanceUnavailable() {
   walletBalanceUnavailable_ = true;
   walletSendReady_ = false;
+  walletTransparentV3SendReady_ = false;
   walletSendUnavailableReason_ = "Waiting for a current wallet balance";
   updateWalletBalanceDisplay();
   updateWalletUIState();
@@ -6448,6 +6469,11 @@ void MainWindow::refreshConfidentialWalletState() {
 }
 
 void MainWindow::onNewAddress() {
+  if (walletTransparentV3SendReady_) {
+    if (txtValidation_) txtValidation_->setText(
+        "This recovered wallet uses its existing addresses until Orchard enrollment is complete.");
+    return;
+  }
 
   // Disable button to prevent double-clicks
   if (btnNewAddress_) {
@@ -6474,7 +6500,11 @@ void MainWindow::onNewAddress() {
             rpc_->callNamed("wallet.listaddresses", QJsonObject{{"count", 200}});
           }
         }
-        if (btnNewAddress_) { btnNewAddress_->setEnabled(true); updateWalletAddressModeUi(); }
+        if (btnNewAddress_) {
+          btnNewAddress_->setEnabled(walletSendReady_ && !walletTransparentV3SendReady_ &&
+              walletUnlocked_ && !walletRescanning_);
+          updateWalletAddressModeUi();
+        }
       });
     return;
   }
@@ -6505,7 +6535,8 @@ void MainWindow::onNewAddress() {
       
       // Re-enable button
       if (btnNewAddress_) {
-        btnNewAddress_->setEnabled(true);
+        btnNewAddress_->setEnabled(walletSendReady_ && !walletTransparentV3SendReady_ &&
+            walletUnlocked_ && !walletRescanning_);
         updateWalletAddressModeUi();
       }
     },
@@ -6517,7 +6548,8 @@ void MainWindow::onNewAddress() {
       
       // Re-enable button with error tooltip
       if (btnNewAddress_) {
-        btnNewAddress_->setEnabled(true);
+        btnNewAddress_->setEnabled(walletSendReady_ && !walletTransparentV3SendReady_ &&
+            walletUnlocked_ && !walletRescanning_);
         updateWalletAddressModeUi();
         btnNewAddress_->setToolTip("Previous attempt failed: " + error + " (click to retry)");
       }
@@ -6837,6 +6869,8 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       const auto sendReady = obj.value("send_ready");
       walletSendReady_ = sendReady.isUndefined() ||
           (sendReady.isBool() && sendReady.toBool());
+      walletTransparentV3SendReady_ = walletSendReady_ &&
+          obj.value("send_scope").toString() == "transparent_recovered_v3";
       walletSendUnavailableReason_ = walletSendReady_ ? QString() :
           obj.value("send_unavailable_reason").toString(
               "Sending is unavailable for this wallet");
@@ -6995,6 +7029,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       if (btnSend_) {
         btnSend_->setEnabled(true);
         btnSend_->setText("📤 Send Transaction");
+        updateSendModeUi();
       }
       
       if (!error.isEmpty()) {
@@ -8316,7 +8351,8 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       consolidationInFlight_ = false;
       pendingConsolidateParams_ = {};
       if (btnConsolidate_) btnConsolidate_->setEnabled(
-        walletSendReady_ && dinero::qt::shouldEnableConsolidation(cachedUtxoCount_, consolidationInFlight_));
+        walletSendReady_ && !walletTransparentV3SendReady_ &&
+        dinero::qt::shouldEnableConsolidation(cachedUtxoCount_, consolidationInFlight_));
       // Daemon found nothing eligible to consolidate.
       QMessageBox::information(this, "Consolidation",
         "Nothing to consolidate — no eligible UTXOs.");
@@ -8343,7 +8379,8 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         consolidationInFlight_ = false;
         pendingConsolidateParams_ = {};
         if (btnConsolidate_) btnConsolidate_->setEnabled(
-          walletSendReady_ && dinero::qt::shouldEnableConsolidation(cachedUtxoCount_, consolidationInFlight_));
+          walletSendReady_ && !walletTransparentV3SendReady_ &&
+          dinero::qt::shouldEnableConsolidation(cachedUtxoCount_, consolidationInFlight_));
         if (btnConsolidate_ && cachedUtxoCount_ > 50) {
           btnConsolidate_->setText(QString("\xF0\x9F\xA7\xB9 Consolidate (%1 UTXOs)").arg(cachedUtxoCount_));
         }
@@ -8352,7 +8389,8 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       consolidationInFlight_ = false;
       pendingConsolidateParams_ = {};
       if (btnConsolidate_) btnConsolidate_->setEnabled(
-        walletSendReady_ && dinero::qt::shouldEnableConsolidation(cachedUtxoCount_, consolidationInFlight_));
+        walletSendReady_ && !walletTransparentV3SendReady_ &&
+        dinero::qt::shouldEnableConsolidation(cachedUtxoCount_, consolidationInFlight_));
       // Fee gate or execution error — surface the daemon's reason.
       QMessageBox::warning(this, "Consolidation Failed",
         obj.value("reason").toString(obj.value("error").toString("Consolidation could not be completed.")));
@@ -8760,7 +8798,7 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
     pendingConsolidateParams_ = {};
     // Re-enable the consolidate button on error
     if (btnConsolidate_) {
-      btnConsolidate_->setEnabled(walletSendReady_);
+      btnConsolidate_->setEnabled(walletSendReady_ && !walletTransparentV3SendReady_);
       if (cachedUtxoCount_ > 50) {
         btnConsolidate_->setText(QString("\xF0\x9F\xA7\xB9 Consolidate (%1 UTXOs)").arg(cachedUtxoCount_));
       }
@@ -12114,7 +12152,8 @@ void MainWindow::updateUTXOTable(const QJsonArray& utxos) {
       btnConsolidate_->setText(QString("\xF0\x9F\xA7\xB9 Consolidate (%1 UTXOs)").arg(cachedUtxoCount_));
       btnConsolidate_->setVisible(true);
       btnConsolidate_->setEnabled(
-        walletSendReady_ && dinero::qt::shouldEnableConsolidation(cachedUtxoCount_, consolidationInFlight_));
+        walletSendReady_ && !walletTransparentV3SendReady_ &&
+        dinero::qt::shouldEnableConsolidation(cachedUtxoCount_, consolidationInFlight_));
     } else {
       btnConsolidate_->setVisible(false);
     }
@@ -14949,6 +14988,7 @@ void MainWindow::clearWalletScopedUiState() {
   walletBalanceUnavailable_ = false;
   walletBalanceVerifiedAtMs_ = 0;
   walletSendReady_ = false;
+  walletTransparentV3SendReady_ = false;
   walletSendUnavailableReason_ = "Waiting for the selected wallet balance";
   if (btnSend_) btnSend_->setEnabled(false);
   if (privateCovenantWidget_) privateCovenantWidget_->setWalletScope({});
@@ -15220,9 +15260,9 @@ void MainWindow::updateWalletUIState() {
   const bool canUseWalletAddress = hasWallet && walletUnlocked_ && !walletRescanning_;
   bool canTransact = canUseWalletAddress && walletSendReady_;
   if (shieldedWidget_) {
-    shieldedWidget_->setWalletUnlocked(canTransact);
+    shieldedWidget_->setWalletUnlocked(canTransact && !walletTransparentV3SendReady_);
 #if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
-    if (orchardWidget_) orchardWidget_->setWalletUnlocked(canTransact);
+    if (orchardWidget_) orchardWidget_->setWalletUnlocked(canTransact && !walletTransparentV3SendReady_);
 #endif
   }
   const QString sendMode = currentSendMode();
@@ -15240,7 +15280,7 @@ void MainWindow::updateWalletUIState() {
     }
   }
   if (btnConsolidate_) {
-    btnConsolidate_->setEnabled(walletSendReady_ &&
+    btnConsolidate_->setEnabled(walletSendReady_ && !walletTransparentV3SendReady_ &&
         dinero::qt::shouldEnableConsolidation(cachedUtxoCount_, consolidationInFlight_));
   }
 
@@ -15261,7 +15301,7 @@ void MainWindow::updateWalletUIState() {
     }
   }
   if (btnHardwareWalletSend_) {
-    btnHardwareWalletSend_->setEnabled(canTransact && standardSendMode);
+    btnHardwareWalletSend_->setEnabled(canTransact && standardSendMode && !walletTransparentV3SendReady_);
     if (!hasWallet) {
       btnHardwareWalletSend_->setToolTip("Create or load a wallet first");
     } else if (walletRescanning_) {
@@ -15294,7 +15334,7 @@ void MainWindow::updateWalletUIState() {
   }
 
   if (btnNewAddress_) {
-    btnNewAddress_->setEnabled(canTransact);
+    btnNewAddress_->setEnabled(canTransact && !walletTransparentV3SendReady_);
   }
   if (btnValidate_) {
     const QString wam = currentWalletAddressMode();
@@ -15306,7 +15346,7 @@ void MainWindow::updateWalletUIState() {
 
   // Receive tab - New Address button
   if (btnDeriveAddress_) {
-    btnDeriveAddress_->setEnabled(canTransact);
+    btnDeriveAddress_->setEnabled(canTransact && !walletTransparentV3SendReady_);
     if (!hasWallet) {
       btnDeriveAddress_->setToolTip("Create or load a wallet first");
     } else if (!walletUnlocked_) {
@@ -15496,6 +15536,11 @@ void MainWindow::onEncryptWallet() {
 }
 
 void MainWindow::onDeriveNewAddress() {
+  if (walletTransparentV3SendReady_) {
+    QMessageBox::information(this, "Address Derivation Unavailable",
+      "This recovered wallet uses its existing addresses until Orchard enrollment is complete.");
+    return;
+  }
   if (!walletUnlocked_) {
     QMessageBox::warning(this, "Wallet Locked",
       "Please unlock your wallet first to derive new addresses.");
@@ -15881,6 +15926,11 @@ void MainWindow::onSendTransaction() {
     if (lblSendStatus_) lblSendStatus_->setText(walletSendUnavailableReason_);
     return;
   }
+  if (walletTransparentV3SendReady_ && currentSendMode() != "public_transfer") {
+    if (lblSendStatus_) lblSendStatus_->setText(
+        "This recovered wallet can send public transfers only.");
+    return;
+  }
   if (sendSubmissionPending_) return;
   if (currentSendMode() == "private_composer") {
     for (int i = 0; mainTabs_ && i < mainTabs_->count(); ++i) {
@@ -15919,7 +15969,8 @@ void MainWindow::onSendTransaction() {
 
   // Phase 6: Reserve change address before send
   QString changeAddress;
-  if (mode == "public_transfer" && changeAddrMgr_ && !changeAddrMgr_->walletIdentityKey().isEmpty()) {
+  if (mode == "public_transfer" && !walletTransparentV3SendReady_ &&
+      changeAddrMgr_ && !changeAddrMgr_->walletIdentityKey().isEmpty()) {
     auto reservation = changeAddrMgr_->reserve();
     activeReservationId_ = reservation.reservationId;
     // Derive the actual address via RPC synchronously is not possible;
@@ -16100,6 +16151,11 @@ void MainWindow::onSendTransaction() {
 }
 
 void MainWindow::onCreatePSBT() {
+  if (walletTransparentV3SendReady_) {
+    if (lblSendStatus_) lblSendStatus_->setText(
+        "Hardware-wallet sends are unavailable for this recovered wallet.");
+    return;
+  }
   if (!walletSendReady_) {
     if (lblSendStatus_) lblSendStatus_->setText(walletSendUnavailableReason_);
     return;
@@ -16128,6 +16184,11 @@ void MainWindow::onCreatePSBT() {
 }
 
 void MainWindow::onConsolidateUTXOs() {
+  if (walletTransparentV3SendReady_) {
+    if (lblSendStatus_) lblSendStatus_->setText(
+        "Consolidation is unavailable for this recovered wallet.");
+    return;
+  }
   if (!walletSendReady_) {
     if (lblSendStatus_) lblSendStatus_->setText(walletSendUnavailableReason_);
     return;

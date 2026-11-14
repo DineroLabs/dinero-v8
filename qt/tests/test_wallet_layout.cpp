@@ -331,6 +331,49 @@ private Q_SLOTS:
         QVERIFY(scope->isHidden());
     }
 
+    void recoveredV3ScopeEnablesOnlyPublicSend() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        auto* rpc = window->findChild<RpcClient*>();
+        QVERIFY(rpc);
+        QVERIFY(bindTestWallet(*window, "RecoveryTestWallet"));
+        window->checkRescanStatus();
+        Q_EMIT rpc->rpcResult("wallet.getinfo", QJsonObject{
+            {"hd_enabled", true}, {"wallet_name", "RecoveryTestWallet"},
+            {"unlocked", true}, {"scanning", false}});
+        Q_EMIT rpc->rpcResult("wallet.getbalance", QJsonObject{
+            {"walletname", "RecoveryTestWallet"}, {"confirmed", 12.0},
+            {"unconfirmed", 0.0}, {"immature", 5.0},
+            {"send_ready", true}, {"send_scope", "transparent_recovered_v3"}});
+        QVERIFY(window->btnSend_->isEnabled());
+        auto* scope = named<QLabel>(*window, "walletBalanceScope");
+        QVERIFY(scope);
+        QVERIFY(!scope->isHidden());
+        QVERIFY(scope->text().contains("Public sends supported"));
+        QVERIFY(!window->btnHardwareWalletSend_->isEnabled());
+        QVERIFY(!window->btnConsolidate_->isEnabled());
+        QVERIFY(!window->btnNewAddress_->isEnabled());
+        QVERIFY(!window->btnDeriveAddress_->isEnabled());
+
+        // The balance poll must not re-enable another send mode while the
+        // recovered wallet has only the transparent payment capability.
+        auto* mode = named<QComboBox>(*window, "sendMode");
+        QVERIFY(mode);
+        mode->setCurrentIndex(mode->findData("public_contract"));
+        QVERIFY(!window->btnSend_->isEnabled());
+        Q_EMIT rpc->rpcResult("wallet.getbalance", QJsonObject{
+            {"walletname", "RecoveryTestWallet"}, {"confirmed", 12.0},
+            {"unconfirmed", 0.0}, {"immature", 5.0},
+            {"send_ready", true}, {"send_scope", "transparent_recovered_v3"}});
+        QVERIFY(!window->btnSend_->isEnabled());
+
+        mode->setCurrentIndex(mode->findData("public_transfer"));
+        QVERIFY(window->btnSend_->isEnabled());
+        Q_EMIT rpc->rpcError("wallet.getbalance", -32603,
+            "Legacy transparent wallet is catching up to the selected chain");
+        QVERIFY(!window->btnSend_->isEnabled());
+    }
+
     void maxStillSendsTheWholeBalance() {
         // Max reads the balance back from its label; separators must not change the amount.
         auto window = makeWindow();

@@ -219,6 +219,9 @@ struct RuntimeOriginProjectionTestAccess {
 #endif
 
 struct ShieldedStateStartupTestAccess {
+    static void SetRetainedSnapshotBaseForPayment(ChainstateService& service, uint32_t height) {
+        service.promoted_base_height_ = height;
+    }
     static bool HasBoundaryCache(ChainstateService& service) {
         std::lock_guard<std::mutex> lock(service.boundary_parent_cache_mutex_);
         return bool(service.boundary_parent_cache_);
