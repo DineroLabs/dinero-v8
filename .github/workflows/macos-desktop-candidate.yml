@@ -45,6 +45,7 @@ jobs:
           python3 -B scripts/ci/test_desktop_candidate.py -v
           python3 -B scripts/ci/test_macos_minimum.py -v
           python3 -B scripts/ci/test_macos_desktop_payload.py -v
+          python3 -B scripts/ci/test_macos_release_asset_names.py -v
           python3 -B scripts/ci/test_snapshot_wiring.py -v
           python3 -B packaging/snapshot/test_desktop_primary_profile.py -v
       - name: Require an immutable candidate input

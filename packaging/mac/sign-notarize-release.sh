@@ -17,6 +17,8 @@
 #     --version 8.0.0-rc21 \
 #     --arch arm64 \
 #     --notary-profile dinero-notary
+# Add --variant ventura-qt6.5 for the separate Intel Ventura stage. That
+# variant must retain its own filenames and checksums through publication.
 
 set -euo pipefail
 
@@ -25,6 +27,8 @@ ARCH="${DINERO_RELEASE_ARCH:-$(uname -m)}"
 IDENTITY="Developer ID Application: DineroLabs LLC (JXJS6ZA5FJ)"
 NOTARY_PROFILE=""
 EXPECTED_SOURCE_HEAD=""
+VARIANT="standard"
+PRINT_ARTIFACT_NAMES=false
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIST_DIR="$PROJECT_ROOT/packaging/mac/dist"
 
@@ -35,6 +39,8 @@ while [[ $# -gt 0 ]]; do
         --identity) IDENTITY="$2"; shift 2 ;;
         --notary-profile) NOTARY_PROFILE="$2"; shift 2 ;;
         --expected-source-head) EXPECTED_SOURCE_HEAD="$2"; shift 2 ;;
+        --variant) VARIANT="$2"; shift 2 ;;
+        --print-artifact-names) PRINT_ARTIFACT_NAMES=true; shift ;;
         -h|--help)
             sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
@@ -48,25 +54,70 @@ case "$ARCH" in
     *) echo "ERROR: unsupported macOS release architecture: $ARCH" >&2; exit 2 ;;
 esac
 
-if [[ -z "$NOTARY_PROFILE" ]]; then
-    echo "ERROR: --notary-profile is required for public macOS releases." >&2
-    exit 1
-fi
+case "$VARIANT" in
+    standard) ;;
+    ventura-qt6.5)
+        [[ "$ARCH" == "x86_64" ]] || {
+            echo "ERROR: Ventura Qt 6.5.3 variant requires x86_64." >&2
+            exit 2
+        } ;;
+    *) echo "ERROR: unsupported macOS release variant: $VARIANT" >&2; exit 2 ;;
+esac
 
 STAGE_DIR="$DIST_DIR/stage"
 APP="$STAGE_DIR/dinero-qt.app"
 OPERATOR_STAGE_DIR="$DIST_DIR/operator-stage"
 OPERATOR_ROOT="$OPERATOR_STAGE_DIR/dinero-operator-v${VERSION}-macOS-${ARCH}"
-ZIP_PATH="$DIST_DIR/Dinero-v${VERSION}-macOS-${ARCH}-qt.zip"
-DMG_PATH="$DIST_DIR/Dinero-v${VERSION}-macOS-${ARCH}.dmg"
-OPERATOR_TARBALL="$DIST_DIR/dinero-operator-v${VERSION}-macOS-${ARCH}.tar.gz"
-DESKTOP_SUMS_PATH="$DIST_DIR/SHA256SUMS-macos-${ARCH}-desktop-${VERSION}"
-OPERATOR_SUMS_PATH="$DIST_DIR/SHA256SUMS-macos-${ARCH}-${VERSION}"
+if [[ "$VARIANT" == "ventura-qt6.5" ]]; then
+    ZIP_PATH="$DIST_DIR/Dinero-v${VERSION}-ventura-qt6.5-macOS-${ARCH}-qt.zip"
+    DMG_PATH="$DIST_DIR/Dinero-v${VERSION}-ventura-qt6.5-macOS-${ARCH}.dmg"
+    OPERATOR_TARBALL="$DIST_DIR/dinero-operator-v${VERSION}-ventura-macOS-${ARCH}.tar.gz"
+    DESKTOP_SUMS_PATH="$DIST_DIR/SHA256SUMS-macos-${ARCH}-desktop-${VERSION}-ventura-qt6.5"
+    OPERATOR_SUMS_PATH="$DIST_DIR/SHA256SUMS-macos-${ARCH}-${VERSION}-ventura"
+else
+    ZIP_PATH="$DIST_DIR/Dinero-v${VERSION}-macOS-${ARCH}-qt.zip"
+    DMG_PATH="$DIST_DIR/Dinero-v${VERSION}-macOS-${ARCH}.dmg"
+    OPERATOR_TARBALL="$DIST_DIR/dinero-operator-v${VERSION}-macOS-${ARCH}.tar.gz"
+    DESKTOP_SUMS_PATH="$DIST_DIR/SHA256SUMS-macos-${ARCH}-desktop-${VERSION}"
+    OPERATOR_SUMS_PATH="$DIST_DIR/SHA256SUMS-macos-${ARCH}-${VERSION}"
+fi
+
+if [[ "$PRINT_ARTIFACT_NAMES" == true ]]; then
+    printf '%s\n' "$(basename "$ZIP_PATH")" "$(basename "$DMG_PATH")" \
+        "$(basename "$OPERATOR_TARBALL")" "$(basename "$DESKTOP_SUMS_PATH")" \
+        "$(basename "$OPERATOR_SUMS_PATH")"
+    exit 0
+fi
+
+if [[ -z "$NOTARY_PROFILE" ]]; then
+    echo "ERROR: --notary-profile is required for public macOS releases." >&2
+    exit 1
+fi
 
 if [[ ! -d "$APP" ]]; then
     echo "ERROR: staged app not found at $APP" >&2
     echo "Run packaging/mac/build-installer.sh first." >&2
     exit 1
+fi
+
+if [[ "$VARIANT" == "ventura-qt6.5" ]]; then
+    PROVENANCE="$DIST_DIR/desktop-release-provenance-macos-x86_64-ventura-qt6.5.txt"
+    [[ -f "$PROVENANCE" ]] || {
+        echo "ERROR: Ventura stage provenance is missing: $PROVENANCE" >&2
+        exit 1
+    }
+    for field in 'variant=x86_64-ventura-qt6.5' 'architecture=x86_64' 'qt_version=6.5.3'; do
+        grep -Fxq "$field" "$PROVENANCE" || {
+            echo "ERROR: Ventura stage provenance mismatch: $field" >&2
+            exit 1
+        }
+    done
+    if [[ -n "$EXPECTED_SOURCE_HEAD" ]]; then
+        grep -Fxq "source_commit=$EXPECTED_SOURCE_HEAD" "$PROVENANCE" || {
+            echo "ERROR: Ventura stage source does not match the expected commit." >&2
+            exit 1
+        }
+    fi
 fi
 
 guard_args=(--version "$VERSION" --app "$APP")

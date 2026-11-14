@@ -76,6 +76,7 @@ jobs:
             packaging/mac/assert-v8-release-lane.sh \
             packaging/mac/build-installer.sh \
             packaging/mac/sign-notarize-release.sh
+          python3 -B scripts/ci/test_macos_release_asset_names.py -v
           for script in packaging/mac/build-installer.sh packaging/mac/sign-notarize-release.sh; do
             set +e
             output=$("$script" --arch powerpc --version 0.0.0-test 2>&1)
