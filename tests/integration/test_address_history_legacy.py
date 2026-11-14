@@ -70,7 +70,40 @@ def main():
                 coverage.get("stop_reason") != "count_limit" or coverage.get("skipped_heights") != 0:
             print(f"FAIL count-limited history: error={lerror} reply={str(limited)[:300]}")
             return 1
-        print("PASS address history coverage: full chain complete to genesis; count limit reported, not incomplete")
+        # Cross-page anchor: every page reports the canonical hash at its scan
+        # start; a later page passed page 1's (height, hash) must report
+        # chain_changed if that block is no longer canonical, even though the
+        # later page's own scan is internally consistent.
+        tip_hash = call("getblockhash", [tip])[0]
+        if (history.get("history_coverage") or {}).get("scan_from_hash") != tip_hash:
+            print(f"FAIL scan_from_hash: {history.get('history_coverage')} tip_hash={tip_hash}")
+            return 1
+        anchor = {"height": tip, "hash": tip_hash}
+        same, serr = call("getaddresshistory", [payee, 200, tip, anchor])
+        bsame, bserr = call("blockchain.getaddressbatch", {"addresses": [payee], "history_count": 49, "anchor": anchor})
+        for name, reply, err in (("history", same, serr), ("batch", bsame, bserr)):
+            cov = (reply or {}).get("history_coverage") or {}
+            if err is not None or reply.get("history_complete") is not True or cov.get("chain_changed") is not False:
+                print(f"FAIL matching anchor {name}: error={err} reply={str(reply)[:300]}")
+                return 1
+        # A real chain change between pages: replace the anchored tip block.
+        _, ierr = call("invalidateblock", [tip_hash])
+        if ierr is not None:
+            print(f"FAIL invalidateblock: {ierr}"); return 1
+        call("generatetoaddress", [2, miner])
+        if call("getblockhash", [tip])[0] == tip_hash:
+            print("FAIL anchored block is still canonical after invalidation"); return 1
+        moved, merr = call("getaddresshistory", [payee, 200, tip, anchor])
+        bmoved, bmerr = call("blockchain.getaddressbatch", {"addresses": [payee], "history_count": 48, "anchor": anchor})
+        for name, reply, err in (("history", moved, merr), ("batch", bmoved, bmerr)):
+            cov = (reply or {}).get("history_coverage") or {}
+            if err is not None or reply.get("history_complete") is not False or cov.get("chain_changed") is not True:
+                print(f"FAIL replaced anchor {name}: error={err} reply={str(reply)[:300]}")
+                return 1
+        _, bad = call("getaddresshistory", [payee, 200, tip, {"height": tip, "hash": "zz"}])
+        if bad is None:
+            print("FAIL malformed anchor was accepted"); return 1
+        print("PASS address history coverage: full chain complete to genesis; count limit reported, not incomplete; cross-page anchor detects a replaced block")
         return 0
     finally:
         proc.terminate(); proc.wait(60)
