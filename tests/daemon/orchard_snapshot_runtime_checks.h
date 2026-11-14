@@ -2227,6 +2227,55 @@ TEST(OrchardPhoneHistory, RestartWithEveryBodyCachedRequestsNothing){
     if(complete){EXPECT_EQ(complete->Body(102),first->WireBytes());EXPECT_EQ(complete->Body(103),second->WireBytes());}
     host.Stop();
 }
+TEST(OrchardPhoneHistory, RefusedCacheFromAnotherRootFetchesFromPeers){
+    // Records written under one datadir root are refused under another root
+    // identity (restored or migrated datadir). The download must stop using
+    // the refused cache and fetch every body from a peer, not retry forever.
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;using Download=p2p::OrchardPhoneHistoryDownload;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    source.f.service->setRuntimeBlockNotifications(std::make_shared<CanonicalPoolNotices>());
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));
+    auto proof=std::make_shared<const OrchardSnapshotSection>(Access::CaptureActivation(source.f.db,*headers));
+    BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+    const auto second=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(second);
+    ASSERT_TRUE(source.Submit(second->WireBytes()).connected);ASSERT_TRUE(headers->AddHeader(second->Header()));
+    const auto b=source.f.db.getOrchardCatalogState(second->Header().GetHash());ASSERT_TRUE(b.ok());
+    std::string error;
+    const auto original=history_cache_test::Root("original-root");
+    {daemon::DatadirGuard guard;ASSERT_TRUE(guard.Acquire(original,error))<<error;p2p::OrchardHistoryCache cache(guard);
+     for(const auto* block:{&*first,&*second}){const auto body=block->WireBytes();
+        cache.Put('b',block->Header().GetHash(),body.size(),OrchardBlockCandidate::MaxWireSize(),[&](const auto& sink){sink(body);});}}
+    const auto moved=history_cache_test::Root("moved-root");daemon::DatadirGuard guard;ASSERT_TRUE(guard.Acquire(moved,error))<<error;
+    std::filesystem::copy(original/p2p::OrchardHistoryCache::Directory,moved/p2p::OrchardHistoryCache::Directory,
+        std::filesystem::copy_options::recursive);
+    auto cache=std::make_shared<p2p::OrchardHistoryCache>(guard);
+    ASSERT_TRUE(cache->Has('b',first->Header().GetHash())); // Present, but bound to the original root.
+    const Download::Target two{102,103,second->Header().GetHash(),storage::catalog::Hash(*b),first->Header().GetHash()};
+    std::mutex mutex;std::condition_variable cv;std::deque<std::vector<uint8_t>> requests;
+    Download host(headers,moved,[&]{return std::optional(two);},[&]{return proof;},
+        [&](auto p,const auto& t){return Access::ReplayActivation(std::move(p),headers,t.height,t.hash);},
+        []{return std::vector<Download::Peer>{{"archive",93,ServiceFlags::NODE_NETWORK}};},
+        [&](const auto&,const auto& command,const auto& bytes){
+            std::lock_guard lock(mutex);EXPECT_EQ(command,"getdata");requests.push_back(bytes);cv.notify_all();return true;},cache);
+    const auto serve=[&](const auto& body){
+        std::unique_lock lock(mutex);
+        if(!cv.wait_for(lock,std::chrono::seconds(5),[&]{return !requests.empty();}))return false;
+        const auto bytes=std::move(requests.front());requests.pop_front();lock.unlock();
+        std::vector<uint8_t> expected{1,2,0,0,0};const auto hash=body.Header().GetHash();expected.insert(expected.end(),hash.begin(),hash.end());
+        return bytes==expected&&host.Enqueue({"archive",93,0},body.WireBytes());
+    };
+    EXPECT_TRUE(serve(*first))<<"worker error: "<<host.Observe().error;
+    EXPECT_TRUE(serve(*second))<<"worker error: "<<host.Observe().error;
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(!host.Ready()&&std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    const auto complete=host.Ready();
+    EXPECT_TRUE(complete)<<"worker error: "<<host.Observe().error<<" verified: "<<host.Observe().verified_height;
+    if(complete){EXPECT_EQ(complete->Body(102),first->WireBytes());EXPECT_EQ(complete->Body(103),second->WireBytes());}
+    host.Stop();
+}
 TEST(OrchardPhoneHistory, ExtensionSeenAtCreationRecheckPreservesInitialization){
     HistoryExtensionMidIterationCase(2,"creation");
 }

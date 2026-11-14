@@ -2160,9 +2160,16 @@ void P2PService::StartOrchardHistoryWorkers() {
                 const std::shared_ptr<p2p::OrchardHistoryCache> cache;
 #endif
                 {std::lock_guard lock(orchard_catalog_download_mutex_);wallet_history_cache_=cache;}
-                const auto cached_proof=[cache,headers]()->std::optional<uint256>{
+                // A refused cached activation proof retires the proof cache for
+                // this process: the catalog is then fetched from peers instead
+                // of retrying the same refused record forever.
+                const auto proof_cache_retired=std::make_shared<std::atomic<bool>>(false);
+                const auto cached_proof=[cache,headers,proof_cache_retired]()->std::optional<uint256>{
                     consensus::HeaderIndexEntry first;
-                    if(cache&&headers->GetHeaderAtHeightCopy(Params().orchard_activation_height,first)&&cache->Has('p',first.hash))return first.hash;
+                    if(!cache||proof_cache_retired->load())return {};
+                    try{
+                        if(headers->GetHeaderAtHeightCopy(Params().orchard_activation_height,first)&&cache->Has('p',first.hash))return first.hash;
+                    }catch(...){proof_cache_retired->store(true);}
                     return {};
                 };
                 auto download=std::make_shared<p2p::OrchardCatalogDownload>(
@@ -2187,13 +2194,15 @@ void P2PService::StartOrchardHistoryWorkers() {
                         const bool retained=bool(cached_proof());
                         if(retained)source->RequestRetainedPhoneHistoryData(); // PUBLIC DATA scheduling only.
                         return retained||(p2p_mgr_&&p2p_mgr_->is_network_active())?source->PhoneHistoryTarget():std::nullopt;
-                    },[this,cache,cached_proof]{
+                    },[this,cache,cached_proof,proof_cache_retired]{
                         if(const auto first=cached_proof()){
                             std::shared_ptr<const consensus::OrchardSnapshotSection> proof;
-                            cache->Read('p',*first,consensus::ORCHARD_SNAPSHOT_MAX_SECTION_BYTES,[&](uint64_t size,const auto& read){
-                                proof=std::make_shared<const consensus::OrchardSnapshotSection>(
-                                    consensus::ReadOrchardSnapshotSection(size,read,std::filesystem::path(config_->DataDir())));});
-                            return proof; // Untrusted until PreparePhoneHistoryVerifier reauthenticates.
+                            try{
+                                cache->Read('p',*first,consensus::ORCHARD_SNAPSHOT_MAX_SECTION_BYTES,[&](uint64_t size,const auto& read){
+                                    proof=std::make_shared<const consensus::OrchardSnapshotSection>(
+                                        consensus::ReadOrchardSnapshotSection(size,read,std::filesystem::path(config_->DataDir())));});
+                                return proof; // Untrusted until PreparePhoneHistoryVerifier reauthenticates.
+                            }catch(...){proof_cache_retired->store(true);}
                         }
                         return ReadyActivationCatalog();
                     },
