@@ -1,5 +1,6 @@
 #pragma once
 #include "daemon/runtime_outbox_cursor.h"
+#include "wallet/runtime_recovery_limits.h"
 #include <array>
 #include <chrono>
 #include <condition_variable>
@@ -23,7 +24,7 @@ namespace vault {class VaultService;}
 class RuntimeDeliveryWorker final {
     struct WakeState;
 public:
-    enum class WalletOutcome { Deferred, ExplicitlyAbsent, NoActiveWallet, NoLog, AppliedPrefix,
+    enum class WalletOutcome { Deferred, ResourceLimited, ExplicitlyAbsent, NoActiveWallet, NoLog, AppliedPrefix,
         AppliedOrchardPrefix, // No transparent/index receipt or mixed readiness.
         AppliedImportedMixedPrefix }; // Captured BOTH-store/catalog prefix ONLY.
     enum class VaultOutcome { Deferred, NoAttachedRuntime, ObservedTip, UnchangedSinceObservation };
@@ -32,6 +33,8 @@ public:
         bool running = false;
         bool source_deferred = true;
         WalletOutcome wallet = WalletOutcome::Deferred;
+        // Process-local count of canonical wallet recovery cycles.
+        uint64_t wallet_recovery_attempts = 0;
         std::optional<RuntimeOutboxCursor> wallet_head;
         std::optional<RuntimeOutboxCursor> reorg_head;
         RuntimeOutboxCursor after_intent;
@@ -49,6 +52,7 @@ public:
     struct Limits {
         size_t intents_per_slice = 32;
         std::chrono::milliseconds retry_interval{1000};
+        size_t legacy_material_limit_bytes = kWalletRecoveryMaterialLimitBytes;
     };
     explicit RuntimeDeliveryWorker(std::shared_ptr<ChainstateService>,
                                    std::shared_ptr<WalletService>);
@@ -87,7 +91,8 @@ private:
         std::array<uint8_t,32> tip{};
     };
     void ObserveVault(Report&,VaultObservationCache&) const;
-    void RecoverWallet(Report&) const;
+    void RecoverWallet(Report&,std::optional<uint64_t>& resource_blocked_session,
+        uint64_t& recovery_attempts) const;
     void RestoreRetiredLegacyPendingNotes() const;
     bool ReconcileSlice(Report&) const;
     std::shared_ptr<ChainstateService> source_;

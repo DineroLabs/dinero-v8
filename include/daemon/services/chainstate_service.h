@@ -19,6 +19,7 @@
 #include "common/annotated_mutex.h"
 #include "wallet/utxo_index.h"
 #include "wallet/runtime_funding_candidates.h"
+#include "wallet/runtime_recovery_limits.h"
 #include "interfaces/wallet_notifier.h"  // Phase 3D: Wallet event notifications
 #include "consensus/utreexo_accumulator.h"  // v0.14.0.4: Utreexo enforcement
 #include "consensus/header_convergence.h"  // #439: HeaderConvergence + pure rule
@@ -279,8 +280,29 @@ public:
     // snapshot's complete live leaf coverage and selected post-base bodies,
     // then applies owned coins/history under one wallet transaction. Does not
     // replace keys or certify pre-base spent history/other wallet consumers.
+    // Native v6 recovery (stages B+C of the design,
+    // 2026-11-11-native-v6-wallet-recovery-design.md): with an Orchard-active
+    // selected tip AND a configured wallet_recovery_v5_source (a V5 container
+    // at exactly the activation parent), the base coin set comes from that
+    // container and the activation..tip transparent effects from the verified
+    // composed account replay (typed tail); reports the tip. While the replay
+    // is not yet available the refusal is transient (retryable), unlike the
+    // permanent no-source capability refusal. v6_partial_base_for_tests is
+    // harness-only (no RPC sets it): it skips the typed tail, recovers ONLY
+    // the PARTIAL base set (coins spent after activation still counted) and
+    // reports the activation parent, never a client-visible scope.
+    // Typed recovery outcome for the RPC layer (stage C step 4): the refusal
+    // class drives retryable classification instead of a string match, and
+    // composed_v6 marks the typed-tail composed recovery whose success scope
+    // is transparent-current-coins-and-post-snapshot-history-v6.
+    struct SnapshotRecoveryOutcome {
+        enum class Refusal { None, Transient, PermanentCapability };
+        Refusal refusal=Refusal::None;
+        bool composed_v6=false;
+    };
     std::optional<uint32_t> RecoverTransparentSnapshotWallet(
-        WalletManager&,std::string* error=nullptr,uint64_t expected_session=0);
+        WalletManager&,std::string* error=nullptr,uint64_t expected_session=0,
+        bool v6_partial_base_for_tests=false,SnapshotRecoveryOutcome* outcome=nullptr);
     // Exact fresh imported activation parent only. Checked source/seed-bound
     // candidate discovery, NOT wallet history/index completion or coin authority.
     // Caller retains WalletUse/WalletIndexUse and holds no SQLite/selected owner.
@@ -1048,6 +1070,11 @@ public:
     // Explicit limits/missing origin material
     // refuse; this is not baseline certification or all-consumer readiness.
     StatusOr<std::shared_ptr<const RuntimeAccountReplay>> getRuntimeAccountReplay() const;
+    // Observational counters for the retained phone replay: full prefix builds
+    // versus tail-only extensions. No authority; diagnostics and tests only.
+    std::pair<uint64_t,uint64_t> PhoneReplayCaptureCounts() const{
+        return {phone_replay_full_builds_.load(),phone_replay_extensions_.load()};
+    }
     // Read-only archival source. No selected lock during proof work; a real
     // service-use pins DB/header lifetimes through shutdown and rechecks them.
     StatusOr<std::shared_ptr<const consensus::OrchardSnapshotSection>> captureOrchardActivationProof(
@@ -1148,7 +1175,8 @@ public:
     // Null ONLY for another source composition or BOTH absent baselines.
     // Every failed/partial/invalid mixed attempt remains closed, never fallback.
     StatusOr<std::shared_ptr<const RuntimeImportedMixedRecoveryResult>>
-        resumeRuntimeImportedMixedRecovery(WalletManager&,UTXOIndex&,uint64_t expected_session);
+        resumeRuntimeImportedMixedRecovery(WalletManager&,UTXOIndex&,uint64_t expected_session,
+            size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes);
     // Observation-only readmission fence at the genuinely empty activation
     // parent. Restores/rechecks every declared encrypted owner under the current
     // source; does not adopt transparent receipts or manufacture delivery.
@@ -1745,9 +1773,11 @@ private:
         const std::unique_lock<std::mutex>& snapshot, UTXOIndex&);
     struct ImportedOrchardDeliverySource;
     StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> captureRuntimeWalletOrigin(
-        WalletManager&,uint64_t,UTXOIndex*,bool existing_identity_only,bool public_history,bool& body_data_pending,bool retained_history = false) const;
+        WalletManager&,uint64_t,UTXOIndex*,bool existing_identity_only,bool public_history,bool& body_data_pending,
+        bool retained_history = false,size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes) const;
     StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> captureRuntimeWalletCoverage(
-        WalletManager&,uint64_t,UTXOIndex&,bool public_history,bool& body_data_pending,bool retained_history = false) const;
+        WalletManager&,uint64_t,UTXOIndex&,bool public_history,bool& body_data_pending,
+        bool retained_history = false,size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes) const;
     std::unique_ptr<const ImportedOrchardDeliverySource> CaptureImportedOrchardDeliveryUnderLock(
         const std::unique_lock<std::mutex>&,UTXOIndex&,const RuntimeAccountReplay&);
     // Transport is not storage authority. This narrower pre-boundary route
@@ -2083,6 +2113,13 @@ private:
     // ❌ DELETED: std::unique_ptr<ChainDB> chain_db_ (violated ONE DB Definition)
     // ChainDB is owned by global g_chain_manager, constructed by DaemonApp
     mutable std::mutex wallet_index_use_mutex_;
+    // One retained phone activation-prefix replay. Later captures extend its
+    // tail with new outbox events instead of re-verifying the whole history.
+    // Serializes replay capture; never held by a caller of activation_mutex_.
+    mutable std::mutex phone_replay_mutex_;
+    mutable std::shared_ptr<const RuntimeAccountReplay> phone_replay_;
+    mutable std::optional<std::pair<uint32_t,uint256>> phone_replay_base_;
+    mutable std::atomic<uint64_t> phone_replay_full_builds_{0},phone_replay_extensions_{0};
     mutable std::condition_variable wallet_index_use_changed_;
     std::map<std::thread::id,size_t> wallet_index_uses_by_thread_;
     size_t wallet_index_uses_=0;

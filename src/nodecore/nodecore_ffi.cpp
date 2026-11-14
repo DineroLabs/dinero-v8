@@ -532,6 +532,7 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
     std::string sync_profile = dinero::nodecore::DefaultSyncProfile();
     std::string wallet_schema_path;
     std::string assumeutxo_snapshot_path;
+    std::string wallet_recovery_v5_source_path;
     std::vector<std::string> assumeutxo_snapshot_fallback_paths;
     std::string assumeutxo_manifest_path;
     bool assumeutxo_require_manifest = false;
@@ -598,6 +599,16 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
                     return NODECORE_ERROR_INVALID_ARGS;
                 }
                 assumeutxo_snapshot_path = config["assumeutxo_snapshot"].asString();
+            }
+            if (config.isMember("wallet_recovery_v5_source")) {
+                // Native v6 wallet recovery (stage C): the preserved V5
+                // activation-parent container the composed recovery reads.
+                // Deliberately separate from assumeutxo_snapshot: it is a
+                // wallet recovery source, never a bootstrap selection.
+                if (!config["wallet_recovery_v5_source"].isString()) {
+                    return NODECORE_ERROR_INVALID_ARGS;
+                }
+                wallet_recovery_v5_source_path = config["wallet_recovery_v5_source"].asString();
             }
             if (config.isMember("assumeutxo_snapshot_fallbacks")) {
                 const auto& fallbacks = config["assumeutxo_snapshot_fallbacks"];
@@ -704,6 +715,9 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
     // snapshot was ignored and the node fell back to genesis IBD. Match the read keys.
     if (!assumeutxo_snapshot_path.empty()) {
         args_storage.push_back("--assumeutxo_snapshot=" + assumeutxo_snapshot_path);
+    }
+    if (!wallet_recovery_v5_source_path.empty()) {
+        args_storage.push_back("--wallet_recovery_v5_source=" + wallet_recovery_v5_source_path);
     }
     if (!assumeutxo_snapshot_fallback_paths.empty()) {
         std::ostringstream encoded;
