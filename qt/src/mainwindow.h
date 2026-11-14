@@ -232,6 +232,7 @@ private:
   class PrivateCovenantWidget* privateCovenantWidget_ = nullptr;
   void bindWalletScopedState(const QString& walletName);
   void clearWalletScopedUiState();
+  void finishConfirmedWalletSwitchWithoutBalance(const QString& reason);
   void refreshWalletMiningAddress();
   void startWalletRescan(const QString& statusText);
   bool isInputUtxoMissingError(const QString& errorText) const;
@@ -717,6 +718,8 @@ private:
   bool walletReorgInfoSupported_ = true;
   bool walletSwitchInFlight_;
   QString pendingWalletOpenName_;
+  QString confirmedWalletOpenName_;
+  bool confirmedWalletOpenUnlocked_ = false;
   bool shuttingDown_;
   QTimer* safeModeRescanRetryTimer_;
   int safeModeRescanRetryAttempts_;

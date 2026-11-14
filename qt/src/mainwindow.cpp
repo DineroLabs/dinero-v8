@@ -5895,6 +5895,7 @@ void MainWindow::setupUI() {
 
   // === Error Message Bar (at very bottom) ===
   lblErrorMessage_ = new QLabel("");
+  lblErrorMessage_->setObjectName("walletGlobalError");
   lblErrorMessage_->setVisible(false);  // Hidden by default, shown when error occurs
   lblErrorMessage_->setStyleSheet(
     "QLabel { "
@@ -8189,11 +8190,20 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       }
 
       if (loadSucceeded) {
+        QString confirmedName;
         if (obj.contains("wallet_name")) {
-          openedWalletName = obj.value("wallet_name").toString(openedWalletName);
+          confirmedName = obj.value("wallet_name").toString();
         } else if (obj.contains("name")) {
-          openedWalletName = obj.value("name").toString(openedWalletName);
+          confirmedName = obj.value("name").toString();
         }
+        // Only the daemon's named success reply can establish the new
+        // wallet identity if the later financial wallet.getinfo is refused.
+        if (!confirmedName.isEmpty() && confirmedName == pendingWalletOpenName_) {
+          confirmedWalletOpenName_ = confirmedName;
+          confirmedWalletOpenUnlocked_ = obj.contains("locked") &&
+              obj.value("locked").isBool() && !obj.value("locked").toBool();
+        }
+        if (!confirmedName.isEmpty()) openedWalletName = confirmedName;
         pendingWalletOpenName_ = openedWalletName;
         updateWalletSwitcherState();
 
@@ -8221,6 +8231,8 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
 
     walletSwitchInFlight_ = false;
     pendingWalletOpenName_.clear();
+    confirmedWalletOpenName_.clear();
+    confirmedWalletOpenUnlocked_ = false;
     updateWalletSwitcherState();
     if (!currentWalletName_.isEmpty()) {
       checkRescanStatus();
@@ -8767,6 +8779,14 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
     return;
   }
 
+  if (method == "wallet.getinfo" && code == -32603 &&
+      message == QLatin1String("Legacy transparent wallet is catching up to the selected chain")) {
+    // The selected wallet is known, but its balance is not current. The
+    // financial-state banner is more useful than a raw RPC exception here.
+    showWalletBalanceUnavailable();
+    return;
+  }
+
   if (method == "wallet.getbalance") {
     showWalletBalanceUnavailable();
     return;
@@ -8836,6 +8856,8 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
   if (method == "wallet.open" || method == "wallet.load") {
     walletSwitchInFlight_ = false;
     pendingWalletOpenName_.clear();
+    confirmedWalletOpenName_.clear();
+    confirmedWalletOpenUnlocked_ = false;
     updateWalletSwitcherState();
     if (!currentWalletName_.isEmpty()) {
       checkRescanStatus();
@@ -13643,6 +13665,8 @@ void MainWindow::onCreateWallet() {
 
     walletSwitchInFlight_ = true;
     pendingWalletOpenName_ = previousWallet;
+    confirmedWalletOpenName_.clear();
+    confirmedWalletOpenUnlocked_ = false;
     updateWalletSwitcherState();
     clearWalletScopedUiState();
     if (changeAddrMgr_) {
@@ -15099,6 +15123,8 @@ void MainWindow::onLoadSelectedWallet() {
 
   walletSwitchInFlight_ = true;
   pendingWalletOpenName_ = walletName;
+  confirmedWalletOpenName_.clear();
+  confirmedWalletOpenUnlocked_ = false;
   updateWalletSwitcherState();
   clearWalletScopedUiState();
   if (changeAddrMgr_) {
@@ -15117,6 +15143,47 @@ void MainWindow::onLoadSelectedWallet() {
   rpc_->call("wallet.open", QJsonArray{walletName});
 }
 
+void MainWindow::finishConfirmedWalletSwitchWithoutBalance(const QString& reason) {
+  // wallet.getinfo includes a financial read. It can refuse while a selected
+  // wallet is catching up, even though wallet.open already switched the
+  // daemon. Bind only from that named wallet.open success, never from a stale
+  // getinfo error or a locally selected combo-box value.
+  if (!walletSwitchInFlight_ || confirmedWalletOpenName_.isEmpty() ||
+      confirmedWalletOpenName_ != pendingWalletOpenName_) return;
+
+  const QString walletName = confirmedWalletOpenName_;
+  const bool unlocked = confirmedWalletOpenUnlocked_;
+  walletSwitchInFlight_ = false;
+  pendingWalletOpenName_.clear();
+  confirmedWalletOpenName_.clear();
+  confirmedWalletOpenUnlocked_ = false;
+
+  currentWalletName_ = walletName;
+  lblWalletName_->setText(QString("Wallet: %1").arg(walletName));
+  lblWalletName_->setStyleSheet(headerPillStyle());
+  lblWalletName_->setToolTip(QString("Active wallet: %1").arg(walletName));
+  walletUnlocked_ = unlocked;
+  walletRescanning_ = false;
+  unlockSecondsRemaining_ = 0;
+  unlockCountdownTimer_->stop();
+  activeReservationId_.clear();
+  cachedPrimaryAddress_.clear();
+  btnWalletLock_->setEnabled(true);
+  btnWalletLock_->setText(unlocked ? "Unlocked | Lock" : "Locked | Unlock");
+  btnWalletLock_->setStyleSheet(chromeButtonStyle());
+
+  clearWalletScopedUiState();
+  bindWalletScopedState(walletName);
+  refreshWalletMiningAddress();
+  if (vaultPanel_) vaultPanel_->refresh();
+  if (shieldedWidget_) shieldedWidget_->refresh();
+  if (tblContracts_) refreshContractsList();
+  showWalletBalanceUnavailable();
+  lblConnectionStatus_->setText("Wallet selected; balance syncing");
+  lblConnectionStatus_->setStyleSheet(headerPillStyle());
+  lblConnectionStatus_->setToolTip(QString("Active wallet: %1. %2").arg(walletName, reason));
+}
+
 void MainWindow::checkRescanStatus() {
   // Query wallet info to check if rescan is in progress and get wallet name
   rpc_->call("wallet.getinfo", QJsonArray{});
@@ -15130,11 +15197,18 @@ void MainWindow::checkRescanStatus() {
       return;
     }
 
-    QObject::disconnect(*walletInfoResultConn);
-    QObject::disconnect(*walletInfoErrorConn);
-
       auto obj = result.toObject();
-      if (obj.contains("error")) return;
+      // Ignore a pre-switch wallet.getinfo response that arrived after the
+      // named wallet.open result. It cannot confirm the new selection.
+      if (!obj.contains("error") && walletSwitchInFlight_ &&
+          !pendingWalletOpenName_.isEmpty() &&
+          obj.value("wallet_name").toString() != pendingWalletOpenName_) return;
+      QObject::disconnect(*walletInfoResultConn);
+      QObject::disconnect(*walletInfoErrorConn);
+      if (obj.contains("error")) {
+        finishConfirmedWalletSwitchWithoutBalance(obj.value("error").toString());
+        return;
+      }
       const bool unlocked = walletUnlockedFromRpc(obj);
 
       // Update wallet name and detect wallet switch
@@ -15160,6 +15234,8 @@ void MainWindow::checkRescanStatus() {
       if (!pendingWalletOpenName_.isEmpty() && walletName == pendingWalletOpenName_) {
         walletSwitchInFlight_ = false;
         pendingWalletOpenName_.clear();
+        confirmedWalletOpenName_.clear();
+        confirmedWalletOpenUnlocked_ = false;
         lblConnectionStatus_->setText("Wallet loaded");
         lblConnectionStatus_->setStyleSheet(headerPillStyle());
         lblConnectionStatus_->setToolTip(QString("Active wallet: %1").arg(walletName));
@@ -15247,7 +15323,7 @@ void MainWindow::checkRescanStatus() {
   });
 
   *walletInfoErrorConn = connect(rpc_, &RpcClient::rpcError, this,
-      [walletInfoResultConn, walletInfoErrorConn](const QString& method, int code, const QString& message) {
+      [this, walletInfoResultConn, walletInfoErrorConn](const QString& method, int code, const QString& message) {
     Q_UNUSED(code);
     if (method != "wallet.getinfo") {
       return;
@@ -15256,6 +15332,7 @@ void MainWindow::checkRescanStatus() {
     QObject::disconnect(*walletInfoResultConn);
     QObject::disconnect(*walletInfoErrorConn);
     qWarning() << "wallet.getinfo failed during rescan status check:" << message;
+    finishConfirmedWalletSwitchWithoutBalance(message);
   });
 }
 
