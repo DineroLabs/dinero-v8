@@ -2154,6 +2154,39 @@ static void HistoryExtensionMidIterationCase(unsigned flip_call,const std::strin
     EXPECT_EQ(host.Observe().verified_height,103u);EXPECT_TRUE(host.Observe().error.empty());
     EXPECT_EQ(verifies.load(),1u);host.Stop();
 }
+TEST(OrchardPhoneHistory, RestartWithEveryBodyCachedRequestsNothing){
+    // A restarted phone whose public cache already holds every selected body
+    // re-verifies them from disk; no body may be fetched from a peer again.
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;using Download=p2p::OrchardPhoneHistoryDownload;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    source.f.service->setRuntimeBlockNotifications(std::make_shared<CanonicalPoolNotices>());
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));
+    auto proof=std::make_shared<const OrchardSnapshotSection>(Access::CaptureActivation(source.f.db,*headers));
+    BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+    const auto second=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(second);
+    ASSERT_TRUE(source.Submit(second->WireBytes()).connected);ASSERT_TRUE(headers->AddHeader(second->Header()));
+    const auto b=source.f.db.getOrchardCatalogState(second->Header().GetHash());ASSERT_TRUE(b.ok());
+    const auto root=history_cache_test::Root("restart-cached");daemon::DatadirGuard guard;std::string error;
+    ASSERT_TRUE(guard.Acquire(root,error))<<error;auto cache=std::make_shared<p2p::OrchardHistoryCache>(guard);
+    for(const auto* block:{&*first,&*second}){const auto body=block->WireBytes();
+        cache->Put('b',block->Header().GetHash(),body.size(),OrchardBlockCandidate::MaxWireSize(),[&](const auto& sink){sink(body);});}
+    const Download::Target two{102,103,second->Header().GetHash(),storage::catalog::Hash(*b),first->Header().GetHash()};
+    std::atomic<unsigned> sends=0;
+    Download host(headers,root,[&]{return std::optional(two);},[&]{return proof;},
+        [&](auto p,const auto& t){return Access::ReplayActivation(std::move(p),headers,t.height,t.hash);},
+        []{return std::vector<Download::Peer>{{"archive",91,ServiceFlags::NODE_NETWORK}};},
+        [&](const auto&,const auto&,const auto&){++sends;return true;},cache);
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(!host.Ready()&&std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    const auto complete=host.Ready();
+    EXPECT_TRUE(complete)<<"worker error: "<<host.Observe().error<<" verified: "<<host.Observe().verified_height;
+    EXPECT_EQ(sends.load(),0u);
+    if(complete){EXPECT_EQ(complete->Body(102),first->WireBytes());EXPECT_EQ(complete->Body(103),second->WireBytes());}
+    host.Stop();
+}
 TEST(OrchardPhoneHistory, ExtensionSeenAtCreationRecheckPreservesInitialization){
     HistoryExtensionMidIterationCase(2,"creation");
 }

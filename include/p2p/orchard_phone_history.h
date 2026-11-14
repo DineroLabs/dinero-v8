@@ -183,7 +183,9 @@ private:
                     if(cache_&&!cached_packet)cache_->Put('b',expected,packet->size(),OrchardBlockCandidate::MaxWireSize(),
                         [&](const auto& sink){sink(*packet);});
                     corpus->Append(next,*packet);++next;awaiting=false;
-                    std::lock_guard lock(mutex_);flight_.reset();
+                    {std::lock_guard lock(mutex_);flight_.reset();}
+                    // Read the next body from the cache before any peer request.
+                    if(cached_packet)continue;
                 }
                 const auto now=Clock::now();
                 const auto connected=peers_();
