@@ -7308,7 +7308,7 @@ StatusOr<wallet::OrchardAccount0RecoveryProgress> ChainstateService::recoverOrch
             // wallet history. Request a separate untrusted full-body source;
             // never fabricate canonical events/cursors or publish an account.
             const auto target=PhoneHistoryTarget(false);if(!target)return captured.status();
-            UTXOIndex* index=nullptr;
+            UTXOIndex* index=nullptr;bool already_recovered=false;
             {std::lock_guard<std::mutex> lock(wallet_index_use_mutex_);
              if(!wallet_index_uses_by_thread_.count(std::this_thread::get_id())||!utxo_index_)return Status::Invalid;
              index=utxo_index_.get();}
@@ -7325,11 +7325,18 @@ StatusOr<wallet::OrchardAccount0RecoveryProgress> ChainstateService::recoverOrch
                                  !sqlite3_get_autocommit(db))std::terminate();}
                 } tx{db};
                 auto seed=lease->CopyRecoverySeed(expected_session);
-                (void)wallet::OrchardAccountCatalog::RequireUnknownEmpty(db,seed->Bytes());
-                if(wallet.getSetting("wallet_initial_owner_v1").empty())return Status::Invalid;
-                std::vector<uint8_t> bytes(seed->Bytes().begin(),seed->Bytes().end());
-                struct Wipe{std::vector<uint8_t>& b;~Wipe(){OPENSSL_cleanse(b.data(),b.size());}} wipe{bytes};
-                if(wallet.InitialPqMasterPresentInTransaction(bytes))return Status::Invalid;
+                // An already recovered account0 waits for the same history to
+                // resume delivery; it reports progress, it is not a new owner.
+                const auto catalog=wallet::OrchardAccountCatalog::Read(db,seed->Bytes());
+                already_recovered=catalog&&catalog->recovered.has_value();
+                if(already_recovered){if(restart)return Status::Invalid;}
+                else {
+                    (void)wallet::OrchardAccountCatalog::RequireUnknownEmpty(db,seed->Bytes());
+                    if(wallet.getSetting("wallet_initial_owner_v1").empty())return Status::Invalid;
+                    std::vector<uint8_t> bytes(seed->Bytes().begin(),seed->Bytes().end());
+                    struct Wipe{std::vector<uint8_t>& b;~Wipe(){OPENSSL_cleanse(b.data(),b.size());}} wipe{bytes};
+                    if(wallet.InitialPqMasterPresentInTransaction(bytes))return Status::Invalid;
+                }
                 // The ownership check requires a FULL transaction even though
                 // this path never stages/adopts wallet state. Release it before
                 // the selected-source and network callbacks below.
@@ -7344,6 +7351,7 @@ StatusOr<wallet::OrchardAccount0RecoveryProgress> ChainstateService::recoverOrch
             orchard_phone_history_requested_.store(true);
             const auto observed=download->Observe();const auto ready=download->Ready();
             wallet::OrchardAccount0RecoveryProgress progress;
+            progress.already_recovered=already_recovered;
             progress.history_requested=true;progress.history_ready=bool(ready&&ready->target==*target);
             progress.history_target_height=target->height;progress.history_target_hash=target->hash;
             if(observed.requested&&observed.target_height==target->height&&observed.target_hash==target->hash)

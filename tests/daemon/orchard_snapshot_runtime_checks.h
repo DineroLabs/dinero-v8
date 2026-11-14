@@ -702,6 +702,28 @@ void GenerateSdkActivationFixture(){
         // A genuinely NEW root with only a normal authenticated v6 floor.
         // No original parent DB, pre-floor bodies or canonical runtime events
         // are copied. The actual SDK must obtain missing history over TCP.
+        // Optional variant: a floor ABOVE activation (103, buried by a real
+        // mined 104) so the account-0 activation prefix spans two uncertified
+        // steps (102,103), like mainnet's 150000..150074 prefix.
+        const bool above=std::getenv("DINERO_SDK_LATE_FLOOR_ABOVE_ACTIVATION")!=nullptr;
+        std::unique_ptr<CanonicalPoolFixture> tail;std::optional<consensus::OrchardSnapshotSection> floor_proof;
+        std::shared_ptr<const CatalogSolvedTemplate> tip;
+        if(above){
+            ASSERT_FALSE(funded);
+            tail=std::make_unique<CanonicalPoolFixture>(true);
+            tail->f.service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
+            ASSERT_EQ(tail->parent->hash,f.proof->parent_catalog.block);
+            ASSERT_TRUE(tail->Submit(f.full.first->WireBytes()).connected);
+            ASSERT_TRUE(tail->Submit(f.full.second->WireBytes()).connected);
+            {auto& live=ShieldedStateStartupTestAccess::CatalogWriterCoins(*tail->f.service);
+             floor_proof=OrchardSnapshotStoreTestAccess::Capture(tail->f.db,consensus::OrchardSnapshotProfile::Compact,
+                consensus::UtreexoStump::fromForest(live.GetForest()).serialize());}
+            ASSERT_EQ(floor_proof->state.height,103u);ASSERT_EQ(floor_proof->state.block_hash,f.full.second->Header().GetHash());
+            BlockAssembler assembler(&tail->f.db);WireOrchardAssembler(assembler,tail->f);
+            tip=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(tip);
+            ASSERT_EQ(tip->Height(),104u);ASSERT_TRUE(tail->Submit(tip->WireBytes()).connected);
+        }
+        const auto& floor=above?f.full.second:f.full.first;
         const auto late=f.root/"late-phone";ASSERT_TRUE(std::filesystem::create_directory(late));
         ASSERT_TRUE(std::filesystem::create_directory(late/"blockchain"));
         daemon::DatadirGuard guard;std::string error;ASSERT_TRUE(guard.Acquire(late,error));
@@ -709,10 +731,11 @@ void GenerateSdkActivationFixture(){
         consensus::HeaderChainSelector headers(&store);
         for(const auto& block:f.full.f.blocks)ASSERT_TRUE(headers.AddHeader(block.header));
         ASSERT_TRUE(headers.AddHeader(f.full.first->Header()));ASSERT_TRUE(headers.AddHeader(f.full.second->Header()));
+        if(tip)ASSERT_TRUE(headers.AddHeader(tip->Header()));
         consensus::SnapshotMetadata metadata;metadata.version=consensus::SNAPSHOT_VERSION_V6;
-        metadata.block_height=102;metadata.block_hash=f.full.first->Header().GetHash();metadata.timestamp=f.full.first->Header().timestamp;
+        metadata.block_height=floor->Height();metadata.block_hash=floor->Header().GetHash();metadata.timestamp=floor->Header().timestamp;
         const auto snapshot=late/"input.v6";
-        ASSERT_TRUE(consensus::WriteOrchardSnapshotFileAtomically(snapshot,metadata,*f.proof,{}).success);
+        ASSERT_TRUE(consensus::WriteOrchardSnapshotFileAtomically(snapshot,metadata,above?*floor_proof:*f.proof,{}).success);
         std::ifstream input(snapshot,std::ios::binary);
         const auto file=consensus::ReadOrchardSnapshotFile(input,std::filesystem::file_size(snapshot),consensus::OrchardSnapshotProfile::Compact);
         const auto path=late/"blockchain/chaindb";OrchardSnapshotStoreTestAccess::CreateFresh(path);
@@ -720,7 +743,15 @@ void GenerateSdkActivationFixture(){
         AnnotatedRecursiveMutex mutex;
         const auto installed=OrchardSnapshotStoreTestAccess::Install(mutex,db,f.full.f.token,files,headers,file);
         ASSERT_TRUE(installed.compact);ASSERT_FALSE(installed.full);
-        row["late_datadir"]=late.string();row["late_floor"]=102;
+        row["late_datadir"]=late.string();row["late_floor"]=Json::UInt(floor->Height());
+        if(tip){
+            const auto tip_path=f.root/"untrusted-late-tip-body.bin";std::ofstream out(tip_path,std::ios::binary);ASSERT_TRUE(out);
+            const auto& bytes=tip->WireBytes();out.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());
+            out.close();ASSERT_TRUE(out);
+            const auto header=tip->Header().SerializeForHash();
+            row["late_tip"]=tip_path.string();row["late_tip_hash"]=tip->Header().GetHash().GetHex();
+            row["late_tip_header"]=util::hex({header.begin(),header.end()});
+        }
     }
     const auto proof_file=f.root/"untrusted-catalog-section.bin";
     {std::ofstream out(proof_file,std::ios::binary);ASSERT_TRUE(out);
