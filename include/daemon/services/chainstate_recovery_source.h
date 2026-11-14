@@ -6,13 +6,16 @@
 #pragma once
 
 #include "wallet/runtime_recovery_source.h"
+#include "wallet/runtime_recovery_limits.h"
 
 namespace dinero {
 class ChainstateService;
 
 class ChainstateRuntimeRecoverySource final : public wallet::IRuntimeRecoverySource {
 public:
-    explicit ChainstateRuntimeRecoverySource(ChainstateService& chain) : chain_(chain) {}
+    explicit ChainstateRuntimeRecoverySource(ChainstateService& chain,
+        size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes)
+        : chain_(chain), material_limit_bytes_(material_limit_bytes) {}
 
     StatusOr<std::shared_ptr<const RuntimeOutboxPage>> GetDeliveryPage(
         const RuntimeOutboxCursor& after, size_t maximum_events) const override;
@@ -24,6 +27,7 @@ public:
 
 private:
     ChainstateService& chain_;
+    size_t material_limit_bytes_;
 };
 
 } // namespace dinero

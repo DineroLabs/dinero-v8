@@ -1,6 +1,7 @@
 #include "wallet/runtime_wallet_recovery.h"
 #include "wallet/runtime_recovery_source.h"
 #include "wallet/runtime_index_delivery.h"
+#include "wallet/runtime_origin_projection.h"
 #include "wallet/wallet_manager.h"
 #include <algorithm>
 #include <stdexcept>
@@ -418,6 +419,9 @@ RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumeCatalogWalletSt
      if(wallet.database_leases_!=1)throw std::runtime_error("Wallet recovery requires released caller lease");}
     if(RuntimeOrdinaryDelivery::CoverageRequiredForWallet(wallet,index,session)) {
         const auto coverage=chain.GetWalletCoverage(wallet,session,index);
+        // Keep the material limit typed: callers stop the session on it
+        // instead of retrying an over-limit capture forever.
+        if(coverage.status()==Status::ResourceLimit)throw RuntimeWalletCoverageMaterialLimit();
         if(!coverage.ok())throw std::runtime_error("Wallet recovery coverage source unavailable");
         if(chain.ReconcileWalletCoverage(wallet,index,**coverage)!=Status::Ok)
             throw std::runtime_error("Wallet recovery coverage reconciliation refused");

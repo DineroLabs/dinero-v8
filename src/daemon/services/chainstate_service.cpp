@@ -7146,7 +7146,8 @@ StatusOr<std::shared_ptr<const RuntimeReorgReadmission>> ChainstateService::read
 }
 
 StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
-ChainstateService::resumeRuntimeWalletRecoveryIfNeeded(WalletManager& wallet, UTXOIndex& index, uint64_t expected_session) {
+ChainstateService::resumeRuntimeWalletRecoveryIfNeeded(WalletManager& wallet, UTXOIndex& index, uint64_t expected_session,
+        size_t material_limit_bytes) {
     if (activation_mutex_.HeldByCurrentThread()) return Status::Invalid;
     try {
         // Require the actual lifetime gate before touching the index. The
@@ -7196,14 +7197,20 @@ ChainstateService::resumeRuntimeWalletRecoveryIfNeeded(WalletManager& wallet, UT
         }
         // Account/source capture and proof verification run after every outer
         // selected lock and the short session lease above have been released.
-        const ChainstateRuntimeRecoverySource recovery_source(*this);
+        const ChainstateRuntimeRecoverySource recovery_source(*this,material_limit_bytes);
         return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
             RuntimeWalletRecovery::ResumeCatalogWalletStores(
                 recovery_source,wallet,index,session));
 #else
         return Status::Internal;
 #endif
-    } catch (...) { return Status::Internal; }
+    }
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    // The delivery worker blocks the wallet session only on ResourceLimit;
+    // any other status is retried on every pass.
+    catch (const RuntimeWalletCoverageMaterialLimit&) { return Status::ResourceLimit; }
+#endif
+    catch (...) { return Status::Internal; }
 }
 
 struct ChainstateService::ImportedWalletSource {
@@ -7772,8 +7779,9 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
 }
 
 StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateService::getRuntimeWalletCoverage(
-        WalletManager& wallet,uint64_t session,UTXOIndex& index) const {
-    bool pending=false;return captureRuntimeWalletCoverage(wallet,session,index,false,pending);
+        WalletManager& wallet,uint64_t session,UTXOIndex& index,size_t material_limit_bytes) const {
+    bool pending=false;
+    return captureRuntimeWalletCoverage(wallet,session,index,false,pending,false,material_limit_bytes);
 }
 StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateService::captureRuntimeWalletCoverage(
         WalletManager& wallet,uint64_t session,UTXOIndex& index,bool public_history,bool& body_data_pending,

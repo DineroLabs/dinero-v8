@@ -1168,7 +1168,8 @@ public:
     // source has no canonical wallet log to resume. A nonnull result reports
     // an earned captured prefix, never lasting readiness or global inventory.
     StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
-        resumeRuntimeWalletRecoveryIfNeeded(WalletManager&, UTXOIndex&, uint64_t expected_session = 0);
+        resumeRuntimeWalletRecoveryIfNeeded(WalletManager&, UTXOIndex&, uint64_t expected_session = 0,
+            size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes);
     // Distinct automatic Orchard-only delivery for the authenticated completed
     // imported owner. Null success means NOT this source composition; failure
     // never falls back to mixed replay or earns missing transparent baselines.
@@ -1204,7 +1205,8 @@ public:
     // genesis through the exact runtime head, including disconnect/reconnect.
     // Read-only source material: does not replace invalidated store receipts.
     StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> getRuntimeWalletCoverage(
-        WalletManager&,uint64_t expected_session,UTXOIndex&) const;
+        WalletManager&,uint64_t expected_session,UTXOIndex&,
+        size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes) const;
     // Recheck exact selected source and authenticate wallet owners/rows before
     // index-first and ordinary-second baseline commits. Not account catch-up
     // or all-consumer readiness; caller must complete normal recovery after it.

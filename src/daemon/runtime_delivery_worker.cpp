@@ -135,7 +135,8 @@ void RuntimeDeliveryWorker::RecoverWallet(Report& report,
             report.wallet=WalletOutcome::AppliedOrchardPrefix;report.wallet_head=(*orchard)->observed_head;return;
         }
 #endif
-        const auto recovered=source_->resumeRuntimeWalletRecoveryIfNeeded(use->Wallet(),index->Index(),session);
+        const auto recovered=source_->resumeRuntimeWalletRecoveryIfNeeded(use->Wallet(),index->Index(),session,
+            limits_.legacy_material_limit_bytes);
         if (!recovered.ok()){refuse_resource_limit(recovered.status());return;}
         if (!*recovered) {report.wallet=WalletOutcome::NoLog;return;}
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
