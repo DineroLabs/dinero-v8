@@ -432,7 +432,8 @@ void PoolPanel::setupUi() {
     auto* earn_hint = new QLabel(
         "Read from your node, not from the pool \xE2\x80\x94 so it is still right when the pool is "
         "down, and it cannot be overstated by a pool reporting on itself."
-        "<br/><b>Lifetime</b> is every fee ever paid to this address and only ever rises. "
+        "<br/><b>Lifetime</b> is available when the node confirms complete history on one chain. "
+        "Otherwise receipts are marked observed, or the check asks you to retry. "
         "<b>Unspent</b> is what is still sitting there, so it falls when you move funds out.");
     earn_hint->setWordWrap(true);
     earn_hint->setTextFormat(Qt::RichText);
@@ -1368,7 +1369,8 @@ void PoolPanel::onCheckEarningsClicked() {
     lifetime_in_flight_ = true;
     btn_check_earnings_->setEnabled(false);
     rpc_->call("blockchain.getaddressbalance", QJsonArray{addr});
-    rpc_->call("blockchain.getaddresshistory", QJsonArray{addr, kEarningsHistoryPage});
+    rpc_->call("blockchain.getaddresshistory",
+               poolearnings::historyRequest(addr, kEarningsHistoryPage));
 }
 
 void PoolPanel::finishEarningsRequest() {
@@ -1387,13 +1389,21 @@ void PoolPanel::applyLifetime(const QJsonValue& result) {
     poolearnings::addPage(lifetime_acc_, page);
     ++lifetime_pages_;
 
+    if (lifetime_acc_.unusable) {
+        lifetime_in_flight_ = false;
+        renderLifetime(/*final=*/true);
+        return;
+    }
+
     // One reply is a page, not the history. Keep asking until the node
     // returns a short page, or until the guard trips.
-    const std::optional<int> next = poolearnings::nextFromHeight(page, kEarningsHistoryPage);
+    const std::optional<int> next = poolearnings::nextPageStart(lifetime_acc_, page,
+                                                               kEarningsHistoryPage);
     if (next && lifetime_pages_ < kEarningsMaxPages) {
         renderLifetime(/*final=*/false);
         rpc_->call("blockchain.getaddresshistory",
-                   QJsonArray{earnings_address_, kEarningsHistoryPage, *next});
+                   poolearnings::historyRequest(earnings_address_, kEarningsHistoryPage,
+                                                *next, lifetime_acc_));
         return;
     }
     if (next) {
@@ -1416,10 +1426,7 @@ void PoolPanel::renderLifetime(bool final_page) {
                      .arg(r.count == 1 ? "payment" : "payments");
     }
     lbl_lifetime_->setText(
-        QString("<span style='font-size:19px; font-weight:700; color:#51cf66;'>%1</span>"
-                "<span style='color:#9fb3c8; font-size:11px;'> lifetime</span>"
-                "<br/><span style='color:#9fb3c8; font-size:11px;'>%2</span>")
-            .arg(formatDin(r.total_una), detail));
+        poolearnings::renderLifetimeHtml(r, formatDin(r.total_una), detail, final_page));
 }
 
 void PoolPanel::onRpcResult(const QString& method, const QJsonValue& result) {
@@ -1460,7 +1467,7 @@ void PoolPanel::onRpcResult(const QString& method, const QJsonValue& result) {
         QString("<span style='font-size:15px; font-weight:600; color:#51cf66;'>%1</span>"
                 "<span style='color:#9fb3c8; font-size:11px;'> unspent now</span>"
                 "<br/><span style='color:#9fb3c8; font-size:11px;'>Confirmed outputs still sitting at this "
-                "address. Lower than lifetime by whatever you have already moved out.</span>")
+                "address. This balance falls when funds move out; the separate history line counts receipts.</span>")
             .arg(formatDin(*balance)));
 }
 

@@ -10,11 +10,11 @@
 // Lifetime is instead summed from `blockchain.getaddresshistory`, whose
 // entries carry `type` ("receive"/"send"), `amount` and `is_coinbase`.
 // The node walks blocks backwards and tells us whether it could see the
-// whole chain, so the three ways the total can be a LOWER BOUND rather
-// than the truth all have to be detected and said out loud:
+// whole chain. An incomplete or unanchored walk is only observed receipts;
+// a reorg invalidates the whole walk, including its earlier pages.
 //
-//   * `history_complete: false` — the node bootstrapped from an
-//     AssumeUTXO snapshot and does not hold pre-base block bodies;
+//   * `history_complete: false` — the node may have a snapshot base,
+//     skipped heights, or unresolved inputs;
 //   * a full page of results — the RPC caps at 200 entries, so a full
 //     page may have been cut off;
 //   * `amount_hidden: true` — a confidential output whose value the
@@ -48,10 +48,17 @@ QJsonObject entryAt(const QString& type, qint64 amount, int height) {
     return e;
 }
 
-QJsonObject history(const QJsonArray& txs, bool complete = true) {
+const QString kHash(64, QLatin1Char('a'));
+
+QJsonObject history(const QJsonArray& txs, bool complete = true,
+                    const QString& stop_reason = QStringLiteral("genesis")) {
     QJsonObject r;
     r["transactions"] = txs;
     r["history_complete"] = complete;
+    r["history_coverage"] = QJsonObject{{"scan_from_height", 900},
+                                         {"scan_from_hash", kHash},
+                                         {"stop_reason", stop_reason},
+                                         {"chain_changed", false}};
     return r;
 }
 
@@ -90,13 +97,23 @@ private Q_SLOTS:
         QVERIFY(r.complete);
     }
 
-    // A snapshot-bootstrapped node cannot see pre-base blocks at all, so
-    // the sum is a floor. `history_complete` is the node saying so.
-    void snapshotNodeReportsALowerBound() {
-        const auto r = poolearnings::sumReceived(history({entry("receive", 500)}, /*complete=*/false));
+    // Snapshot wording is justified only by the explicit stop reason.
+    void snapshotNodeExplainsTheMissingHistory() {
+        const auto r = poolearnings::sumReceived(
+            history({entry("receive", 500)}, /*complete=*/false, "assumed_utxo"));
         QCOMPARE(r.total_una, 500);
         QVERIFY(!r.complete);
         QVERIFY(r.caveat.contains("snapshot", Qt::CaseInsensitive));
+    }
+
+    void otherPartialReasonsDoNotClaimSnapshotOrALowerBound() {
+        const auto r = poolearnings::sumReceived(
+            history({entry("receive", 500)}, /*complete=*/false, "count_limit"));
+        QCOMPARE(r.total_una, 500);
+        QVERIFY(!r.complete);
+        QVERIFY(!r.caveat.contains("snapshot", Qt::CaseInsensitive));
+        QVERIFY(!r.caveat.contains("At least", Qt::CaseInsensitive));
+        QVERIFY(r.caveat.contains("incomplete", Qt::CaseInsensitive));
     }
 
     // A full page is not the end of the history, it is the RPC's cap.
@@ -138,14 +155,128 @@ private Q_SLOTS:
         QVERIFY(acc.complete);
     }
 
-    // Stopping at the page cap is the one case where the figure really is
-    // truncated, and it has to say so.
-    void hittingThePageCapIsReportedAsAFloor() {
+    // The production panel uses historyRequest/nextPageStart, so these
+    // assertions cover the exact RPC params rather than a separate mock.
+    void pageTwoCarriesPageOnesCanonicalAnchor() {
+        const QJsonArray first = poolearnings::historyRequest("din1pOURS", 2);
+        QCOMPARE(first.size(), 2);
+        poolearnings::Received acc;
+        const QJsonObject page = history({entryAt("receive", 500, 900),
+                                          entryAt("receive", 400, 800)});
+        poolearnings::addPage(acc, page);
+        const auto next = poolearnings::nextPageStart(acc, page, 2);
+        QVERIFY(next.has_value());
+        QCOMPARE(*next, 799);
+        const QJsonArray later = poolearnings::historyRequest("din1pOURS", 2, *next, acc);
+        QCOMPARE(later.size(), 4);
+        QCOMPARE(later.at(0).toString(), QStringLiteral("din1pOURS"));
+        QCOMPARE(later.at(1).toInt(), 2);
+        QCOMPARE(later.at(2).toInt(), 799);
+        QCOMPARE(later.at(3).toObject().value("height").toInt(), 900);
+        QCOMPARE(later.at(3).toObject().value("hash").toString(), kHash);
+    }
+
+    void reorgAfterPageOneDiscardsAllReceiptsAndStopsPaging() {
+        poolearnings::Received acc;
+        const QJsonObject first = history({entryAt("receive", 500, 900),
+                                           entryAt("receive", 400, 800)});
+        poolearnings::addPage(acc, first);
+        QCOMPARE(acc.total_una, 900);
+        QJsonObject replaced = history({entryAt("receive", 100, 700),
+                                        entryAt("receive", 50, 600)}, false);
+        QJsonObject coverage = replaced.value("history_coverage").toObject();
+        coverage["chain_changed"] = true;
+        replaced["history_coverage"] = coverage;
+        poolearnings::addPage(acc, replaced);
+        QVERIFY(acc.unusable);
+        QCOMPARE(acc.total_una, 0);
+        QCOMPARE(acc.count, 0);
+        QVERIFY(!poolearnings::nextPageStart(acc, replaced, 2).has_value());
+        QVERIFY(acc.caveat.contains("retry", Qt::CaseInsensitive));
+        const QString html = poolearnings::renderLifetimeHtml(
+            acc, QStringLiteral("900.00000000 DIN"), QStringLiteral("lifetime"), true);
+        QVERIFY(!html.contains(QStringLiteral("900.00000000")));
+        QVERIFY(!html.contains(QStringLiteral("> lifetime<")));
+    }
+
+    void nestedRpcErrorAfterPageOneDiscardsAllReceipts() {
+        poolearnings::Received acc;
+        poolearnings::addPage(acc, history({entryAt("receive", 500, 900)}));
+        QJsonObject error;
+        error["error"] = QJsonObject{{"code", -8}, {"message", "invalid anchor"}};
+        poolearnings::addPage(acc, error);
+        QVERIFY(acc.unusable);
+        QCOMPARE(acc.total_una, 0);
+        QCOMPARE(acc.count, 0);
+        QVERIFY(!poolearnings::nextPageStart(acc, error, 1).has_value());
+        const QString html = poolearnings::renderLifetimeHtml(
+            acc, QStringLiteral("500.00000000 DIN"), QStringLiteral("lifetime"), true);
+        QVERIFY(!html.contains(QStringLiteral("500.00000000")));
+    }
+
+    void anchoredPageWithoutCoverageFailsClosed() {
+        poolearnings::Received acc;
+        poolearnings::addPage(acc, history({entryAt("receive", 500, 900)}));
+        QJsonObject old_server_reply;
+        old_server_reply["transactions"] = QJsonArray{entryAt("receive", 400, 800)};
+        old_server_reply["history_complete"] = true;
+        poolearnings::addPage(acc, old_server_reply);
+        QVERIFY(acc.unusable);
+        QCOMPARE(acc.total_una, 0);
+        QVERIFY(!acc.complete);
+    }
+
+    void anchoredPageWithMalformedHashFailsClosed() {
+        poolearnings::Received acc;
+        poolearnings::addPage(acc, history({entryAt("receive", 500, 900)}));
+        QJsonObject malformed = history({entryAt("receive", 400, 800)});
+        QJsonObject coverage = malformed.value("history_coverage").toObject();
+        coverage["scan_from_hash"] = "not-a-block-hash";
+        malformed["history_coverage"] = coverage;
+        poolearnings::addPage(acc, malformed);
+        QVERIFY(acc.unusable);
+        QCOMPARE(acc.total_una, 0);
+    }
+
+    void malformedTransactionsCannotBecomeAnExactZero() {
+        poolearnings::Received acc;
+        QJsonObject malformed = history({});
+        malformed.remove("transactions");
+        poolearnings::addPage(acc, malformed);
+        QVERIFY(acc.unusable);
+        QVERIFY(!acc.complete);
+        const QString html = poolearnings::renderLifetimeHtml(
+            acc, QStringLiteral("0.00000000 DIN"), QStringLiteral(""), true);
+        QVERIFY(!html.contains(QStringLiteral("0.00000000")));
+    }
+
+    void olderDaemonWithoutAnchorContinuesOnlyAsObserved() {
+        poolearnings::Received acc;
+        QJsonObject old_reply = history({entryAt("receive", 500, 900),
+                                         entryAt("receive", 400, 800)});
+        old_reply.remove("history_coverage");
+        poolearnings::addPage(acc, old_reply);
+        QVERIFY(!acc.complete);
+        QVERIFY(!acc.unusable);
+        const auto next = poolearnings::nextPageStart(acc, old_reply, 2);
+        QVERIFY(next.has_value());
+        const QJsonArray later = poolearnings::historyRequest("din1pOURS", 2, *next, acc);
+        QCOMPARE(later.size(), 3);
+        QVERIFY(acc.caveat.contains("Observed", Qt::CaseInsensitive));
+        const QString html = poolearnings::renderLifetimeHtml(
+            acc, QStringLiteral("900.00000000 DIN"), acc.caveat, true);
+        QVERIFY(html.contains(QStringLiteral("observed")));
+        QVERIFY(!html.contains(QStringLiteral("> lifetime<")));
+    }
+
+    // A capped walk is incomplete; a reorg could also invalidate any
+    // floor claim, so label the shown receipts as observations only.
+    void hittingThePageCapIsReportedAsObserved() {
         poolearnings::Received acc;
         poolearnings::addPage(acc, history({entryAt("receive", 500, 900)}));
         poolearnings::markPageCapReached(acc);
         QVERIFY(!acc.complete);
-        QVERIFY(acc.caveat.contains("At least"));
+        QVERIFY(acc.caveat.contains("Observed"));
     }
 
     // A confidential receipt carries no `amount` at all. Skipping it
@@ -196,6 +327,7 @@ private Q_SLOTS:
         const auto r = poolearnings::sumReceived(history({e}));
         QCOMPARE(r.total_una, 500);
         QCOMPARE(r.count, 1);
+        QVERIFY(!r.complete);
     }
 
     // mainwindow's address explorer calls the SAME two RPCs on the SAME
@@ -220,7 +352,8 @@ private Q_SLOTS:
     void snapshotCaveatOutranksTruncation() {
         QJsonArray txs;
         for (int i = 0; i < 200; ++i) txs.append(entry("receive", 1));
-        const auto r = poolearnings::sumReceived(history(txs, /*complete=*/false));
+        auto r = poolearnings::sumReceived(history(txs, /*complete=*/false, "assumed_utxo"));
+        poolearnings::markPageCapReached(r);
         QVERIFY(!r.complete);
         QVERIFY(r.caveat.contains("snapshot", Qt::CaseInsensitive));
     }

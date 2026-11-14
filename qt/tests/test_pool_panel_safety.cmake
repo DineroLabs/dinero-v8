@@ -34,8 +34,8 @@ foreach(REQUIRED_TEXT
     "setOperatorAuthenticated(true)"
     "setOperatorAuthenticated(false)"
     # The earnings card reports TWO figures and they must stay
-    # distinguishable. Lifetime only ever rises; unspent falls when the
-    # operator moves funds out. Collapsing them, or labelling one as the
+    # distinguishable. Observed receipts and unspent balance answer
+    # different questions. Collapsing them, or labelling one as the
     # other, is the regression this guards — it previously read a bare
     # unspent balance under an earnings heading.
     "Fee earnings (verified on-chain)"
@@ -45,7 +45,8 @@ foreach(REQUIRED_TEXT
     # the balance call. `getaddressbalance` is a UTXO-set sum: using it
     # here would make "lifetime" fall every time the operator swept their
     # fee, which is the exact mislabel above wearing a new name.
-    "blockchain.getaddresshistory")
+    "blockchain.getaddresshistory"
+    "poolearnings::historyRequest")
   string(FIND "${POOL_SOURCE}" "${REQUIRED_TEXT}" FOUND_AT)
   if(FOUND_AT EQUAL -1)
     message(FATAL_ERROR "Pool cockpit regression: missing '${REQUIRED_TEXT}'")
@@ -58,9 +59,9 @@ if(NOT FALSE_EARNINGS_AT EQUAL -1)
 endif()
 
 # A single page of history is 200 entries against addresses that hold
-# thousands, so a lifetime total that does not page is a floor presented
-# as a total — on DineroSJ it read 2,000 DIN against a true 33,905.
-string(FIND "${POOL_SOURCE}" "nextFromHeight" PAGING_AT)
+# thousands. The helper suppresses another request after a failed page,
+# while the request helper adds the page-one anchor to later pages.
+string(FIND "${POOL_SOURCE}" "nextPageStart" PAGING_AT)
 if(PAGING_AT EQUAL -1)
   message(FATAL_ERROR
     "Pool cockpit regression: lifetime earnings no longer page the full address history")
