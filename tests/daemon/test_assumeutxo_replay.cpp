@@ -955,6 +955,9 @@ TEST(RuntimeOriginProjection, ArchivalBudgetRequiresExplicitBoundedSelection) {
     const auto owned=source[0].vtx[0].vout[0].scriptPubKey;
     constexpr size_t compact_limit=64*1024*1024;
     auto compact=RuntimeOriginProjectionTestAccess::Create(owned);
+    // Phone recovery defaults to 128 MiB; this case exercises an explicit
+    // narrower archival budget passed by a caller.
+    RuntimeOriginProjectionTestAccess::SetMaterialBudget(*compact,compact_limit);
     RuntimeOriginProjectionTestAccess::SetRetainedCharge(*compact,compact_limit-1);
     EXPECT_THROW(RuntimeOriginProjectionTestAccess::Append(*compact,source[0],1),
         RuntimeWalletCoverageMaterialLimit);
