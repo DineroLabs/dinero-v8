@@ -102,13 +102,13 @@ jobs:
           import re
           from pathlib import Path
           pin = json.loads(Path('packaging/snapshot/desktop-inputs-candidate.json').read_text())['primary']
-          if (pin.get('filename') != 'dinero-assumeutxo-153051-v6-full.dat' or
-                  pin.get('height') != 153051 or pin.get('format_version') != 6 or
+          if (pin.get('filename') != 'dinero-assumeutxo-152700-v6-full.dat' or
+                  pin.get('height') != 152700 or pin.get('format_version') != 6 or
                   pin.get('snapshot_profile') != 'full' or
                   type(pin.get('bytes')) is not int or pin['bytes'] < 109 or
                   not re.fullmatch(r'[0-9a-f]{64}', str(pin.get('sha256', ''))) or
                   not re.fullmatch(r'[0-9a-f]{64}', str(pin.get('block_hash', '')))):
-              raise SystemExit('H153051 full-v6 image admission refused: native-qualified catalog pin is unavailable')
+              raise SystemExit('H152700 full-v6 image admission refused: native-qualified catalog pin is unavailable')
           print('Full-v6 catalog pin is present; Docker fetch verifies its exact signed payload.')
           PY
 

@@ -20,7 +20,7 @@ def verify(payload: Path, manifest_path: Path, catalog_path: Path, expected_name
         raise ValueError("unsupported desktop snapshot catalog")
     pin = catalog["primary"]
     if (pin.get("filename") != expected_name or pin.get("format_version") != 6 or
-            pin.get("height") != 153051 or pin.get("snapshot_profile") != "full"):
+            pin.get("height") != 152700 or pin.get("snapshot_profile") != "full"):
         raise ValueError("desktop primary pin is not the expected full-v6 release input")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if (manifest.get("network") != "mainnet" or manifest.get("format_version") != 6 or

@@ -26,7 +26,7 @@
 set -eu
 
 DATADIR="${DINERO_DATADIR:-/data}"
-SNAPSHOT="${DINERO_SNAPSHOT:-/opt/dinero/dinero-assumeutxo-153051-v6-full.dat}"
+SNAPSHOT="${DINERO_SNAPSHOT:-/opt/dinero/dinero-assumeutxo-152700-v6-full.dat}"
 SNAPSHOT_FALLBACKS="${DINERO_SNAPSHOT_FALLBACKS:-/opt/dinero/dinero-assumeutxo-148375-v5.dat;/opt/dinero/dinero-assumeutxo-99677-v4.dat;/opt/dinero/dinero-assumeutxo-73035-v4.dat;/opt/dinero/utxo-snapshot-65300.dat}"
 
 # RPC listens on loopback INSIDE the container only. Binding 0.0.0.0 would expose the

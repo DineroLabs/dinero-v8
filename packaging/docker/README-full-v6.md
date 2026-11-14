@@ -5,7 +5,7 @@ prepare the next server image; the copies in this directory are review fixtures.
 No image is published by these source changes. The build refuses the new
 primary while `desktop-inputs-candidate.json` still names the v5 base.
 
-The new image takes the exact H153051 full-v6 payload and original publisher
+The new image takes the exact H152700 full-v6 payload and original publisher
 manifest from the release, plus its detached signature. The fetch
 helper requires and verifies that signature and creates the normalized runtime
 manifest. It independently checks the payload profile, internal checksum,
@@ -28,7 +28,7 @@ remain mandatory. Manual runs with URL overrides cannot publish an image.
 The final release must carry
 the `.dat`, normalized `.dat.manifest.json`, original
 `.dat.publisher.manifest.json`, `.dat.publisher.manifest.sig`, and
-qualification receipt. Its exact H153051 payload SHA-256 and length must come
+qualification receipt. Its exact H152700 payload SHA-256 and length must come
 from a successful native export, import, and restart at the frozen source SHA.
 Pull-request CI runs source contracts only and explicitly reports that no
 image was qualified. It does not pair old 8.2.2 binaries with the new snapshot
@@ -38,7 +38,7 @@ the release event repeats that smoke against the published assets before
 pushing an image to GHCR.
 
 After native source and payload qualification, update the catalog with the
-exact H153051 payload hash, bytes, block hash, and profile, then run a hosted
+exact H152700 payload hash, bytes, block hash, and profile, then run a hosted
 image smoke with all four fallback paths. The release event builds and smokes
 the exact published v8.2.3 binaries and signed snapshot assets before pushing
 the image. Until those assets exist, the normal PR image check is expected to

@@ -116,7 +116,7 @@ QStringList currentBootstrapAddnodes() {
 // All remain armed on every start. The daemon treats them as inert on an
 // ordinary synced datadir, but an interrupted first sync needs the exact old
 // artifact even after the app bundle has been upgraded.
-constexpr char kBundledSnapshotPrimary[] = "dinero-assumeutxo-153051-v6-full.dat";
+constexpr char kBundledSnapshotPrimary[] = "dinero-assumeutxo-152700-v6-full.dat";
 constexpr char kBundledSnapshotFallback[] = "dinero-assumeutxo-148375-v5.dat";
 constexpr char kBundledSnapshotLegacyFallback[] = "dinero-assumeutxo-99677-v4.dat";
 constexpr char kBundledSnapshotOldestFallback[] = "utxo-snapshot-65300.dat";
@@ -172,7 +172,7 @@ void appendAssumeUtxoSnapshotArgs(QStringList& args, const QString& datadir) {
     // snapshot base until the genesis->base replay completes, so a payment
     // received above the base shows 0 confirmations (and never reaches the
     // wallet index) for the whole first-run validation window — hours of
-    // "where's my money?" on every fresh install. The v5 snapshot is verified
+    // "where's my money?" on every fresh install. The full-v6 snapshot is verified
     // against its selected header-chain commitment and burial before loading; validation
     // still runs to completion in the background (#361 forward-connect;
     // the posture the iOS profile has always shipped).

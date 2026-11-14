@@ -1,14 +1,14 @@
 {
   "schema": "dinero.desktop-snapshot-inputs.v1",
-  "purpose": "H153051 full-v6 desktop primary; package and native release qualification tracked separately",
+  "purpose": "H152700 full-v6 desktop primary; package and native release qualification tracked separately",
   "primary": {
-    "filename": "dinero-assumeutxo-153051-v6-full.dat",
-    "height": 153051,
+    "filename": "dinero-assumeutxo-152700-v6-full.dat",
+    "height": 152700,
     "format_version": 6,
     "snapshot_profile": "full",
-    "block_hash": "00000012daae58a444ef6f76d524b648b8bdcc4f8fff7b2ddc66ecea378293e2",
-    "bytes": 142539134,
-    "sha256": "20d87ae691ebc9cd4c42a8800ce7d69af58a4bb97a565f4a8bc1532792fb513f"
+    "block_hash": "00000005f90ed3ae11d7ee08745fb3ae329eeec25ed14f0fae3b94738b292781",
+    "bytes": 142296413,
+    "sha256": "773d67f99cce8c45af205e27f5756784b0f7a3aa0ec4f6f0bfb5a34e3715ecca"
   },
   "fallbacks": [
     {
