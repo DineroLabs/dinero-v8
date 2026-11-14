@@ -2,6 +2,9 @@
 #include "consensus/utreexo_delta_codec.h"
 #include "consensus/pow.hpp"
 #include "consensus/pow_context.h"
+#include "consensus/coin_type.h"
+#include "crypto/hd_keychain.h"
+#include "crypto/tagged_hash.h"
 #include "p2p/orchard_catalog_transfer.h"
 #include "p2p/orchard_catalog_server.h"
 #include "p2p/orchard_catalog_client.h"
@@ -699,6 +702,33 @@ void GenerateSdkActivationFixture(){
         // A genuinely NEW root with only a normal authenticated v6 floor.
         // No original parent DB, pre-floor bodies or canonical runtime events
         // are copied. The actual SDK must obtain missing history over TCP.
+        // Optional variant: a floor ABOVE activation (103, buried by a real
+        // mined 104) so the account-0 activation prefix spans two uncertified
+        // steps (102,103), like mainnet's 150000..150074 prefix.
+        const bool above=std::getenv("DINERO_SDK_LATE_FLOOR_ABOVE_ACTIVATION")!=nullptr;
+        std::unique_ptr<CanonicalPoolFixture> tail;std::optional<consensus::OrchardSnapshotSection> floor_proof;
+        std::shared_ptr<const CatalogSolvedTemplate> tip,unserved;
+        if(above){
+            ASSERT_FALSE(funded);
+            tail=std::make_unique<CanonicalPoolFixture>(true);
+            tail->f.service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
+            ASSERT_EQ(tail->parent->hash,f.proof->parent_catalog.block);
+            ASSERT_TRUE(tail->Submit(f.full.first->WireBytes()).connected);
+            ASSERT_TRUE(tail->Submit(f.full.second->WireBytes()).connected);
+            {auto& live=ShieldedStateStartupTestAccess::CatalogWriterCoins(*tail->f.service);
+             floor_proof=OrchardSnapshotStoreTestAccess::Capture(tail->f.db,consensus::OrchardSnapshotProfile::Compact,
+                consensus::UtreexoStump::fromForest(live.GetForest()).serialize());}
+            ASSERT_EQ(floor_proof->state.height,103u);ASSERT_EQ(floor_proof->state.block_hash,f.full.second->Header().GetHash());
+            BlockAssembler assembler(&tail->f.db);WireOrchardAssembler(assembler,tail->f);
+            tip=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(tip);
+            ASSERT_EQ(tip->Height(),104u);ASSERT_TRUE(tail->Submit(tip->WireBytes()).connected);
+            // A real successor whose HEADER alone a test peer may announce, so
+            // the best header leads the active tip (not converged).
+            BlockAssembler successor(&tail->f.db);WireOrchardAssembler(successor,tail->f);
+            unserved=SolveCatalogTemplate(successor.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(unserved);
+            ASSERT_EQ(unserved->Height(),105u);
+        }
+        const auto& floor=above?f.full.second:f.full.first;
         const auto late=f.root/"late-phone";ASSERT_TRUE(std::filesystem::create_directory(late));
         ASSERT_TRUE(std::filesystem::create_directory(late/"blockchain"));
         daemon::DatadirGuard guard;std::string error;ASSERT_TRUE(guard.Acquire(late,error));
@@ -706,10 +736,11 @@ void GenerateSdkActivationFixture(){
         consensus::HeaderChainSelector headers(&store);
         for(const auto& block:f.full.f.blocks)ASSERT_TRUE(headers.AddHeader(block.header));
         ASSERT_TRUE(headers.AddHeader(f.full.first->Header()));ASSERT_TRUE(headers.AddHeader(f.full.second->Header()));
+        if(tip)ASSERT_TRUE(headers.AddHeader(tip->Header()));
         consensus::SnapshotMetadata metadata;metadata.version=consensus::SNAPSHOT_VERSION_V6;
-        metadata.block_height=102;metadata.block_hash=f.full.first->Header().GetHash();metadata.timestamp=f.full.first->Header().timestamp;
+        metadata.block_height=floor->Height();metadata.block_hash=floor->Header().GetHash();metadata.timestamp=floor->Header().timestamp;
         const auto snapshot=late/"input.v6";
-        ASSERT_TRUE(consensus::WriteOrchardSnapshotFileAtomically(snapshot,metadata,*f.proof,{}).success);
+        ASSERT_TRUE(consensus::WriteOrchardSnapshotFileAtomically(snapshot,metadata,above?*floor_proof:*f.proof,{}).success);
         std::ifstream input(snapshot,std::ios::binary);
         const auto file=consensus::ReadOrchardSnapshotFile(input,std::filesystem::file_size(snapshot),consensus::OrchardSnapshotProfile::Compact);
         const auto path=late/"blockchain/chaindb";OrchardSnapshotStoreTestAccess::CreateFresh(path);
@@ -717,7 +748,23 @@ void GenerateSdkActivationFixture(){
         AnnotatedRecursiveMutex mutex;
         const auto installed=OrchardSnapshotStoreTestAccess::Install(mutex,db,f.full.f.token,files,headers,file);
         ASSERT_TRUE(installed.compact);ASSERT_FALSE(installed.full);
-        row["late_datadir"]=late.string();row["late_floor"]=102;
+        row["late_datadir"]=late.string();row["late_floor"]=Json::UInt(floor->Height());
+        if(tip){
+            const auto tip_path=f.root/"untrusted-late-tip-body.bin";std::ofstream out(tip_path,std::ios::binary);ASSERT_TRUE(out);
+            const auto& bytes=tip->WireBytes();out.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());
+            out.close();ASSERT_TRUE(out);
+            const auto header=tip->Header().SerializeForHash();
+            row["late_tip"]=tip_path.string();row["late_tip_hash"]=tip->Header().GetHash().GetHex();
+            row["late_tip_header"]=util::hex({header.begin(),header.end()});
+        }
+        if(unserved){
+            const auto header=unserved->Header().SerializeForHash();
+            row["unserved_header"]=util::hex({header.begin(),header.end()});
+            const auto body_path=f.root/"untrusted-late-successor-body.bin";std::ofstream out(body_path,std::ios::binary);ASSERT_TRUE(out);
+            const auto& bytes=unserved->WireBytes();out.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());
+            out.close();ASSERT_TRUE(out);row["unserved_body"]=body_path.string();
+            row["unserved_hash"]=unserved->Header().GetHash().GetHex();
+        }
     }
     const auto proof_file=f.root/"untrusted-catalog-section.bin";
     {std::ofstream out(proof_file,std::ios::binary);ASSERT_TRUE(out);
@@ -777,6 +824,92 @@ void GenerateSdkActivationFixture(){
                 const auto header=mined->Header().SerializeForHash();result["header"]=util::hex({header.begin(),header.end()});
                 result["transactions"]=Json::Value(Json::arrayValue);
                 for(const auto& tx:mined->Transactions())result["transactions"].append(tx.GetTxid().AsUint256().GetHex());
+            }else if(op=="advance"){
+                // Adopt the crossing blocks on the native source without the
+                // funded 'mine' contract (which requires a pending mempool
+                // payment in the mined block). Idempotent refusal-free entry
+                // for tails that extend with mine_next afterwards.
+                ASSERT_TRUE(source.Submit(f.full.first->WireBytes()).connected);
+                ASSERT_TRUE(source.Submit(f.full.second->WireBytes()).connected);
+                result["height"]=source.f.service->GetActiveTip()->height;
+            }else if(op=="shield_funding"){
+                // Stage-D tail-spend: spend the funded height-101 coin (a
+                // recovery BASE coin) inside a real shield mined at the next
+                // height, with change to the wallet's first change script —
+                // the tail then both SPENDS a base coin and CREATES an owned
+                // coin. Keys are re-derived exactly as the wallet derives
+                // them (BIP86 m/86'/coin'/0'/0/0, canonical TapTweak keypath).
+                const auto& funding_tx=source.f.blocks.at(101).vtx.at(1);
+                const TxId funded_txid=funding_tx.GetTxid();
+                const auto funded_coin=source.f.db.getCoin(funded_txid.AsUint256(),0);
+                ASSERT_TRUE(funded_coin.ok());ASSERT_EQ(funded_coin->amount,1000000);
+                std::vector<uint8_t> funded_script;ASSERT_TRUE(util::unhex(funded_coin->script_pubkey,funded_script));
+                ASSERT_EQ(funded_script.size(),34u);ASSERT_EQ(funded_script[0],0x51);
+                std::vector<uint8_t> seed_bytes;
+                ASSERT_TRUE(bip39::MnemonicToSeed(
+                    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about","",seed_bytes));
+                const auto leaf=crypto::HDKeychain::fromSeed(seed_bytes)
+                    .derive(86|0x80000000).derive(consensus::DINERO_COIN_TYPE|0x80000000)
+                    .derive(0x80000000).derive(0u).derive(0u);
+                orchard::SigningDomain domain;domain.network_code=2;domain.branch_id=Params().orchard_branch_id;
+                const auto genesis_hash=uint256::FromHexUnsafe(Params().genesis_hash);
+                std::copy(genesis_hash.begin(),genesis_hash.end(),domain.genesis_wire.begin());
+                orchard::EnvelopeInput input{};
+                std::copy(funded_txid.AsUint256().begin(),funded_txid.AsUint256().end(),input.txid_wire.begin());
+                input.output_index=0;input.sequence=UINT32_MAX;
+                constexpr uint64_t fee=100000,shielded=200000;
+                const uint64_t change=1000000-fee-shielded;
+                // Change pays the wallet's FIRST change leaf (m/86'/coin'/0'/1/0):
+                // inside the restored gap-limit watch set, unlike the fixture's
+                // funding_change_script, which sits at change index 20.
+                const auto change_leaf=crypto::HDKeychain::fromSeed(seed_bytes)
+                    .derive(86|0x80000000).derive(consensus::DINERO_COIN_TYPE|0x80000000)
+                    .derive(0x80000000).derive(1u).derive(0u);
+                std::array<uint8_t,32> change_internal{},change_tweaked{};
+                std::copy(change_leaf.public_key.begin()+1,change_leaf.public_key.end(),change_internal.begin());
+                ASSERT_TRUE(TaprootKeys::ComputeTweakedPubkey(change_internal,change_tweaked));
+                std::vector<uint8_t> change_script{0x51,0x20};
+                change_script.insert(change_script.end(),change_tweaked.begin(),change_tweaked.end());
+                const std::vector<orchard::TransparentOutput> outputs{{change,change_script}};
+                const auto receiver=orchard::WalletKeys::FromSeed(std::array<uint8_t,64>{71},0);
+                const std::vector<orchard::WalletPayment> payments{{shielded,receiver.Receiver(orchard::WalletScope::External,{}),{}}};
+                const std::vector<orchard::ResolvedInput> resolved{{input.txid_wire,0,input.sequence,1000000,funded_script}};
+                const auto bundle=orchard::WalletBundlePlan::PrepareShield(receiver,payments)
+                    .Prove(orchard::SigningContext::Create(domain,0,resolved,outputs,fee));
+                const auto draft=orchard::TransactionEnvelope::Create(0,{input},outputs,fee,bundle.Bytes());
+                FirstBoundaryView view(*source.f.replay);
+                const auto snapshot=consensus::OrchardCoinSnapshot::ResolveUnderChainstateLock(draft,view);
+                const auto digest=consensus::OrchardTransparentSigningDigest(snapshot,domain,0);
+                std::unique_ptr<secp256k1_context,decltype(&secp256k1_context_destroy)> signing(
+                    secp256k1_context_create(SECP256K1_CONTEXT_SIGN|SECP256K1_CONTEXT_VERIFY),secp256k1_context_destroy);
+                secp256k1_keypair pair;ASSERT_EQ(secp256k1_keypair_create(signing.get(),&pair,leaf.private_key.data()),1);
+                secp256k1_xonly_pubkey internal{},output_key{};
+                std::array<uint8_t,33> serialized{};std::array<uint8_t,32> tweak{},output_bytes{};
+                ASSERT_EQ(secp256k1_keypair_xonly_pub(signing.get(),&internal,nullptr,&pair),1);
+                ASSERT_EQ(secp256k1_xonly_pubkey_serialize(signing.get(),serialized.data(),&internal),1);
+                crypto::TaggedHash("TapTweak",serialized.data(),32,tweak.data());
+                ASSERT_EQ(secp256k1_keypair_xonly_tweak_add(signing.get(),&pair,tweak.data()),1);
+                ASSERT_EQ(secp256k1_keypair_xonly_pub(signing.get(),&output_key,nullptr,&pair),1);
+                ASSERT_EQ(secp256k1_xonly_pubkey_serialize(signing.get(),output_bytes.data(),&output_key),1);
+                ASSERT_TRUE(std::equal(output_bytes.begin(),output_bytes.end(),funded_script.begin()+2))
+                    <<"derived tweaked key does not match the funded script";
+                std::vector<uint8_t> signature(64);orchard::Hash aux{};
+                ASSERT_EQ(secp256k1_schnorrsig_sign32(signing.get(),signature.data(),digest.data(),&pair,aux.data()),1);
+                input.witness={signature};
+                const auto body=MempoolTransaction::FromOrchard(
+                    orchard::TransactionEnvelope::Create(0,{input},outputs,fee,bundle.Bytes()));
+                const auto admission=source.f.ingress->SubmitBody(body,TxOrigin::P2P);
+                ASSERT_TRUE(admission.accepted())<<admission.message;
+                const auto before=source.f.service->GetActiveTip()->height;
+                BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+                const auto mined=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(mined);
+                ASSERT_EQ(mined->Height(),before+1);ASSERT_GT(mined->Transactions().size(),1u);
+                ASSERT_TRUE(source.Submit(mined->WireBytes()).connected);
+                result["body"]=util::hex(mined->WireBytes());result["hash"]=mined->Header().GetHash().GetHex();
+                const auto header=mined->Header().SerializeForHash();result["header"]=util::hex({header.begin(),header.end()});
+                result["height"]=mined->Height();result["spend_txid"]=body.GetTxid().AsUint256().GetHex();
+                result["change_una"]=Json::UInt64(change);
+                result["change_script"]=util::hex(change_script);
             }else if(op=="mine_next"){
                 // Real next-block coinbase to a public owned address. Ordinary
                 // assembler/consensus, never wallet-coin injection.
@@ -1939,6 +2072,8 @@ TEST(OrchardHistoryCache, FreshGuardReadsExactPublicBytesAndNeverOverwritesOrAdo
         EXPECT_FALSE(cache.Has('b',id));
         cache.Put('b',id,bytes.size(),bytes.size(),[&](const auto& sink){sink(bytes);});
         EXPECT_EQ(history_cache_test::Read(cache,id),bytes);
+        for(const auto& p:std::filesystem::directory_iterator(root/Cache::Directory))
+            EXPECT_FALSE(p.path().filename().string().starts_with("partial-"))<<p.path();
         cache.Put('b',id,bytes.size(),bytes.size(),[&](const auto& sink){sink(bytes);});
         auto other=bytes;other.back()^=1;
         EXPECT_ANY_THROW(cache.Put('b',id,other.size(),other.size(),[&](const auto& sink){sink(other);}));
@@ -2007,6 +2142,180 @@ TEST(OrchardHistoryCache, ValidDataChecksumCannotCertifyCorruptSelectedBody){
     while(host.Observe().error.empty()&&std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(10));
     EXPECT_FALSE(host.Observe().error.empty());EXPECT_FALSE(host.Ready());EXPECT_EQ(sends.load(),0u);host.Stop();
     EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(source.f.db),unchanged);
+}
+static void HistoryExtensionMidIterationCase(unsigned flip_call,const std::string& tag){
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;using Download=p2p::OrchardPhoneHistoryDownload;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    source.f.service->setRuntimeBlockNotifications(std::make_shared<CanonicalPoolNotices>());
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));
+    auto proof=std::make_shared<const OrchardSnapshotSection>(Access::CaptureActivation(source.f.db,*headers));
+    const auto a=source.f.db.getOrchardCatalogState(first->Header().GetHash());ASSERT_TRUE(a.ok());
+    BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+    const auto second=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(second);
+    ASSERT_TRUE(source.Submit(second->WireBytes()).connected);ASSERT_TRUE(headers->AddHeader(second->Header()));
+    const auto b=source.f.db.getOrchardCatalogState(second->Header().GetHash());ASSERT_TRUE(b.ok());
+    const auto root=history_cache_test::Root("extend-"+tag);daemon::DatadirGuard guard;std::string error;
+    ASSERT_TRUE(guard.Acquire(root,error))<<error;auto cache=std::make_shared<p2p::OrchardHistoryCache>(guard);
+    const auto body=first->WireBytes();
+    cache->Put('b',first->Header().GetHash(),body.size(),OrchardBlockCandidate::MaxWireSize(),[&](const auto& sink){sink(body);});
+    ASSERT_TRUE(cache->Has('b',first->Header().GetHash()));
+    const Download::Target one{102,102,first->Header().GetHash(),storage::catalog::Hash(*a),first->Header().GetHash()};
+    const Download::Target two{102,103,second->Header().GetHash(),storage::catalog::Hash(*b),first->Header().GetHash()};
+    // Armed worker calls are strictly single-threaded: loop-top(1), the
+    // creation recheck(2), the post-append recheck(3). Flipping to the pure
+    // extension at exactly flip_call exercises one mid-iteration site; the
+    // single verifier-factory call proves no discard/rebuild happened.
+    std::mutex mutex;std::condition_variable cv;std::deque<std::vector<uint8_t>> requests;
+    std::atomic<bool> armed{false};std::atomic<unsigned> calls{0},verifies{0};
+    Download host(headers,root,[&]()->std::optional<Download::Target>{
+            if(!armed)return std::nullopt;return ++calls>=flip_call?std::optional(two):std::optional(one);},
+        [&]{return proof;},
+        [&](auto p,const auto& t){++verifies;return Access::ReplayActivation(std::move(p),headers,t.height,t.hash);},
+        []{return std::vector<Download::Peer>{{"archive",91,ServiceFlags::NODE_NETWORK}};},
+        [&](const auto&,const auto& command,const auto& bytes){
+            std::lock_guard lock(mutex);EXPECT_EQ(command,"getdata");requests.push_back(bytes);cv.notify_all();return true;},cache);
+    armed=true;
+    {
+        std::unique_lock lock(mutex);
+        ASSERT_TRUE(cv.wait_for(lock,std::chrono::seconds(5),[&]{return !requests.empty();}));
+        std::vector<uint8_t> expected{1,2,0,0,0};const auto hash=second->Header().GetHash();
+        expected.insert(expected.end(),hash.begin(),hash.end());
+        EXPECT_EQ(requests.front(),expected)
+            <<"worker error: "<<host.Observe().error
+            <<" verified: "<<host.Observe().verified_height
+            <<" verifies: "<<verifies.load()<<" calls: "<<calls.load();
+        requests.pop_front();
+    }
+    ASSERT_TRUE(host.Enqueue({"archive",91,0},second->WireBytes()));
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(!host.Ready()&&std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    const auto complete=host.Ready();ASSERT_TRUE(complete);
+    EXPECT_EQ(complete->target,two);EXPECT_EQ(complete->Body(102),first->WireBytes());
+    EXPECT_EQ(complete->Body(103),second->WireBytes());
+    EXPECT_EQ(host.Observe().verified_height,103u);EXPECT_TRUE(host.Observe().error.empty());
+    EXPECT_EQ(verifies.load(),1u);host.Stop();
+}
+TEST(OrchardPhoneHistory, RestartWithEveryBodyCachedRequestsNothing){
+    // A restarted phone whose public cache already holds every selected body
+    // re-verifies them from disk; no body may be fetched from a peer again.
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;using Download=p2p::OrchardPhoneHistoryDownload;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    source.f.service->setRuntimeBlockNotifications(std::make_shared<CanonicalPoolNotices>());
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));
+    auto proof=std::make_shared<const OrchardSnapshotSection>(Access::CaptureActivation(source.f.db,*headers));
+    BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+    const auto second=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(second);
+    ASSERT_TRUE(source.Submit(second->WireBytes()).connected);ASSERT_TRUE(headers->AddHeader(second->Header()));
+    const auto b=source.f.db.getOrchardCatalogState(second->Header().GetHash());ASSERT_TRUE(b.ok());
+    const auto root=history_cache_test::Root("restart-cached");daemon::DatadirGuard guard;std::string error;
+    ASSERT_TRUE(guard.Acquire(root,error))<<error;auto cache=std::make_shared<p2p::OrchardHistoryCache>(guard);
+    for(const auto* block:{&*first,&*second}){const auto body=block->WireBytes();
+        cache->Put('b',block->Header().GetHash(),body.size(),OrchardBlockCandidate::MaxWireSize(),[&](const auto& sink){sink(body);});}
+    const Download::Target two{102,103,second->Header().GetHash(),storage::catalog::Hash(*b),first->Header().GetHash()};
+    std::atomic<unsigned> sends=0;
+    Download host(headers,root,[&]{return std::optional(two);},[&]{return proof;},
+        [&](auto p,const auto& t){return Access::ReplayActivation(std::move(p),headers,t.height,t.hash);},
+        []{return std::vector<Download::Peer>{{"archive",91,ServiceFlags::NODE_NETWORK}};},
+        [&](const auto&,const auto&,const auto&){++sends;return true;},cache);
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(!host.Ready()&&std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    const auto complete=host.Ready();
+    EXPECT_TRUE(complete)<<"worker error: "<<host.Observe().error<<" verified: "<<host.Observe().verified_height;
+    EXPECT_EQ(sends.load(),0u);
+    if(complete){EXPECT_EQ(complete->Body(102),first->WireBytes());EXPECT_EQ(complete->Body(103),second->WireBytes());}
+    host.Stop();
+}
+TEST(OrchardPhoneHistory, RefusedCacheFromAnotherRootFetchesFromPeers){
+    // Records written under one datadir root are refused under another root
+    // identity (restored or migrated datadir). The download must stop using
+    // the refused cache and fetch every body from a peer, not retry forever.
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;using Download=p2p::OrchardPhoneHistoryDownload;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    source.f.service->setRuntimeBlockNotifications(std::make_shared<CanonicalPoolNotices>());
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));
+    auto proof=std::make_shared<const OrchardSnapshotSection>(Access::CaptureActivation(source.f.db,*headers));
+    BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+    const auto second=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(second);
+    ASSERT_TRUE(source.Submit(second->WireBytes()).connected);ASSERT_TRUE(headers->AddHeader(second->Header()));
+    const auto b=source.f.db.getOrchardCatalogState(second->Header().GetHash());ASSERT_TRUE(b.ok());
+    std::string error;
+    const auto original=history_cache_test::Root("original-root");
+    {daemon::DatadirGuard guard;ASSERT_TRUE(guard.Acquire(original,error))<<error;p2p::OrchardHistoryCache cache(guard);
+     for(const auto* block:{&*first,&*second}){const auto body=block->WireBytes();
+        cache.Put('b',block->Header().GetHash(),body.size(),OrchardBlockCandidate::MaxWireSize(),[&](const auto& sink){sink(body);});}}
+    const auto moved=history_cache_test::Root("moved-root");daemon::DatadirGuard guard;ASSERT_TRUE(guard.Acquire(moved,error))<<error;
+    std::filesystem::copy(original/p2p::OrchardHistoryCache::Directory,moved/p2p::OrchardHistoryCache::Directory,
+        std::filesystem::copy_options::recursive);
+    auto cache=std::make_shared<p2p::OrchardHistoryCache>(guard);
+    ASSERT_TRUE(cache->Has('b',first->Header().GetHash())); // Present, but bound to the original root.
+    const Download::Target two{102,103,second->Header().GetHash(),storage::catalog::Hash(*b),first->Header().GetHash()};
+    std::mutex mutex;std::condition_variable cv;std::deque<std::vector<uint8_t>> requests;
+    Download host(headers,moved,[&]{return std::optional(two);},[&]{return proof;},
+        [&](auto p,const auto& t){return Access::ReplayActivation(std::move(p),headers,t.height,t.hash);},
+        []{return std::vector<Download::Peer>{{"archive",93,ServiceFlags::NODE_NETWORK}};},
+        [&](const auto&,const auto& command,const auto& bytes){
+            std::lock_guard lock(mutex);EXPECT_EQ(command,"getdata");requests.push_back(bytes);cv.notify_all();return true;},cache);
+    const auto serve=[&](const auto& body){
+        std::unique_lock lock(mutex);
+        if(!cv.wait_for(lock,std::chrono::seconds(5),[&]{return !requests.empty();}))return false;
+        const auto bytes=std::move(requests.front());requests.pop_front();lock.unlock();
+        std::vector<uint8_t> expected{1,2,0,0,0};const auto hash=body.Header().GetHash();expected.insert(expected.end(),hash.begin(),hash.end());
+        return bytes==expected&&host.Enqueue({"archive",93,0},body.WireBytes());
+    };
+    EXPECT_TRUE(serve(*first))<<"worker error: "<<host.Observe().error;
+    EXPECT_TRUE(serve(*second))<<"worker error: "<<host.Observe().error;
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(!host.Ready()&&std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    const auto complete=host.Ready();
+    EXPECT_TRUE(complete)<<"worker error: "<<host.Observe().error<<" verified: "<<host.Observe().verified_height;
+    if(complete){EXPECT_EQ(complete->Body(102),first->WireBytes());EXPECT_EQ(complete->Body(103),second->WireBytes());}
+    host.Stop();
+}
+TEST(OrchardPhoneHistory, ReplacedCacheRootFailsClosedWithoutPeerRefetch){
+    // A record refusal retires the cache only while the cache ROOT still
+    // checks out. If the guarded datadir root itself was replaced, the
+    // download keeps failing closed locally instead of refetching all
+    // history from peers in a loop.
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;using Download=p2p::OrchardPhoneHistoryDownload;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    source.f.service->setRuntimeBlockNotifications(std::make_shared<CanonicalPoolNotices>());
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));
+    auto proof=std::make_shared<const OrchardSnapshotSection>(Access::CaptureActivation(source.f.db,*headers));
+    const auto a=source.f.db.getOrchardCatalogState(first->Header().GetHash());ASSERT_TRUE(a.ok());
+    const auto root=history_cache_test::Root("replaced-root");std::string error;
+    daemon::DatadirGuard guard;ASSERT_TRUE(guard.Acquire(root,error))<<error;
+    auto cache=std::make_shared<p2p::OrchardHistoryCache>(guard);
+    {const auto body=first->WireBytes();
+     cache->Put('b',first->Header().GetHash(),body.size(),OrchardBlockCandidate::MaxWireSize(),[&](const auto& sink){sink(body);});}
+    std::filesystem::rename(root,root.string()+"-preserved");std::filesystem::create_directory(root);
+    const Download::Target one{102,102,first->Header().GetHash(),storage::catalog::Hash(*a),first->Header().GetHash()};
+    std::atomic<unsigned> sends=0;
+    Download host(headers,root,[&]{return std::optional(one);},[&]{return proof;},
+        [&](auto p,const auto& t){return Access::ReplayActivation(std::move(p),headers,t.height,t.hash);},
+        []{return std::vector<Download::Peer>{{"archive",95,ServiceFlags::NODE_NETWORK}};},
+        [&](const auto&,const auto&,const auto&){++sends;return true;},cache);
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    EXPECT_EQ(sends.load(),0u)<<"worker error: "<<host.Observe().error;
+    EXPECT_FALSE(host.Ready());
+    host.Stop();
+}
+TEST(OrchardPhoneHistory, ExtensionSeenAtCreationRecheckPreservesInitialization){
+    HistoryExtensionMidIterationCase(2,"creation");
+}
+TEST(OrchardPhoneHistory, ExtensionSeenMidIterationPreservesVerifiedPrefix){
+    HistoryExtensionMidIterationCase(3,"append");
 }
 #endif
 TEST(OrchardPhoneHistory, SequentialBodiesExtendWithoutSkippingAndReadyDataIsNotState){

@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include "p2p/orchard_catalog_client.h"
 #include "consensus/merkle_root.h"
 #include "primitives/block.h"
@@ -44,7 +45,12 @@ public:
         {std::lock_guard lock(mutex_);stop_=true;flight_.reset();packet_.reset();ready_.clear();wanted_.clear();}
         cv_.notify_all();if(worker_.joinable())worker_.join();
     }
+    // Idle workers (nothing wanted or in flight) wait up to IdleWait instead
+    // of polling every 50 ms; any request, packet or stop still wakes them.
+    static constexpr std::chrono::milliseconds IdleWait{1000},ActiveWait{50};
+    uint64_t Iterations()const{return iterations_.load();}
 private:
+    std::atomic<uint64_t> iterations_{0};
     using Clock=std::chrono::steady_clock;
     const Peers peers_;const Send send_;std::mutex mutex_,join_;std::condition_variable cv_;
     bool stop_=false,received_=false;std::deque<uint256> wanted_;
@@ -54,7 +60,8 @@ private:
         std::map<std::string,Clock::time_point> cooldown;Clock::time_point sent{},window=Clock::now();size_t used=0;
         for(;;){
             std::optional<Bytes> packet;std::optional<Peer> peer;uint256 wanted;
-            {std::unique_lock lock(mutex_);cv_.wait_for(lock,std::chrono::milliseconds(50),[&]{return stop_||packet_.has_value();});
+            {std::unique_lock lock(mutex_);const bool idle=wanted_.empty();
+             cv_.wait_for(lock,idle?IdleWait:ActiveWait,[&]{return stop_||packet_.has_value()||(idle&&!wanted_.empty());});++iterations_;
              if(stop_)return;if(wanted_.empty())continue;wanted=wanted_.front();peer=flight_;packet=std::move(packet_);packet_.reset();}
             const auto fail=[&]{
                 if(peer){if(cooldown.size()>=32)cooldown.erase(cooldown.begin());cooldown[peer->address]=Clock::now()+std::chrono::minutes(1);}

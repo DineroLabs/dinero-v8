@@ -100,12 +100,95 @@ Why not the others (recorded, not silent):
 - **B: the V5 wallet-source mode** — read the preserved container as a recovery source against a
   non-tip header (H149999) that chains into the selected ancestry; base-set recovery lands in the
   wallet exactly as today's path does at a pre-Orchard tip.
-- **C: the typed tail** — late-v6 composition gate + coverage-pipeline consumption of the verified
-  phone-history bodies + outbox; transparent effects applied through the reconcile writer.
+- **C: the typed tail** — late-v6 composition gate + a narrow tail applier over the verified
+  phone-history replay (activation..base typed bodies + base+1..tip outbox), applied through the
+  snapshot-recovery rescan writer. See §5a for the chosen plan and why the coverage-pipeline
+  route was rejected.
 - **D: end-to-end harness test** (the §4 fixture) + serve the preserved V5 on the private phone
   channel (Codex-coordinated: EU1 serving config only, no publisher changes).
+  **Harness DONE (2026-11-11): `tests/integration/test_nodecore_late_phone_wallet_recovery.py`
+  (ctest `NodeCoreLatePhoneWalletRecovery`).** A genuinely new SDK root on an authenticated v6
+  floor (102) syncs, restores the funded wallet, completes the typed phone-history download
+  through the real account-0 recovery, then drives `wallet.recovertransparentfromsnapshot`
+  against the preserved V5 activation parent. Covered rows, each with exact-value assertions:
+  composed recovery to the tip with the v6 scope; full-balance equality (the funded base coin);
+  tail-created owned IMMATURE coinbase after the chain extends past the download target
+  (re-recovery follows the extended verified tail in one attempt); base coin SPENT in the tail
+  by a real shield (native source re-derives the wallet's BIP86/TapTweak key) with owned change
+  to the first change leaf — recovered balance excludes the spent base coin exactly (the
+  overstatement a partial base set would cause); idempotent reruns; retryable-vs-permanent
+  refusal discipline (the permanent message never rides a retryable reply); encrypted offline
+  cold reopen with no peer, no rewind, no row rewrites. Remaining in stage D: serve the
+  preserved V5 on the private channel (Codex-coordinated EU1 config; key:
+  `wallet_recovery_v5_source`).
 - **E: phone qualification** — iOS/DPI lane app updates (scope string, non-retryable handling),
   owner's physical runs, release decision.
+
+## 5a. Stage C plan (chosen: narrow tail applier)
+
+Two candidate routes were studied in-code; the **narrow tail applier** was chosen.
+
+**Rejected: reuse the sep2 imported-coverage pipeline.** That pipeline's origin contract is
+load-bearing for a different composition (v5-imported-at-activation-parent) and fails the late-v6
+phone on at least seven structural preconditions: the first-event shape (sequence-1 Connect at
+`height == activation_height`, chainstate_service.cpp:7572; late-v6's first outbox event is at
+base+1), the genesis→activation full-body replay origin (the exact cost full replay was rejected
+for), the `imported_parent` cohort binding (absent on late-v6, gates all four imported writers via
+`CaptureImportedOrchardDeliveryUnderLock`), `RuntimeWalletCoverageProjection::Build` consuming
+outbox events only (no notion of prefix steps), `ReadPostBaseFunding`'s activation-floor throw,
+and — decisively — the reconcile writer cannot express a recovered tail **send**: it inserts
+receive rows only (runtime_index_delivery.cpp:1021) and hard-fails "Coverage originated history
+unavailable" (:971) for observed spends of owned coins with no pre-existing history row, which is
+exactly the bridge-spent-during-the-window case. Fixing all of that requires writing the tail
+extractor anyway plus five receipt-coupled surfaces, and reroutes `wallet.getbalance` through the
+coverage capsule. Kept from that pipeline: the fence idiom (recheck under
+`snapshot_load_mutex_` + `activation_mutex_`, replay head == captured tip).
+
+**Chosen: compose the two authenticated halves the design already names.**
+Base set = stage B's V5 container (root-bound to the H149999 header). Tail = the composed
+`RuntimeAccountReplay` (`getRuntimeAccountReplayForWallet`): activation..base typed bodies verified
+by `OrchardBoundaryReplay` against the burial-depth-authenticated activation proof and the phone's
+own selected header chain, plus base+1..tip from the phone's canonical outbox, revalidated
+page-by-page. Transparent effects are extracted per block and applied through the same
+`RescanBlockchainImpl` writer the pre-Orchard snapshot recovery uses (wallet_manager.cpp:7629 loop
+— it needs only txid/vout/value/script/prevouts/coinbase/header-timestamp, all present in a typed
+delta), in the same single BEGIN IMMEDIATE transaction, index-commits-first, with
+recovered-blocks stamps extended over the delta heights.
+
+**Steps (smallest first, one test each):**
+1. Typed-tail extractor `ReadRecoveryTailEffects(const RuntimeAccountReplay&)` beside
+   `ReadPostBaseFunding` (chainstate_service.cpp:21676 pattern: Orchard/Historical tx shapes,
+   caps, CT refusal), walking prefix steps then events. Unit test over a synthetic replay:
+   base-coin-spent-in-tail, created-and-spent netting, immature coinbase, refusals.
+2. `SelectedWalletHistory` typed-tail member + rescan branch iterating deltas where the loop reads
+   `block.vtx`; stamp extension. Test: snapshot+deltas recovery case; neuter check: without the
+   branch, tail coins are absent.
+3. Compose in `RecoverTransparentSnapshotWallet`: real late-v6 arm captures the replay, requires
+   head == tip under the final locks, extracts, applies with `recovery_base+1`, returns target;
+   harness-only partial mode stays behind its flag; V5 source bytes digest-rechecked under the
+   final locks. Test: activation-crossing fixture, exact-balance equality; tip-advance mid-recovery
+   → retryable refusal, succeeds on retry.
+4. Typed refusal signal (small result struct) replacing the RPC string match; new scope
+   `transparent-current-coins-and-post-snapshot-history-v6`; permanent (no V5 source, tampered V5)
+   non-retryable, transient (download pending) retryable with progress.
+5. Refusal matrix per §4; the 15 pre-Orchard recovery cases stay byte-identical.
+
+**Status (2026-11-11):** steps 1-4 implemented and neuter-proven on this branch (extractor
+7a7e155e6, writer fa569273e, composed arm 7924d810e, typed outcome + v6 scope 3b1e645d2). The
+composed arm's positive end-to-end — full-balance equality on a real activation-crossing
+composition — is stage D, which also discharges step 5's remaining matrix rows. One deliberate
+refinement over stage A: a missing tip or safe mode is now classified Transient (retryable), not
+permanent; only the unconfigured-V5/broken-profile case is a permanent capability refusal. The
+V5 digest-pin note from the original step-3 sketch is dropped: the reader's root binding
+authenticates the in-memory coin set, and nothing re-reads the file after authentication.
+
+**Open questions (owner/Codex):** who arms the phone-history download for recovery (reuse
+`recoverOrchardAccount0`'s request path vs. the recovery RPC arming
+`RequestRetainedPhoneHistoryData` itself); extractor event cap vs. `ReadPostBaseFunding`'s 4096 on
+a phone weeks past import; who writes `wallet_recovery_v5_source` on-device and whether the
+container sha256 is pinned client-side; whether a pre-existing ordinary-delivery receipt tolerates
+the recovery rewrite (test, or clear it inside the recovery transaction); #903 rebase order for
+the chainstate_service.cpp hunks.
 
 ## 6. Collision ledger
 

@@ -1,9 +1,12 @@
 #pragma once
 #include "daemon/runtime_block_outbox.h"
 #include "primitives/block.h"
+#include "wallet/runtime_recovery_limits.h"
+#include <cstddef>
 #include <map>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -11,6 +14,10 @@ namespace dinero {
 class RuntimeOrdinaryDelivery;
 class RuntimeAccountReplay;
 class RuntimeWalletCoverageProjection;
+class RuntimeWalletCoverageMaterialLimit final : public std::runtime_error {
+public:
+    RuntimeWalletCoverageMaterialLimit():std::runtime_error("Wallet coverage material limit") {}
+};
 // Immutable facts for the captured ordinary and optional index script domains at the
 // checked outbox origin. Not a receipt, complete key discovery or adoption.
 class RuntimeWalletOriginProjection final {
@@ -72,6 +79,7 @@ private:
     std::map<TxOutPoint,Coin> coins_;
     std::vector<History> history_;
     size_t retained_bytes_ = 0;
+    size_t material_limit_bytes_ = kWalletRecoveryMaterialLimitBytes;
 };
 
 // Immutable transparent facts for the captured script union through one exact
@@ -106,7 +114,8 @@ public:
     // by those inputs, not caller identity.
     static std::shared_ptr<const RuntimeWalletCoverageProjection> Build(
         std::shared_ptr<const RuntimeWalletOriginProjection>,
-        std::shared_ptr<const RuntimeAccountReplay>,RuntimeOutboxCursor through = {});
+        std::shared_ptr<const RuntimeAccountReplay>,RuntimeOutboxCursor through = {},
+        size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes);
     // Immutable exact-prefix facts collected while Build verifies every event.
     // This lookup never touches the replay source or any wallet/index owner.
     const uint256& ProfileDigest() const { return profile_digest_; }
@@ -121,6 +130,7 @@ private:
     RuntimeWalletCoverageProjection() = default;
     std::shared_ptr<const RuntimeWalletOriginProjection> origin_;
     std::shared_ptr<const RuntimeAccountReplay> replay_;
+    size_t material_limit_bytes_ = kWalletRecoveryMaterialLimitBytes;
     std::map<TxOutPoint,Coin> coins_;
     std::map<TxId,Activity> history_;
     std::map<TxOutPoint,std::vector<Coin>> observed_coins_;

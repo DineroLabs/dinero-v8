@@ -25,6 +25,7 @@ void SelectSdkActivationFixture(Chain chain) {
 #include "p2p/orchard_catalog_transfer.h"
 #include "p2p/orchard_phone_history.h"
 #include "daemon/runtime_delivery_worker.h"
+#include "wallet/runtime_account_replay.h"
 namespace dinero {
 struct RuntimeDeliveryStartupTestAccess {
     static Json::Value Observe(DaemonApp& app){
@@ -32,8 +33,22 @@ struct RuntimeDeliveryStartupTestAccess {
         const auto report=app.runtime_delivery_worker_->Snapshot();
         row["mixed_prefix"]=report.wallet==RuntimeDeliveryWorker::WalletOutcome::AppliedImportedMixedPrefix;
         row["orchard_only_prefix"]=report.wallet==RuntimeDeliveryWorker::WalletOutcome::AppliedOrchardPrefix;
+        row["resource_limited"]=report.wallet==RuntimeDeliveryWorker::WalletOutcome::ResourceLimited;
+        row["recovery_attempts"]=Json::UInt64(report.wallet_recovery_attempts);
+        row["slices"]=Json::UInt64(report.slices);
         if(report.wallet_head){row["sequence"]=Json::UInt64(report.wallet_head->sequence);row["digest"]=report.wallet_head->digest.GetHex();}
         return row;
+    }
+    static void SetRecoveryBudget(DaemonApp& app,size_t bytes){
+        auto& worker=app.runtime_delivery_worker_;
+        if(!worker)throw std::runtime_error("Missing native delivery worker");
+        worker->Stop();
+        const auto& context=app.GetContext();
+        auto source=std::dynamic_pointer_cast<ChainstateService>(context.chainstate);
+        if(!source||!context.wallet)throw std::runtime_error("Missing native recovery owners");
+        worker=std::make_unique<RuntimeDeliveryWorker>(source,context.wallet,
+            RuntimeDeliveryWorker::Limits{1,std::chrono::milliseconds(20),bytes});
+        worker->Start();
     }
 };
 struct P2PServiceStopTestAccess {
@@ -110,6 +125,11 @@ Json::Value SdkActivationTestState(){
         row["network_active"]=peers->get().is_network_active();
         row["catalog_client"]=dinero::P2PServiceStopTestAccess::HasCatalogClient(*peers);
         row["proof_ready"]=bool(peers->ReadyActivationCatalog());row["peers"]=Json::Value(Json::arrayValue);
+        if(const auto chain=std::dynamic_pointer_cast<dinero::ChainstateService>(context.chainstate)){
+            const auto [full,extended]=chain->PhoneReplayCaptureCounts();
+            row["phone_replay"]["full_builds"]=Json::UInt64(full);row["phone_replay"]["extensions"]=Json::UInt64(extended);
+            row["phone_replay"]["source_reads"]=Json::UInt64(chain->PhoneReplaySourceReads());
+        }
         if(const auto history=peers->PhoneHistoryDownload()){
             const auto observed=history->Observe();auto& h=row["phone_history"];
             h["requested"]=observed.requested;h["ready"]=observed.ready;
@@ -129,6 +149,32 @@ Json::Value SdkActivationTestState(){
         }
     }
     return row;
+}
+
+// Native fixture only: shrink the worker's retained material budget after a
+// genuine imported mixed baseline has been earned, without changing any
+// production configuration or the authenticated wallet/source data.
+Json::Value SdkActivationRecoveryBudget(const Json::Value& request){
+    auto& s=state();std::lock_guard lock(s.mtx);
+    if(!s.running||!s.app||dinero::Params().magic!=0x02a1c925||
+       !request["bytes"].isUInt64()||request["bytes"].asUInt64()!=1)
+        throw std::runtime_error("Invalid native recovery budget request");
+    dinero::RuntimeDeliveryStartupTestAccess::SetRecoveryBudget(*s.app,1);
+    return true;
+}
+
+// Native fixture only: hold a captured replay view (as a long reader would) so
+// a later capture finds the retained view shared; release drops it.
+std::shared_ptr<const dinero::RuntimeAccountReplay> held_replay;
+Json::Value SdkActivationHoldReplay(const Json::Value& request){
+    auto& s=state();std::lock_guard lock(s.mtx);
+    if(!s.running||!s.app||!request["hold"].isBool())throw std::runtime_error("Invalid replay hold request");
+    if(!request["hold"].asBool()){const bool had=bool(held_replay);held_replay.reset();return had;}
+    const auto chain=std::dynamic_pointer_cast<dinero::ChainstateService>(s.app->GetContext().chainstate);
+    if(!chain)throw std::runtime_error("Missing chainstate");
+    const auto replay=chain->getRuntimeAccountReplay();
+    if(!replay.ok())throw std::runtime_error("Replay capture refused");
+    held_replay=*replay;return Json::UInt64(held_replay->Head().sequence);
 }
 
 // Fixed-profile native test ONLY: replace untrusted DATA in an already present

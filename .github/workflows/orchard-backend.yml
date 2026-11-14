@@ -267,7 +267,7 @@ jobs:
           import re
           log=open('orchard-input-proof-execution.log').read()
           assert re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log)==['WalletFundingDownload']
-          cases=['NewInputProofCodecBounds','InputRequestOutpointUsesWireFieldOrder','NewInputRequestCapacityAndStop','CurrentSourceChangeCancelsBlockedInputFlight','BoundedRequestsAndStoppedOwner','CurrentFullSourceInputProofAndExactSessionDownload','ActualCreationMetadataAndMerkleComparison','ExactSessionAndBodyDataOnly']
+          cases=['NewInputProofCodecBounds','InputRequestOutpointUsesWireFieldOrder','NewInputRequestCapacityAndStop','CurrentSourceChangeCancelsBlockedInputFlight','BoundedRequestsAndStoppedOwner','CurrentFullSourceInputProofAndExactSessionDownload','ActualCreationMetadataAndMerkleComparison','ExactSessionAndBodyDataOnly','IdleHistoryWorkersWaitAndRequestsWakeImmediately','IdleOrchardHistoryWorkersWait']
           assert sorted(re.findall(r'\[       OK \] WalletFundingDownload\.(\w+)',log))==sorted(cases)
           PYINPUT
       - name: Exercise phone migration, rollback cleanup, CSN reconnect and pruned header reconsider
@@ -1359,7 +1359,7 @@ jobs:
           import re
           from pathlib import Path
           log=Path('wallet-script-reconciliation-execution.log').read_text()
-          expected=['ExpandedScriptDomainPreservesPendingAndAccountOwners', 'PreparationCommitRefusalLeavesBothStoresUnchanged', 'OrdinaryCommitRefusalRetainsIndexPrefixForRetry', 'UnknownCoinAndUnavailableKeyInventoryRefuseBeforeIndex', 'NormalRecoveryReconcilesNewScriptAndPreservesReadyHistory', 'ProvedDisconnectAndReinclusionPreserveLocalHistory', 'MissingOriginatedHistoryRefusesWithoutChangingEitherStore', 'CurrentOrchardReservationRequiresProvedSourceCoin', 'FreshSourceRefusalBeforeIndexCommitLeavesBothOwnersUnchanged', 'FreshSourceRefusalBeforeOrdinaryCommitRetainsOnlyGenuineIndexPrefix']
+          expected=['ExpandedScriptDomainPreservesPendingAndAccountOwners', 'PreparationCommitRefusalLeavesBothStoresUnchanged', 'OrdinaryCommitRefusalRetainsIndexPrefixForRetry', 'UnknownCoinAndUnavailableKeyInventoryRefuseBeforeIndex', 'NormalRecoveryReconcilesNewScriptAndPreservesReadyHistory', 'ProvedDisconnectAndReinclusionPreserveLocalHistory', 'MissingOriginatedHistoryRefusesWithoutChangingEitherStore', 'CurrentOrchardReservationRequiresProvedSourceCoin', 'FreshSourceRefusalBeforeIndexCommitLeavesBothOwnersUnchanged', 'FreshSourceRefusalBeforeOrdinaryCommitRetainsOnlyGenuineIndexPrefix', 'CoverageMaterialLimitStopsEnrolledRecoveryAsResourceLimit']
           actual=re.findall(r'\[       OK \] WalletScriptReconciliation\.(\w+) \(',log)
           assert sorted(actual)==sorted(expected)
           assert '100% tests passed, 0 tests failed out of 1' in log
@@ -3174,7 +3174,7 @@ jobs:
           if owned != ['SelectedWalletHistory.ValidatesBeforeEffectsAndUsesOwnedBodies']:
               raise SystemExit('Selected wallet history service case did not execute exactly once')
           projection = re.findall(r'\[ RUN\s+\] (RuntimeOriginProjection\.\S+)', open('orchard-history-replay-execution.log').read())
-          if sorted(projection) != ['RuntimeOriginProjection.BindsCapturedWalletAndScriptDomain', 'RuntimeOriginProjection.KeepsSpentCoinsAndExactTransactionHistory']:
+          if sorted(projection) != ['RuntimeOriginProjection.BindsCapturedWalletAndScriptDomain', 'RuntimeOriginProjection.KeepsSpentCoinsAndExactTransactionHistory', 'RuntimeOriginProjection.PhoneRecoveryMaterialBoundIs128MiB']:
               raise SystemExit('Origin projection case did not execute exactly once')
           PYTEST
       - name: Require and execute wallet recovery key ownership
