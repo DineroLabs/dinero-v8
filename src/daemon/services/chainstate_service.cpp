@@ -7331,7 +7331,8 @@ ChainstateService::resumeRuntimeWalletRecoveryIfNeeded(WalletManager& wallet, UT
         }
         // Account/source capture and proof verification run after every outer
         // selected lock and the short session lease above have been released.
-        const ChainstateRuntimeRecoverySource recovery_source(*this);
+        // The caller's material limit bounds enrolled-wallet coverage too.
+        const ChainstateRuntimeRecoverySource recovery_source(*this,legacy_material_limit_bytes);
         return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
             RuntimeWalletRecovery::ResumeCatalogWalletStores(
                 recovery_source,wallet,index,session));
@@ -8108,8 +8109,9 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
 }
 
 StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateService::getRuntimeWalletCoverage(
-        WalletManager& wallet,uint64_t session,UTXOIndex& index) const {
-    bool pending=false;return captureRuntimeWalletCoverage(wallet,session,index,false,pending);
+        WalletManager& wallet,uint64_t session,UTXOIndex& index,size_t material_limit_bytes) const {
+    bool pending=false;
+    return captureRuntimeWalletCoverage(wallet,session,index,false,pending,false,material_limit_bytes);
 }
 StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateService::getRuntimeWalletCoverageV3(
         WalletManager& wallet,uint64_t session,UTXOIndex& metadata_index,size_t material_limit_bytes) const {

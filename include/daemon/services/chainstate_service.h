@@ -1218,7 +1218,8 @@ public:
     // genesis through the exact runtime head, including disconnect/reconnect.
     // Read-only source material: does not replace invalidated store receipts.
     StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> getRuntimeWalletCoverage(
-        WalletManager&,uint64_t expected_session,UTXOIndex&) const;
+        WalletManager&,uint64_t expected_session,UTXOIndex&,
+        size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes) const;
     // Full archival v3 capture owns no legacy index coin/script map. The
     // metadata handle only authenticates the selected owner; source bytes are
     // replayed from the verified chain at a retained outbox prefix. New tip
