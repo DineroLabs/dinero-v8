@@ -189,6 +189,18 @@ if(NOT WIN32)
   set_tests_properties(DaemonServiceRelease PROPERTIES
     LABELS "integration;restart;mandatory" TIMEOUT 300 RUN_SERIAL TRUE)
 
+  add_test(NAME WalletIndexV3StartupRefusal COMMAND python3 -B
+    ${CMAKE_SOURCE_DIR}/tests/integration/test_wallet_index_v3_startup_refusal.py
+    $<TARGET_FILE:dinerod> $<TARGET_FILE:test_daemon_service_release>)
+  set_tests_properties(WalletIndexV3StartupRefusal PROPERTIES
+    LABELS "integration;e2e-daemon;wallet;storage;mandatory" TIMEOUT 240 RUN_SERIAL TRUE)
+
+  add_test(NAME WalletIndexV3Status COMMAND python3 -B
+    ${CMAKE_SOURCE_DIR}/tests/integration/test_wallet_index_v3_status.py
+    $<TARGET_FILE:dinerod> $<TARGET_FILE:test_daemon_service_release>)
+  set_tests_properties(WalletIndexV3Status PROPERTIES
+    LABELS "integration;e2e-daemon;wallet;storage;mandatory" TIMEOUT 240 RUN_SERIAL TRUE)
+
   if(UNIX)
     add_test(NAME DockerEntrypointConfig COMMAND python3 -B
       ${CMAKE_SOURCE_DIR}/tests/integration/test_docker_entrypoint_config.py)
@@ -5946,11 +5958,16 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     ${CMAKE_SOURCE_DIR}/src
   )
   # Additional suites in this binary have separate bounded CTest registrations.
-  # Keep the original replay/history/projection cases here without duplicating them.
+  # Keep the original replay/history/projection and wallet-catchup cases here
+  # without duplicating the separately registered focused suites.
   add_test(NAME AssumeUtxoReplay COMMAND test_assumeutxo_replay
-    --gtest_filter=AssumeUtxoReplay.*:SelectedWalletHistory.*:RuntimeOriginProjection.*:WalletRestorePreflight.*:SnapshotWalletSource.*:SnapshotWalletRecovery.*)
+    --gtest_filter=AssumeUtxoReplay.*:SelectedWalletHistory.*:RuntimeOriginProjection.*:WalletRestorePreflight.*:SnapshotWalletSource.*:SnapshotWalletRecovery.*:WalletCatchup.*)
   add_test(NAME AssumeUtxoPromotion COMMAND test_assumeutxo_replay
     --gtest_filter=AssumeUtxoPromotion.*)
+  add_test(NAME WalletV3Maintenance COMMAND test_assumeutxo_replay
+    --gtest_filter=WalletV3Maintenance.*)
+  set_tests_properties(WalletV3Maintenance PROPERTIES
+    LABELS "daemon;assumeutxo;wallet-index-v3;focused" TIMEOUT 120)
   add_test(NAME StatefulSnapshotCache COMMAND test_assumeutxo_replay
     --gtest_filter=StatefulSnapshotCache.*)
   set_tests_properties(StatefulSnapshotCache PROPERTIES LABELS "snapshot;daemon;restart;mandatory" TIMEOUT 120)
@@ -6141,6 +6158,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     set_tests_properties(OrchardDetachedCatalog PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
     add_test(NAME OrchardDetachedCoverage COMMAND test_assumeutxo_replay --gtest_filter=OrchardDetachedCoverage.*)
     set_tests_properties(OrchardDetachedCoverage PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+    add_test(NAME RecoveryTailEffects COMMAND test_assumeutxo_replay --gtest_filter=RecoveryTailEffects.*)
+    set_tests_properties(RecoveryTailEffects PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;recovery;mandatory")
     add_test(NAME OrchardDetachedRecovery COMMAND test_assumeutxo_replay --gtest_filter=OrchardDetachedRecovery.*)
     set_tests_properties(OrchardDetachedRecovery PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
     add_test(NAME OrchardDetachedIssuance COMMAND test_assumeutxo_replay --gtest_filter=OrchardDetachedIssuance.*)
@@ -6176,7 +6195,31 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(OrchardAccountCreation PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
   set_tests_properties(OrchardAccountIssuance PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;mandatory")
   add_test(NAME WalletCanonicalRecovery COMMAND test_assumeutxo_replay --gtest_filter=WalletCanonicalRecovery.*)
-  set_tests_properties(WalletCanonicalRecovery PROPERTIES TIMEOUT 120 LABELS "daemon;wallet;mandatory")
+  # A cold full-archive fixture takes about 165 seconds on the Linux host.
+  set_tests_properties(WalletCanonicalRecovery PROPERTIES TIMEOUT 300 LABELS "daemon;wallet;mandatory")
+  if(DINERO_BUILD_ORCHARD_BACKEND)
+    add_test(NAME WalletV3RescanGate COMMAND test_assumeutxo_replay
+      --gtest_filter=WalletV3RescanGate.*)
+    set_tests_properties(WalletV3RescanGate PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
+    add_test(NAME WalletV3Spend COMMAND test_assumeutxo_replay
+      --gtest_filter=WalletV3Spend.*)
+    set_tests_properties(WalletV3Spend PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
+    add_test(NAME WalletV3CoverageSource COMMAND test_assumeutxo_replay
+      --gtest_filter=WalletV3RecoveryRoute.FullArchiveSourceCapturesNamedWalletAtFixedPrefix)
+    set_tests_properties(WalletV3CoverageSource PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
+    add_test(NAME WalletV3RecoveryRoute COMMAND test_assumeutxo_replay
+      --gtest_filter=WalletV3RecoveryRoute.LegacyNamedWalletRecoversTypedCoinbaseWithoutV2IndexBinding)
+    set_tests_properties(WalletV3RecoveryRoute PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
+    add_test(NAME WalletV3RecoveryWorker COMMAND test_assumeutxo_replay
+      --gtest_filter=WalletV3RecoveryWorker.*)
+    set_tests_properties(WalletV3RecoveryWorker PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
+    add_test(NAME WalletV3ColdRestart COMMAND test_assumeutxo_replay
+      --gtest_filter=WalletV3ColdRestart.NamedWalletReceiptsSurviveFreshServiceAndIndexHandles)
+    set_tests_properties(WalletV3ColdRestart PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
+    add_test(NAME WalletV3ImportGuard COMMAND test_assumeutxo_replay
+      --gtest_filter=WalletV3ImportGuard.MandatoryDescriptorRescanRefusesBeforeAnyWalletWrite)
+    set_tests_properties(WalletV3ImportGuard PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
+  endif()
   add_test(NAME VaultCanonicalObservation COMMAND test_assumeutxo_replay --gtest_filter=VaultCanonicalObservation.*)
   set_tests_properties(VaultCanonicalObservation PROPERTIES TIMEOUT 120 LABELS "daemon;vault;mandatory")
   add_test(NAME VaultSelectedSnapshot COMMAND test_assumeutxo_replay --gtest_filter=VaultSelectedSnapshot.*)
@@ -10188,6 +10231,18 @@ if(TARGET nodecore_ffi)
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_funded_crossing.py)
     set_tests_properties(NodeCoreFundedCrossing PROPERTIES TIMEOUT 360 RUN_SERIAL TRUE
       LABELS "integration;nodecore;orchard;restart;wallet")
+    add_test(NAME NodeCoreLatePhoneWalletRecovery COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
+      ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_late_phone_wallet_recovery.py)
+    set_tests_properties(NodeCoreLatePhoneWalletRecovery PROPERTIES TIMEOUT 420 RUN_SERIAL TRUE
+      LABELS "integration;nodecore;orchard;snapshot-v5;restart;wallet;recovery")
+    add_test(NAME NodeCoreLatePhoneMultiStepPrefixRecovery COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
+      ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_late_phone_multistep_prefix.py)
+    set_tests_properties(NodeCoreLatePhoneMultiStepPrefixRecovery PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE
+      LABELS "integration;nodecore;orchard;history;wallet;recovery")
     add_test(NAME NodeCoreAssumedFundedCrossing COMMAND ${CMAKE_COMMAND} -E env
       NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
       ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
@@ -10248,6 +10303,14 @@ if(TARGET nodecore_ffi)
       DINERO_SDK_POST_BASE_SHIELD=1 DINERO_SDK_MIXED_BASELINE=1
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_funded_crossing.py)
     set_tests_properties(NodeCoreImportedMixedBaseline PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE
+      LABELS "integration;nodecore;orchard;assumedmobile;wallet;recovery")
+    add_test(NAME NodeCoreImportedMixedResourceLimit COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
+      ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
+      DINERO_SDK_ASSUMED_MOBILE_FIXTURE=1 DINERO_SDK_COMPACT_NEW_RESERVATION=1 DINERO_SDK_COMPACT_NEW_READY=1
+      DINERO_SDK_POST_BASE_SHIELD=1 DINERO_SDK_MIXED_BASELINE=1 DINERO_SDK_MIXED_RESOURCE_LIMIT=1
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_funded_crossing.py)
+    set_tests_properties(NodeCoreImportedMixedResourceLimit PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE
       LABELS "integration;nodecore;orchard;assumedmobile;wallet;recovery")
     add_test(NAME NodeCoreImportedBalanceRead COMMAND ${CMAKE_COMMAND} -E env
       NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
@@ -17949,6 +18012,15 @@ if(UNIX AND TARGET dinerod AND NOT DINERO_BUILD_ORCHARD_BACKEND)
     ${CMAKE_SOURCE_DIR}/tests/integration/test_orchard_backend_off_handoff.py $<TARGET_FILE:dinerod>)
   set_tests_properties(OrchardBackendOffHandoffRefusal PROPERTIES
     TIMEOUT 150 RUN_SERIAL TRUE LABELS "orchard;storage;regression;mandatory")
+endif()
+
+# Real regtest chain: address history lists a payment, reports full coverage
+# to genesis, and reports the caller's count bound without claiming missing data.
+if(UNIX AND TARGET dinerod)
+  add_test(NAME AddressHistoryCoverage COMMAND python3
+    ${CMAKE_SOURCE_DIR}/tests/integration/test_address_history_legacy.py $<TARGET_FILE:dinerod>)
+  set_tests_properties(AddressHistoryCoverage PROPERTIES
+    TIMEOUT 300 RUN_SERIAL TRUE LABELS "rpc;wallet;regression;mandatory")
 endif()
 
 # Reproduce wingdi.h's ERROR macro on every compiler, including non-Windows CI.

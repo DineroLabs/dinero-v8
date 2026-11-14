@@ -19,6 +19,14 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <stdio.h>
+#elif defined(__linux__)
+#include <sys/syscall.h>
+#ifndef RENAME_NOREPLACE
+#define RENAME_NOREPLACE (1<<0)
+#endif
+#endif
 #endif
 
 namespace dinero::p2p {
@@ -109,10 +117,11 @@ public:
         Need(count==length);std::array<uint8_t,32> digest{};hash.Finalize(digest.data());WriteExact(file.fd,digest);
         Need(::fchmod(file.fd,0400)==0&&::fsync(file.fd)==0&&Same(Stat(file.fd),Named(dir.fd,partial)));
         DirectoryCheck(dir.fd);Check();
-        // linkat is no-replace on both supported POSIX families. The only
-        // removed name is this successful writer's own temporary hardlink.
-        Need(::linkat(dir.fd,partial.c_str(),dir.fd,name.c_str(),0)==0&&::fsync(dir.fd)==0);
-        Need(::unlinkat(dir.fd,partial.c_str(),0)==0&&::fsync(dir.fd)==0&&::fsync(root_)==0);
+        // Atomic no-replace publication. linkat is denied to Android app
+        // domains (SELinux app_data_file neverallow, targetSdk>=29), and
+        // bionic lacks a renameat2 wrapper before API 30, so Linux invokes
+        // the syscall directly; Apple uses renameatx_np(RENAME_EXCL).
+        Need(NoReplaceRename(dir.fd,partial,name)&&::fsync(dir.fd)==0&&::fsync(root_)==0);
         const auto final=Stat(file.fd);File(final);Need(SameFile(final,Named(dir.fd,name)));DirectoryCheck(dir.fd);Check();
 #else
         Refuse();
@@ -127,6 +136,15 @@ private:
 #ifndef _WIN32
     struct Fd{int fd=-1;explicit Fd(int f,bool optional=false):fd(f){Need(f>=0||optional);}~Fd(){if(fd>=0)::close(fd);}
         Fd(Fd&& o):fd(std::exchange(o.fd,-1)){}Fd(const Fd&)=delete;};
+    static bool NoReplaceRename(int dir,const std::string& from,const std::string& to){
+#if defined(__APPLE__)
+        return ::renameatx_np(dir,from.c_str(),dir,to.c_str(),RENAME_EXCL)==0;
+#elif defined(__linux__)
+        return ::syscall(SYS_renameat2,dir,from.c_str(),dir,to.c_str(),RENAME_NOREPLACE)==0;
+#else
+#error no-replace rename primitive is required on this POSIX family
+#endif
+    }
     static struct stat Stat(int fd){struct stat s{};Need(::fstat(fd,&s)==0);return s;}
     static struct stat Named(int fd,const std::string& name){struct stat s{};Need(::fstatat(fd,name.c_str(),&s,AT_SYMLINK_NOFOLLOW)==0);return s;}
     static bool Same(const struct stat& a,const struct stat& b){return a.st_dev==b.st_dev&&a.st_ino==b.st_ino;}

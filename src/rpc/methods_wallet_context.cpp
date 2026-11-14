@@ -27,13 +27,18 @@
 #include "rpc/orchard_account_rpc.h"
 #include "rpc/proof_bundle_consistency.h"
 #include "rpc/amount_parser.h"
+#include "rpc/legacy_transparent_freshness.h"
 #include "daemon/daemon_context.h"
 #include "daemon/services/wallet_service.h"
 #include "daemon/services/chainstate_service.h"
+#include "daemon/config.h"
 #include "daemon/services/mempool_service.h"
 #include "daemon/interfaces/tx_ingress.h"
 #include "wallet/wallet_manager.h"
 #include "wallet/runtime_wallet_balance.h"
+#if DINERO_WALLET_RAW_ORCHARD
+#include "wallet/runtime_ordinary_tip.h"
+#endif
 #include "wallet/hd_wallet.h"
 #include "wallet/wallet_transaction_signer.h"
 #include "util/hex.h"
@@ -94,8 +99,10 @@ using dinero::OutPoint;                   // Phase M.0: Make OutPoint available 
 #include <unordered_map>
 #include <unordered_set>
 #include <fstream>
+#include <filesystem>
 #include <chrono>
 #include <ctime>
+#include <random>
 
 // Forward declarations for cross-handler delegation.
 din::Json rpc_context_wallet_dumpwallet(const ExecutionContext& ctx, const din::Json& params);
@@ -169,11 +176,20 @@ static bool RefuseIfSafeMode(const ExecutionContext& ctx, din::Json& result) {
 struct RescanReadiness {
     bool ok;
     std::string reason;
+    std::string error_code;
 };
 
 RescanReadiness CheckRescanReadiness(const std::shared_ptr<dinero::ChainstateService>& chainstate) {
     if (!chainstate) {
         return {false, "Chainstate service not available"};
+    }
+
+    // A v3 full-archive index is metadata only. Its wallet history must be
+    // restored by the authenticated runtime route, never a legacy rescan.
+    // This applies before, during, and after transparent wallet enrollment.
+    if (chainstate->HasFullArchiveWalletIndexV3()) {
+        return {false, "Full-archive v3 wallet source requires authenticated wallet recovery; legacy rescan is unavailable",
+                "wallet_v3_legacy_rescan_unavailable"};
     }
 
     if (chainstate->IsInSafeMode()) {
@@ -660,6 +676,247 @@ static std::optional<din::Json> ImportedRuntimeBalanceRefusal(const ExecutionCon
     return refusal;
 }
 
+// A completed transparent-only migration has a durable wallet height and a
+// typed ordinary-delivery receipt. Neither alone proves that the amount is
+// current: the selected chain can move before its wallet delivery catches up.
+// Capture selected state outside wallet ownership on both sides of the read.
+class LegacyBalanceNotCurrent final : public std::runtime_error {
+public:
+    LegacyBalanceNotCurrent() : std::runtime_error(
+        "Legacy transparent wallet is catching up to the selected chain") {}
+};
+
+template <typename Read>
+static auto ReadWithCurrentLegacyTransparentTip(
+    const ExecutionContext& ctx, const std::shared_ptr<dinero::WalletService>& service,
+    Read&& read) {
+    auto use = dinero::WalletService::AcquireWalletUse(service);
+    auto& wallet = use->Wallet();
+    dinero::WalletManager::LegacyTransparentState state;
+    std::optional<uint32_t> unenrolled_scan_height;
+    std::string selected_name;
+    uint64_t session = 0;
+    {
+        auto lease = wallet.AcquireDatabaseLease();
+        if (lease->WalletName().empty() ||
+            (!ctx.walletName.empty() && ctx.walletName != lease->WalletName()))
+            throw std::runtime_error("Balance wallet ownership unavailable");
+        selected_name = lease->WalletName();
+        session = lease->Session();
+        state = lease->LegacyTransparentState();
+        if (state == dinero::WalletManager::LegacyTransparentState::Absent)
+            unenrolled_scan_height = lease->UnenrolledLegacyTransparentScanHeight();
+    }
+    if (state == dinero::WalletManager::LegacyTransparentState::Pending)
+        throw LegacyBalanceNotCurrent();
+    if (state == dinero::WalletManager::LegacyTransparentState::Absent) {
+        // A v3 full-archive index begins with every v2 coin quarantined. An
+        // unenrolled wallet has no owner-scoped index receipt, even when its
+        // old SQL scan height happens to equal the selected tip.
+        auto source = ctx.daemon && ctx.daemon->chainstate
+            ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)
+            : nullptr;
+        if (source && source->HasFullArchiveWalletIndexV3())
+            throw LegacyBalanceNotCurrent();
+        // An old full-node wallet may be opened at its H(activation-1) SQL
+        // watermark while canonical replay is still waiting for an archival
+        // body. A failed source capture happens before the pending marker can
+        // be written. Refuse that old amount rather than calling it current.
+        if (unenrolled_scan_height && !GetConfig().utreexo_stateless && source) {
+            const auto activation = dinero::Params().orchard_activation_height;
+            if (source && !source->IsAssumeUTXOActive() &&
+                source->GetSnapshotWalletRecoveryBaseHeight() == 0 &&
+                activation != UINT32_MAX && activation > 0 &&
+                *unenrolled_scan_height < activation &&
+                source->getBlockHeight() >= activation) {
+                const auto selected = source->getUtreexoRpcSnapshot();
+                if (!selected.ok() || selected->height >= activation &&
+                    *unenrolled_scan_height < selected->height)
+                    throw LegacyBalanceNotCurrent();
+            }
+        }
+        return read(wallet, selected_name);
+    }
+
+#if DINERO_WALLET_RAW_ORCHARD
+    auto source = ctx.daemon && ctx.daemon->chainstate
+        ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)
+        : nullptr;
+    if (!source) throw LegacyBalanceNotCurrent();
+    const auto before = source->getUtreexoRpcSnapshot();
+    if (!before.ok()) throw LegacyBalanceNotCurrent();
+    std::unique_ptr<dinero::ChainstateService::WalletIndexUse> v3_index;
+    if (source->HasFullArchiveWalletIndexV3()) {
+        try {
+            v3_index = dinero::ChainstateService::AcquireWalletIndexUse(source);
+        } catch (...) {
+            throw LegacyBalanceNotCurrent();
+        }
+    }
+
+    using Result = decltype(read(wallet, selected_name));
+    std::optional<Result> value;
+    {
+        // This outer lease prevents a wallet switch between receipt and the
+        // protected operation. Never hold a wallet lock while capturing
+        // selected-chain state.
+        auto lease = wallet.AcquireDatabaseLease();
+        if (lease->Session() != session || lease->WalletName() != selected_name ||
+            lease->LegacyTransparentState() != dinero::WalletManager::LegacyTransparentState::Complete)
+            throw LegacyBalanceNotCurrent();
+        lease->RequireLegacyTransparentFinancialReady();
+        const auto ordinary = dinero::ReadRuntimeOrdinaryWalletTip(wallet, session);
+        if (!ordinary || ordinary->second != before->height ||
+            ordinary->first != before->block_hash)
+            throw LegacyBalanceNotCurrent();
+        if (v3_index) {
+            bool current = false;
+            try {
+                current = dinero::IsRuntimeV3MetadataIndex(v3_index->Index()) &&
+                    dinero::RuntimeV3IndexWalletTipCurrent(v3_index->Index(), *lease,
+                        before->block_hash, before->height);
+            } catch (...) {
+                throw LegacyBalanceNotCurrent();
+            }
+            if (!current) throw LegacyBalanceNotCurrent();
+        }
+        value.emplace(read(wallet, selected_name));
+    }
+    const auto after = source->getUtreexoRpcSnapshot();
+    if (!after.ok() || after->height != before->height ||
+        after->block_hash != before->block_hash)
+        throw LegacyBalanceNotCurrent();
+    return std::move(*value);
+#else
+    // A wallet that was migrated by an Orchard-enabled binary must remain
+    // unavailable if this binary cannot verify its typed delivery receipt.
+    throw LegacyBalanceNotCurrent();
+#endif
+}
+
+static dinero::WalletManager::BalanceSummary ReadCurrentWalletBalanceSummary(
+    const ExecutionContext& ctx, const std::shared_ptr<dinero::WalletService>& service) {
+    return ReadWithCurrentLegacyTransparentTip(ctx, service,
+        [](dinero::WalletManager& wallet, const std::string& name) {
+            return wallet.getBalanceSummary(name);
+        });
+}
+
+static void MarkLegacyBalanceNotCurrent(din::Json& result,
+                                        const LegacyBalanceNotCurrent& error) {
+    result["error"] = error.what();
+    result["error_code"] = "wallet_balance_not_current";
+    result["retryable"] = true;
+}
+
+bool RefuseIfLegacyTransparentTipNotCurrent(
+    const ExecutionContext& ctx, const std::shared_ptr<dinero::WalletService>& service,
+    din::Json& result) {
+    try {
+        (void)ReadWithCurrentLegacyTransparentTip(ctx, service,
+            [](dinero::WalletManager&, const std::string&) { return true; });
+        return false;
+    } catch (const LegacyBalanceNotCurrent& error) {
+        MarkLegacyBalanceNotCurrent(result, error);
+        return true;
+    }
+}
+
+static bool RefuseAfterLegacyTransparentRead(
+    const ExecutionContext& ctx, const std::shared_ptr<dinero::WalletService>& service,
+    din::Json& result) {
+    din::Json refusal;
+    if (!RefuseIfLegacyTransparentTipNotCurrent(ctx, service, refusal)) return false;
+    // The caller may already have populated amounts. Replace the whole payload
+    // so a late selected-tip change cannot leak stale numbers with an error.
+    if (result.isObject() && result.isMember("walletname"))
+        refusal["walletname"] = result["walletname"];
+    result = std::move(refusal);
+    return true;
+}
+
+static dinero::WalletManager::LegacyTransparentState ReadLegacyTransparentScope(
+    const std::shared_ptr<dinero::WalletService>& service,
+    const std::string& expected_name) {
+    auto use = dinero::WalletService::AcquireWalletUse(service);
+    auto lease = use->Wallet().AcquireDatabaseLease();
+    if (lease->WalletName() != expected_name) throw LegacyBalanceNotCurrent();
+    const auto state = lease->LegacyTransparentState();
+    if (state == dinero::WalletManager::LegacyTransparentState::Pending)
+        throw LegacyBalanceNotCurrent();
+    return state;
+}
+
+static void MarkLegacyTransparentLimitedScope(din::Json& result) {
+    result["wallet_scope"] = "legacy_transparent_only";
+    result["balance_scope"] = "transparent_current_tip";
+    result["whole_wallet_ready"] = false;
+    result["send_ready"] = false;
+    result["send_unavailable_reason"] = "Orchard wallet enrollment is required before sending";
+}
+
+static bool RefuseLegacyTransparentWalletOwnership(din::Json& result,
+                                                   const char* error) {
+    // These helpers are JSON preflights. A failed lease must stop the caller
+    // before it reaches signing or address mutation, without escaping past an
+    // RPC adapter that normally returns an error object.
+    result = din::Json(Json::objectValue);
+    result["error"] = error;
+    return true;
+}
+
+bool RefuseIfLegacyTransparentSpendUnavailable(
+    const ExecutionContext& ctx, const std::shared_ptr<dinero::WalletService>& service,
+    din::Json& result) {
+    try {
+        // Preserve the adapter's selected-wallet error before the freshness
+        // probe, which also checks the name but reports only a generic read
+        // ownership failure. Release this lease before reading chain state.
+        if (!ctx.walletName.empty()) {
+            auto selected_use = dinero::WalletService::AcquireWalletUse(service);
+            auto selected_lease = selected_use->Wallet().AcquireDatabaseLease();
+            if (selected_lease->WalletName() != ctx.walletName)
+                return RefuseLegacyTransparentWalletOwnership(result, "wallet_selection_changed");
+        }
+        if (RefuseIfLegacyTransparentTipNotCurrent(ctx, service, result)) return true;
+        auto use = dinero::WalletService::AcquireWalletUse(service);
+        auto lease = use->Wallet().AcquireDatabaseLease();
+        if (lease->WalletName().empty() ||
+            (!ctx.walletName.empty() && lease->WalletName() != ctx.walletName))
+            return RefuseLegacyTransparentWalletOwnership(result, "wallet_selection_changed");
+        if (lease->LegacyTransparentState() !=
+            dinero::WalletManager::LegacyTransparentState::Complete) return false;
+        // Address/change derivation changes the ordinary script domain and
+        // invalidates the receipt. This class has no Orchard catalog from which
+        // the postactivation payment path can re-establish that authority.
+        result["error"] = "Transparent-only recovered wallet cannot sign or send without Orchard wallet enrollment";
+        result["error_code"] = "wallet_transparent_only_send_unavailable";
+        MarkLegacyTransparentLimitedScope(result);
+        return true;
+    } catch (const std::exception&) {
+        return RefuseLegacyTransparentWalletOwnership(result, "wallet_ownership_unavailable");
+    }
+}
+
+bool RefuseIfLegacyTransparentAddressMutation(
+    const ExecutionContext& ctx, const std::shared_ptr<dinero::WalletService>& service,
+    din::Json& result) {
+    try {
+        auto use = dinero::WalletService::AcquireWalletUse(service);
+        auto lease = use->Wallet().AcquireDatabaseLease();
+        if (lease->WalletName().empty() ||
+            (!ctx.walletName.empty() && lease->WalletName() != ctx.walletName))
+            return RefuseLegacyTransparentWalletOwnership(result, "wallet_selection_changed");
+        if (lease->LegacyTransparentState() ==
+            dinero::WalletManager::LegacyTransparentState::Absent) return false;
+        result["error"] = "Recovered transparent-only wallet cannot issue new addresses during migration";
+        result["error_code"] = "wallet_transparent_only_address_unavailable";
+        return true;
+    } catch (const std::exception&) {
+        return RefuseLegacyTransparentWalletOwnership(result, "wallet_ownership_unavailable");
+    }
+}
+
 din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
 
@@ -678,18 +935,20 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
         result["error"] = "No active wallet";
         return result;
     }
-
     try {
+        result["walletname"] = wallet_service->getCurrentWalletName();
         if (const auto refusal = ImportedRuntimeBalanceRefusal(ctx)) {
+            auto unavailable = *refusal;
+            unavailable["walletname"] = result["walletname"];
             auto source=std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
             auto index_use=dinero::ChainstateService::AcquireWalletIndexUse(source);
             auto wallet_use=dinero::WalletService::AcquireWalletUse(wallet_service);
             uint64_t session;std::string intended;
             {auto lease=wallet_use->Wallet().AcquireDatabaseLease();
-             if(!ctx.walletName.empty()&&ctx.walletName!=lease->WalletName())return *refusal;
+             if(!ctx.walletName.empty()&&ctx.walletName!=lease->WalletName())return unavailable;
              intended=lease->WalletName();session=lease->Session();}
             const auto captured=source->readImportedRuntimeWalletBalance(wallet_use->Wallet(),index_use->Index(),session,intended);
-            if(!captured.ok())return *refusal;
+            if(!captured.ok())return unavailable;
             // Entire numeric payload uses this immutable owned capture. Do not
             // fall through to independent confidential/asset/legacy row reads.
             const auto& summary=(*captured)->Summary();const auto& balance=summary.balance;
@@ -717,12 +976,33 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
         if (ctx.daemon->chainstate) {
             auto cs = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
             if (cs) {
-                mgr.WaitForHeight(cs->getBlockHeight(), std::chrono::milliseconds(5000));
+                // A completed transparent-only wallet uses the exact receipt
+                // and selected-tip fence below, with an immediate retryable
+                // refusal while behind. Keep the legacy wait for other wallets.
+                auto lease = mgr.AcquireDatabaseLease();
+                const bool marked = lease->LegacyTransparentState() !=
+                    dinero::WalletManager::LegacyTransparentState::Absent;
+                lease.reset();
+                if (!marked) mgr.WaitForHeight(cs->getBlockHeight(), std::chrono::milliseconds(5000));
             }
         }
 
-        const auto summary = mgr.getBalanceSummary(ctx.walletName);
+        const auto summary = ReadCurrentWalletBalanceSummary(ctx, wallet_service);
         const auto& balance = summary.balance;
+        const bool transparent_only = ReadLegacyTransparentScope(wallet_service, summary.wallet_name) ==
+            dinero::WalletManager::LegacyTransparentState::Complete;
+        auto v3_source = ctx.daemon->chainstate
+            ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)
+            : nullptr;
+        const bool transparent_send = transparent_only && v3_source &&
+            v3_source->RecoveredV3TransparentSendSourceReady();
+        result["walletname"] = summary.wallet_name;
+        if (transparent_only) MarkLegacyTransparentLimitedScope(result);
+        if (transparent_send) {
+            result["send_ready"] = true;
+            result["send_scope"] = "transparent_recovered_v3";
+            result.removeMember("send_unavailable_reason");
+        }
         result["reservation_status"] = ReservationStatusName(summary.reservations);
 
         // Phase 35: Enhanced balance breakdown
@@ -731,7 +1011,8 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
         result["immature"] = balance.immature;
         result["locked"] = ReservationAmount(summary.locked);
         result["total"] = balance.total;
-        result["spendable"] = ReservationAmount(summary.available_confirmed);
+        result["spendable"] = transparent_only && !transparent_send
+            ? din::Json(Json::nullValue) : ReservationAmount(summary.available_confirmed);
         result["utxo_count"] = balance.utxo_count;
 
         // Same wallet snapshot as the balance and recorded reservations.
@@ -742,13 +1023,14 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
 
         // Phase 35: Detailed breakdown for verification
         din::Json breakdown;
-        breakdown["spendable"] = ReservationAmount(summary.available_confirmed);  // confirmed - locked
+        breakdown["spendable"] = transparent_only && !transparent_send
+            ? din::Json(Json::nullValue) : ReservationAmount(summary.available_confirmed);
         breakdown["pending"] = balance.unconfirmed;  // unconfirmed
         breakdown["unspendable"] = ReservationAmount(summary.unavailable_confirmed_and_immature);
         result["breakdown"] = breakdown;
 
         // Phase F: Add confidential balance if chainstate/UTXOIndex available
-        if (ctx.daemon->chainstate) {
+        if (!transparent_only && ctx.daemon->chainstate) {
             auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
             if (chainstate && chainstate->utxoIndex()) {
                 try {
@@ -765,8 +1047,14 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
                 }
             }
         }
+        if (transparent_only) {
+            result["confidential"] = din::Json(Json::nullValue);
+            result["total_with_confidential"] = din::Json(Json::nullValue);
+        }
 
-        // Phase 33.6: Add multi-asset balances
+        // Phase 33.6: The global asset registry has no v3 wallet receipt.
+        // Keep the transparent-only response limited to authenticated DIN.
+        if (!transparent_only) {
         try {
             auto& asset_registry = dinero::assets::GetAssetRegistry();
             auto addresses = wallet_service->get().getWalletAddresses();
@@ -811,8 +1099,12 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
             // Asset registry may not be initialized - silently skip
             // DIN balance still works
         }
+        }
 
+        if (RefuseAfterLegacyTransparentRead(ctx, wallet_service, result)) return result;
         result["rpc_schema"] = "din.wallet.v1";
+    } catch (const LegacyBalanceNotCurrent& e) {
+        MarkLegacyBalanceNotCurrent(result, e);
     } catch (const std::exception& e) {
         result["error"] = std::string("Balance query error: ") + e.what();
     }
@@ -874,19 +1166,32 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
             result["retryable"] = true;
         } else {
         // Balance aggregation (read-only), original non-imported behavior.
-        const auto summary = mgr.getBalanceSummary(ctx.walletName);
+        const auto summary = ReadCurrentWalletBalanceSummary(ctx, wallet_service);
         const auto& balance = summary.balance;
+        const bool transparent_only = ReadLegacyTransparentScope(wallet_service, summary.wallet_name) ==
+            dinero::WalletManager::LegacyTransparentState::Complete;
+        auto v3_source = ctx.daemon->chainstate
+            ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)
+            : nullptr;
+        const bool transparent_send = transparent_only && v3_source &&
+            v3_source->RecoveredV3TransparentSendSourceReady();
         result["walletname"] = summary.wallet_name;
+        if (transparent_only) MarkLegacyTransparentLimitedScope(result);
+        if (transparent_send) {
+            result["send_ready"] = true;
+            result["send_scope"] = "transparent_recovered_v3";
+            result.removeMember("send_unavailable_reason");
+        }
         result["reservation_status"] = ReservationStatusName(summary.reservations);
         result["balance"] = balance.total;
         result["transparent_balance"] = balance.total;
         result["confirmed_balance"] = balance.confirmed;
         result["unconfirmed_balance"] = balance.unconfirmed;
         result["immature_balance"] = balance.immature;
-        result["confidential_balance"] = 0.0;
-        result["total_with_confidential"] = balance.total;
+        result["confidential_balance"] = transparent_only ? din::Json(Json::nullValue) : din::Json(0.0);
+        result["total_with_confidential"] = transparent_only ? din::Json(Json::nullValue) : din::Json(balance.total);
 
-        if (ctx.daemon->chainstate) {
+        if (!transparent_only && ctx.daemon->chainstate) {
             auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
             if (chainstate && chainstate->utxoIndex()) {
                 try {
@@ -904,7 +1209,8 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
         result["locked_balance"] = ReservationAmount(summary.locked);
 
         // Spendable balance
-        result["spendable_balance"] = ReservationAmount(summary.available_confirmed);
+        result["spendable_balance"] = transparent_only && !transparent_send
+            ? din::Json(Json::nullValue) : ReservationAmount(summary.available_confirmed);
         result["utxo_count"] = balance.utxo_count;
         result["immature_utxo_count"] = balance.immature_utxo_count;
         }
@@ -962,6 +1268,11 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
         // Virtual keypool: HD wallet derives keys on demand
         result["keypoolsize"] = 1000;
 
+        if (RefuseAfterLegacyTransparentRead(ctx, wallet_service, result)) return result;
+
+    } catch (const LegacyBalanceNotCurrent& e) {
+        result["balance_status"] = "reconciliation_required";
+        MarkLegacyBalanceNotCurrent(result, e);
     } catch (const std::exception& e) {
         result["error"] = std::string("Wallet info query error: ") + e.what();
     }
@@ -1401,19 +1712,22 @@ din::Json rpc_context_wallet_snapshot(const ExecutionContext& ctx, const din::Js
         wallet_obj["unlocked"] = !mgr.isWalletLocked();
         wallet_obj["hd_enabled"] = (mgr.getHDWallet() != nullptr);
 
-        const auto summary = mgr.getBalanceSummary(ctx.walletName);
+        const auto summary = ReadCurrentWalletBalanceSummary(ctx, wallet_service);
         const auto& balance = summary.balance;
+        const bool transparent_only = ReadLegacyTransparentScope(wallet_service, summary.wallet_name) ==
+            dinero::WalletManager::LegacyTransparentState::Complete;
         wallet_obj["name"] = summary.wallet_name;
+        if (transparent_only) MarkLegacyTransparentLimitedScope(wallet_obj);
         balances["reservation_status"] = ReservationStatusName(summary.reservations);
         balances["confirmed"] = balance.confirmed;
         balances["unconfirmed"] = balance.unconfirmed;
         balances["immature"] = balance.immature;
         balances["locked"] = ReservationAmount(summary.locked);
         balances["total"] = balance.total;
-        balances["spendable"] = ReservationAmount(summary.available_confirmed);
+        balances["spendable"] = transparent_only ? din::Json(Json::nullValue) : ReservationAmount(summary.available_confirmed);
         balances["utxo_count"] = balance.utxo_count;
         balances["immature_utxo_count"] = balance.immature_utxo_count;
-        balances["breakdown"]["spendable"] = ReservationAmount(summary.available_confirmed);
+        balances["breakdown"]["spendable"] = transparent_only ? din::Json(Json::nullValue) : ReservationAmount(summary.available_confirmed);
         balances["breakdown"]["pending"] = balance.unconfirmed;
         balances["breakdown"]["unspendable"] = ReservationAmount(summary.unavailable_confirmed_and_immature);
 
@@ -1490,7 +1804,7 @@ din::Json rpc_context_wallet_snapshot(const ExecutionContext& ctx, const din::Js
             std::vector<uint8_t> exact_script;
             const bool known_script = util::unhex(addr_row.script_pubkey, exact_script) && !exact_script.empty();
             const auto available = summary.available_by_script.find(known_script ? util::hex(exact_script) : "");
-            addr_obj["spendable"] = available == summary.available_by_script.end()
+            addr_obj["spendable"] = transparent_only || available == summary.available_by_script.end()
                 ? din::Json(Json::nullValue) : din::Json(available->second);
             addr_obj["reservation_status"] = ReservationStatusName(summary.reservations);
             addr_obj["utxo_count"] = addr_balance.utxo_count;
@@ -1528,9 +1842,14 @@ din::Json rpc_context_wallet_snapshot(const ExecutionContext& ctx, const din::Js
             tx_obj["time"] = static_cast<double>(tx.time);
             tx_obj["label"] = tx.label;
             tx_obj["is_coinbase"] = tx.is_coinbase;
+            tx_obj["height"] = tx.height;
             PopulateWalletHistoryMetadata(tx_obj, tx);
             history_obj["items"].append(tx_obj);
         }
+        if (RefuseAfterLegacyTransparentRead(ctx, wallet_service, result)) return result;
+    } catch (const LegacyBalanceNotCurrent& e) {
+        MarkLegacyBalanceNotCurrent(result, e);
+        return result;
     } catch (const std::exception& e) {
         result["error"] = std::string("Failed to build wallet snapshot: ") + e.what();
         return result;
@@ -1668,6 +1987,7 @@ din::Json rpc_context_wallet_getnewaddress(const ExecutionContext& ctx, const di
     }
 
     try {
+        if (RefuseIfLegacyTransparentAddressMutation(ctx, wallet_service, result)) return result;
         std::string label = "";
         std::string address_type = "taproot";
 
@@ -1807,8 +2127,12 @@ din::Json rpc_context_wallet_listaddresses(const ExecutionContext& ctx, const di
     }
 
     try {
+        if (RefuseIfLegacyTransparentTipNotCurrent(ctx, wallet_service, result)) return result;
         auto addresses = wallet_service->get().listAddresses(true);
         din::Json addr_array = din::arr();
+        const bool transparent_only = ReadLegacyTransparentScope(wallet_service,
+            wallet_service->getCurrentWalletName()) ==
+            dinero::WalletManager::LegacyTransparentState::Complete;
 
         auto build_path = [](const dinero::AddressRow& addr_row) -> std::string {
             if (addr_row.account < 0) {
@@ -1846,7 +2170,8 @@ din::Json rpc_context_wallet_listaddresses(const ExecutionContext& ctx, const di
             addr_obj["confirmed"] = balance.confirmed;
             addr_obj["unconfirmed"] = balance.unconfirmed;
             addr_obj["immature"] = balance.immature;
-            addr_obj["spendable"] = balance.spendable;
+            addr_obj["spendable"] = transparent_only
+                ? din::Json(Json::nullValue) : din::Json(balance.spendable);
             addr_obj["utxo_count"] = balance.utxo_count;
             addr_array.append(addr_obj);
         }
@@ -1855,7 +2180,10 @@ din::Json rpc_context_wallet_listaddresses(const ExecutionContext& ctx, const di
         // not in the legacy `addresses` table. Merge them in so wallet.listaddresses
         // is the single source of truth for the wallet's receive set.
         const std::string p2mr_store_path = wallet_service->get().GetV7P2MRStorePath();
-        if (!p2mr_store_path.empty()) {
+        // The v3 receipt covers only enrolled transparent wallet paths. This
+        // separate store is neither part of that receipt nor read-only on
+        // Open(), so do not merge it into a recovered v3 address inventory.
+        if (!transparent_only && !p2mr_store_path.empty()) {
             dinero::wallet::V7P2MRStore p2mr_store;
             if (p2mr_store.Open(p2mr_store_path) ==
                 dinero::wallet::V7P2MRStore::OpenResult::Ok) {
@@ -1886,13 +2214,15 @@ din::Json rpc_context_wallet_listaddresses(const ExecutionContext& ctx, const di
                     addr_obj["confirmed"]  = balance.confirmed;
                     addr_obj["unconfirmed"]= balance.unconfirmed;
                     addr_obj["immature"]   = balance.immature;
-                    addr_obj["spendable"]  = balance.spendable;
+                    addr_obj["spendable"]  = transparent_only
+                        ? din::Json(Json::nullValue) : din::Json(balance.spendable);
                     addr_obj["utxo_count"] = balance.utxo_count;
                     addr_array.append(addr_obj);
                 }
             }
         }
 
+        if (RefuseIfLegacyTransparentTipNotCurrent(ctx, wallet_service, result)) return result;
         result = addr_array;
     } catch (const std::exception& e) {
         result["error"] = std::string("Failed to list addresses: ") + e.what();
@@ -1922,6 +2252,7 @@ din::Json rpc_context_wallet_listunspent(const ExecutionContext& ctx, const din:
     }
 
     try {
+        if (RefuseIfLegacyTransparentTipNotCurrent(ctx, wallet_service, result)) return result;
         int min_conf = 1;
         int max_conf = 9999999;
 
@@ -1974,6 +2305,9 @@ din::Json rpc_context_wallet_listunspent(const ExecutionContext& ctx, const din:
         auto lease = mgr.AcquireDatabaseLease();
         if (lease->Session() != session || lease->WalletName() != wallet_name)
             throw std::runtime_error("Wallet request selection changed");
+        const bool transparent_only = lease->LegacyTransparentState() ==
+            dinero::WalletManager::LegacyTransparentState::Complete;
+        lease.reset();
         if (mgr.getUTXOIndex() && (!index_use || mgr.getUTXOIndex() != &index_use->Index()))
             throw std::runtime_error("Wallet index owner does not match selected wallet");
         std::optional<dinero::MempoolWalletView> mempool_view;
@@ -2007,7 +2341,7 @@ din::Json rpc_context_wallet_listunspent(const ExecutionContext& ctx, const din:
             din::Json utxo_obj;
             const bool solvable = mgr.hasSigningMaterialForScriptPubKey(utxo.script_pubkey);
             const bool locked = mgr.isUTXOLocked(utxo.txid, utxo.vout);
-            const bool spendable = utxo.spendable && solvable && !locked;
+            const bool spendable = !transparent_only && utxo.spendable && solvable && !locked;
 
             // Phase 35: Enhanced UTXO metadata
             utxo_obj["txid"] = utxo.txid;
@@ -2051,6 +2385,12 @@ din::Json rpc_context_wallet_listunspent(const ExecutionContext& ctx, const din:
             utxo_array.append(utxo_obj);
         }
 
+        pool_use.reset();
+        index_use.reset();
+        if (RefuseIfLegacyTransparentTipNotCurrent(ctx, wallet_service, result)) return result;
+        auto closing_lease = mgr.AcquireDatabaseLease();
+        if (closing_lease->Session() != session || closing_lease->WalletName() != wallet_name)
+            throw std::runtime_error("Wallet request selection changed");
         result = utxo_array;
     } catch (const std::exception& e) {
         result["error"] = std::string("Failed to list UTXOs: ") + e.what();
@@ -2164,6 +2504,11 @@ din::Json rpc_context_wallet_lockunspent(const ExecutionContext& ctx, const din:
             result["success"] = true;
             return result;
         }
+
+        // Lock changes affect coin selection and must not alter a wallet whose
+        // recovered coin view is receive/display-only. The no-argument query
+        // above remains available.
+        if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
 
         // Special case: Lock/unlock ALL UTXOs (empty outputs array)
         if (has_outputs_param && outputs_array.size() == 0) {
@@ -2281,6 +2626,7 @@ din::Json rpc_context_wallet_abandontransaction(const ExecutionContext& ctx, con
     }
 
     try {
+        if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
         auto& mgr = wallet_service->get();
         std::string txid = params[0].as<std::string>();
 
@@ -2370,7 +2716,13 @@ din::Json rpc_context_wallet_getinfo(const ExecutionContext& ctx, const din::Jso
                     "database as the exact backup and migrate funds to a mnemonic-backed wallet.";
             }
 
-            auto balance = mgr.getBalance();
+            const auto balance = ReadWithCurrentLegacyTransparentTip(ctx, wallet_service,
+                [](dinero::WalletManager& wallet, const std::string&) {
+                    return wallet.getBalance();
+                });
+            if (ReadLegacyTransparentScope(wallet_service, result["wallet_name"].asString()) ==
+                dinero::WalletManager::LegacyTransparentState::Complete)
+                MarkLegacyTransparentLimitedScope(result);
             result["balance"] = balance.total;
             result["utxo_count"] = balance.utxo_count;
 
@@ -2393,7 +2745,14 @@ din::Json rpc_context_wallet_getinfo(const ExecutionContext& ctx, const din::Jso
         }
         result["available_wallets"] = wallet_array;
 
+        if (wallet_service->hasActiveWallet() &&
+            RefuseAfterLegacyTransparentRead(ctx, wallet_service, result)) return result;
         result["rpc_schema"] = "din.wallet.v1";
+    } catch (const LegacyBalanceNotCurrent& e) {
+        din::Json refusal;
+        MarkLegacyBalanceNotCurrent(refusal, e);
+        if (result.isMember("wallet_name")) refusal["wallet_name"] = result["wallet_name"];
+        result = std::move(refusal);
     } catch (const std::exception& e) {
         result["error"] = std::string("Failed to get wallet info: ") + e.what();
     }
@@ -2527,9 +2886,17 @@ din::Json rpc_context_wallet_unlock(const ExecutionContext& ctx, const din::Json
             wallet_use->Wallet().unlockWallet(passphrase, timeout);
         }
         result["success"] = true;
-        std::string recovery_error;
-        if (!wallet_service->RecoverActiveWalletFromSnapshotIfNeeded(&recovery_error, unlocked_session)) {
-            result["recovery_warning"] = recovery_error;
+        const auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        if (source && source->HasFullArchiveWalletIndexV3()) {
+            // Unlock only makes the keys available. The owner-scoped runtime
+            // worker certifies v3 recovery separately; the legacy snapshot
+            // hook always refuses v3 and its warning is not recovery status.
+            result["recovery_mode"] = "owner_scoped_async";
+        } else {
+            std::string recovery_error;
+            if (!wallet_service->RecoverActiveWalletFromSnapshotIfNeeded(&recovery_error, unlocked_session)) {
+                result["recovery_warning"] = recovery_error;
+            }
         }
         if (ctx.logger) {
             ctx.logger->info("[wallet.unlock] Wallet unlocked");
@@ -2675,6 +3042,33 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
     auto wallet_service = std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
     if (!wallet_service || !wallet_service->hasActiveWallet()) {
         result["error"] = "No active wallet";
+        return result;
+    }
+
+    // A completed full-archive v3 recovery has an independently verified
+    // transparent coin inventory. Only this ordinary send path can use it;
+    // other wallet mutation RPCs retain the Orchard-enrollment refusal.
+    bool recovered_v3_send = false;
+#if DINERO_WALLET_RAW_ORCHARD
+    if (ctx.daemon->chainstate) {
+        auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        if (source && source->HasFullArchiveWalletIndexV3()) {
+            auto use = dinero::WalletService::AcquireWalletUse(wallet_service);
+            auto lease = use->Wallet().AcquireDatabaseLease();
+            recovered_v3_send = lease->LegacyTransparentState() ==
+                dinero::WalletManager::LegacyTransparentState::Complete;
+        }
+    }
+#endif
+    if (recovered_v3_send) {
+        if (RefuseIfLegacyTransparentTipNotCurrent(ctx, wallet_service, result)) return result;
+        auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        if (!source || !source->RecoveredV3TransparentSendSourceReady()) {
+            result["error"] = "Recovered payment selected source unavailable";
+            result["error_code"] = "wallet_v3_send_source_unavailable";
+            return result;
+        }
+    } else if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) {
         return result;
     }
 
@@ -3130,9 +3524,39 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
         int64_t estimated_fee = coin_result.fee;
         int64_t change_amount = coin_result.change_amount;
 
-        // Phase 6: Use client-specified change address if provided, otherwise derive
+        // The v3 recovery owns only the scripts already proved by its two
+        // receipts. Deriving a new script would invalidate those receipts;
+        // using the recipient for change could lose the remainder of a coin.
+        // Reuse an existing input address only after matching its recorded
+        // script and signing key. The payment owner checks it again at commit.
         std::string change_address;
-        if (!override_change_address.empty()) {
+        if (recovered_v3_send) {
+            if (!override_change_address.empty()) {
+                result["error"] = "Recovered transparent wallet cannot override its change address";
+                result["error_code"] = "wallet_v3_change_override_unavailable";
+                return result;
+            }
+            auto lease = wallet_use->Wallet().AcquireDatabaseLease();
+            if (lease->Session() != signing_identity.session ||
+                lease->WalletName() != signing_identity.name)
+                throw std::runtime_error("Recovered payment wallet selection changed");
+            auto pin = lease->CopyRecoverySeed(signing_identity.session);
+            for (const auto& coin : selected_utxos) {
+                if (coin.address.empty() || coin.script_pubkey.empty()) continue;
+                auto recorded = wallet_use->Wallet().getScriptPubKeyForAddress(coin.address);
+                if (!recorded || *recorded != coin.script_pubkey) continue;
+                auto key = lease->ResolveSigningKey(coin.script_pubkey, *pin);
+                if (key && key->secret.size() == 32) {
+                    change_address = coin.address;
+                    break;
+                }
+            }
+            if (change_address.empty()) {
+                result["error"] = "Recovered transparent wallet has no existing owned change address";
+                result["error_code"] = "wallet_v3_change_owner_unavailable";
+                return result;
+            }
+        } else if (!override_change_address.empty()) {
             change_address = override_change_address;
             if (ctx.logger) {
                 ctx.logger->debug("[wallet.sendtoaddress] Using client-specified change address: " + change_address.substr(0, 20) + "...");
@@ -3140,7 +3564,7 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
         } else {
             change_address = wallet_service->get().getNewAddress("change", "taproot");
         }
-        if (change_address.empty()) {
+        if (!recovered_v3_send && change_address.empty()) {
             // Fallback: use recipient address for change
             change_address = address;
             if (ctx.logger) {
@@ -3212,6 +3636,11 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
                 return result;
             }
 
+            if (recovered_v3_send) {
+                if (RefuseIfLegacyTransparentTipNotCurrent(ctx, wallet_service, result)) return result;
+            } else if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) {
+                return result;
+            }
             auto sign_result=chainstate_service->signAndStageWalletPayment(
                 wallet_use->Wallet(),signing_identity,build_result.unsigned_tx,
                 dinero::PendingPaymentIntent{address,parsed_amount_una,""});
@@ -3308,6 +3737,8 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
         }
 
         result["available_keys"] = static_cast<int>(available_keys);
+        if (recovered_v3_send && RefuseAfterLegacyTransparentRead(ctx, wallet_service, result))
+            return result;
 
         if (ctx.logger) {
             ctx.logger->info("[wallet.sendtoaddress] Preview: " + std::to_string(amount_din) +
@@ -3356,6 +3787,7 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
     }
 
     try {
+        if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
         if(required_identity && (!required_service || required_service!=wallet_service || !requested))
             throw std::runtime_error("Bound payment wallet service or request format changed");
         // Retain the actual manager through all synchronous callbacks. This
@@ -3697,6 +4129,7 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
             if(intent.request && static_cast<uint64_t>(unsigned_tx.fee)>intent.request->maximum_fee_una) {
                 result["error"]="Payment exceeds explicit request fee limit";return result;
             }
+            if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
             auto signed_result=intent.request
                 ? dinero::SignWalletRequestPreview(wallet_service->get(),signing_identity,unsigned_tx,intent)
                 : dinero::SignWalletTransaction(wallet_service->get(),signing_identity,unsigned_tx);
@@ -3730,6 +4163,7 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
             effective_fee_rate = std::max(effective_fee_rate * 2.0, effective_fee_rate + 1.0);
         }
 
+        if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
         auto retained = chainstate_service->signAndStageWalletPayment(wallet_use->Wallet(), signing_identity, unsigned_tx, intent);
         if (!retained.success) { result["error"] = "Payment retention failed: " + retained.error; return result; }
         build_result.transaction = std::move(retained.signed_tx.tx);
@@ -4342,6 +4776,9 @@ din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext& ct
         result["error"] = "No active wallet";
         return result;
     }
+    // This validator reports a spendable UTXO set. A transparent-only wallet
+    // has no supported postactivation signer or complete Orchard account view.
+    if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
 
     if (!ctx.daemon->chainstate) {
         result["error"] = "Chainstate service not available";
@@ -4712,6 +5149,7 @@ din::Json rpc_context_wallet_listtransactions(const ExecutionContext& ctx, const
     }
 
     try {
+        if (RefuseIfLegacyTransparentTipNotCurrent(ctx, wallet_service, result)) return result;
         int limit = 100;
         int offset = 0;
         int min_conf = -1;
@@ -4817,10 +5255,16 @@ din::Json rpc_context_wallet_listtransactions(const ExecutionContext& ctx, const
             tx_obj["time"] = static_cast<double>(tx.time);
             tx_obj["label"] = tx.label;
             tx_obj["is_coinbase"] = tx.is_coinbase;
+            tx_obj["height"] = tx.height;
             PopulateWalletHistoryMetadata(tx_obj, tx);
             tx_array.append(tx_obj);
         }
 
+        if (RefuseIfLegacyTransparentTipNotCurrent(ctx, wallet_service, result)) {
+            // A selected-chain advance during history pagination must never
+            // leave stale transaction amounts in the response.
+            return result;
+        }
         result = tx_array;
     } catch (const std::exception& e) {
         result["error"] = std::string("Failed to list transactions: ") + e.what();
@@ -4922,6 +5366,7 @@ din::Json rpc_context_wallet_gettransaction(const ExecutionContext& ctx, const d
     std::string txid = params[0].as<std::string>();
 
     try {
+        if (RefuseIfLegacyTransparentTipNotCurrent(ctx, wallet_service, result)) return result;
         // Get transaction from wallet history
         auto txs = wallet_service->get().getTransactionHistory(10000, 0);
         bool found = false;
@@ -5068,6 +5513,7 @@ din::Json rpc_context_wallet_gettransaction(const ExecutionContext& ctx, const d
             }
         }
 
+        if (RefuseAfterLegacyTransparentRead(ctx, wallet_service, result)) return result;
     } catch (const std::exception& e) {
         result["error"] = std::string("Failed to get transaction: ") + e.what();
     }
@@ -5162,6 +5608,8 @@ din::Json rpc_context_wallet_createfundedpsbt(const ExecutionContext& ctx, const
         result["error"] = "No active wallet";
         return result;
     }
+
+    if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
 
     if (params.empty() || !params[0].isObject()) {
         result["error"] = "Usage: wallet.createfundedpsbt {\"address\": amount, ...} [options]";
@@ -5292,6 +5740,7 @@ din::Json rpc_context_wallet_processpsbt(const ExecutionContext& ctx, const din:
     try {
         std::string psbt_base64 = params[0].as<std::string>();
         bool do_sign = params.size() < 2 || params[1].asBool();
+        if (do_sign && RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
 
         // Decode PSBT
         dinero::PSBT psbt = dinero::PSBT::FromBase64(psbt_base64);
@@ -5612,6 +6061,7 @@ din::Json rpc_context_wallet_signrawtransaction(const ExecutionContext& ctx, con
     }
 
     try {
+        if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
         std::string tx_hex = params[0].asString();
 
         // Deserialize transaction
@@ -5908,6 +6358,15 @@ din::Json rpc_context_wallet_sendrawtransaction(const ExecutionContext& ctx, con
     din::Json result;
     if (RefuseIfSafeMode(ctx, result)) return result;
 
+    // This wallet-namespaced alias must not silently bypass the recovered
+    // transparent-only wallet's receive/display-only scope. Generic external
+    // transaction relay remains available as mempool.sendrawtransaction.
+    if (ctx.daemon && ctx.daemon->wallet) {
+        auto wallet_service = std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
+        if (wallet_service && wallet_service->hasActiveWallet() &&
+            RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
+    }
+
     // Phase 38: Wallet MUST route through mempool.sendrawtransaction
     // This ensures wallet doesn't bypass mempool policy validation
 
@@ -5943,6 +6402,7 @@ din::Json rpc_context_wallet_recordsend(const ExecutionContext& ctx, const din::
         result["error"] = "No active wallet";
         return result;
     }
+    if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
 
     std::string txid, address;
     double amount_din = 0.0, fee_din = 0.0;
@@ -6028,6 +6488,7 @@ din::Json rpc_context_wallet_importprivkey(const ExecutionContext& ctx, const di
     }
 
     try {
+        if (RefuseIfLegacyTransparentAddressMutation(ctx, wallet_service, result)) return result;
         std::string privkey_str = params[0].asString();
         std::string label = params.size() >= 2 ? params[1].asString() : "";
         bool rescan = params.size() < 3 || params[2].asBool();
@@ -6321,6 +6782,7 @@ din::Json rpc_context_wallet_importwallet(const ExecutionContext& ctx, const din
     }
 
     try {
+        if (RefuseIfLegacyTransparentAddressMutation(ctx, wallet_service, result)) return result;
         std::string filename = params[0].as<std::string>();
         auto& wallet = wallet_service->get();
         uint64_t expected_session=0;
@@ -6423,18 +6885,25 @@ din::Json rpc_context_wallet_exportcsv(const ExecutionContext& ctx, const din::J
         return result;
     }
 
+    // A historical export must not turn an incomplete migration into a
+    // plausible CSV. Check before creating a file, then again before publish.
+    if (RefuseIfLegacyTransparentTipNotCurrent(ctx, wallet_service, result)) return result;
+
+    struct TemporaryExport {
+        std::filesystem::path path;
+        ~TemporaryExport() {
+            if (!path.empty()) {
+                std::error_code ignored;
+                std::filesystem::remove(path, ignored);
+            }
+        }
+    } temporary;
     try {
         std::string filename = params[0].as<std::string>();
+        const auto wallet_name = wallet_service->getCurrentWalletName();
         auto& wallet = wallet_service->get();
-
-        std::ofstream file(filename);
-        if (!file.is_open()) {
-            result["error"] = "Cannot open file for writing: " + filename;
-            return result;
-        }
-
-        // Write CSV header
-        file << "Date,Type,Address,Amount,TxID,Confirmations,Label\n";
+        std::ostringstream csv;
+        csv << "Date,Type,Address,Amount,TxID,Confirmations,Label\n";
 
         // Get transaction history
         auto txs = wallet.getTransactionHistory(10000, 0);  // Get up to 10k txs
@@ -6452,7 +6921,7 @@ din::Json rpc_context_wallet_exportcsv(const ExecutionContext& ctx, const din::J
             std::string label = tx.label;
 
             // Write CSV row
-            file << date_buf << ","
+            csv << date_buf << ","
                  << tx.category << ","
                  << address << ","
                  << std::fixed << std::setprecision(9) << tx.amount << ","
@@ -6461,8 +6930,37 @@ din::Json rpc_context_wallet_exportcsv(const ExecutionContext& ctx, const din::J
                  << label << "\n";
             exported++;
         }
+        if (wallet_service->getCurrentWalletName() != wallet_name) {
+            result["error"] = "Wallet selection changed during export";
+            result["error_code"] = "wallet_selection_changed";
+            return result;
+        }
+        if (RefuseAfterLegacyTransparentRead(ctx, wallet_service, result)) return result;
 
-        file.close();
+        // Write next to the destination so publication is a same-volume
+        // rename. The random suffix prevents concurrent exports colliding.
+        auto candidate = std::filesystem::path(filename);
+        candidate += ".partial-" +
+            std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+            "-" + std::to_string(std::random_device{}());
+        if (std::filesystem::exists(candidate))
+            throw std::runtime_error("Temporary export path already exists");
+        temporary.path = std::move(candidate);
+        {
+            std::ofstream file(temporary.path, std::ios::binary | std::ios::trunc);
+            if (!file.is_open()) throw std::runtime_error("Cannot open export file for writing");
+            file << csv.str();
+            file.close();
+            if (!file) throw std::runtime_error("Failed to write export file");
+        }
+        if (wallet_service->getCurrentWalletName() != wallet_name) {
+            result["error"] = "Wallet selection changed during export";
+            result["error_code"] = "wallet_selection_changed";
+            return result;
+        }
+        if (RefuseAfterLegacyTransparentRead(ctx, wallet_service, result)) return result;
+        std::filesystem::rename(temporary.path, filename);
+        temporary.path.clear();
 
         result["filename"] = filename;
         result["transactions_exported"] = exported;
@@ -6508,7 +7006,6 @@ din::Json rpc_context_wallet_rescanblockchain(const ExecutionContext& ctx, const
         result["error"] = "No active wallet";
         return result;
     }
-
     auto chainstate_service = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
     if (!chainstate_service) {
         result["error"] = "Chainstate service not available";
@@ -6518,9 +7015,11 @@ din::Json rpc_context_wallet_rescanblockchain(const ExecutionContext& ctx, const
     const auto readiness = CheckRescanReadiness(chainstate_service);
     if (!readiness.ok) {
         result["error"] = readiness.reason;
+        if (!readiness.error_code.empty()) result["error_code"] = readiness.error_code;
         result["rescan_blocked"] = true;
         return result;
     }
+    if (RefuseIfLegacyTransparentAddressMutation(ctx, wallet_service, result)) return result;
 
     try {
         uint32_t current_height = chainstate_service->getBlockHeight();
@@ -7049,8 +7548,12 @@ din::Json rpc_context_wallet_listaddresseswithbalances(const ExecutionContext& c
     }
 
     try {
+        if (RefuseIfLegacyTransparentTipNotCurrent(ctx, wallet_service, result)) return result;
         auto addresses = wallet_service->get().listAddresses(true);
         din::Json addr_array = din::arr();
+        const bool transparent_only = ReadLegacyTransparentScope(wallet_service,
+            wallet_service->getCurrentWalletName()) ==
+            dinero::WalletManager::LegacyTransparentState::Complete;
 
         auto build_path = [](const dinero::AddressRow& addr_row) -> std::string {
             if (addr_row.account < 0) {
@@ -7088,12 +7591,14 @@ din::Json rpc_context_wallet_listaddresseswithbalances(const ExecutionContext& c
                 addr_obj["confirmed"] = balance.confirmed;
                 addr_obj["unconfirmed"] = balance.unconfirmed;
                 addr_obj["immature"] = balance.immature;
-                addr_obj["spendable"] = balance.spendable;
+                addr_obj["spendable"] = transparent_only
+                    ? din::Json(Json::nullValue) : din::Json(balance.spendable);
                 addr_obj["utxo_count"] = balance.utxo_count;
                 addr_array.append(addr_obj);
             }
         }
 
+        if (RefuseIfLegacyTransparentTipNotCurrent(ctx, wallet_service, result)) return result;
         result = addr_array;
     } catch (const std::exception& e) {
         result["error"] = std::string("Failed to list addresses with balances: ") + e.what();
@@ -7208,23 +7713,27 @@ din::Json rpc_context_wallet_recoversnapshot(const ExecutionContext& ctx,const d
             addresses.front().address!=params["expected_first_address"].asString()){
             result["error"]="Active wallet differs from requested recovery wallet";return result;
          }session=lease->Session();}
-        std::string error;const auto recovered=source->RecoverTransparentSnapshotWallet(wallet,&error,session);
+        std::string error;dinero::ChainstateService::SnapshotRecoveryOutcome outcome;
+        const auto recovered=source->RecoverTransparentSnapshotWallet(wallet,&error,session,false,&outcome);
         if(!recovered){
             result["error"]=error;
             // Permanent capability refusals must not be hot-retried: both
-            // phone apps retry any retryable error every 15 seconds, and the
-            // post-Orchard refusal cannot clear until the native v6 recovery
-            // path ships (2026-11-11-native-v6-wallet-recovery-design.md).
-            // Transient refusals (locks, sessions, missing bodies still
-            // downloading) stay retryable. Stage C replaces this string
-            // match with a typed signal from the recovery function.
-            const bool permanent_capability_refusal =
-                error=="transparent snapshot recovery requires a pre-Orchard selected source";
-            result["retryable"]=!permanent_capability_refusal;
+            // phone apps retry any retryable error every 15 seconds, and an
+            // Orchard-active node with NO configured V5 source cannot clear
+            // without provisioning (2026-11-11-native-v6-wallet-recovery-
+            // design.md). Everything else (locks, sessions, safe mode, typed
+            // history still downloading) stays retryable. The classification
+            // is the recovery function's typed outcome, not a string match.
+            result["retryable"]=outcome.refusal!=
+                dinero::ChainstateService::SnapshotRecoveryOutcome::Refusal::PermanentCapability;
             return result;
         }
         result["success"]=true;result["recovered_height"]=Json::UInt64(*recovered);
-        result["scope"]="transparent-current-coins-and-post-snapshot-history";
+        // The apps accept exactly this scope for a compact-v6 receipt; the
+        // legacy scope only qualifies a pre-Orchard base.
+        result["scope"]=outcome.composed_v6
+            ?"transparent-current-coins-and-post-snapshot-history-v6"
+            :"transparent-current-coins-and-post-snapshot-history";
         result["whole_wallet_certified"]=false;
         return result;
     }catch(const std::exception& e){result["error"]=e.what();return result;}
@@ -7273,6 +7782,7 @@ din::Json rpc_context_wallet_restore(const ExecutionContext& ctx, const din::Jso
         const auto readiness = CheckRescanReadiness(source);
         if (!readiness.ok) {
             result["error"] = readiness.reason;
+            if (!readiness.error_code.empty()) result["error_code"] = readiness.error_code;
             result["rescan_blocked"] = true;
             return result;
         }
@@ -7474,6 +7984,7 @@ din::Json rpc_context_wallet_importmnemonic(const ExecutionContext& ctx, const d
         if (!readiness.ok) {
             result["success"] = false;
             result["error"] = readiness.reason;
+            if (!readiness.error_code.empty()) result["error_code"] = readiness.error_code;
             result["rescan_blocked"] = true;
             result["hint"] = "Retry wallet.importmnemonic once chain activation failures stop, or import with rescan=false.";
             return result;
@@ -7485,6 +7996,8 @@ din::Json rpc_context_wallet_importmnemonic(const ExecutionContext& ctx, const d
         result["error"] = "Failed to cast wallet service";
         return result;
     }
+    if (wallet_service->hasActiveWallet() &&
+        RefuseIfLegacyTransparentAddressMutation(ctx, wallet_service, result)) return result;
     dinero::WalletManager* wallet_manager = &wallet_service->get();
 
     din::Json import_params = params;
@@ -7627,8 +8140,20 @@ din::Json rpc_context_wallet_importtaprootdescriptor(const ExecutionContext& ctx
         return result;
     }
 
+    // This import always rescans after persisting the key. A full-archive v3
+    // index has no legacy block rescan source, so refuse before the key or
+    // address is written, including while its wallet receipt is still Absent.
+    if (ctx.daemon->chainstate->HasFullArchiveWalletIndexV3()) {
+        result["error"] = "Taproot descriptor import requires a legacy block rescan unavailable on full-archive wallet index v3";
+        result["error_code"] = "wallet_v3_descriptor_rescan_unavailable";
+        result["success"] = false;
+        return result;
+    }
+
     // Get WalletManager from context
     auto& wallet_service = ctx.daemon->wallet;
+    if (wallet_service->hasActiveWallet() &&
+        RefuseIfLegacyTransparentAddressMutation(ctx, wallet_service, result)) return result;
     dinero::WalletManager* wallet_manager = &wallet_service->get();
 
     // Call the Taproot descriptor import implementation
@@ -7729,6 +8254,8 @@ din::Json rpc_context_wallet_importdescriptors(const ExecutionContext& ctx, cons
 
     // Get WalletManager from context
     auto& wallet_service = ctx.daemon->wallet;
+    if (wallet_service->hasActiveWallet() &&
+        RefuseIfLegacyTransparentAddressMutation(ctx, wallet_service, result)) return result;
     dinero::WalletManager* wallet_manager = &wallet_service->get();
 
     // Call the descriptor RPC implementation (din::Json is an alias for Json::Value)
@@ -7756,6 +8283,7 @@ din::Json rpc_context_wallet_consolidate(const ExecutionContext& ctx, const din:
     if (!chainstate_service || !chainstate_service->utxoIndex()) { result["ok"] = false; result["error"] = "UTXO index not available"; return result; }
 
     try {
+        if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) { result["ok"] = false; return result; }
         const auto signing_identity=dinero::CaptureWalletSigningIdentity(wallet_service->get(),ctx.walletName);
         // RPC may pass the options object directly OR wrapped in a single-element
         // array (params == [ {...} ]). Normalize to the effective options object.
@@ -7969,6 +8497,7 @@ din::Json rpc_context_wallet_consolidate(const ExecutionContext& ctx, const din:
         auto br = dinero::UnsignedTxBuilder::Build(cins, outs, bo);
         if (!br.success) { result["ok"] = false; result["error"] = "Failed to build transaction: " + br.error; return result; }
 
+        if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) { result["ok"] = false; return result; }
         auto sr=dinero::SignWalletTransaction(wallet_service->get(),signing_identity,br.unsigned_tx);
         if (!sr.success) { result["ok"] = false; result["error"] = "Failed to sign transaction: " + sr.error; return result; }
 

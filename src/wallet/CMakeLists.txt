@@ -38,6 +38,9 @@ add_library(dinero_wallet STATIC
   # src/wallet/transaction.cpp REMOVED: duplicate of src/primitives/transaction.cpp (now in dinero_consensus)
   # Wallet uses Transaction from dinero_consensus (already linked)
   ${CMAKE_CURRENT_SOURCE_DIR}/utxo_index.cpp       # Wallet UTXO index (SQLite; moved from chainstate, Task 4.3)
+  ${CMAKE_CURRENT_SOURCE_DIR}/wallet_index_v3_schema.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/wallet_index_v3_owner.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/wallet_index_v3_coin_view.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/transaction_deserializer.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/coin_selection.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/bip143_signer.cpp

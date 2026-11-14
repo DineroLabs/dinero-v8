@@ -400,4 +400,8 @@ Intel host: a successful build and macOS 13 load-command audit are not a physica
 Ventura runtime pass. All stages are unsigned workflow artifacts for local
 Developer ID signing/notarization with `dinero-notarytool`; no publishing step
 runs. Keep the standard and Ventura stages separate through final signing and
-checksums. Mobile applications and their SDK publication are outside this lane.
+checksums. Run `packaging/mac/sign-notarize-release.sh` from an isolated
+checkout for each stage; pass `--variant ventura-qt6.5` only for the Intel
+Ventura stage. The finalizer checks that stage's Qt 6.5.3 provenance and emits
+distinct Ventura ZIP, DMG, operator archive, and checksum filenames directly.
+Mobile applications and their SDK publication are outside this lane.

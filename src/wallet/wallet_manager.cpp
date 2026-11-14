@@ -345,6 +345,29 @@ WalletManager::~WalletManager() {
     closeRegistry();
 }
 
+void WalletManager::setUTXOIndex(dinero::UTXOIndex* utxo_index) {
+    std::lock_guard<std::recursive_mutex> lock(database_lifecycle_mutex_);
+    if (utxo_index && full_archive_v3_legacy_rescans_disabled_)
+        throw std::runtime_error("Full-archive v3 wallet source cannot bind legacy wallet writers");
+    if (utxo_index && utxo_index->IsFullArchiveV3MetadataOnly()) {
+        throw std::runtime_error(
+            "Full-archive v3 wallet index cannot be bound to legacy wallet writers");
+    }
+    utxo_index_ = utxo_index;
+}
+
+void WalletManager::DisableLegacyRescansForFullArchiveV3() {
+    std::lock_guard<std::recursive_mutex> lock(database_lifecycle_mutex_);
+    if (utxo_index_)
+        throw std::runtime_error("Full-archive v3 wallet source still has a legacy UTXO index");
+    full_archive_v3_legacy_rescans_disabled_ = true;
+}
+
+bool WalletManager::LegacyRescansDisabledForFullArchiveV3() const {
+    std::lock_guard<std::recursive_mutex> lock(database_lifecycle_mutex_);
+    return full_archive_v3_legacy_rescans_disabled_;
+}
+
 std::string WalletManager::resolveWalletSchemaPath() const {
     auto isEmbeddedContainerPath = [](const std::filesystem::path& path) {
         const std::string s = path.string();
@@ -3328,6 +3351,15 @@ std::string WalletManager::DatabaseLease::EnsureDeliveryIdentity() {
         throw std::logic_error("Wallet delivery identity used on another thread");
     if (!db_ || name_.empty() || !sqlite3_get_autocommit(db_))
         throw std::runtime_error("Wallet delivery identity ownership unavailable");
+    if (LegacyTransparentState() != WalletManager::LegacyTransparentState::Absent) {
+        // A marked migration may never recover from a missing ID by silently
+        // minting a new one. Exact typed delivery must retain the first ID.
+        const auto id = ReadDeliveryIdentity();
+        static constexpr char hex[] = "0123456789abcdef";
+        std::string result = "DNWI01:";
+        for (auto byte : id) { result += hex[byte >> 4]; result += hex[byte & 15]; }
+        return result;
+    }
     struct Statement {
         sqlite3_stmt* stmt = nullptr;
         Statement(sqlite3* db, const char* sql) {
@@ -3399,6 +3431,316 @@ std::string WalletManager::DatabaseLease::EnsureDeliveryIdentity() {
             !sqlite3_get_autocommit(db_)) std::terminate();
         throw;
     }
+}
+
+namespace {
+struct LegacyMigrationStatement {
+    sqlite3_stmt* stmt = nullptr;
+    LegacyMigrationStatement(sqlite3* db, const char* sql) {
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+            sqlite3_finalize(stmt);
+            throw std::runtime_error("Legacy wallet migration SQL unavailable");
+        }
+    }
+    ~LegacyMigrationStatement() { sqlite3_finalize(stmt); }
+};
+
+bool LegacyMigrationColumn(sqlite3* db, std::string_view target) {
+    LegacyMigrationStatement columns(db, "PRAGMA table_info(wallet_meta)");
+    bool found = false;
+    size_t rows = 0;
+    int rc;
+    while ((rc = sqlite3_step(columns.stmt)) == SQLITE_ROW) {
+        if (sqlite3_column_type(columns.stmt, 1) != SQLITE_TEXT)
+            throw std::runtime_error("Legacy wallet metadata schema malformed");
+        const auto* bytes = static_cast<const char*>(sqlite3_column_blob(columns.stmt, 1));
+        const int length = sqlite3_column_bytes(columns.stmt, 1);
+        if (!bytes || length <= 0) throw std::runtime_error("Legacy wallet metadata schema malformed");
+        if (std::string_view(bytes, length) == target) {
+            if (found) throw std::runtime_error("Legacy wallet metadata column duplicated");
+            found = true;
+        }
+        ++rows;
+    }
+    if (rc != SQLITE_DONE || !rows) throw std::runtime_error("Legacy wallet metadata schema unavailable");
+    return found;
+}
+
+void LegacyMigrationExec(sqlite3* db, const char* sql) {
+    if (sqlite3_exec(db, sql, nullptr, nullptr, nullptr) != SQLITE_OK)
+        throw std::runtime_error("Legacy wallet migration SQL failed");
+}
+
+uint32_t LegacyMigrationHeight(sqlite3* db, const char* sql) {
+    LegacyMigrationStatement statement(db, sql);
+    if (sqlite3_step(statement.stmt) != SQLITE_ROW ||
+        sqlite3_column_type(statement.stmt, 0) != SQLITE_INTEGER ||
+        sqlite3_column_int64(statement.stmt, 0) < 0 ||
+        sqlite3_column_int64(statement.stmt, 0) > UINT32_MAX)
+        throw std::runtime_error("Legacy wallet recovery height unavailable");
+    const auto height = static_cast<uint32_t>(sqlite3_column_int64(statement.stmt, 0));
+    if (sqlite3_step(statement.stmt) != SQLITE_DONE)
+        throw std::runtime_error("Legacy wallet recovery height malformed");
+    return height;
+}
+}
+
+WalletManager::LegacyTransparentState
+WalletManager::DatabaseLease::LegacyTransparentState() const {
+    if (thread_ != std::this_thread::get_id())
+        throw std::logic_error("Legacy wallet migration state used on another thread");
+    if (!db_ || name_.empty() || owner_.db_ != db_ || owner_.database_session_ != session_)
+        throw std::runtime_error("Legacy wallet migration state ownership unavailable");
+    if (!LegacyMigrationColumn(db_, "runtime_legacy_transparent_state_v1"))
+        return WalletManager::LegacyTransparentState::Absent;
+    LegacyMigrationStatement state(db_,
+        "SELECT runtime_legacy_transparent_state_v1 FROM wallet_meta WHERE id=1");
+    if (sqlite3_step(state.stmt) != SQLITE_ROW ||
+        sqlite3_column_type(state.stmt, 0) != SQLITE_TEXT)
+        throw std::runtime_error("Legacy wallet migration state malformed");
+    const auto* bytes = static_cast<const char*>(sqlite3_column_blob(state.stmt, 0));
+    const int length = sqlite3_column_bytes(state.stmt, 0);
+    if (!bytes || length <= 0) throw std::runtime_error("Legacy wallet migration state malformed");
+    const std::string value(bytes, length);
+    if (sqlite3_step(state.stmt) != SQLITE_DONE)
+        throw std::runtime_error("Legacy wallet migration state malformed");
+    if (value == "pending") return WalletManager::LegacyTransparentState::Pending;
+    if (value == "complete") return WalletManager::LegacyTransparentState::Complete;
+    throw std::runtime_error("Legacy wallet migration state malformed");
+}
+
+std::optional<uint32_t>
+WalletManager::DatabaseLease::UnenrolledLegacyTransparentScanHeight() const {
+    if (thread_ != std::this_thread::get_id())
+        throw std::logic_error("Legacy wallet enrollment check used on another thread");
+    if (!db_ || name_.empty() || owner_.db_ != db_ || owner_.database_session_ != session_)
+        throw std::runtime_error("Legacy wallet enrollment check ownership unavailable");
+    if (LegacyTransparentState() != WalletManager::LegacyTransparentState::Absent)
+        return std::nullopt;
+    if (LegacyMigrationColumn(db_, "runtime_delivery_id")) {
+        LegacyMigrationStatement identity(db_,
+            "SELECT runtime_delivery_id FROM wallet_meta WHERE id=1");
+        if (sqlite3_step(identity.stmt) != SQLITE_ROW)
+            throw std::runtime_error("Legacy wallet identity metadata unavailable");
+        const int type = sqlite3_column_type(identity.stmt, 0);
+        if (type != SQLITE_NULL &&
+            (type != SQLITE_BLOB || sqlite3_column_bytes(identity.stmt, 0) != 32))
+            throw std::runtime_error("Legacy wallet identity malformed");
+        if (type == SQLITE_BLOB) {
+            const auto* bytes = static_cast<const uint8_t*>(sqlite3_column_blob(identity.stmt, 0));
+            if (!bytes || std::all_of(bytes, bytes + 32, [](uint8_t byte) { return byte == 0; }))
+                throw std::runtime_error("Legacy wallet identity malformed");
+        }
+        if (sqlite3_step(identity.stmt) != SQLITE_DONE)
+            throw std::runtime_error("Legacy wallet identity metadata malformed");
+        if (type != SQLITE_NULL) return std::nullopt;
+    }
+    { LegacyMigrationStatement settings(db_,
+          "SELECT key FROM settings WHERE key IN "
+          "('orchard_account_catalog_v1','wallet_initial_owner_v1')");
+      const int rc = sqlite3_step(settings.stmt);
+      if (rc == SQLITE_ROW) return std::nullopt;
+      if (rc != SQLITE_DONE) throw std::runtime_error("Legacy wallet owner metadata unavailable"); }
+    { LegacyMigrationStatement tables(db_,
+          "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+          "('orchard_wallet_schema','orchard_wallet_snapshots','orchard_wallet_retained','shielded_state_v1')");
+      const int rc = sqlite3_step(tables.stmt);
+      if (rc == SQLITE_ROW) return std::nullopt;
+      if (rc != SQLITE_DONE) throw std::runtime_error("Legacy wallet Orchard schema unavailable"); }
+    return LegacyMigrationHeight(db_,
+        "SELECT last_scanned_height FROM sync_meta WHERE id=1");
+}
+
+void WalletManager::DatabaseLease::RequireLegacyTransparentFinancialReady() const {
+    const auto state = LegacyTransparentState();
+    if (state == WalletManager::LegacyTransparentState::Pending)
+        throw std::runtime_error("Legacy transparent wallet migration pending");
+    if (state == WalletManager::LegacyTransparentState::Complete) {
+        (void)ReadDeliveryIdentity();
+        const auto tip = LegacyMigrationHeight(db_, "SELECT height FROM tip WHERE rowid=1");
+        const auto scan = LegacyMigrationHeight(db_,
+            "SELECT last_scanned_height FROM sync_meta WHERE id=1");
+        if (tip != scan || owner_.getBlockchainHeight() != tip)
+            throw std::runtime_error("Legacy transparent wallet height publication pending");
+    }
+}
+
+void WalletManager::DatabaseLease::RequireOrchardWalletReady() const {
+    if (LegacyTransparentState() != WalletManager::LegacyTransparentState::Absent)
+        throw std::runtime_error("Legacy transparent wallet has no Orchard account catalog");
+}
+
+std::string WalletManager::DatabaseLease::BeginLegacyTransparentMigration() {
+    if (thread_ != std::this_thread::get_id())
+        throw std::logic_error("Legacy wallet migration used on another thread");
+    if (!db_ || name_.empty() || owner_.db_ != db_ || owner_.database_session_ != session_ ||
+        owner_.database_leases_ != 1 || !sqlite3_get_autocommit(db_))
+        throw std::runtime_error("Legacy wallet migration ownership unavailable");
+    auto seed = CopyRecoverySeed(session_);
+    (void)seed;
+    LegacyMigrationExec(db_, "PRAGMA synchronous=FULL");
+    { LegacyMigrationStatement policy(db_, "PRAGMA synchronous");
+      if (sqlite3_step(policy.stmt) != SQLITE_ROW || sqlite3_column_int(policy.stmt, 0) != 2 ||
+          sqlite3_step(policy.stmt) != SQLITE_DONE)
+          throw std::runtime_error("Legacy wallet migration durability unavailable"); }
+    LegacyMigrationExec(db_, "BEGIN IMMEDIATE");
+    try {
+        { LegacyMigrationStatement selected(db_, "SELECT id FROM wallet_meta WHERE id=1");
+          if (sqlite3_step(selected.stmt) != SQLITE_ROW ||
+              sqlite3_step(selected.stmt) != SQLITE_DONE)
+              throw std::runtime_error("Legacy wallet metadata unavailable"); }
+        if (LegacyMigrationColumn(db_, "runtime_legacy_transparent_state_v1"))
+            throw std::runtime_error("Legacy wallet migration already enrolled");
+        { LegacyMigrationStatement settings(db_,
+              "SELECT key FROM settings WHERE key IN ('orchard_account_catalog_v1','wallet_initial_owner_v1')");
+          if (sqlite3_step(settings.stmt) != SQLITE_DONE)
+              throw std::runtime_error("Legacy wallet already has an Orchard owner"); }
+        { LegacyMigrationStatement tables(db_,
+              "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+              "('orchard_wallet_schema','orchard_wallet_snapshots','orchard_wallet_retained','shielded_state_v1')");
+          if (sqlite3_step(tables.stmt) != SQLITE_DONE)
+              throw std::runtime_error("Legacy wallet already has Orchard state"); }
+        if (!LegacyMigrationColumn(db_, "runtime_delivery_id"))
+            LegacyMigrationExec(db_, "ALTER TABLE wallet_meta ADD COLUMN runtime_delivery_id BLOB");
+        { LegacyMigrationStatement old_id(db_,
+              "SELECT runtime_delivery_id FROM wallet_meta WHERE id=1");
+          if (sqlite3_step(old_id.stmt) != SQLITE_ROW ||
+              sqlite3_column_type(old_id.stmt, 0) != SQLITE_NULL ||
+              sqlite3_step(old_id.stmt) != SQLITE_DONE)
+              throw std::runtime_error("Legacy wallet already has a delivery identity"); }
+        LegacyMigrationExec(db_,
+            "ALTER TABLE wallet_meta ADD COLUMN runtime_legacy_transparent_state_v1 TEXT");
+        std::array<unsigned char, 32> id{};
+        if (RAND_bytes(id.data(), int(id.size())) != 1 ||
+            std::all_of(id.begin(), id.end(), [](auto byte) { return byte == 0; }))
+            throw std::runtime_error("Legacy wallet migration randomness unavailable");
+        { LegacyMigrationStatement write(db_,
+              "UPDATE wallet_meta SET runtime_delivery_id=?,runtime_legacy_transparent_state_v1='pending' "
+              "WHERE id=1 AND runtime_delivery_id IS NULL AND runtime_legacy_transparent_state_v1 IS NULL");
+          if (sqlite3_bind_blob(write.stmt, 1, id.data(), int(id.size()), SQLITE_TRANSIENT) != SQLITE_OK ||
+              sqlite3_step(write.stmt) != SQLITE_DONE || sqlite3_changes(db_) != 1)
+              throw std::runtime_error("Legacy wallet migration enrollment failed"); }
+        static constexpr char hex[] = "0123456789abcdef";
+        std::string result = "DNWI01:";
+        for (auto byte : id) { result += hex[byte >> 4]; result += hex[byte & 15]; }
+        LegacyMigrationExec(db_, "COMMIT");
+        return result;
+    } catch (...) {
+        if (!sqlite3_get_autocommit(db_) &&
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
+            !sqlite3_get_autocommit(db_)) std::terminate();
+        throw;
+    }
+}
+
+std::string WalletManager::DatabaseLease::BeginLegacyTransparentMigrationV3(
+    const dinero::UTXOIndex& metadata_index, uint64_t expected_session) {
+    if (thread_ != std::this_thread::get_id())
+        throw std::logic_error("V3 legacy wallet migration used on another thread");
+    if (!metadata_index.IsFullArchiveV3MetadataOnly() || owner_.utxo_index_ != nullptr)
+        throw std::runtime_error("V3 legacy wallet migration requires detached metadata-only index");
+    if (!db_ || name_.empty() || owner_.db_ != db_ || owner_.database_session_ != session_ ||
+        owner_.database_leases_ != 1 || !sqlite3_get_autocommit(db_) ||
+        !expected_session || expected_session != session_)
+        throw std::runtime_error("V3 legacy wallet migration ownership unavailable");
+    auto seed = CopyRecoverySeed(expected_session);
+    LegacyMigrationExec(db_, "PRAGMA synchronous=FULL");
+    { LegacyMigrationStatement policy(db_, "PRAGMA synchronous");
+      if (sqlite3_step(policy.stmt) != SQLITE_ROW || sqlite3_column_int(policy.stmt, 0) != 2 ||
+          sqlite3_step(policy.stmt) != SQLITE_DONE)
+          throw std::runtime_error("V3 legacy wallet migration durability unavailable"); }
+    LegacyMigrationExec(db_, "BEGIN IMMEDIATE");
+    try {
+        { LegacyMigrationStatement selected(db_, "SELECT id FROM wallet_meta WHERE id=1");
+          if (sqlite3_step(selected.stmt) != SQLITE_ROW ||
+              sqlite3_step(selected.stmt) != SQLITE_DONE)
+              throw std::runtime_error("V3 legacy wallet metadata unavailable"); }
+        if (LegacyMigrationColumn(db_, "runtime_legacy_transparent_state_v1"))
+            throw std::runtime_error("V3 legacy wallet migration already enrolled");
+        { LegacyMigrationStatement settings(db_,
+              "SELECT key FROM settings WHERE key IN ('orchard_account_catalog_v1','wallet_initial_owner_v1')");
+          if (sqlite3_step(settings.stmt) != SQLITE_DONE)
+              throw std::runtime_error("V3 legacy wallet already has an Orchard owner"); }
+        { LegacyMigrationStatement tables(db_,
+              "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+              "('orchard_wallet_schema','orchard_wallet_snapshots','orchard_wallet_retained','shielded_state_v1')");
+          if (sqlite3_step(tables.stmt) != SQLITE_DONE)
+              throw std::runtime_error("V3 legacy wallet already has Orchard state"); }
+        // The seed and every spendable/imported address are checked in this
+        // transaction, before either enrollment field can become durable.
+        ValidateRecoveryInventoryInTransaction(*seed);
+        if (!LegacyMigrationColumn(db_, "runtime_delivery_id"))
+            LegacyMigrationExec(db_, "ALTER TABLE wallet_meta ADD COLUMN runtime_delivery_id BLOB");
+        std::array<unsigned char, 32> id{};
+        bool create = false;
+        { LegacyMigrationStatement old_id(db_,
+              "SELECT runtime_delivery_id FROM wallet_meta WHERE id=1");
+          if (sqlite3_step(old_id.stmt) != SQLITE_ROW)
+              throw std::runtime_error("V3 legacy wallet delivery identity unavailable");
+          create = sqlite3_column_type(old_id.stmt, 0) == SQLITE_NULL;
+          if (!create) {
+              if (sqlite3_column_type(old_id.stmt, 0) != SQLITE_BLOB ||
+                  sqlite3_column_bytes(old_id.stmt, 0) != int(id.size()))
+                  throw std::runtime_error("V3 legacy wallet delivery identity malformed");
+              const auto* bytes = sqlite3_column_blob(old_id.stmt, 0);
+              if (!bytes) throw std::runtime_error("V3 legacy wallet delivery identity unavailable");
+              std::memcpy(id.data(), bytes, id.size());
+              if (std::all_of(id.begin(), id.end(), [](auto byte) { return byte == 0; }))
+                  throw std::runtime_error("V3 legacy wallet delivery identity malformed");
+          }
+          if (sqlite3_step(old_id.stmt) != SQLITE_DONE)
+              throw std::runtime_error("V3 legacy wallet delivery identity incomplete"); }
+        if (create && (RAND_bytes(id.data(), int(id.size())) != 1 ||
+            std::all_of(id.begin(), id.end(), [](auto byte) { return byte == 0; })))
+            throw std::runtime_error("V3 legacy wallet migration randomness unavailable");
+        LegacyMigrationExec(db_,
+            "ALTER TABLE wallet_meta ADD COLUMN runtime_legacy_transparent_state_v1 TEXT");
+        if (create) {
+            LegacyMigrationStatement write(db_,
+                "UPDATE wallet_meta SET runtime_delivery_id=?,runtime_legacy_transparent_state_v1='pending' "
+                "WHERE id=1 AND runtime_delivery_id IS NULL AND runtime_legacy_transparent_state_v1 IS NULL");
+            if (sqlite3_bind_blob(write.stmt, 1, id.data(), int(id.size()), SQLITE_TRANSIENT) != SQLITE_OK ||
+                sqlite3_step(write.stmt) != SQLITE_DONE || sqlite3_changes(db_) != 1)
+                throw std::runtime_error("V3 legacy wallet migration enrollment failed");
+        } else {
+            LegacyMigrationStatement write(db_,
+                "UPDATE wallet_meta SET runtime_legacy_transparent_state_v1='pending' "
+                "WHERE id=1 AND runtime_delivery_id=? AND runtime_legacy_transparent_state_v1 IS NULL");
+            if (sqlite3_bind_blob(write.stmt, 1, id.data(), int(id.size()), SQLITE_TRANSIENT) != SQLITE_OK ||
+                sqlite3_step(write.stmt) != SQLITE_DONE || sqlite3_changes(db_) != 1)
+                throw std::runtime_error("V3 legacy wallet migration enrollment failed");
+        }
+        static constexpr char hex[] = "0123456789abcdef";
+        std::string result = "DNWI01:";
+        for (auto byte : id) { result += hex[byte >> 4]; result += hex[byte & 15]; }
+        LegacyMigrationExec(db_, "COMMIT");
+        return result;
+    } catch (...) {
+        if (!sqlite3_get_autocommit(db_) &&
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
+            !sqlite3_get_autocommit(db_)) std::terminate();
+        throw;
+    }
+}
+
+void WalletManager::PublishRecoveredBlockchainHeight(uint32_t expected_previous,
+                                                      uint32_t recovered, uint64_t session) {
+    auto lease = AcquireDatabaseLease();
+    if (lease->Session() != session ||
+        lease->LegacyTransparentState() != LegacyTransparentState::Complete)
+        throw std::runtime_error("Legacy wallet height publication ownership unavailable");
+    if (LegacyMigrationHeight(lease->Database(), "SELECT height FROM tip WHERE rowid=1") != recovered ||
+        LegacyMigrationHeight(lease->Database(),
+            "SELECT last_scanned_height FROM sync_meta WHERE id=1") != recovered)
+        throw std::runtime_error("Legacy wallet durable recovery height mismatch");
+    {
+        std::lock_guard<std::mutex> lock(height_mu_);
+        if (current_blockchain_height_ != expected_previous &&
+            current_blockchain_height_ != recovered)
+            throw std::runtime_error("Legacy wallet published recovery height changed");
+        current_blockchain_height_ = recovered;
+    }
+    height_cv_.notify_all();
 }
 
 WalletManager::RecoverySeed::RecoverySeed(WalletManager& owner, std::span<const uint8_t> seed)
@@ -5592,6 +5934,8 @@ WalletManager::Balance WalletManager::getBalance(const void* mempool_ptr) const 
         WLOG_INFO("getBalance: No database or wallet not open");
         return Balance{};
     }
+    auto legacy_read_lease = const_cast<WalletManager&>(*this).AcquireDatabaseLease();
+    legacy_read_lease->RequireLegacyTransparentFinancialReady();
     
     WLOG_INFO("getBalance: current_wallet_id=" + std::to_string(current_wallet_id_) + ", current_blockchain_height_=" + std::to_string(current_blockchain_height_));
     WLOG_INFO("getBalance: database pointer=" + std::to_string(reinterpret_cast<uintptr_t>(db_)));
@@ -5600,7 +5944,7 @@ WalletManager::Balance WalletManager::getBalance(const void* mempool_ptr) const 
     
     // Query utxos for balance calculation with dynamic coinbase maturity
     // Use positional parameters to avoid name/prefix mismatches
-    sqlite3_stmt* stmt;
+    sqlite3_stmt* stmt = nullptr;
     const char* sql = R"(
         WITH params(h, w) AS (VALUES (?1, ?2)),
         eligible AS (
@@ -5630,39 +5974,36 @@ WalletManager::Balance WalletManager::getBalance(const void* mempool_ptr) const 
 
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
     if (rc != SQLITE_OK) {
-        WLOG_ERR("getBalance: prepare failed: " + std::string(sqlite3_errmsg(db_)));
-        return balance;
+        const std::string error = sqlite3_errmsg(db_);
+        sqlite3_finalize(stmt);
+        throw std::runtime_error("Wallet balance query prepare failed: " + error);
     }
+
+    const auto fail = [&](const std::string& error) -> void {
+        sqlite3_finalize(stmt);
+        throw std::runtime_error("Wallet balance query failed: " + error);
+    };
 
     // Assert parameter count to prevent binding bugs
     const int expected_params = 2;
     const int actual_params = sqlite3_bind_parameter_count(stmt);
     if (actual_params != expected_params) {
-        WLOG_ERR("getBalance: Expected " + std::to_string(expected_params) +
-                              " params, got " + std::to_string(actual_params) +
-                              ": " + std::string(sqlite3_sql(stmt)));
-        sqlite3_finalize(stmt);
-        return balance;
+        fail("expected " + std::to_string(expected_params) +
+             " parameters, got " + std::to_string(actual_params));
     }
 
     // Positional binds: ?1 = current_height, ?2 = active wallet_id
     rc = sqlite3_bind_int(stmt, 1, current_blockchain_height_);
     if (rc != SQLITE_OK) {
-        WLOG_ERR("getBalance: bind ?1 failed: " + std::to_string(rc) +
-                              " SQL: " + std::string(sqlite3_sql(stmt)));
-        sqlite3_finalize(stmt);
-        return balance;
+        fail("height bind failed: " + std::to_string(rc));
     }
 
     rc = sqlite3_bind_int(stmt, 2, current_wallet_id_);
     if (rc != SQLITE_OK) {
-        WLOG_ERR("getBalance: bind ?2 failed: " + std::to_string(rc) +
-                              " SQL: " + std::string(sqlite3_sql(stmt)));
-        sqlite3_finalize(stmt);
-        return balance;
+        fail("wallet bind failed: " + std::to_string(rc));
     }
 
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
+    if ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
         // Get raw values from SQLite
         double confirmed_raw = sqlite3_column_double(stmt, 0);
         double unconfirmed_raw = sqlite3_column_double(stmt, 1);
@@ -5693,10 +6034,14 @@ WalletManager::Balance WalletManager::getBalance(const void* mempool_ptr) const 
                              " total=" + std::to_string(balance.total) + 
                              " utxo_count=" + std::to_string(balance.utxo_count));
     } else {
-        WLOG_WARN("getBalance: no row returned (empty eligible set?)");
+        fail("row unavailable: " + std::to_string(rc));
     }
 
-    sqlite3_finalize(stmt);
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_DONE)
+        fail("query did not complete: " + std::to_string(rc));
+    if (sqlite3_finalize(stmt) != SQLITE_OK)
+        throw std::runtime_error("Wallet balance query finalize failed");
     return balance;
 }
 
@@ -5704,6 +6049,8 @@ WalletManager::Balance WalletManager::getAddressBalance(const std::string& addre
     if (!db_) {
         return Balance{};
     }
+    auto legacy_read_lease = const_cast<WalletManager&>(*this).AcquireDatabaseLease();
+    legacy_read_lease->RequireLegacyTransparentFinancialReady();
 
     // Prefer scriptPubKey ownership matching when possible.
     // Address text can vary by network prefix while scriptPubKey is canonical.
@@ -5820,6 +6167,8 @@ WalletManager::Balance WalletManager::getScriptPubKeyBalance(const std::string& 
     if (!db_ || script_pubkey.empty()) {
         return Balance{};
     }
+    auto legacy_read_lease = const_cast<WalletManager&>(*this).AcquireDatabaseLease();
+    legacy_read_lease->RequireLegacyTransparentFinancialReady();
 
     Balance balance;
 
@@ -5907,6 +6256,8 @@ std::vector<WalletManager::TransactionInfo> WalletManager::getTransactionHistory
     if (!db_ || current_wallet_id_ == -1) {
         return history;
     }
+    auto legacy_read_lease = const_cast<WalletManager&>(*this).AcquireDatabaseLease();
+    legacy_read_lease->RequireLegacyTransparentFinancialReady();
     
     sqlite3_stmt* stmt;
     // Per-wallet database: no wallet_id filtering needed
@@ -5919,21 +6270,23 @@ std::vector<WalletManager::TransactionInfo> WalletManager::getTransactionHistory
             t.category,
             t.time,
             COALESCE(t.label, COALESCE(a.label, '')) as label,
-            t.is_coinbase
+            t.is_coinbase,
+            t.height
         FROM transactions t
         LEFT JOIN addresses a ON t.address = a.address
         ORDER BY t.time DESC, t.confirmations DESC
         LIMIT ? OFFSET ?
     )";
 
-    if (!SqlLog::prepare(&stmt, db_, sql, "tx-history-get-real")) {
-        return history;
-    }
+    if (!SqlLog::prepare(&stmt, db_, sql, "tx-history-get-real"))
+        throw std::runtime_error("Transaction history query unavailable");
+    std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(stmt, sqlite3_finalize);
+    if (sqlite3_bind_int(stmt, 1, limit) != SQLITE_OK ||
+        sqlite3_bind_int(stmt, 2, offset) != SQLITE_OK)
+        throw std::runtime_error("Transaction history query parameters unavailable");
 
-    sqlite3_bind_int(stmt, 1, limit);
-    sqlite3_bind_int(stmt, 2, offset);
-    
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
+    int rc;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
         TransactionInfo tx;
         tx.txid = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
         tx.address = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
@@ -5943,11 +6296,13 @@ std::vector<WalletManager::TransactionInfo> WalletManager::getTransactionHistory
         tx.time = sqlite3_column_int64(stmt, 5);
         tx.label = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
         tx.is_coinbase = sqlite3_column_int(stmt, 7) != 0;
+        tx.height = static_cast<uint32_t>(sqlite3_column_int(stmt, 8));
         
         history.push_back(tx);
     }
     
-    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE)
+        throw std::runtime_error("Transaction history query failed: " + std::string(sqlite3_errmsg(db_)));
     return history;
 }
 
@@ -5968,7 +6323,8 @@ std::vector<WalletManager::TransactionInfo> WalletManager::getAddressHistory(con
             category,
             time,
             '' as label,
-            is_coinbase
+            is_coinbase,
+            height
         FROM transactions
         WHERE address = ?
         ORDER BY time DESC, confirmations DESC
@@ -5992,6 +6348,7 @@ std::vector<WalletManager::TransactionInfo> WalletManager::getAddressHistory(con
         tx.time = sqlite3_column_int64(stmt, 5);
         tx.label = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
         tx.is_coinbase = sqlite3_column_int(stmt, 7) != 0;
+        tx.height = static_cast<uint32_t>(sqlite3_column_int(stmt, 8));
         
         history.push_back(tx);
     }
@@ -6171,6 +6528,7 @@ void WalletManager::checkUnlockTimeout() {
 std::vector<WalletManager::WalletUTXO> WalletManager::listUnspentUTXOs(
     int min_confirmations, int max_confirmations, const wallet::IWalletMempoolView* mempool) const {
     auto lease = const_cast<WalletManager&>(*this).AcquireDatabaseLease();
+    lease->RequireLegacyTransparentFinancialReady();
     if (!db_ || current_wallet_id_ <= 0)
         throw std::runtime_error("Wallet UTXO inventory unavailable");
     if (min_confirmations < 0 || max_confirmations < min_confirmations)
@@ -6443,6 +6801,7 @@ size_t WalletManager::unlockAllUTXOs() {
 WalletManager::BalanceSummary WalletManager::getBalanceSummary(const std::string& expected_wallet) const {
     auto& self = const_cast<WalletManager&>(*this);
     auto lease = self.AcquireDatabaseLease();
+    lease->RequireLegacyTransparentFinancialReady();
     if (!db_ || current_wallet_id_ < 0 ||
         (!expected_wallet.empty() && lease->WalletName() != expected_wallet))
         throw std::runtime_error("Balance wallet ownership unavailable");
@@ -6550,6 +6909,7 @@ WalletManager::BalanceSummary WalletManager::ReadBalanceSummaryInTransaction(Dat
 
 double WalletManager::getLockedBalance() const {
     auto& self=const_cast<WalletManager&>(*this);auto lease=self.AcquireDatabaseLease();
+    lease->RequireLegacyTransparentFinancialReady();
     if(!db_)return 0.0;
     IssuedAddressTransaction transaction(db_);auto locks=locked_utxos_;
     if(PaymentColumn(db_)) {
@@ -6931,6 +7291,13 @@ std::string WalletManager::getNewAddress(const std::string& label, const std::st
         WLOG_ERR("No wallet ID set for address generation");
         return "";
     }
+    {
+        auto lease=AcquireDatabaseLease();
+        if (lease->LegacyTransparentState()!=LegacyTransparentState::Absent) {
+            WLOG_WARN("Transparent-only wallet cannot issue a new receive address before Orchard enrollment");
+            return "";
+        }
+    }
 
     // ═══════════════════════════════════════════════════════════════
     // Phase 3C: Descriptor-Based Address Generation
@@ -7164,6 +7531,13 @@ std::string WalletManager::getNewChangeAddress(const std::string& label, const s
     if (current_wallet_id_ == -1) {
         WLOG_ERR("No wallet ID set for change address generation");
         return "";
+    }
+    {
+        auto lease=AcquireDatabaseLease();
+        if (lease->LegacyTransparentState()!=LegacyTransparentState::Absent) {
+            WLOG_WARN("Transparent-only wallet cannot issue a new change address before Orchard enrollment");
+            return "";
+        }
     }
 
     std::string effective_address_type = "taproot";
@@ -7503,6 +7877,10 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
     std::unique_ptr<DatabaseLease> database_lease;
     try { database_lease = AcquireDatabaseLease(); }
     catch (...) { return false; }
+    // Authenticated recovery may apply an owned SelectedWalletHistory. The
+    // mutable chain-view scanner cannot grant a v3 recovery receipt and may
+    // derive addresses or replace ordinary coin/sync rows.
+    if (full_archive_v3_legacy_rescans_disabled_ && !prepared) return false;
     if (!db_ || current_wallet_id_ == -1 || !sqlite3_get_autocommit(db_)) return false;
     if (prepared && (database_leases_ != 1 || !expected_session ||
         database_lease->Session() != expected_session || (prepared->blocks_.empty() && !prepared->snapshot_) ||
@@ -7542,7 +7920,8 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
     uint32_t tip_height = 0;
     try {
         if (prepared) {
-            const auto end=uint64_t(prepared->first_height_)+prepared->blocks_.size();
+            const auto end=uint64_t(prepared->first_height_)+
+                (prepared->blocks_.empty()?prepared->typed_tail_.size():prepared->blocks_.size());
             if (!end || end>uint64_t(INT32_MAX)+1 ||
                 (!prepared->blocks_.empty()&&prepared->blocks_.back().GetHash()!=prepared->tip_))return false;
             tip_height=uint32_t(end-1);
@@ -7628,18 +8007,49 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
         // height cannot wrap to zero and repeatedly replay the source.
         for (uint64_t cursor = static_cast<uint32_t>(start_height); cursor <= tip_height; ++cursor) {
             const auto height = static_cast<uint32_t>(cursor);
+            // Three body sources, one writer: typed deltas (v6-recovery stage
+            // C), owned prepared bodies, or mutable archival reads.
+            const RecoveryTailBlock* delta = prepared && !prepared->typed_tail_.empty()
+                ? &prepared->typed_tail_[height-prepared->first_height_] : nullptr;
             std::optional<Block> legacy_body;
-            if (!prepared) {
-                const auto hash = view->GetBlockHashAtHeight(static_cast<int32_t>(height));
-                if (!hash) throw std::runtime_error("Block rescan source height unavailable");
-                auto source = view->ReadBlock(*hash);
-                if (!source) throw std::runtime_error("Block rescan source body unavailable");
-                legacy_body = std::move(*source);
+            const Block* block = nullptr;
+            if (!delta) {
+                if (!prepared) {
+                    const auto hash = view->GetBlockHashAtHeight(static_cast<int32_t>(height));
+                    if (!hash) throw std::runtime_error("Block rescan source height unavailable");
+                    auto source = view->ReadBlock(*hash);
+                    if (!source) throw std::runtime_error("Block rescan source body unavailable");
+                    legacy_body = std::move(*source);
+                    block = &*legacy_body;
+                } else {
+                    block = &prepared->blocks_[height-prepared->first_height_];
+                }
             }
-            const auto& block = prepared ? prepared->blocks_[height-prepared->first_height_] : *legacy_body;
-            for (size_t tx_index = 0; tx_index < block.vtx.size(); ++tx_index) {
-                const auto& tx = block.vtx[tx_index];
-                const std::string txid = tx.GetTxid().AsUint256().GetHex();
+            const uint32_t block_time = delta ? delta->timestamp : block->header.timestamp;
+            const size_t tx_count = delta ? delta->transactions.size() : block->vtx.size();
+            for (size_t tx_index = 0; tx_index < tx_count; ++tx_index) {
+                // Normalized transaction views: the SQL effects below stay
+                // single-sourced for raw bodies and typed deltas.
+                struct OutputView { uint64_t value_una; const std::vector<uint8_t>* script; bool confidential; };
+                struct InputView { TxId txid; uint32_t vout; };
+                std::string txid; std::vector<OutputView> outs; std::vector<InputView> ins;
+                if (delta) {
+                    const auto& tx = delta->transactions[tx_index];
+                    txid = tx.txid.AsUint256().GetHex();
+                    outs.reserve(tx.outputs.size());
+                    for (const auto& output : tx.outputs)
+                        outs.push_back({output.value_una, &output.script_pub_key, output.is_confidential});
+                    ins.reserve(tx.spends.size());
+                    for (const auto& spend : tx.spends) ins.push_back({spend.txid, spend.vout});
+                } else {
+                    const auto& tx = block->vtx[tx_index];
+                    txid = tx.GetTxid().AsUint256().GetHex();
+                    outs.reserve(tx.vout.size());
+                    for (const auto& output : tx.vout)
+                        outs.push_back({output.value.GetUna(), &output.scriptPubKey, output.is_confidential});
+                    ins.reserve(tx.vin.size());
+                    for (const auto& input : tx.vin) ins.push_back({input.prevout.txid, input.prevout.vout});
+                }
                 const bool coinbase = tx_index == 0;
                 std::map<std::string, int64_t> activity;
                 std::map<std::string, std::set<std::string>> obsolete_receipt_addresses;
@@ -7651,27 +8061,27 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                         throw std::runtime_error("Block rescan history amount out of range");
                     amount += value;
                 };
-                for (size_t vout = 0; vout < tx.vout.size(); ++vout) {
-                    const auto& output = tx.vout[vout];
-                    if (!scripts.count(output.scriptPubKey)) continue;
-                    if (output.is_confidential)
+                for (size_t vout = 0; vout < outs.size(); ++vout) {
+                    const auto& output = outs[vout];
+                    if (!scripts.count(*output.script)) continue;
+                    if (output.confidential)
                         throw std::runtime_error("Block rescan confidential history unsupported");
-                    if (output.value.GetUna() > uint64_t(INT64_MAX) || vout > UINT32_MAX)
+                    if (output.value_una > uint64_t(INT64_MAX) || vout > UINT32_MAX)
                         throw std::runtime_error("Block rescan owned output out of range");
                     std::string script;
                     static constexpr char hex[] = "0123456789abcdef";
-                    script.reserve(output.scriptPubKey.size() * 2);
-                    for (const auto byte : output.scriptPubKey) {
+                    script.reserve(output.script->size() * 2);
+                    for (const auto byte : *output.script) {
                         script.push_back(hex[byte >> 4]); script.push_back(hex[byte & 15]);
                     }
-                    std::string address = extractAddressFromScript(output.scriptPubKey);
+                    std::string address = extractAddressFromScript(*output.script);
                     if (address.empty()) address = "script:" + script.substr(0, 16);
-                    accumulate(address, static_cast<int64_t>(output.value.GetUna()));
+                    accumulate(address, static_cast<int64_t>(output.value_una));
                     // Earlier recovery used a Bech32 checksum for Taproot and
                     // a display-only script fallback for P2MR. Reconcile only
                     // aliases derived from this authenticated owned output.
-                    if (output.scriptPubKey.size()==34 && output.scriptPubKey[1]==0x20) {
-                        const auto& spk=output.scriptPubKey;
+                    if (output.script->size()==34 && (*output.script)[1]==0x20) {
+                        const auto& spk=*output.script;
                         if(spk[0]==0x51)
                             obsolete_receipt_addresses[address].insert(bech32::Encode("din",1,
                                 std::vector<uint8_t>(spk.begin()+2,spk.end()),bech32::Encoding::BECH32));
@@ -7687,7 +8097,7 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                     checked(sqlite3_bind_text(row.get(), 2, txid.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
                     checked(sqlite3_bind_int64(row.get(), 3, vout), SQLITE_OK);
                     checked(sqlite3_bind_text(row.get(), 4, address.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
-                    checked(sqlite3_bind_int64(row.get(), 5, output.value.GetUna()), SQLITE_OK);
+                    checked(sqlite3_bind_int64(row.get(), 5, output.value_una), SQLITE_OK);
                     checked(sqlite3_bind_text(row.get(), 6, script.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
                     checked(sqlite3_bind_int64(row.get(), 7, height), SQLITE_OK);
                     checked(sqlite3_bind_int(row.get(), 8, coinbase ? 1 : 0), SQLITE_OK);
@@ -7695,12 +8105,12 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                     checked(sqlite3_step(row.get()), SQLITE_DONE);
                 }
                 if (!coinbase) {
-                    for (const auto& input : tx.vin) {
-                        const auto previous = input.prevout.txid.AsUint256().GetHex();
+                    for (const auto& input : ins) {
+                        const auto previous = input.txid.AsUint256().GetHex();
                         auto owned = prepare("SELECT address,amount FROM utxos WHERE wallet_id=? AND txid=? AND vout=? AND is_spent=0");
                         checked(sqlite3_bind_int(owned.get(), 1, current_wallet_id_), SQLITE_OK);
                         checked(sqlite3_bind_text(owned.get(), 2, previous.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
-                        checked(sqlite3_bind_int64(owned.get(), 3, input.prevout.vout), SQLITE_OK);
+                        checked(sqlite3_bind_int64(owned.get(), 3, input.vout), SQLITE_OK);
                         const int found = sqlite3_step(owned.get());
                         if (found == SQLITE_ROW) {
                             const auto* address = reinterpret_cast<const char*>(sqlite3_column_text(owned.get(), 0));
@@ -7719,7 +8129,7 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                         checked(sqlite3_bind_int64(row.get(), 2, height), SQLITE_OK);
                         checked(sqlite3_bind_int(row.get(), 3, current_wallet_id_), SQLITE_OK);
                         checked(sqlite3_bind_text(row.get(), 4, previous.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
-                        checked(sqlite3_bind_int64(row.get(), 5, input.prevout.vout), SQLITE_OK);
+                        checked(sqlite3_bind_int64(row.get(), 5, input.vout), SQLITE_OK);
                         checked(sqlite3_step(row.get()), SQLITE_DONE);
                     }
                 }
@@ -7796,7 +8206,7 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
                     checked(sqlite3_bind_int64(history.get(), 5, uint64_t(tip_height)-height+1), SQLITE_OK);
                     checked(sqlite3_bind_text(history.get(), 6, category.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
                     checked(sqlite3_bind_text(history.get(), 7, recovered_label.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
-                    checked(sqlite3_bind_int64(history.get(), 8, block.header.timestamp), SQLITE_OK);
+                    checked(sqlite3_bind_int64(history.get(), 8, block_time), SQLITE_OK);
                     checked(sqlite3_bind_int(history.get(), 9, coinbase ? 1 : 0), SQLITE_OK);
                     checked(sqlite3_bind_int64(history.get(), 10, height), SQLITE_OK);
                     checked(sqlite3_step(history.get()), SQLITE_DONE);
@@ -7806,7 +8216,7 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
             std::string error;
             // A transparent snapshot baseline does not qualify legacy shielded
             // discovery. Keep that consumer on the existing archival path only.
-            if (!(prepared&&prepared->snapshot_) && !wallet::shielded_ops::RescanConfirmedBlock(*this, height, block.vtx, &error))
+            if (!(prepared&&prepared->snapshot_) && !wallet::shielded_ops::RescanConfirmedBlock(*this, height, block->vtx, &error))
                 throw std::runtime_error("Block rescan shielded consumer failed: " + error);
             if ((cursor - start_height + 1) % 100 == 0 || height == tip_height) {
                 auto progress = prepare(R"(
@@ -7843,6 +8253,7 @@ bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
             };
             stamp(prepared->snapshot_->height,prepared->snapshot_->base);
             for(size_t i=0;i<prepared->blocks_.size();++i)stamp(prepared->first_height_+uint32_t(i),prepared->blocks_[i].GetHash());
+            for(const auto& applied:prepared->typed_tail_)stamp(applied.height,applied.hash);
             std::map<std::vector<uint8_t>,std::string> paths;
             {auto rows=prepare("SELECT script_pubkey,path FROM watch_scripts");int rc;
              while((rc=sqlite3_step(rows.get()))==SQLITE_ROW){const auto* data=static_cast<const uint8_t*>(sqlite3_column_blob(rows.get(),0));
@@ -7937,6 +8348,7 @@ int WalletManager::DiscoverSnapshotCandidates(std::span<const UtxoSetEntry> coin
         current_wallet_id_<=0||!sqlite3_get_autocommit(db_)||base.IsNull()||!height)return -1;
     const char* phase="unlocked-seed";
     try{
+        lease->RequireOrchardWalletReady();
         auto seed=lease->CopyRecoverySeed(expected_session);
         IssuedAddressTransaction transaction(db_);
         phase="unknown-empty-catalog";
@@ -8021,6 +8433,7 @@ int WalletManager::rescanUtxoSet(
     std::unique_ptr<DatabaseLease> database_lease;
     try { database_lease = AcquireDatabaseLease(); }
     catch (...) { return -1; }
+    if (full_archive_v3_legacy_rescans_disabled_) return -1;
     if (!db_ || current_wallet_id_ == -1) return -1;
     if (!sqlite3_get_autocommit(db_)) return -1; // Never adopt a caller transaction.
 
@@ -10108,6 +10521,11 @@ void WalletManager::addWatchScript(const std::vector<uint8_t>& script_pubkey, co
         WLOG_ERR("[addWatchScript] No wallet database open");
         return;
     }
+    auto lease = AcquireDatabaseLease();
+    if (lease->LegacyTransparentState() != LegacyTransparentState::Absent) {
+        WLOG_WARN("[addWatchScript] Transparent-only wallet script domain is frozen until Orchard enrollment");
+        return;
+    }
 
     // Insert into watch_scripts table (OR IGNORE prevents duplicates)
     const char* sql = "INSERT OR IGNORE INTO watch_scripts (script_pubkey, path, is_change, last_seen_height, created_at) VALUES (?, ?, ?, 0, ?)";
@@ -10151,6 +10569,11 @@ bool WalletManager::storeCovenantDescriptor(
         record.script_pubkey[0] != 0x51 ||
         record.script_pubkey[1] != 0x20) {
         WLOG_ERR("[storeCovenantDescriptor] Invalid record or no active wallet");
+        return false;
+    }
+    auto lease = AcquireDatabaseLease();
+    if (lease->LegacyTransparentState() != LegacyTransparentState::Absent) {
+        WLOG_WARN("[storeCovenantDescriptor] Transparent-only wallet script domain is frozen until Orchard enrollment");
         return false;
     }
 
@@ -10423,6 +10846,11 @@ void WalletManager::addAddress(int account, int change, int idx, const std::stri
         WLOG_ERR("[addAddress] No wallet database open");
         return;
     }
+    auto lease = AcquireDatabaseLease();
+    if (lease->LegacyTransparentState() != LegacyTransparentState::Absent) {
+        WLOG_WARN("[addAddress] Transparent-only wallet address domain is frozen until Orchard enrollment");
+        return;
+    }
 
     // Insert into addresses table (OR IGNORE prevents duplicates)
     const char* sql = "INSERT OR IGNORE INTO addresses (account, change, idx, address, type, created_at) VALUES (?, ?, ?, ?, ?, ?)";
@@ -10467,6 +10895,11 @@ void WalletManager::registerTaprootAddress(const std::vector<uint8_t>& script_pu
         WLOG_ERR("[registerTaprootAddress] No wallet database open");
         return;
     }
+    auto lease = AcquireDatabaseLease();
+    if (lease->LegacyTransparentState() != LegacyTransparentState::Absent) {
+        WLOG_WARN("[registerTaprootAddress] Transparent-only wallet script domain is frozen until Orchard enrollment");
+        return;
+    }
 
     // Register with UTXOIndex for UTXO scanning
     if (utxo_index_) {
@@ -10506,6 +10939,12 @@ void WalletManager::registerTaprootAddress(const std::vector<uint8_t>& script_pu
 
 void WalletManager::registerP2MRAddress(const std::vector<uint8_t>& script_pubkey,
                                         const std::string& derivation_path) {
+    if (!db_) return;
+    auto lease = AcquireDatabaseLease();
+    if (lease->LegacyTransparentState() != LegacyTransparentState::Absent) {
+        WLOG_WARN("[registerP2MRAddress] Transparent-only wallet script domain is frozen until Orchard enrollment");
+        return;
+    }
     if (!db_) {
         WLOG_ERR("[registerP2MRAddress] No wallet database open");
         return;
@@ -10555,6 +10994,7 @@ bool WalletManager::storeTaprootKey(const std::string& address,
         auto lease = AcquireDatabaseLease();
         if (!db_ || !sqlite3_get_autocommit(db_) || recovery_seeds_ ||
             (expected_session && lease->Session()!=expected_session)) return false;
+        if (lease->LegacyTransparentState() != LegacyTransparentState::Absent) return false;
         checkUnlockTimeout();
         IssuedAddressTransaction transaction(db_);
         if (require_empty_legacy_imports) {

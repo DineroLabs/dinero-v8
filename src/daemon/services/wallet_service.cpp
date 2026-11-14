@@ -3,6 +3,9 @@
 #include "daemon/services/logger_service.h"
 #include "daemon/services/config_service.h"
 #include "daemon/services/chainstate_service.h"
+#include "daemon/services/wallet_catchup.h"
+#include <optional>
+#include <utility>
 #include "daemon/daemon_context.h"
 #include "daemon/config.h"
 #include "daemon/rpc/wallet_gui_handlers.h"  // For RpcCreateHDWallet
@@ -19,6 +22,11 @@
 #endif
 
 namespace dinero {
+
+namespace {
+constexpr const char* kV3OwnerScopedRecoveryPending =
+    "v3 owner-scoped recovery pending; legacy wallet index and block replay are unavailable";
+}
 
 // The worker owns its randomized plans and results; it calls no wallet,
 // chainstate or service callback while proving. Its destructor drains before
@@ -181,19 +189,35 @@ bool WalletService::Start() {
         UTXOIndex* utxo_index = nullptr;
         if (chainstate_) {
             utxo_index = &index_use->Index();
-            logger_interface_->info("[WalletService] Initializing wallet worker with UTXO index");
+            logger_interface_->info("[WalletService] UTXO index acquired from chainstate");
         } else {
             logger_interface_->warning("[WalletService] Chainstate not available - wallet worker will start without UTXO index");
         }
 
-        // ✅ CRITICAL FIX: Pass WalletManager to enable UTXO database persistence
-        WalletNotify::Initialize(utxo_index, wallet_mgr_.get());
-        logger_interface_->info("[WalletService] Wallet worker thread started with database persistence");
+        const bool full_archive_v3 = utxo_index && utxo_index->IsFullArchiveV3MetadataOnly();
+        if (full_archive_v3) {
+            // The v3 index authenticates archive metadata only. Runtime
+            // delivery owns wallet coins; the legacy worker and manager
+            // address registration would write an unrelated v2 view.
+            if (WalletNotify::IsInitialized() || wallet_mgr_->getUTXOIndex())
+                throw std::runtime_error("v3 wallet source has an active legacy writer");
+            wallet_mgr_->DisableLegacyRescansForFullArchiveV3();
+            legacy_scan_suppressed = true;
+            logger_interface_->info("[WalletService] Full-archive v3 wallet source: legacy writers disabled");
+        }
 
-        // ✅ CRITICAL INVARIANT: UTXOIndex MUST be set before any wallet operations
-        // This enables address registration for wallet UTXO tracking
-        // Without UTXOIndex, wallet addresses won't be registered for block scanning
-        if (utxo_index) {
+        // ✅ CRITICAL FIX: Pass WalletManager to enable UTXO database persistence
+        if (!full_archive_v3) {
+            WalletNotify::Initialize(utxo_index, wallet_mgr_.get());
+            legacy_wallet_notify_started_ = true;
+            logger_interface_->info("[WalletService] Wallet worker thread started with database persistence");
+        }
+
+        // The legacy v2 wallet registers addresses in its UTXO index.
+        // Full-archive v3 keeps the metadata-only index owned by chainstate.
+        if (full_archive_v3) {
+            logger_interface_->info("[WalletService] v3 metadata-only index retained by chainstate");
+        } else if (utxo_index) {
             wallet_mgr_->setUTXOIndex(utxo_index);
             logger_interface_->info("[WalletService] ✅ UTXOIndex set in WalletManager");
         } else {
@@ -253,7 +277,7 @@ bool WalletService::Start() {
                     "wallet.exportseed, store it offline, then call wallet.acknowledgeseedbackup");
 
                 // Load any existing addresses into UTXOIndex (now populated with first address from HD wallet)
-                wallet_mgr_->LoadAddressesIntoUTXOIndex();
+                if (!full_archive_v3) wallet_mgr_->LoadAddressesIntoUTXOIndex();
 
             } catch (const std::exception& e) {
                 logger_interface_->error("[WalletService] Failed to auto-create default wallet: " + std::string(e.what()));
@@ -294,7 +318,7 @@ bool WalletService::Start() {
             const auto canonical=activation_parent ? CanonicalRecovery::Deferred :
                 RecoverActiveWalletFromCanonicalSource(&canonical_error);
             if(activation_parent)canonical_error="Activation-parent wallet recovery queued for the runtime worker";
-            legacy_scan_suppressed=canonical!=CanonicalRecovery::NotRequired;
+            legacy_scan_suppressed=full_archive_v3 || canonical!=CanonicalRecovery::NotRequired;
             if(!legacy_scan_suppressed&&GetConfig().utreexo_stateless&&
                chainstate_&&chainstate_->GetSnapshotWalletRecoveryBaseHeight()>0){
                 // Bootstrap height is not a reorg or wallet recovery source.
@@ -406,7 +430,7 @@ bool WalletService::Start() {
             if (wallet_mgr_->hasActiveWallet()) {
                 std::string canonical_error;
                 const auto canonical=RecoverActiveWalletFromCanonicalSource(&canonical_error);
-                legacy_scan_suppressed=canonical!=CanonicalRecovery::NotRequired;
+                legacy_scan_suppressed=full_archive_v3 || canonical!=CanonicalRecovery::NotRequired;
             if(!legacy_scan_suppressed&&GetConfig().utreexo_stateless&&
                chainstate_&&chainstate_->GetSnapshotWalletRecoveryBaseHeight()>0){
                 // Bootstrap height is not a reorg or wallet recovery source.
@@ -447,38 +471,30 @@ bool WalletService::Start() {
                     logger_interface_->error("[WalletService] ChainDB not available for catch-up scan");
                 } else {
 
-                    // Manually trigger WalletNotify for each block the wallet missed
-                    for (uint32_t height = wallet_scan_height + 1; height <= actual_blockchain_height; height++) {
-                        if ((height - wallet_scan_height) % 1000 == 0) {
+                    // The legacy wallet worker consumes historical Block
+                    // bodies only. This loop refuses the first unavailable
+                    // height; typed Orchard recovery has its own source path.
+                    wallet_catchup::RequireContiguous(wallet_scan_height,
+                        actual_blockchain_height, [&](uint32_t height)
+                            -> std::optional<std::pair<uint256, Block>> {
+                        const auto hash_result = chain_db->getBlockHashByHeight(height);
+                        if (!hash_result.ok() || hash_result.value().IsNull())
+                            return std::nullopt;
+                        const uint256& block_hash = hash_result.value();
+                        auto block_result = chainstate->getBlockByHash(block_hash);
+                        if (!block_result.ok()) return std::nullopt;
+                        return std::make_pair(block_hash, std::move(block_result.value()));
+                    }, [&](uint32_t height, const uint256& block_hash, const Block& block) {
+                        if ((height - wallet_scan_height) % 1000 == 0)
                             logger_interface_->info("[WalletService] Catch-up progress: " +
                                 std::to_string(height) + "/" + std::to_string(actual_blockchain_height));
-                        }
-                        try {
-                            // Phase M.0: Get block hash as uint256
-                            auto hash_result = chain_db->getBlockHashByHeight(height);
-                            if (hash_result.ok() && !hash_result.value().IsNull()) {
-                                const uint256& block_hash = hash_result.value();
+                        // Phase M.0: Convert uint256 to string at wallet boundary.
+                        WalletNotify::OnBlockConnected(height, block_hash.GetHex(), block.vtx);
+                        logger_interface_->info("[WalletService]   Queued block " + std::to_string(height)
+                            + " (" + std::to_string(block.vtx.size()) + " txs)");
+                    });
 
-                                // Get full block data
-                                auto block_result = chainstate->getBlockByHash(block_hash);
-                                if (block_result.ok()) {
-                                    // Trigger wallet worker to scan this block
-                                    // Phase M.0: Convert uint256 to string at wallet boundary
-                                    WalletNotify::OnBlockConnected(height, block_hash.GetHex(), block_result.value().vtx);
-                                    logger_interface_->info("[WalletService]   Scanned block " + std::to_string(height)
-                                        + " (" + std::to_string(block_result.value().vtx.size()) + " txs)");
-                                } else {
-                                    logger_interface_->warning("[WalletService]   Could not load block " + std::to_string(height) + " for scanning");
-                                }
-                            } else {
-                                logger_interface_->warning("[WalletService]   Could not find hash for block " + std::to_string(height));
-                            }
-                        } catch (const std::exception& block_err) {
-                            logger_interface_->warning("[WalletService]   Failed to scan block " + std::to_string(height) + ": " + block_err.what());
-                        }
-                    }
-
-                    logger_interface_->info("[WalletService] ✅ Wallet catch-up scan completed");
+                    logger_interface_->info("[WalletService] Wallet catch-up blocks queued for scanning");
 
                     // Priority 3 FIX: Validate wallet UTXOs against consensus
                     // This removes any phantom UTXOs that may have been created by incomplete reorgs
@@ -527,12 +543,15 @@ bool WalletService::EnsureRuntimeWalletBindings() {
     try {
         if (chainstate_) {
             index_use=ChainstateService::AcquireWalletIndexUse(chainstate_);
-            if (wallet_mgr_->getUTXOIndex()!=&index_use->Index()) return false;
+            if (index_use->Index().IsFullArchiveV3MetadataOnly()) {
+                if (wallet_mgr_->getUTXOIndex() || WalletNotify::IsInitialized()) return false;
+            } else if (wallet_mgr_->getUTXOIndex()!=&index_use->Index()) return false;
         }
     } catch (const std::exception&) { return false; }
 
     try {
-        wallet_mgr_->LoadAddressesIntoUTXOIndex();
+        if (!index_use || !index_use->Index().IsFullArchiveV3MetadataOnly())
+            wallet_mgr_->LoadAddressesIntoUTXOIndex();
     } catch (const std::exception& e) {
         logger_interface_->error("[WalletService] Script inventory reload refused: " + std::string(e.what()));
         return false;
@@ -566,7 +585,9 @@ WalletService::CanonicalRecovery WalletService::RecoverActiveWalletFromCanonical
         if (!chainstate_ || !use->Wallet().hasActiveWallet())
             throw std::runtime_error("wallet or chainstate unavailable");
         auto index=ChainstateService::AcquireWalletIndexUse(chainstate_);
-        const auto recovered=chainstate_->resumeRuntimeWalletRecoveryIfNeeded(use->Wallet(),index->Index(),expected_session);
+        const auto recovered=index->Index().IsFullArchiveV3MetadataOnly() ?
+            chainstate_->resumeRuntimeWalletRecoveryV3IfNeeded(use->Wallet(),index->Index(),expected_session) :
+            chainstate_->resumeRuntimeWalletRecoveryIfNeeded(use->Wallet(),index->Index(),expected_session);
         if (!recovered.ok())
             throw std::runtime_error("canonical wallet recovery deferred: checked source, unlocked keys and authenticated store baselines are required");
         return *recovered ? CanonicalRecovery::AppliedPrefix : CanonicalRecovery::NotRequired;
@@ -574,6 +595,20 @@ WalletService::CanonicalRecovery WalletService::RecoverActiveWalletFromCanonical
         if (error) *error=e.what();
         return CanonicalRecovery::Deferred;
     }
+}
+
+std::string WalletService::EnrollActiveLegacyTransparentWalletV3(uint64_t expected_session) {
+    auto use = BorrowWalletUse();
+    if (!chainstate_ || !use->Wallet().hasActiveWallet())
+        throw std::runtime_error("V3 legacy wallet or chainstate unavailable");
+    auto index = ChainstateService::AcquireWalletIndexUse(chainstate_);
+    if (!index->Index().IsFullArchiveV3MetadataOnly() || use->Wallet().getUTXOIndex() != nullptr)
+        throw std::runtime_error("V3 legacy wallet enrollment requires detached metadata-only index");
+    auto lease = use->Wallet().AcquireDatabaseLease();
+    const auto session = lease->Session();
+    if (expected_session && expected_session != session)
+        throw std::runtime_error("V3 legacy wallet enrollment session changed");
+    return lease->BeginLegacyTransparentMigrationV3(index->Index(), session);
 }
 
 bool WalletService::RecoverActiveWalletFromSnapshotIfNeeded(std::string* error, uint64_t expected_session) {
@@ -591,6 +626,10 @@ bool WalletService::RecoverActiveWalletFromSnapshotIfNeeded(std::string* error, 
     std::unique_ptr<ChainstateService::WalletIndexUse> index_use;
     try {
         index_use=ChainstateService::AcquireWalletIndexUse(chainstate_);
+        if (index_use->Index().IsFullArchiveV3MetadataOnly()) {
+            if (error) *error=kV3OwnerScopedRecoveryPending;
+            return false;
+        }
         if (wallet_mgr_->getUTXOIndex()!=&index_use->Index()) {
             if (error) *error="wallet index binding does not match current source";
             return false;
@@ -725,7 +764,10 @@ void WalletService::Stop() {
         // wallet SQLite or selected-chain mutex; active proof computation is
         // nonpreemptible, so this is not a bounded shutdown-time guarantee.
         if(orchard_proofs_)orchard_proofs_->Shutdown();
-        WalletNotify::Shutdown();
+        if (legacy_wallet_notify_started_) {
+            WalletNotify::Shutdown();
+            legacy_wallet_notify_started_=false;
+        }
         wallet_mgr_->setHDWallet(nullptr);
     } catch (...) {
         // Keep the actual manager/helper owned if prerequisite shutdown did

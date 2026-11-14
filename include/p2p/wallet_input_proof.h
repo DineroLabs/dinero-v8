@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include "p2p/orchard_catalog_client.h"
 #include "crypto/secure_random.h"
 #include "consensus/utreexo_maturity_leaf_activation.h"
@@ -118,7 +119,12 @@ public:
     }
     void Stop(){std::lock_guard join(join_);{std::lock_guard lock(mutex_);stop_=true;packet_.reset();flight_.reset();wanted_.clear();ready_.clear();}
         cv_.notify_all();if(worker_.joinable())worker_.join();}
+    // Idle workers (nothing wanted or in flight) wait up to IdleWait instead
+    // of polling every 50 ms; any request, packet or stop still wakes them.
+    static constexpr std::chrono::milliseconds IdleWait{1000},ActiveWait{50};
+    uint64_t Iterations()const{return iterations_.load();}
 private:
+    std::atomic<uint64_t> iterations_{0};
     using Clock=std::chrono::steady_clock;const Peers peers_;const Send send_;
     std::mutex mutex_,join_;std::condition_variable cv_;bool stop_=false;uint64_t generation_=0;
     std::deque<Wire::Request> wanted_;std::map<Bytes,std::shared_ptr<const Wire::Reply>> ready_;
@@ -128,7 +134,8 @@ private:
         std::optional<Wire::Request> sent_request;
         for(;;){
             std::optional<Peer> peer;std::optional<Bytes> packet;Wire::Request request;uint64_t generation=0;
-            {std::unique_lock lock(mutex_);cv_.wait_for(lock,std::chrono::milliseconds(50),[&]{return stop_||packet_.has_value();});
+            {std::unique_lock lock(mutex_);const bool idle=wanted_.empty();
+             cv_.wait_for(lock,idle?IdleWait:ActiveWait,[&]{return stop_||packet_.has_value()||(idle&&!wanted_.empty());});++iterations_;
              if(stop_)return;if(wanted_.empty())continue;generation=generation_;request=wanted_.front();peer=flight_;packet=std::move(packet_);packet_.reset();}
             const auto fail=[&]{std::lock_guard lock(mutex_);if(generation==generation_){
                 if(peer){if(cooldown.size()>=32)cooldown.erase(cooldown.begin());cooldown[peer->address]=Clock::now()+std::chrono::minutes(1);}

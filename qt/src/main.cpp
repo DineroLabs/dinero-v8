@@ -12,11 +12,16 @@
 #include <QFileInfo>
 #include <QLockFile>
 #include <iostream>
+#include <memory>
+#include <optional>
 #include <string>
 #include "bundledsnapshotpolicy.h"
+#include "daemonstartuppolicy.h"
 #include <QMessageBox>
 #include <QPushButton>
 #include <QCheckBox>
+#include <QProgressDialog>
+#include <QEventLoop>
 #include <QTimer>
 #include <QMutex>
 #include <QPointer>
@@ -111,7 +116,7 @@ QStringList currentBootstrapAddnodes() {
 // All remain armed on every start. The daemon treats them as inert on an
 // ordinary synced datadir, but an interrupted first sync needs the exact old
 // artifact even after the app bundle has been upgraded.
-constexpr char kBundledSnapshotPrimary[] = "dinero-assumeutxo-150521-v6-full.dat";
+constexpr char kBundledSnapshotPrimary[] = "dinero-assumeutxo-152700-v6-full.dat";
 constexpr char kBundledSnapshotFallback[] = "dinero-assumeutxo-148375-v5.dat";
 constexpr char kBundledSnapshotLegacyFallback[] = "dinero-assumeutxo-99677-v4.dat";
 constexpr char kBundledSnapshotOldestFallback[] = "utxo-snapshot-65300.dat";
@@ -167,7 +172,7 @@ void appendAssumeUtxoSnapshotArgs(QStringList& args, const QString& datadir) {
     // snapshot base until the genesis->base replay completes, so a payment
     // received above the base shows 0 confirmations (and never reaches the
     // wallet index) for the whole first-run validation window — hours of
-    // "where's my money?" on every fresh install. The v5 snapshot is verified
+    // "where's my money?" on every fresh install. The full-v6 snapshot is verified
     // against its selected header-chain commitment and burial before loading; validation
     // still runs to completion in the background (#361 forward-connect;
     // the posture the iOS profile has always shipped).
@@ -882,7 +887,8 @@ static void killStaleOrphanSeeders() {
 }
 
 // Start the daemon in the background (returns QProcess* for output capture)
-static QProcess* startDaemon(const QString& datadir, dinero::DebugConsole* debugConsole) {
+static QProcess* startDaemon(const QString& datadir, dinero::DebugConsole* debugConsole,
+                             dinero::qt::WalletIndexStartupMode walletIndexMode) {
     QString daemonPath = defaultDaemonPath();
 
     // Check if daemon binary exists
@@ -923,7 +929,8 @@ static QProcess* startDaemon(const QString& datadir, dinero::DebugConsole* debug
 
     // Fresh wallet: fast-sync from the bundled AssumeUTXO snapshot rather than
     // syncing from genesis (removes the long, catch-up-stall-prone first run).
-    appendAssumeUtxoSnapshotArgs(args, datadir);
+    if (dinero::qt::ShouldArmBundledSnapshot(walletIndexMode))
+        appendAssumeUtxoSnapshotArgs(args, datadir);
 
     // Track C: Liquidity Vault. Daemon defaults are vault=1 and
     // (as of v2.1.29) shadow=0 — credits open for real once a
@@ -976,7 +983,8 @@ static QProcess* startDaemon(const QString& datadir, dinero::DebugConsole* debug
 }
 
 // Ensure daemon is running, start if needed. Returns QProcess* if we started it.
-static QProcess* ensureDaemonRunning(const QString& datadir, dinero::DebugConsole* debugConsole = nullptr) {
+static QProcess* ensureDaemonRunning(const QString& datadir, dinero::DebugConsole* debugConsole,
+                                     dinero::qt::WalletIndexStartupMode walletIndexMode) {
     qDebug() << "═══════════════════════════════════════════════════════";
     qDebug() << "Checking daemon status...";
     qDebug() << "Data directory:" << datadir;
@@ -1052,7 +1060,7 @@ static QProcess* ensureDaemonRunning(const QString& datadir, dinero::DebugConsol
     constexpr int kMaxSpawnAttempts = 3;
     QProcess* daemonProc = nullptr;
     for (int attempt = 1; attempt <= kMaxSpawnAttempts; ++attempt) {
-        daemonProc = startDaemon(datadir, debugConsole);
+        daemonProc = startDaemon(datadir, debugConsole, walletIndexMode);
 
         if (daemonProc && daemonProc->state() != QProcess::NotRunning) {
             qDebug() << "✅ Successfully started daemon";
@@ -1168,6 +1176,150 @@ static bool confirmRpcPortSquatter() {
     return box.clickedButton() == continueBtn;
 }
 
+struct WalletIndexMaintenanceResult {
+    bool completed = false;
+    bool timedOut = false;
+    int exitCode = -1;
+    QString output;
+};
+
+// Run only the bundled daemon's foreground maintenance mode. It owns the
+// datadir lock and all source/backup checks; Qt never opens the index itself.
+// Drain its output while it runs so a verbose preflight cannot block on a
+// full process pipe before the timeout can fire.
+static WalletIndexMaintenanceResult runWalletIndexMaintenance(
+    const QString& daemonPath, const QStringList& args, int timeoutMs,
+    const QString& progressText = {}) {
+  QProcess process;
+  process.setProcessChannelMode(QProcess::MergedChannels);
+  WalletIndexMaintenanceResult result;
+  auto drain = [&]() {
+    result.output += QString::fromUtf8(process.readAllStandardOutput());
+    constexpr qsizetype kMaxDiagnosticChars = 32768;
+    if (result.output.size() > kMaxDiagnosticChars)
+      result.output.remove(0, result.output.size() - kMaxDiagnosticChars);
+  };
+  QObject::connect(&process, &QProcess::readyReadStandardOutput, &process, drain);
+  process.start(daemonPath, args);
+  if (!process.waitForStarted(5000)) {
+    drain();
+    result.output += process.errorString();
+    return result;
+  }
+
+  QTimer timeout;
+  timeout.setSingleShot(true);
+  QEventLoop loop;
+  QObject::connect(&process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+                   &loop, &QEventLoop::quit);
+  QObject::connect(&timeout, &QTimer::timeout, &loop, [&]() {
+    result.timedOut = true;
+    loop.quit();
+  });
+  std::unique_ptr<QProgressDialog> progress;
+  if (!progressText.isEmpty()) {
+    progress = std::make_unique<QProgressDialog>();
+    progress->setWindowTitle(QStringLiteral("Updating wallet history"));
+    progress->setLabelText(progressText);
+    progress->setRange(0, 0);
+    progress->setCancelButton(nullptr);
+    progress->setMinimumDuration(0);
+    progress->setWindowModality(Qt::ApplicationModal);
+    progress->show();
+  }
+  timeout.start(timeoutMs);
+  if (process.state() != QProcess::NotRunning) loop.exec();
+  timeout.stop();
+  if (process.state() != QProcess::NotRunning) {
+    process.kill();
+    process.waitForFinished(3000);
+  }
+  drain();
+  if (progress) progress->close();
+  result.completed = !result.timedOut && process.exitStatus() == QProcess::NormalExit;
+  result.exitCode = process.exitCode();
+  return result;
+}
+
+static std::optional<dinero::qt::WalletIndexStartupMode>
+offerFullArchiveWalletIndexUpgrade(const QString& datadir) {
+  using dinero::qt::WalletIndexStartupMode;
+  const QString index = QDir(datadir).filePath(QStringLiteral("blockchain/utxo"));
+  if (!QFileInfo(index).isFile() || isDaemonRunning(300))
+    return WalletIndexStartupMode::LegacyOrUnavailable;
+  const QString daemonPath = defaultDaemonPath();
+  if (!QFileInfo(daemonPath).isExecutable())
+    return WalletIndexStartupMode::LegacyOrUnavailable;
+
+  // Old/externally supplied dinerod builds may silently ignore unknown CLI
+  // switches and start a node. Require an advertised read-only command first.
+  const auto help = runWalletIndexMaintenance(daemonPath, {"--help"}, 10000);
+  if (!help.completed || help.exitCode != 0 ||
+      !help.output.contains(QStringLiteral("--wallet-index-v3-status")))
+    return WalletIndexStartupMode::LegacyOrUnavailable;
+
+  const QStringList rootArgs = {QStringLiteral("--datadir"), datadir};
+  const auto status = runWalletIndexMaintenance(
+      daemonPath, QStringList{QStringLiteral("--wallet-index-v3-status")} + rootArgs,
+      60000);
+  if (!status.completed || status.exitCode != 0)
+    return WalletIndexStartupMode::LegacyOrUnavailable;
+  bool available = false;
+  bool ready = false;
+  for (const auto& line : status.output.split('\n')) {
+    available |= line.trimmed() == QStringLiteral("wallet_index_v3_status=upgrade_available");
+    ready |= line.trimmed() == QStringLiteral("wallet_index_v3_status=ready");
+  }
+  if (ready) return WalletIndexStartupMode::FullArchiveV3;
+  if (!available) return WalletIndexStartupMode::LegacyOrUnavailable;
+  // Recovery currently publishes transparent history but cannot yet make the
+  // legacy wallet spend-ready after Orchard. Never offer this as an ordinary
+  // wallet upgrade. An explicit pilot environment is required until the
+  // authenticated send path and its qualification are complete.
+  if (!dinero::qt::ShouldOfferWalletIndexV3Upgrade(
+          available, qEnvironmentVariable("DINERO_QT_V3_WALLET_PILOT") == QStringLiteral("1")))
+    return WalletIndexStartupMode::LegacyOrUnavailable;
+
+  QMessageBox choice;
+  choice.setIcon(QMessageBox::Warning);
+  choice.setWindowTitle(QStringLiteral("Update wallet history"));
+  choice.setText(QStringLiteral("Pilot: recover transparent wallet history"));
+  choice.setInformativeText(QStringLiteral(
+      "This pilot can display transparent mining rewards after Orchard, but "
+      "the recovered wallet cannot send funds until its Orchard spend path is qualified. "
+      "Dinero will make a separate rollback copy before changing the index. "
+      "Your wallet keys are not changed. The daemon will start after the update.\n\n"
+      "If you continue without updating, recent mining rewards may be missing "
+      "from the wallet display. Do not use this pilot for a spending wallet."));
+  auto* upgrade = choice.addButton(QStringLiteral("Update history"), QMessageBox::AcceptRole);
+  auto* later = choice.addButton(QStringLiteral("Not now"), QMessageBox::RejectRole);
+  choice.setDefaultButton(later);
+  choice.setEscapeButton(later);
+  choice.exec();
+  if (choice.clickedButton() != upgrade)
+    return WalletIndexStartupMode::LegacyOrUnavailable;
+
+  const auto updated = runWalletIndexMaintenance(
+      daemonPath, QStringList{QStringLiteral("--upgrade-wallet-index-v3")} + rootArgs,
+      600000, QStringLiteral("Verifying the full node and preserving the old wallet index…"));
+  const auto verified = updated.completed && updated.exitCode == 0 &&
+      updated.output.contains(QStringLiteral("Wallet index v3 offline upgrade verified"));
+  if (verified) return WalletIndexStartupMode::FullArchiveV3;
+
+  QMessageBox failure;
+  failure.setIcon(QMessageBox::Critical);
+  failure.setWindowTitle(QStringLiteral("Wallet history update stopped"));
+  failure.setText(QStringLiteral("Dinero could not verify the wallet history update."));
+  failure.setInformativeText(QStringLiteral(
+      "The node was not started. Keep the data directory and any rollback copy "
+      "in place. Inspect the details before retrying."));
+  failure.setDetailedText(updated.timedOut
+      ? QStringLiteral("The update exceeded ten minutes.\n") + updated.output
+      : updated.output);
+  failure.exec();
+  return std::nullopt;
+}
+
 int main(int argc, char** argv) {
   // This package inspection must precede QApplication and daemon discovery.
   // --version is accepted as a safe fallback for package checks of old builds.
@@ -1252,13 +1404,28 @@ int main(int argc, char** argv) {
     return 0;
   }
 
+  // An already verified v3 source needs a snapshot-free daemon launch. The
+  // v2-to-v3 upgrade prompt is pilot-only until the spend path is qualified.
+  // A healthy externally managed daemon is adopted without changing its data.
+  const auto walletIndexMode = offerFullArchiveWalletIndexUpgrade(datadir);
+  if (!walletIndexMode) return 1;
+
   // Auto-launch daemon if not already running
-  QProcess* daemonProcess = ensureDaemonRunning(datadir);
+  QProcess* daemonProcess = ensureDaemonRunning(datadir, nullptr, *walletIndexMode);
 
   // Check if daemon exited with genesis mismatch
   if (daemonProcess &&
       daemonProcess->state() == QProcess::NotRunning &&
       daemonProcess->exitCode() == GENESIS_MISMATCH_EXIT_CODE) {
+
+    if (*walletIndexMode == dinero::qt::WalletIndexStartupMode::FullArchiveV3) {
+      QMessageBox::critical(nullptr, "Incompatible Chain Data",
+        "The authenticated wallet history index belongs to this chain. "
+        "Dinero will not wipe chain data while it is active. "
+        "See the daemon error details and restore a matching data directory.");
+      delete daemonProcess;
+      return 1;
+    }
 
     QMessageBox msgBox;
     msgBox.setWindowTitle("Incompatible Chain Data");

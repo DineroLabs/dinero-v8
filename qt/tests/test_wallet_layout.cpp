@@ -3,6 +3,7 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSettings>
@@ -10,6 +11,7 @@
 #include <QTabWidget>
 #include <QTcpServer>
 #include <QTemporaryDir>
+#include <QTimer>
 #include "mainwindow.h"
 #include "rpcclient.h"
 
@@ -50,8 +52,33 @@ class WalletLayoutTest : public QObject {
         auto* rpc = window.findChild<RpcClient*>();
         Q_EMIT rpc->rpcResult("wallet.getbalance", QJsonObject{
             {"confirmed", 636799.99999731}, {"unconfirmed", 2.5}, {"immature", 100.0},
-            {"pq_balance_din", 42900.0}});
+            {"pq_balance_din", 42900.0}, {"walletname", ""}});
         QCoreApplication::processEvents();
+    }
+
+    static bool bindTestWallet(MainWindow& window, const QString& name) {
+        QTimer::singleShot(0, [] {
+            for (QWidget* widget : QApplication::topLevelWidgets()) {
+                if (auto* message = qobject_cast<QMessageBox*>(widget)) message->accept();
+            }
+        });
+        return QMetaObject::invokeMethod(&window, "onWalletCreated", Qt::DirectConnection,
+            Q_ARG(QString, name), Q_ARG(QString, QStringLiteral("test-fingerprint")),
+            Q_ARG(bool, false));
+    }
+
+    static bool hasSelectedWallet(MainWindow& window, const QString& name) {
+        for (const auto* selector : window.findChildren<QComboBox*>()) {
+            if (selector->currentText() == name && selector->findText(name) >= 0) return true;
+        }
+        return false;
+    }
+
+    static bool hasLabelText(MainWindow& window, const QString& text) {
+        for (const auto* label : window.findChildren<QLabel*>()) {
+            if (label->text() == text) return true;
+        }
+        return false;
     }
 
 private Q_SLOTS:
@@ -73,6 +100,278 @@ private Q_SLOTS:
         QCOMPARE(named<QLabel>(*window, "walletTotalBalance")->text(), QString("636,799.99999731 DIN"));
         QCOMPARE(named<QLabel>(*window, "lblTransparentTaprootBalance")->text(), QString("593,899.99999731 DIN"));
         QCOMPARE(named<QLabel>(*window, "lblTransparentP2mrBalance")->text(), QString("42,900.00000000 DIN"));
+    }
+
+    void recoveryRefusalDoesNotReplaceKnownBalanceWithZero() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        feedBalance(*window);
+        auto* rpc = window->findChild<RpcClient*>();
+        QVERIFY(rpc);
+        auto* total = named<QLabel>(*window, "walletTotalBalance");
+        auto* transparent = named<QLabel>(*window, "lblTransparentTaprootBalance");
+        auto* maturing = named<QLabel>(*window, "lblImmature");
+        QVERIFY(total && transparent && maturing);
+        const QString priorTotal = total->text();
+        const QString priorTransparent = transparent->text();
+        const QString priorMaturing = maturing->text();
+
+        // Core returns financial-read refusals inside the RPC result object.
+        // A missing amount must never be interpreted as a real zero balance.
+        Q_EMIT rpc->rpcResult("wallet.getbalance", QJsonObject{
+            {"error", "Balance query error: orchard_wallet_delivery_pending"}});
+        Q_EMIT rpc->rpcResult("wallet.gettotalbalance", QJsonObject{
+            {"error", "Balance query error: orchard_wallet_delivery_pending"}});
+        QCoreApplication::processEvents();
+        QCOMPARE(total->text(), priorTotal);
+        QCOMPARE(transparent->text(), priorTransparent);
+        QCOMPARE(maturing->text(), priorMaturing);
+
+        // A complete numeric response with an actual zero is still accepted.
+        Q_EMIT rpc->rpcResult("wallet.getbalance", QJsonObject{
+            {"walletname", ""}, {"confirmed", 0.0},
+            {"unconfirmed", 0.0}, {"immature", 0.0}});
+        QCoreApplication::processEvents();
+        QCOMPARE(total->text(), QString("0.00000000 DIN"));
+    }
+
+    void recoveryRefusalBeforeFirstBalanceIsUnavailable() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        auto* rpc = window->findChild<RpcClient*>();
+        QVERIFY(rpc);
+        Q_EMIT rpc->rpcResult("wallet.getbalance", QJsonObject{
+            {"error", "Balance query error: orchard_wallet_delivery_pending"}});
+        QCoreApplication::processEvents();
+        QCOMPARE(named<QLabel>(*window, "walletTotalBalance")->text(), QString("Balance unavailable"));
+    }
+
+    void productionBalanceRpcErrorMarksVerifiedAmountStaleAndDisablesSend() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        auto* rpc = window->findChild<RpcClient*>();
+        QVERIFY(rpc);
+        QVERIFY(bindTestWallet(*window, "RecoveryTestWallet"));
+        window->checkRescanStatus();
+        Q_EMIT rpc->rpcResult("wallet.getinfo", QJsonObject{
+            {"hd_enabled", true}, {"wallet_name", "RecoveryTestWallet"},
+            {"unlocked", true}, {"scanning", false}});
+        Q_EMIT rpc->rpcResult("wallet.getbalance", QJsonObject{
+            {"walletname", "RecoveryTestWallet"}, {"confirmed", 12.0},
+            {"unconfirmed", 0.0}, {"immature", 5.0}, {"send_ready", true}});
+        QCoreApplication::processEvents();
+        auto* total = named<QLabel>(*window, "walletTotalBalance");
+        auto* maturing = named<QLabel>(*window, "lblImmature");
+        auto* scope = named<QLabel>(*window, "walletBalanceScope");
+        auto* send = named<QPushButton>(*window, "walletSendButton");
+        QVERIFY(total && maturing && scope && send);
+        QCOMPARE(total->text(), QString("12.00000000 DIN"));
+        QCOMPARE(maturing->text(), QString("5.00000000 DIN"));
+        QVERIFY(window->walletSendReady_);
+        QVERIFY(send->isEnabled());
+
+        // The live HTTP dispatcher promotes wallet_balance_not_current to
+        // this top-level RPC error, rather than delivering an error-shaped
+        // rpcResult object to the existing balance handler.
+        Q_EMIT rpc->rpcError("wallet.getbalance", -32603,
+            "Legacy transparent wallet is catching up to the selected chain");
+        QCoreApplication::processEvents();
+        QCOMPARE(total->text(), QString("12.00000000 DIN"));
+        QCOMPARE(maturing->text(), QString("5.00000000 DIN"));
+        QVERIFY(!scope->isHidden());
+        QVERIFY(scope->text().contains("Last verified"));
+        QVERIFY(scope->text().contains("UTC"));
+        QVERIFY(scope->text().contains("waiting for current wallet balance"));
+        QVERIFY(!window->walletSendReady_);
+        QVERIFY(!send->isEnabled());
+
+        // Other wallet-scoped polling must not rewrite a stale display.
+        Q_EMIT rpc->rpcResult("wallet.shieldedbalance", QJsonObject{
+            {"walletname", "RecoveryTestWallet"}, {"balance_una", 200000000.0},
+            {"spend_enabled", true}});
+        Q_EMIT rpc->rpcResult("wallet.gettotalbalance", QJsonObject{
+            {"walletname", "RecoveryTestWallet"}, {"total_balance", 1000.0}});
+        QCoreApplication::processEvents();
+        QCOMPARE(total->text(), QString("12.00000000 DIN"));
+
+        Q_EMIT rpc->rpcResult("wallet.getbalance", QJsonObject{
+            {"walletname", "RecoveryTestWallet"}, {"confirmed", 13.0},
+            {"unconfirmed", 0.0}, {"immature", 6.0}, {"send_ready", true}});
+        QCoreApplication::processEvents();
+        QVERIFY(scope->isHidden());
+        QVERIFY(send->isEnabled());
+        QCOMPARE(maturing->text(), QString("6.00000000 DIN"));
+
+        QVERIFY(bindTestWallet(*window, "Other"));
+        QCOMPARE(total->text(), QString("Loading..."));
+        Q_EMIT rpc->rpcError("wallet.getbalance", -32603,
+            "Legacy transparent wallet is catching up to the selected chain");
+        QCoreApplication::processEvents();
+        QCOMPARE(total->text(), QString("Balance unavailable"));
+        QVERIFY(scope->isHidden());
+        QVERIFY(!send->isEnabled());
+    }
+
+    void lateOldWalletReplyCannotBeAcceptedAfterSwitch() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        auto* rpc = window->findChild<RpcClient*>();
+        QVERIFY(rpc);
+        QVERIFY(bindTestWallet(*window, "RecoveryTestWallet"));
+        Q_EMIT rpc->rpcResult("wallet.getbalance", QJsonObject{
+            {"walletname", "RecoveryTestWallet"}, {"confirmed", 12.0},
+            {"unconfirmed", 0.0}, {"immature", 5.0}});
+        QCoreApplication::processEvents();
+        QCOMPARE(named<QLabel>(*window, "walletTotalBalance")->text(), QString("12.00000000 DIN"));
+        QCOMPARE(named<QLabel>(*window, "lblImmature")->text(), QString("5.00000000 DIN"));
+
+        QVERIFY(bindTestWallet(*window, "Other"));
+        QCOMPARE(named<QLabel>(*window, "walletTotalBalance")->text(), QString("Loading..."));
+        QCOMPARE(named<QLabel>(*window, "lblImmature")->text(), QString("Loading..."));
+        Q_EMIT rpc->rpcResult("wallet.getbalance", QJsonObject{
+            {"walletname", "RecoveryTestWallet"}, {"confirmed", 99.0},
+            {"unconfirmed", 0.0}, {"immature", 0.0}});
+        QCoreApplication::processEvents();
+        QCOMPARE(named<QLabel>(*window, "walletTotalBalance")->text(), QString("Loading..."));
+        Q_EMIT rpc->rpcResult("wallet.getbalance", QJsonObject{
+            {"walletname", "Other"}, {"confirmed", 7.0},
+            {"unconfirmed", 0.0}, {"immature", 0.0}});
+        QCoreApplication::processEvents();
+        QCOMPARE(named<QLabel>(*window, "walletTotalBalance")->text(), QString("7.00000000 DIN"));
+        Q_EMIT rpc->rpcResult("wallet.shieldedbalance", QJsonObject{
+            {"walletname", "Other"}, {"balance_una", 200000000.0},
+            {"spend_enabled", true}});
+        QCoreApplication::processEvents();
+        QCOMPARE(named<QLabel>(*window, "walletTotalBalance")->text(), QString("9.00000000 DIN"));
+        // A chain-level error without wallet identity may be an old reply.
+        Q_EMIT rpc->rpcResult("wallet.shieldedbalance", QJsonObject{
+            {"error", "shielded_not_active"}});
+        QCoreApplication::processEvents();
+        QCOMPARE(named<QLabel>(*window, "walletTotalBalance")->text(), QString("9.00000000 DIN"));
+        Q_EMIT rpc->rpcResult("wallet.shieldedbalance", QJsonObject{
+            {"walletname", "RecoveryTestWallet"}, {"balance_una", 18000000000.0},
+            {"spend_enabled", true}});
+        QCoreApplication::processEvents();
+        QCOMPARE(named<QLabel>(*window, "walletTotalBalance")->text(), QString("9.00000000 DIN"));
+    }
+
+    void incompleteShieldedReplyCannotEraseKnownAmount() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        feedBalance(*window);
+        auto* rpc = window->findChild<RpcClient*>();
+        QVERIFY(rpc);
+        Q_EMIT rpc->rpcResult("wallet.shieldedbalance", QJsonObject{
+            {"walletname", ""}, {"balance_una", 18000000000.0},
+            {"spend_enabled", true}});
+        QCoreApplication::processEvents();
+        auto* total = named<QLabel>(*window, "walletTotalBalance");
+        QVERIFY(total);
+        const QString priorTotal = total->text();
+        QVERIFY(priorTotal.contains("636,979."));
+
+        Q_EMIT rpc->rpcResult("wallet.shieldedbalance", QJsonObject{});
+        QCoreApplication::processEvents();
+        QCOMPARE(total->text(), priorTotal);
+    }
+
+    void pendingWalletInfoDoesNotUnloadOrLockSelectedWallet() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        auto* rpc = window->findChild<RpcClient*>();
+        QVERIFY(rpc);
+        QVERIFY(bindTestWallet(*window, "RecoveryTestWallet"));
+        QVERIFY(hasSelectedWallet(*window, "RecoveryTestWallet"));
+        // refresh attaches the normal wallet.getinfo rescan/status listener.
+        QVERIFY(QMetaObject::invokeMethod(window.get(), "refresh", Qt::DirectConnection));
+        Q_EMIT rpc->rpcResult("wallet.getinfo", QJsonObject{
+            {"error", "wallet_balance_not_current"}, {"retryable", true},
+            {"walletname", "RecoveryTestWallet"}});
+        QCoreApplication::processEvents();
+        QVERIFY(hasSelectedWallet(*window, "RecoveryTestWallet"));
+        QVERIFY(!hasLabelText(*window, "No wallet loaded"));
+    }
+
+    void transparentOnlyBalanceCannotEnableSend() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        auto* rpc = window->findChild<RpcClient*>();
+        QVERIFY(rpc);
+        QVERIFY(bindTestWallet(*window, "RecoveryTestWallet"));
+        window->checkRescanStatus();
+        Q_EMIT rpc->rpcResult("wallet.getinfo", QJsonObject{
+            {"hd_enabled", true}, {"wallet_name", "RecoveryTestWallet"},
+            {"unlocked", true}, {"scanning", false}});
+        QCoreApplication::processEvents();
+        auto* send = named<QPushButton>(*window, "walletSendButton");
+        QVERIFY(send);
+
+        Q_EMIT rpc->rpcResult("wallet.getbalance", QJsonObject{
+            {"walletname", "RecoveryTestWallet"}, {"confirmed", 12.0},
+            {"unconfirmed", 0.0}, {"immature", 5.0},
+            {"wallet_scope", "legacy_transparent_only"},
+            {"send_ready", false},
+            {"send_unavailable_reason", "Orchard wallet enrollment is required before sending"}});
+        QCoreApplication::processEvents();
+        QCOMPARE(named<QLabel>(*window, "walletTotalBalance")->text(), QString("12.00000000 DIN"));
+        auto* scope = named<QLabel>(*window, "walletBalanceScope");
+        QVERIFY(scope);
+        QVERIFY(!scope->isHidden());
+        QVERIFY(scope->text().contains("Sending paused"));
+        QVERIFY(!send->isEnabled());
+        QVERIFY(send->toolTip().contains("Orchard wallet enrollment"));
+
+        // A later enrolled response can restore normal send controls without
+        // changing the selected wallet or its displayed balance.
+        Q_EMIT rpc->rpcResult("wallet.getbalance", QJsonObject{
+            {"walletname", "RecoveryTestWallet"}, {"confirmed", 12.0},
+            {"unconfirmed", 0.0}, {"immature", 5.0}, {"send_ready", true}});
+        QCoreApplication::processEvents();
+        QVERIFY(send->isEnabled());
+        QVERIFY(scope->isHidden());
+    }
+
+    void recoveredV3ScopeEnablesOnlyPublicSend() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        auto* rpc = window->findChild<RpcClient*>();
+        QVERIFY(rpc);
+        QVERIFY(bindTestWallet(*window, "RecoveryTestWallet"));
+        window->checkRescanStatus();
+        Q_EMIT rpc->rpcResult("wallet.getinfo", QJsonObject{
+            {"hd_enabled", true}, {"wallet_name", "RecoveryTestWallet"},
+            {"unlocked", true}, {"scanning", false}});
+        Q_EMIT rpc->rpcResult("wallet.getbalance", QJsonObject{
+            {"walletname", "RecoveryTestWallet"}, {"confirmed", 12.0},
+            {"unconfirmed", 0.0}, {"immature", 5.0},
+            {"send_ready", true}, {"send_scope", "transparent_recovered_v3"}});
+        QVERIFY(window->btnSend_->isEnabled());
+        auto* scope = named<QLabel>(*window, "walletBalanceScope");
+        QVERIFY(scope);
+        QVERIFY(!scope->isHidden());
+        QVERIFY(scope->text().contains("Public sends supported"));
+        QVERIFY(!window->btnHardwareWalletSend_->isEnabled());
+        QVERIFY(!window->btnConsolidate_->isEnabled());
+        QVERIFY(!window->btnNewAddress_->isEnabled());
+        QVERIFY(!window->btnDeriveAddress_->isEnabled());
+
+        // The balance poll must not re-enable another send mode while the
+        // recovered wallet has only the transparent payment capability.
+        auto* mode = named<QComboBox>(*window, "sendMode");
+        QVERIFY(mode);
+        mode->setCurrentIndex(mode->findData("public_contract"));
+        QVERIFY(!window->btnSend_->isEnabled());
+        Q_EMIT rpc->rpcResult("wallet.getbalance", QJsonObject{
+            {"walletname", "RecoveryTestWallet"}, {"confirmed", 12.0},
+            {"unconfirmed", 0.0}, {"immature", 5.0},
+            {"send_ready", true}, {"send_scope", "transparent_recovered_v3"}});
+        QVERIFY(!window->btnSend_->isEnabled());
+
+        mode->setCurrentIndex(mode->findData("public_transfer"));
+        QVERIFY(window->btnSend_->isEnabled());
+        Q_EMIT rpc->rpcError("wallet.getbalance", -32603,
+            "Legacy transparent wallet is catching up to the selected chain");
+        QVERIFY(!window->btnSend_->isEnabled());
     }
 
     void maxStillSendsTheWholeBalance() {

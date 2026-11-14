@@ -33,6 +33,7 @@ struct WalletServiceOwnerFixture {
         service=std::make_shared<WalletService>();context.wallet=service;
         if(!service->Init(context))throw std::runtime_error("fixture real service Init");
         index=std::make_unique<UTXOIndex>((root/"index.db").string());
+        if(!index->Initialize())throw std::runtime_error("fixture wallet index Init");
         auto use=WalletService::AcquireWalletUse(service);use->Wallet().setUTXOIndex(index.get());
         use->Wallet().create("owner");
     }

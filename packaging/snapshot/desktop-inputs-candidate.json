@@ -1,14 +1,14 @@
 {
   "schema": "dinero.desktop-snapshot-inputs.v1",
-  "purpose": "H150521 full-v6 desktop candidate; Linux native import/restart passed on Core 53c1eeda4, final merged release SHA still requires qualification",
+  "purpose": "H152700 full-v6 desktop primary; package and native release qualification tracked separately",
   "primary": {
-    "filename": "dinero-assumeutxo-150521-v6-full.dat",
-    "height": 150521,
+    "filename": "dinero-assumeutxo-152700-v6-full.dat",
+    "height": 152700,
     "format_version": 6,
     "snapshot_profile": "full",
-    "block_hash": "00000003d288d8f065b63e51f83b10dcb2e2c73ddb7f90943f565d72b414fb75",
-    "bytes": 140788569,
-    "sha256": "16f66f67a814b6626481ab083aebbee7252a5d9f8381d08ed8c2d645c48175be"
+    "block_hash": "00000005f90ed3ae11d7ee08745fb3ae329eeec25ed14f0fae3b94738b292781",
+    "bytes": 142296413,
+    "sha256": "773d67f99cce8c45af205e27f5756784b0f7a3aa0ec4f6f0bfb5a34e3715ecca"
   },
   "fallbacks": [
     {

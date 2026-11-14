@@ -64,10 +64,10 @@ def fetch(payload_url: str, manifest_url: str, catalog_path: Path, destination: 
             raise ValueError("snapshot input URL must use HTTPS")
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
     pin = catalog["primary"]
-    if (pin.get("filename") != "dinero-assumeutxo-150521-v6-full.dat" or
-            pin.get("height") != 150521 or pin.get("format_version") != 6 or
+    if (pin.get("filename") != "dinero-assumeutxo-152700-v6-full.dat" or
+            pin.get("height") != 152700 or pin.get("format_version") != 6 or
             pin.get("snapshot_profile") != "full"):
-        raise ValueError("qualified H150521 full-v6 catalog pin is unavailable")
+        raise ValueError("qualified H152700 full-v6 catalog pin is unavailable")
     if type(pin.get("bytes")) is not int or pin["bytes"] < 109 or pin["bytes"] > 536870912:
         raise ValueError("invalid pinned full-v6 payload length")
     destination.mkdir(parents=True, exist_ok=True)

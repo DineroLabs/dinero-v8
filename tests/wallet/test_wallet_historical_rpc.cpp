@@ -13,6 +13,7 @@
 #include "daemon/services/config_service.h"
 #include "daemon/services/wallet_service.h"
 #include "daemon/services/mempool_service.h"
+#include "daemon/services/mining_service.h"
 #include "daemon/services/chainstate_service.h"
 #include "daemon/services/logger_service.h"
 #include "daemon/block_acceptor.h"
@@ -62,6 +63,7 @@ struct WalletBatchPaymentTestAccess {
 }
 #include "pool_payment_chain_fixture.h"
 void registerV7PqWalletMethods();
+void registerShieldedWalletMethods();
 din::Json rpc_context_wallet_sendmany(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_getbalance(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext&,const din::Json&);
@@ -69,6 +71,22 @@ din::Json rpc_context_wallet_snapshot(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_listunspent(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_listpendingpayments(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_signrawtransaction(const ExecutionContext&,const din::Json&);
+din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext&,const din::Json&);
+din::Json rpc_context_wallet_sendrawtransaction(const ExecutionContext&,const din::Json&);
+din::Json rpc_context_wallet_lockunspent(const ExecutionContext&,const din::Json&);
+din::Json rpc_context_wallet_abandontransaction(const ExecutionContext&,const din::Json&);
+din::Json rpc_context_wallet_listtransactions(const ExecutionContext&,const din::Json&);
+din::Json rpc_context_wallet_getnewaddress(const ExecutionContext&,const din::Json&);
+din::Json rpc_context_wallet_getstatus(const ExecutionContext&,const din::Json&);
+din::Json rpc_context_wallet_getsyncstate(const ExecutionContext&,const din::Json&);
+din::Json rpc_context_wallet_getinfo(const ExecutionContext&,const din::Json&);
+din::Json rpc_context_wallet_listaddresses(const ExecutionContext&,const din::Json&);
+din::Json rpc_context_wallet_listaddresseswithbalances(const ExecutionContext&,const din::Json&);
+din::Json rpc_context_wallet_validatestatelessbalance(const ExecutionContext&,const din::Json&);
+din::Json rpc_context_mining_setaddress(const ExecutionContext&,const din::Json&);
+din::Json rpc_context_wallet_exportcsv(const ExecutionContext&,const din::Json&);
+din::Json rpc_dpi_createinvoice(const ExecutionContext&,const din::Json&);
+void register_context_wallet_covenant_profile_methods();
 namespace {
 class HistoricalRpc : public ::testing::Test {
 protected:
@@ -537,6 +555,7 @@ TEST_F(WalletReservationBalance, LockedRpcAmountsAreExplicitlyUnavailable) {
     EXPECT_DOUBLE_EQ(summary.balance.confirmed,0.003);EXPECT_FALSE(summary.locked);EXPECT_FALSE(summary.available_confirmed);
     EXPECT_FALSE(summary.unavailable_confirmed_and_immature);EXPECT_TRUE(summary.available_by_script.empty());
     const auto balance=rpc_context_wallet_getbalance(ctx,din::Json());ASSERT_FALSE(balance.isMember("error"))<<balance.toStyledString();
+    EXPECT_EQ(balance["walletname"].asString(),"owner");
     EXPECT_DOUBLE_EQ(balance["confirmed"].asDouble(),0.003);EXPECT_TRUE(balance["locked"].isNull());EXPECT_TRUE(balance["spendable"].isNull());
     EXPECT_EQ(balance["reservation_status"].asString(),"unlock_required");EXPECT_TRUE(balance["breakdown"]["unspendable"].isNull());
     const auto info=rpc_context_wallet_getwalletinfo(ctx,din::Json());ASSERT_FALSE(info.isMember("error"))<<info.toStyledString();
@@ -545,11 +564,239 @@ TEST_F(WalletReservationBalance, LockedRpcAmountsAreExplicitlyUnavailable) {
     const auto snapshot=rpc_context_wallet_snapshot(ctx,din::Json());ASSERT_FALSE(snapshot.isMember("error"))<<snapshot.toStyledString();
     EXPECT_DOUBLE_EQ(snapshot["balances"]["confirmed"].asDouble(),0.003);EXPECT_TRUE(snapshot["balances"]["locked"].isNull());
     EXPECT_TRUE(snapshot["balances"]["spendable"].isNull());EXPECT_EQ(snapshot["balances"]["reservation_status"].asString(),"unlock_required");
-    ctx.walletName="other";EXPECT_TRUE(rpc_context_wallet_getbalance(ctx,din::Json()).isMember("error"));
+    ctx.walletName="other";const auto wrong=rpc_context_wallet_getbalance(ctx,din::Json());
+    EXPECT_TRUE(wrong.isMember("error"));EXPECT_EQ(wrong["walletname"].asString(),"owner");
     EXPECT_TRUE(rpc_context_wallet_getwalletinfo(ctx,din::Json()).isMember("error"));EXPECT_TRUE(rpc_context_wallet_snapshot(ctx,din::Json()).isMember("error"));ctx.walletName="owner";
     w.unlockWallet("historical-rpc",0);const auto unlocked=rpc_context_wallet_getbalance(ctx,din::Json());ASSERT_FALSE(unlocked.isMember("error"));
     EXPECT_EQ(unlocked["reservation_status"].asString(),"authenticated");EXPECT_DOUBLE_EQ(unlocked["spendable"].asDouble(),0.001);
     EXPECT_DOUBLE_EQ(unlocked["locked"].asDouble(),0.002);EXPECT_EQ(envelope(w.getCurrentDatabase()),stored);
+}
+TEST_F(WalletReservationBalance, PendingLegacyMigrationBalanceIsUnavailableAndNamed) {
+    auto& wallet=service->get();
+    // The ordinary fixture already has an Orchard owner, so it cannot enroll
+    // through the migration API. Model the independently persisted pending
+    // marker to exercise the RPC refusal without changing that fixture.
+    sql(wallet.getCurrentDatabase(),
+        "ALTER TABLE wallet_meta ADD COLUMN runtime_legacy_transparent_state_v1 TEXT");
+    sql(wallet.getCurrentDatabase(),
+        "UPDATE wallet_meta SET runtime_legacy_transparent_state_v1='pending' WHERE id=1");
+    const auto pending=rpc_context_wallet_getbalance(ctx,din::Json());
+    EXPECT_EQ(pending["walletname"].asString(),"owner");
+    EXPECT_EQ(pending["error_code"].asString(),"wallet_balance_not_current");
+    EXPECT_TRUE(pending["retryable"].asBool());
+    EXPECT_FALSE(pending.isMember("confirmed"));
+    EXPECT_FALSE(pending.isMember("total"));
+
+    // A pending migration has no authenticated spend or history source. These
+    // entry points must refuse before signing, reserving, or writing rows.
+    auto* db = wallet.getCurrentDatabase();
+    const auto before = sqlite3_total_changes(db);
+    din::Json payment;
+    payment["address"] = modern_address;
+    payment["amount_una"] = static_cast<Json::UInt64>(1000);
+    const auto send = rpc_context_wallet_sendtoaddress(ctx, payment);
+    EXPECT_EQ(send["error_code"].asString(), "wallet_balance_not_current");
+    EXPECT_FALSE(send.isMember("txid"));
+    const auto signing = rpc_context_wallet_signrawtransaction(ctx, params({hd}));
+    EXPECT_EQ(signing["error_code"].asString(), "wallet_balance_not_current");
+    EXPECT_FALSE(signing.isMember("hex"));
+    din::Json mined;
+    mined["type"] = "mined";
+    const auto history = rpc_context_wallet_listtransactions(ctx, mined);
+    EXPECT_EQ(history["error_code"].asString(), "wallet_balance_not_current");
+    EXPECT_TRUE(history["retryable"].asBool());
+    const auto status = rpc_context_wallet_getstatus(ctx, din::Json());
+    EXPECT_FALSE(status["balance_available"].asBool());
+    EXPECT_EQ(status["error_code"].asString(), "wallet_balance_not_current");
+    EXPECT_FALSE(status.isMember("balance"));
+    const auto sync = rpc_context_wallet_getsyncstate(ctx, din::Json());
+    EXPECT_FALSE(sync["balance_available"].asBool());
+    EXPECT_EQ(sync["error_code"].asString(), "wallet_balance_not_current");
+    EXPECT_FALSE(sync.isMember("error")) << sync.toStyledString();
+    EXPECT_FALSE(sync["balance_error"].asString().empty());
+    EXPECT_TRUE(sync.isMember("last_scanned_height"));
+    EXPECT_TRUE(sync.isMember("target_height"));
+    EXPECT_FALSE(sync.isMember("balance_discovered"));
+    const auto address = rpc_context_wallet_getnewaddress(ctx, din::Json());
+    EXPECT_EQ(address["error_code"].asString(), "wallet_transparent_only_address_unavailable");
+    EXPECT_FALSE(address.isMember("address"));
+    const auto info = rpc_context_wallet_getinfo(ctx, din::Json());
+    EXPECT_EQ(info["error_code"].asString(), "wallet_balance_not_current");
+    EXPECT_FALSE(info.isMember("balance"));
+    const auto addresses = rpc_context_wallet_listaddresses(ctx, din::Json());
+    EXPECT_EQ(addresses["error_code"].asString(), "wallet_balance_not_current");
+    const auto funded = rpc_context_wallet_listaddresseswithbalances(ctx, din::Json());
+    EXPECT_EQ(funded["error_code"].asString(), "wallet_balance_not_current");
+    const auto verified = rpc_context_wallet_validatestatelessbalance(ctx, din::Json());
+    EXPECT_EQ(verified["error_code"].asString(), "wallet_balance_not_current");
+    EXPECT_EQ(sqlite3_total_changes(db), before);
+    EXPECT_TRUE(wallet.getPendingPayments().empty());
+}
+TEST_F(WalletReservationBalance, PendingMigrationRefusesRawWalletRelayAndShieldedSpends) {
+    auto& wallet=service->get();
+    auto* db=wallet.getCurrentDatabase();
+    sql(db,"ALTER TABLE wallet_meta ADD COLUMN runtime_legacy_transparent_state_v1 TEXT");
+    sql(db,"UPDATE wallet_meta SET runtime_legacy_transparent_state_v1='pending' WHERE id=1");
+    const auto before=sqlite3_total_changes(db);
+    const auto pending_payments=wallet.getPendingPayments().size();
+    din::Json raw=din::arr();raw.append("00");
+    const auto relay=rpc_context_wallet_sendrawtransaction(ctx,raw);
+    EXPECT_EQ(relay["error_code"].asString(),"wallet_balance_not_current")
+        << relay.toStyledString();
+
+    const auto locked=rpc_context_wallet_lockunspent(ctx,din::Json());
+    EXPECT_TRUE(locked["success"].asBool()) << locked.toStyledString();
+    din::Json lock_request=din::arr(), outputs=din::arr(), point;
+    point["txid"]=old.GetTxIdHex();point["vout"]=old.vout;
+    outputs.append(point);lock_request.append(false);lock_request.append(outputs);
+    const auto lock_change=rpc_context_wallet_lockunspent(ctx,lock_request);
+    EXPECT_EQ(lock_change["error_code"].asString(),"wallet_balance_not_current")
+        << lock_change.toStyledString();
+    din::Json abandon=din::arr();abandon.append(old.GetTxIdHex());
+    const auto abandon_change=rpc_context_wallet_abandontransaction(ctx,abandon);
+    EXPECT_EQ(abandon_change["error_code"].asString(),"wallet_balance_not_current")
+        << abandon_change.toStyledString();
+
+    const auto old_chain=dinero::IsChainSelected()
+        ? dinero::GetActiveChain() : dinero::Chain::MAINNET;
+    struct RestoreChain { dinero::Chain old; ~RestoreChain(){dinero::SelectParams(old);} } restore{old_chain};
+    dinero::SelectParams(dinero::Chain::REGTEST);
+    registerShieldedWalletMethods();
+    for(const char* name : {"wallet.shield","wallet.unshield","wallet.transfer"}) {
+        const auto* handler=g_rpcRegistry.lookup(name);
+        ASSERT_NE(handler,nullptr) << name;
+        const auto refused=(*handler)(ctx,din::Json());
+        EXPECT_EQ(refused["error_code"].asString(),"wallet_balance_not_current")
+            << name << ": " << refused.toStyledString();
+    }
+    EXPECT_EQ(sqlite3_total_changes(db),before);
+    EXPECT_EQ(wallet.getPendingPayments().size(),pending_payments);
+    // Even nominally read-only shielded calls may initialize Orchard state or
+    // cache a derived address. A transparent-only migration cannot claim it.
+    for(const char* name : {"wallet.shieldedbalance","wallet.listshielded",
+                            "wallet.listshieldedoutgoing","wallet.getshieldedaddress"}) {
+        const auto* handler=g_rpcRegistry.lookup(name);
+        ASSERT_NE(handler,nullptr) << name;
+        const auto refused=(*handler)(ctx,din::Json());
+        EXPECT_EQ(refused["error_code"].asString(),"wallet_balance_not_current")
+            << name << ": " << refused.toStyledString();
+    }
+    EXPECT_EQ(sqlite3_total_changes(db),before);
+}
+TEST_F(WalletReservationBalance, MarkedWalletCannotIssueUntrackedAddressesDirectly) {
+    auto& wallet=service->get();auto* db=wallet.getCurrentDatabase();
+    sql(db,"ALTER TABLE wallet_meta ADD COLUMN runtime_legacy_transparent_state_v1 TEXT");
+    for(const auto* state : {"pending","complete"}) {
+        sql(db,std::string("UPDATE wallet_meta SET runtime_legacy_transparent_state_v1='")+
+            state+"' WHERE id=1");
+        const auto before=sqlite3_total_changes(db);
+        EXPECT_TRUE(wallet.getNewAddress("untracked-v3").empty());
+        EXPECT_TRUE(wallet.getNewChangeAddress("untracked-v3").empty());
+        const std::vector<uint8_t> taproot_script(34,0x20);
+        std::vector<uint8_t> p2mr_script(34,0x20);
+        p2mr_script[0]=0x53;
+        wallet.addWatchScript(taproot_script,"m/untracked",false);
+        wallet.addAddress(0,0,47,"untracked-v3","p2tr");
+        wallet.registerP2MRAddress(p2mr_script,"m/untracked-p2mr");
+        std::array<uint8_t,32> key{};
+        wallet.registerTaprootAddress(taproot_script,"m/untracked-taproot",key,key);
+        dinero::CovenantDescriptorRecord descriptor;
+        descriptor.descriptor_id=std::string(64,'a');
+        descriptor.profile="ctv";
+        descriptor.descriptor="tr(untracked)";
+        descriptor.script_pubkey=taproot_script;
+        EXPECT_FALSE(wallet.storeCovenantDescriptor(descriptor));
+        EXPECT_FALSE(wallet.getWatchScriptPath(taproot_script));
+        EXPECT_FALSE(wallet.getWatchScriptPath(p2mr_script));
+        EXPECT_EQ(sqlite3_total_changes(db),before);
+    }
+}
+TEST_F(WalletReservationBalance, HistoryQueryFailureCannotLookLikeEmptyHistory) {
+    auto* db=service->get().getCurrentDatabase();
+    const auto ordinary=rpc_context_wallet_listtransactions(ctx,din::Json());
+    ASSERT_TRUE(ordinary.isArray()) << ordinary.toStyledString();
+    sqlite3_set_authorizer(db,[](void*,int op,const char* table,const char*,const char*,const char*) {
+        return op==SQLITE_READ && table && std::strcmp(table,"transactions")==0
+            ? SQLITE_DENY : SQLITE_OK;
+    },nullptr);
+    const auto refused=rpc_context_wallet_listtransactions(ctx,din::Json());
+    sqlite3_set_authorizer(db,nullptr,nullptr);
+    EXPECT_TRUE(refused.isObject()) << refused.toStyledString();
+    EXPECT_TRUE(refused.isMember("error")) << refused.toStyledString();
+    EXPECT_NE(refused["error"].asString().find("Transaction history query unavailable"),
+              std::string::npos) << refused.toStyledString();
+}
+TEST_F(WalletReservationBalance, MiningWalletShortcutCannotChangePendingScriptDomain) {
+    auto& wallet=service->get();
+    auto* db=wallet.getCurrentDatabase();
+    sql(db,"ALTER TABLE wallet_meta ADD COLUMN runtime_legacy_transparent_state_v1 TEXT");
+    sql(db,"UPDATE wallet_meta SET runtime_legacy_transparent_state_v1='pending' WHERE id=1");
+    const auto before=sqlite3_total_changes(db);
+    daemon.mining=std::make_shared<dinero::MiningService>();
+    din::Json request=din::arr();request.append("wallet");
+    const auto result=rpc_context_mining_setaddress(ctx,request);
+    EXPECT_EQ(result["error_code"].asString(),"wallet_transparent_only_address_unavailable");
+    EXPECT_FALSE(result.isMember("derived_from_wallet"));
+    EXPECT_EQ(sqlite3_total_changes(db),before);
+    // An existing explicit payout address remains usable; only issuance is fenced.
+    din::Json explicit_request=din::arr();explicit_request.append(modern_address);
+    const auto explicit_result=rpc_context_mining_setaddress(ctx,explicit_request);
+    EXPECT_FALSE(explicit_result.isMember("error"))<<explicit_result.toStyledString();
+    EXPECT_EQ(explicit_result["address"].asString(),modern_address);
+    EXPECT_FALSE(explicit_result.isMember("derived_from_wallet"));
+}
+TEST_F(WalletReservationBalance, PendingLegacyMigrationCannotPublishHistoryCsv) {
+    auto& wallet=service->get();
+    auto* db=wallet.getCurrentDatabase();
+    const auto ordinary_destination=root/"ordinary-history.csv";
+    din::Json ordinary_request=din::arr();ordinary_request.append(ordinary_destination.string());
+    const auto ordinary=rpc_context_wallet_exportcsv(ctx,ordinary_request);
+    ASSERT_FALSE(ordinary.isMember("error"))<<ordinary.toStyledString();
+    ASSERT_TRUE(std::filesystem::exists(ordinary_destination));
+    sql(db,"ALTER TABLE wallet_meta ADD COLUMN runtime_legacy_transparent_state_v1 TEXT");
+    sql(db,"UPDATE wallet_meta SET runtime_legacy_transparent_state_v1='pending' WHERE id=1");
+    const auto before=sqlite3_total_changes(db);
+    const auto destination=root/"pending-history.csv";
+    din::Json request=din::arr();request.append(destination.string());
+    const auto result=rpc_context_wallet_exportcsv(ctx,request);
+    EXPECT_EQ(result["error_code"].asString(),"wallet_balance_not_current");
+    EXPECT_FALSE(result.isMember("transactions_exported"));
+    EXPECT_FALSE(std::filesystem::exists(destination));
+    EXPECT_EQ(sqlite3_total_changes(db),before);
+}
+TEST_F(WalletReservationBalance, DpiInvoiceCannotIssueAddressDuringLegacyMigration) {
+    auto& wallet=service->get();auto* db=wallet.getCurrentDatabase();
+    sql(db,"ALTER TABLE wallet_meta ADD COLUMN runtime_legacy_transparent_state_v1 TEXT");
+    sql(db,"UPDATE wallet_meta SET runtime_legacy_transparent_state_v1='pending' WHERE id=1");
+    din::Json request;request["amount_una"]=static_cast<Json::UInt64>(100000);
+    for (const auto* state : {"pending", "complete"}) {
+        sql(db,std::string("UPDATE wallet_meta SET runtime_legacy_transparent_state_v1='")+
+            state+"' WHERE id=1");
+        const auto before=sqlite3_total_changes(db);
+        const auto result=rpc_dpi_createinvoice(ctx,request);
+        EXPECT_EQ(result["error_code"].asString(),"wallet_transparent_only_address_unavailable");
+        EXPECT_FALSE(result.isMember("invoice"));
+        EXPECT_EQ(sqlite3_total_changes(db),before);
+    }
+}
+TEST_F(WalletReservationBalance, CovenantOwnerCannotIssueAddressInAnotherLegacyWallet) {
+    dinero::SelectParams(dinero::Chain::MAINNET);
+    auto& wallet=service->get();wallet.open("other");ctx.walletName="other";
+    auto* db=wallet.getCurrentDatabase();
+    sql(db,"ALTER TABLE wallet_meta ADD COLUMN runtime_legacy_transparent_state_v1 TEXT");
+    sql(db,"UPDATE wallet_meta SET runtime_legacy_transparent_state_v1='pending' WHERE id=1");
+    register_context_wallet_covenant_profile_methods();
+    auto* handler=g_rpcRegistry.lookup("wallet.covenant.ccvcreate");ASSERT_NE(handler,nullptr);
+    din::Json request;request["counter"]=0;request["data_hex"]="";
+    for (const auto* state : {"pending", "complete"}) {
+        sql(db,std::string("UPDATE wallet_meta SET runtime_legacy_transparent_state_v1='")+
+            state+"' WHERE id=1");
+        const auto before=sqlite3_total_changes(db);
+        const auto result=(*handler)(ctx,request);
+        EXPECT_NE(result["error"].asString().find("Recovered transparent-only wallet cannot issue"),std::string::npos)
+            <<result.toStyledString();
+        EXPECT_EQ(sqlite3_total_changes(db),before);
+    }
 }
 TEST_F(WalletReservationBalance, UntrackedAndIncompleteReadsNeverClaimAuthentication) {
     auto& w=service->get();auto* db=w.getCurrentDatabase();w.setBlockchainHeight(100);fund(old);fund(modern);

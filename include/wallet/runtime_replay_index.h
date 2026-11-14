@@ -32,6 +32,7 @@ public:
         batch.Commit();root_=next;
     }
     void Freeze(){Check(!frozen_);frozen_=true;}
+    void Thaw(){Check(frozen_);frozen_=false;}
 private:
     struct Node {unsigned bit;Key key;Bytes value;Hash zero,one;};
     RuntimeReplaySpool& spool_;Hash root_{};bool frozen_=false;

@@ -14,7 +14,7 @@ import sys
 import time
 
 
-PRIMARY = "dinero-assumeutxo-150521-v6-full.dat"
+PRIMARY = "dinero-assumeutxo-152700-v6-full.dat"
 REQUIRED = (
     PRIMARY,
     PRIMARY + ".manifest.json",
