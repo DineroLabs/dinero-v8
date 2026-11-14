@@ -928,7 +928,6 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
             result["reservation_status"]=ReservationStatusName(summary.reservations);
             result["confirmed"]=balance.confirmed;result["unconfirmed"]=balance.unconfirmed;
             result["immature"]=balance.immature;result["total"]=balance.total;
-            result["immature_utxo_count"]=balance.immature_utxo_count;
             result["locked"]=ReservationAmount(summary.locked);
             result["spendable"]=ReservationAmount(summary.available_confirmed);result["utxo_count"]=balance.utxo_count;
             result["pq_balance_una"]=Json::UInt64(summary.pq_confirmed_una);
@@ -988,7 +987,6 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
         result["spendable"] = transparent_only && !transparent_send
             ? din::Json(Json::nullValue) : ReservationAmount(summary.available_confirmed);
         result["utxo_count"] = balance.utxo_count;
-        result["immature_utxo_count"] = balance.immature_utxo_count;
 
         // Same wallet snapshot as the balance and recorded reservations.
         result["pq_ratio"] = balance.confirmed > 0

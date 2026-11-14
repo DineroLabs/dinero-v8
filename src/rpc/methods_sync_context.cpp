@@ -252,7 +252,12 @@ din::Json rpc_context_wallet_getstatus(const ExecutionContext& ctx, const din::J
                             ? current["spendable"] : din::Json(Json::nullValue);
                         result["total_balance"] = current["total"];
                         result["utxo_count"] = current["utxo_count"];
-                        result["immature_utxo_count"] = current["immature_utxo_count"];
+                        // Keep this status-only diagnostic without extending
+                        // getbalance's frozen public RPC schema. Its financial
+                        // amounts and send capability come from the certified
+                        // getbalance read above.
+                        result["immature_utxo_count"] =
+                            wallet.getBalance().immature_utxo_count;
                         result["confidential_balance"] = din::Json(Json::nullValue);
                         result["total_with_confidential"] = din::Json(Json::nullValue);
                         result["balance_available"] = true;
