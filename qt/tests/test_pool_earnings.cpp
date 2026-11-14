@@ -36,6 +36,7 @@ namespace {
 QJsonObject entry(const QString& type, qint64 amount, bool coinbase = true) {
     QJsonObject e;
     e["type"] = type;
+    e["height"] = 900;
     e["amount"] = amount;
     e["amount_hidden"] = false;
     e["is_coinbase"] = coinbase;
@@ -149,7 +150,13 @@ private Q_SLOTS:
         poolearnings::Received acc;
         poolearnings::addPage(acc, history({entryAt("receive", 500, 900),
                                             entryAt("receive", 400, 800)}));
-        poolearnings::addPage(acc, history({entryAt("receive", 100, 700)}));
+        poolearnings::historyRequest("din1pOURS", 2, 799, acc);
+        QJsonObject second = history({entryAt("receive", 100, 700)});
+        QJsonObject coverage = second.value("history_coverage").toObject();
+        coverage["scan_from_height"] = 799;
+        coverage["scan_from_hash"] = QString(64, QLatin1Char('b'));
+        second["history_coverage"] = coverage;
+        poolearnings::addPage(acc, second);
         QCOMPARE(acc.total_una, 1000);
         QCOMPARE(acc.count, 3);
         QVERIFY(acc.complete);
@@ -174,6 +181,16 @@ private Q_SLOTS:
         QCOMPARE(later.at(2).toInt(), 799);
         QCOMPARE(later.at(3).toObject().value("height").toInt(), 900);
         QCOMPARE(later.at(3).toObject().value("hash").toString(), kHash);
+        QJsonObject second = history({entryAt("receive", 100, 700)});
+        QJsonObject coverage = second.value("history_coverage").toObject();
+        coverage["scan_from_height"] = 799;
+        coverage["scan_from_hash"] = QString(64, QLatin1Char('b'));
+        second["history_coverage"] = coverage;
+        poolearnings::addPage(acc, second);
+        QCOMPARE(acc.total_una, 1000);
+        QVERIFY(acc.complete);
+        QCOMPARE(acc.anchor->height, 900);
+        QCOMPARE(acc.anchor->hash, kHash);
     }
 
     void reorgAfterPageOneDiscardsAllReceiptsAndStopsPaging() {
@@ -184,7 +201,10 @@ private Q_SLOTS:
         QCOMPARE(acc.total_una, 900);
         QJsonObject replaced = history({entryAt("receive", 100, 700),
                                         entryAt("receive", 50, 600)}, false);
+        poolearnings::historyRequest("din1pOURS", 2, 799, acc);
         QJsonObject coverage = replaced.value("history_coverage").toObject();
+        coverage["scan_from_height"] = 799;
+        coverage["scan_from_hash"] = QString(64, QLatin1Char('b'));
         coverage["chain_changed"] = true;
         replaced["history_coverage"] = coverage;
         poolearnings::addPage(acc, replaced);
@@ -203,6 +223,7 @@ private Q_SLOTS:
         poolearnings::Received acc;
         poolearnings::addPage(acc, history({entryAt("receive", 500, 900)}));
         QJsonObject error;
+        poolearnings::historyRequest("din1pOURS", 1, 899, acc);
         error["error"] = QJsonObject{{"code", -8}, {"message", "invalid anchor"}};
         poolearnings::addPage(acc, error);
         QVERIFY(acc.unusable);
@@ -218,6 +239,7 @@ private Q_SLOTS:
         poolearnings::Received acc;
         poolearnings::addPage(acc, history({entryAt("receive", 500, 900)}));
         QJsonObject old_server_reply;
+        poolearnings::historyRequest("din1pOURS", 1, 899, acc);
         old_server_reply["transactions"] = QJsonArray{entryAt("receive", 400, 800)};
         old_server_reply["history_complete"] = true;
         poolearnings::addPage(acc, old_server_reply);
@@ -230,10 +252,23 @@ private Q_SLOTS:
         poolearnings::Received acc;
         poolearnings::addPage(acc, history({entryAt("receive", 500, 900)}));
         QJsonObject malformed = history({entryAt("receive", 400, 800)});
+        poolearnings::historyRequest("din1pOURS", 1, 899, acc);
         QJsonObject coverage = malformed.value("history_coverage").toObject();
+        coverage["scan_from_height"] = 899;
         coverage["scan_from_hash"] = "not-a-block-hash";
         malformed["history_coverage"] = coverage;
         poolearnings::addPage(acc, malformed);
+        QVERIFY(acc.unusable);
+        QCOMPARE(acc.total_una, 0);
+    }
+
+    void anchoredPageWithWrongScanStartFailsClosed() {
+        poolearnings::Received acc;
+        poolearnings::addPage(acc, history({entryAt("receive", 500, 900)}));
+        poolearnings::historyRequest("din1pOURS", 1, 899, acc);
+        QJsonObject wrong_start = history({entryAt("receive", 400, 800)});
+        // The hash is valid-looking, but it describes the wrong scan start.
+        poolearnings::addPage(acc, wrong_start);
         QVERIFY(acc.unusable);
         QCOMPARE(acc.total_una, 0);
     }
@@ -248,6 +283,44 @@ private Q_SLOTS:
         const QString html = poolearnings::renderLifetimeHtml(
             acc, QStringLiteral("0.00000000 DIN"), QStringLiteral(""), true);
         QVERIFY(!html.contains(QStringLiteral("0.00000000")));
+    }
+
+    void malformedFullPageCannotEndAsAnExactTotal() {
+        QJsonArray txs;
+        for (int i = 0; i < 200; ++i) {
+            QJsonObject bad = entry("receive", 1);
+            bad.remove("height");
+            txs.append(bad);
+        }
+        poolearnings::Received acc;
+        const QJsonObject page = history(txs);
+        poolearnings::addPage(acc, page);
+        QVERIFY(acc.unusable);
+        QCOMPARE(acc.total_una, 0);
+        QVERIFY(!poolearnings::nextPageStart(acc, page, 200).has_value());
+        const QString html = poolearnings::renderLifetimeHtml(
+            acc, QStringLiteral("200.00000000 DIN"), QStringLiteral(""), true);
+        QVERIFY(!html.contains(QStringLiteral("200.00000000")));
+    }
+
+    void firstPageCannotContainHeightsAboveItsScanStart() {
+        poolearnings::Received acc;
+        poolearnings::addPage(acc, history({entryAt("receive", 500, 901)}));
+        QVERIFY(acc.unusable);
+        QCOMPARE(acc.total_una, 0);
+    }
+
+    void repeatedPageBeyondRequestedHeightCannotCountTwice() {
+        poolearnings::Received acc;
+        const QJsonObject first = history({entryAt("receive", 500, 900),
+                                           entryAt("receive", 400, 800)});
+        poolearnings::addPage(acc, first);
+        poolearnings::historyRequest("din1pOURS", 2, 799, acc);
+        // An old or faulty daemon ignores from_height and returns page one.
+        poolearnings::addPage(acc, first);
+        QVERIFY(acc.unusable);
+        QCOMPARE(acc.total_una, 0);
+        QVERIFY(!poolearnings::nextPageStart(acc, first, 2).has_value());
     }
 
     void olderDaemonWithoutAnchorContinuesOnlyAsObserved() {
@@ -285,6 +358,7 @@ private Q_SLOTS:
     void hiddenAmountsAreFlaggedNotSilentlyDropped() {
         QJsonObject hidden;
         hidden["type"] = "receive";
+        hidden["height"] = 900;
         hidden["amount_hidden"] = true;
         QJsonArray txs{entry("receive", 500), hidden};
         const auto r = poolearnings::sumReceived(history(txs));
@@ -299,6 +373,7 @@ private Q_SLOTS:
     void malformedAmountsCountAsIncomplete() {
         QJsonObject bad;
         bad["type"] = "receive";
+        bad["height"] = 900;
         bad["amount_hidden"] = false;
         bad["amount"] = "not a number";
         const auto r = poolearnings::sumReceived(history({entry("receive", 500), bad}));
@@ -322,6 +397,7 @@ private Q_SLOTS:
     void aMissingCoinbaseFlagStillCounts() {
         QJsonObject e;
         e["type"] = "receive";
+        e["height"] = 900;
         e["amount"] = 500;
         e["amount_hidden"] = false;
         const auto r = poolearnings::sumReceived(history({e}));
@@ -339,6 +415,15 @@ private Q_SLOTS:
         r["address"] = "din1pTHEIRS";
         QVERIFY(!poolearnings::isForAddress(r, "din1pOURS"));
         QVERIFY(poolearnings::isForAddress(r, "din1pTHEIRS"));
+    }
+
+    void sameAddressAloneCannotDistinguishExplorerReply() {
+        QJsonObject explorer;
+        explorer["address"] = "din1pSAME";
+        explorer["transactions"] = QJsonArray{entryAt("receive", 100, 900)};
+        // Both screens request this same address. The transport's per-call
+        // alias, tested in RpcReplyAlias, is the required discriminator.
+        QVERIFY(poolearnings::isForAddress(explorer, "din1pSAME"));
     }
 
     // An older node that does not echo the address back leaves us with

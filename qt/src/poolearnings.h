@@ -52,6 +52,9 @@ struct Received {
     };
     /// Page one's canonical scan-start block. Later requests carry this.
     std::optional<Anchor> anchor;
+    /// The bound sent with the current page. A daemon that ignores the
+    /// bound must not make a repeated page look like a complete walk.
+    std::optional<int> requested_from_height;
     int pages = 0;
 };
 
@@ -73,14 +76,15 @@ inline std::optional<Received::Anchor> pageAnchor(const QJsonObject& coverage) {
     return Received::Anchor{h, hash};
 }
 
+inline QJsonArray historyRequest(const QString& address, int count) {
+    return QJsonArray{address, count};
+}
+
 inline QJsonArray historyRequest(const QString& address, int count,
-                                 std::optional<int> from_height = std::nullopt,
-                                 const Received& acc = Received{}) {
-    QJsonArray params{address, count};
-    if (from_height) {
-        params.append(*from_height);
-        if (acc.anchor) params.append(acc.anchor->toJson());
-    }
+                                 int from_height, Received& acc) {
+    acc.requested_from_height = from_height;
+    QJsonArray params{address, count, from_height};
+    if (acc.anchor) params.append(acc.anchor->toJson());
     return params;
 }
 
@@ -94,14 +98,11 @@ inline void invalidate(Received& acc, const QString& reason) {
 
 /// Whether a reply belongs to the address we asked about.
 ///
-/// `RpcClient` broadcasts every reply to every connected widget, and
-/// mainwindow's address explorer calls these same two RPCs on the same
-/// client. Without this check, searching an address over there repaints
-/// the Pool tab's earnings with that address's numbers.
+/// The per-request reply route keeps the explorer's same-address call out
+/// of this panel; an echoed address is an additional response check.
 ///
-/// A node that does not echo `address` back leaves nothing to compare,
-/// so the reply is accepted and the caller's in-flight bookkeeping is
-/// the only guard.
+/// Older nodes may not echo `address`, so the reply route remains the
+/// primary guard in that case.
 inline bool isForAddress(const QJsonObject& result, const QString& expected) {
     const QJsonValue echoed = result.value(QStringLiteral("address"));
     if (!echoed.isString()) {
@@ -139,6 +140,8 @@ inline void addPage(Received& acc, const QJsonObject& page) {
     const std::optional<Received::Anchor> current_anchor = pageAnchor(coverage);
     if (acc.pages > 0 && acc.anchor &&
         (!coverage_value.isObject() || !current_anchor ||
+         !acc.requested_from_height ||
+         current_anchor->height != *acc.requested_from_height ||
          !coverage.value(QStringLiteral("chain_changed")).isBool() ||
          !page.value(QStringLiteral("history_complete")).isBool())) {
         invalidate(acc, QStringLiteral(
@@ -157,7 +160,24 @@ inline void addPage(Received& acc, const QJsonObject& page) {
     ++acc.pages;
     const QJsonArray txs = page.value(QStringLiteral("transactions")).toArray();
     for (const QJsonValue& value : txs) {
+        if (!value.isObject()) {
+            invalidate(acc, QStringLiteral("The node returned a malformed history entry. Please retry."));
+            return;
+        }
         const QJsonObject entry = value.toObject();
+        const QJsonValue height_value = entry.value(QStringLiteral("height"));
+        const int height = height_value.toInt(-1);
+        const QJsonValue type_value = entry.value(QStringLiteral("type"));
+        if (!height_value.isDouble() || height < 0 ||
+            height_value.toDouble() != static_cast<double>(height) ||
+            (acc.pages == 1 && acc.anchor && height > acc.anchor->height) ||
+            (acc.requested_from_height && height > *acc.requested_from_height) ||
+            !type_value.isString() ||
+            (type_value.toString() != QLatin1String("receive") &&
+             type_value.toString() != QLatin1String("send"))) {
+            invalidate(acc, QStringLiteral("The node returned a malformed history entry. Please retry."));
+            return;
+        }
         // Sends are the operator moving their own money out. Counting
         // them at all would either double-count the receipt that funded
         // them or turn this figure back into a balance.
@@ -238,10 +258,15 @@ inline std::optional<int> nextFromHeight(const QJsonObject& page, int requested_
     return lowest - 1;
 }
 
-inline std::optional<int> nextPageStart(const Received& acc, const QJsonObject& page,
+inline std::optional<int> nextPageStart(Received& acc, const QJsonObject& page,
                                        int requested_count) {
     if (acc.unusable) return std::nullopt;
-    return nextFromHeight(page, requested_count);
+    const auto next = nextFromHeight(page, requested_count);
+    if (next && acc.requested_from_height && *next >= *acc.requested_from_height) {
+        invalidate(acc, QStringLiteral("The node repeated a history page. Please retry."));
+        return std::nullopt;
+    }
+    return next;
 }
 
 /// Paging gave up before the history ran out. The only case where the

@@ -11,7 +11,7 @@ foreach(REQUIRED_TEXT
     "req.setAttribute(kKindAttr, kKindStatus)"
     "if (status_in_flight_)"
     "if (payout_in_flight_)"
-    "if (earnings_in_flight_)")
+    "if (earnings_in_flight_ || lifetime_in_flight_)")
   string(FIND "${POOL_SOURCE}" "${REQUIRED_TEXT}" FOUND_AT)
   if(FOUND_AT EQUAL -1)
     message(FATAL_ERROR "Pool panel safety regression: missing '${REQUIRED_TEXT}'")
@@ -46,7 +46,12 @@ foreach(REQUIRED_TEXT
     # here would make "lifetime" fall every time the operator swept their
     # fee, which is the exact mislabel above wearing a new name.
     "blockchain.getaddresshistory"
-    "poolearnings::historyRequest")
+    "poolearnings::historyRequest"
+    # The address explorer can request the same address through the shared
+    # RpcClient. Per-call routes keep its reply out of this earnings walk.
+    "rpc_->callAs"
+    "expected_history_reply_"
+    "expected_balance_reply_")
   string(FIND "${POOL_SOURCE}" "${REQUIRED_TEXT}" FOUND_AT)
   if(FOUND_AT EQUAL -1)
     message(FATAL_ERROR "Pool cockpit regression: missing '${REQUIRED_TEXT}'")
@@ -87,6 +92,12 @@ string(FIND "${VAULT_GATED_SOURCE}" "poolPanel_ = new PoolPanel" POOL_IN_VAULT_G
 if(NOT POOL_IN_VAULT_GATE EQUAL -1)
   message(FATAL_ERROR
     "Pool panel visibility regression: Pool tab is coupled to the disabled Liquidity Vault gate")
+endif()
+
+string(FIND "${MAINWINDOW_SOURCE}"
+  "method.startsWith(QStringLiteral(\"pool.earnings.\"))" POOL_ERROR_ROUTING_AT)
+if(POOL_ERROR_ROUTING_AT EQUAL -1)
+  message(FATAL_ERROR "Pool reply errors can leak into the global error banner")
 endif()
 
 message(STATUS "Qt Pool panel transport and single-flight safety checks passed")

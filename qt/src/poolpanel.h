@@ -75,6 +75,7 @@ private:
     void setupConnections();
     void applyStatus(const QJsonObject& status);
     void applyLifetime(const QJsonValue& result);
+    void requestHistoryPage(std::optional<int> from_height = std::nullopt);
     /// Paints the running total. `final_page` distinguishes a mid-walk
     /// figure, which is still climbing, from the answer.
     void renderLifetime(bool final_page);
@@ -119,10 +120,13 @@ private:
     bool fee_in_flight_ = false;
     bool earnings_in_flight_ = false;
     bool lifetime_in_flight_ = false;
-    /// The address the in-flight earnings check is for. RpcClient
-    /// broadcasts replies to every widget, so a reply is only ours if it
-    /// echoes this back.
+    /// Address echoed by a reply is checked as well as its per-call route.
     QString earnings_address_;
+    /// Per-request reply aliases separate this panel from MainWindow's
+    /// address explorer even when both query the same address. A fresh
+    /// alias on every page also rejects a late reply from an older walk.
+    QString expected_history_reply_;
+    QString expected_balance_reply_;
     /// Running total across history pages, and how many have landed.
     poolearnings::Received lifetime_acc_;
     int lifetime_pages_ = 0;
@@ -196,8 +200,8 @@ private:
     // Chain-verified earnings.
     QLineEdit* fee_address_input_;
     QPushButton* btn_check_earnings_;
-    /// Lifetime total (only rises) above the unspent balance (falls when
-    /// the operator moves funds out). Both are read from the chain.
+    /// Complete history gives a lifetime total. Partial history shows only
+    /// observed receipts; a reorg hides them. Unspent falls as funds move out.
     QLabel* lbl_lifetime_ = nullptr;
     QLabel* lbl_earnings_;
 
