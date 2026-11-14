@@ -3464,7 +3464,11 @@ jobs:
           python3 - <<'PYTEST'
           import re
           log=open('orchard-reservation-balance-execution.log').read()
-          expected=['AuthenticatedReservationMaturityAndReopen','LockedRpcAmountsAreExplicitlyUnavailable','UntrackedAndIncompleteReadsNeverClaimAuthentication']
+          expected=['AuthenticatedReservationMaturityAndReopen','LockedRpcAmountsAreExplicitlyUnavailable','UntrackedAndIncompleteReadsNeverClaimAuthentication',
+                    'PendingLegacyMigrationBalanceIsUnavailableAndNamed','PendingMigrationRefusesRawWalletRelayAndShieldedSpends',
+                    'MarkedWalletCannotIssueUntrackedAddressesDirectly','HistoryQueryFailureCannotLookLikeEmptyHistory',
+                    'MiningWalletShortcutCannotChangePendingScriptDomain','PendingLegacyMigrationCannotPublishHistoryCsv',
+                    'DpiInvoiceCannotIssueAddressDuringLegacyMigration','CovenantOwnerCannotIssueAddressInAnotherLegacyWallet']
           if sorted(re.findall(r'\[       OK \] WalletReservationBalance\.(\w+)',log))!=sorted(expected):
               raise SystemExit('Reservation balance cases did not complete exactly once')
           PYTEST
