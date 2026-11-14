@@ -80,8 +80,25 @@ uint32_t HeaderIndexEntry::SkipHeight(uint32_t h) {
     return static_cast<uint32_t>(SkipHeightSigned(h));
 }
 
+namespace {
+// True when every link from `e` down to genesis has height == parent + 1.
+// Entries at height >= 2 are consistent exactly when their skip link was
+// built (BuildSkip only links consistent ancestry), so this is O(1).
+bool AncestryConsistent(const HeaderIndexEntry* e) {
+    if (!e) return false;
+    if (e->height == 0) return e->parent == nullptr;
+    if (!e->parent || e->parent->height + 1 != e->height) return false;
+    if (e->height == 1) return e->parent->parent == nullptr;
+    return e->Skip() != nullptr;
+}
+}  // namespace
+
 void HeaderIndexEntry::BuildSkip() {
-    skip.set(parent ? parent->GetAncestor(SkipHeight(height)) : nullptr);
+    // Only link through height-consistent ancestry (a corrupt or legacy store
+    // may hold a parent whose height is not height - 1); elsewhere GetAncestor
+    // keeps the exact behaviour of the parent walk.
+    skip.set(parent && parent->height + 1 == height && AncestryConsistent(parent)
+                 ? parent->GetAncestor(SkipHeight(height)) : nullptr);
 }
 
 const HeaderIndexEntry* HeaderIndexEntry::GetAncestor(uint32_t ancestor_height) const {
@@ -91,20 +108,21 @@ const HeaderIndexEntry* HeaderIndexEntry::GetAncestor(uint32_t ancestor_height) 
     // Skip pointers when built; the parent link otherwise (copies, entries
     // whose links are not yet built). Signed arithmetic avoids unsigned
     // underflow near genesis.
+    // Heights are read from each entry, so without skip links (or across a
+    // height-inconsistent link, where none are built) this is exactly the
+    // original parent walk.
     const int64_t target = ancestor_height;
     const HeaderIndexEntry* walk = this;
-    int64_t walk_height = height;
-    while (walk && walk_height > target) {
+    while (walk && walk->height > target) {
+        const int64_t walk_height = walk->height;
         const int64_t skip_height = SkipHeightSigned(walk_height);
         const int64_t skip_height_prev = SkipHeightSigned(walk_height - 1);
         const HeaderIndexEntry* skip_target = walk->skip.get();
         if (skip_target && (skip_height == target ||
             (skip_height > target && !(skip_height_prev < skip_height - 2 && skip_height_prev >= target)))) {
             walk = skip_target;
-            walk_height = skip_height;
         } else {
             walk = walk->parent;
-            --walk_height;
         }
     }
     return (walk && walk->height == ancestor_height) ? walk : nullptr;
