@@ -964,8 +964,18 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
         const auto& balance = summary.balance;
         const bool transparent_only = ReadLegacyTransparentScope(wallet_service, summary.wallet_name) ==
             dinero::WalletManager::LegacyTransparentState::Complete;
+        auto v3_source = ctx.daemon->chainstate
+            ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)
+            : nullptr;
+        const bool transparent_send = transparent_only && v3_source &&
+            v3_source->RecoveredV3TransparentSendSourceReady();
         result["walletname"] = summary.wallet_name;
         if (transparent_only) MarkLegacyTransparentLimitedScope(result);
+        if (transparent_send) {
+            result["send_ready"] = true;
+            result["send_scope"] = "transparent_recovered_v3";
+            result.removeMember("send_unavailable_reason");
+        }
         result["reservation_status"] = ReservationStatusName(summary.reservations);
 
         // Phase 35: Enhanced balance breakdown
@@ -974,7 +984,8 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
         result["immature"] = balance.immature;
         result["locked"] = ReservationAmount(summary.locked);
         result["total"] = balance.total;
-        result["spendable"] = transparent_only ? din::Json(Json::nullValue) : ReservationAmount(summary.available_confirmed);
+        result["spendable"] = transparent_only && !transparent_send
+            ? din::Json(Json::nullValue) : ReservationAmount(summary.available_confirmed);
         result["utxo_count"] = balance.utxo_count;
 
         // Same wallet snapshot as the balance and recorded reservations.
@@ -985,7 +996,8 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
 
         // Phase 35: Detailed breakdown for verification
         din::Json breakdown;
-        breakdown["spendable"] = transparent_only ? din::Json(Json::nullValue) : ReservationAmount(summary.available_confirmed);
+        breakdown["spendable"] = transparent_only && !transparent_send
+            ? din::Json(Json::nullValue) : ReservationAmount(summary.available_confirmed);
         breakdown["pending"] = balance.unconfirmed;  // unconfirmed
         breakdown["unspendable"] = ReservationAmount(summary.unavailable_confirmed_and_immature);
         result["breakdown"] = breakdown;
@@ -1131,8 +1143,18 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
         const auto& balance = summary.balance;
         const bool transparent_only = ReadLegacyTransparentScope(wallet_service, summary.wallet_name) ==
             dinero::WalletManager::LegacyTransparentState::Complete;
+        auto v3_source = ctx.daemon->chainstate
+            ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)
+            : nullptr;
+        const bool transparent_send = transparent_only && v3_source &&
+            v3_source->RecoveredV3TransparentSendSourceReady();
         result["walletname"] = summary.wallet_name;
         if (transparent_only) MarkLegacyTransparentLimitedScope(result);
+        if (transparent_send) {
+            result["send_ready"] = true;
+            result["send_scope"] = "transparent_recovered_v3";
+            result.removeMember("send_unavailable_reason");
+        }
         result["reservation_status"] = ReservationStatusName(summary.reservations);
         result["balance"] = balance.total;
         result["transparent_balance"] = balance.total;
@@ -1160,7 +1182,8 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
         result["locked_balance"] = ReservationAmount(summary.locked);
 
         // Spendable balance
-        result["spendable_balance"] = transparent_only ? din::Json(Json::nullValue) : ReservationAmount(summary.available_confirmed);
+        result["spendable_balance"] = transparent_only && !transparent_send
+            ? din::Json(Json::nullValue) : ReservationAmount(summary.available_confirmed);
         result["utxo_count"] = balance.utxo_count;
         result["immature_utxo_count"] = balance.immature_utxo_count;
         }
@@ -2995,7 +3018,32 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
         return result;
     }
 
-    if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
+    // A completed full-archive v3 recovery has an independently verified
+    // transparent coin inventory. Only this ordinary send path can use it;
+    // other wallet mutation RPCs retain the Orchard-enrollment refusal.
+    bool recovered_v3_send = false;
+#if DINERO_WALLET_RAW_ORCHARD
+    if (ctx.daemon->chainstate) {
+        auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        if (source && source->HasFullArchiveWalletIndexV3()) {
+            auto use = dinero::WalletService::AcquireWalletUse(wallet_service);
+            auto lease = use->Wallet().AcquireDatabaseLease();
+            recovered_v3_send = lease->LegacyTransparentState() ==
+                dinero::WalletManager::LegacyTransparentState::Complete;
+        }
+    }
+#endif
+    if (recovered_v3_send) {
+        if (RefuseIfLegacyTransparentTipNotCurrent(ctx, wallet_service, result)) return result;
+        auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        if (!source || !source->RecoveredV3TransparentSendSourceReady()) {
+            result["error"] = "Recovered payment selected source unavailable";
+            result["error_code"] = "wallet_v3_send_source_unavailable";
+            return result;
+        }
+    } else if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) {
+        return result;
+    }
 
     // Check if wallet is locked
     if (wallet_service->get().isWalletLocked()) {
@@ -3449,9 +3497,39 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
         int64_t estimated_fee = coin_result.fee;
         int64_t change_amount = coin_result.change_amount;
 
-        // Phase 6: Use client-specified change address if provided, otherwise derive
+        // The v3 recovery owns only the scripts already proved by its two
+        // receipts. Deriving a new script would invalidate those receipts;
+        // using the recipient for change could lose the remainder of a coin.
+        // Reuse an existing input address only after matching its recorded
+        // script and signing key. The payment owner checks it again at commit.
         std::string change_address;
-        if (!override_change_address.empty()) {
+        if (recovered_v3_send) {
+            if (!override_change_address.empty()) {
+                result["error"] = "Recovered transparent wallet cannot override its change address";
+                result["error_code"] = "wallet_v3_change_override_unavailable";
+                return result;
+            }
+            auto lease = wallet_use->Wallet().AcquireDatabaseLease();
+            if (lease->Session() != signing_identity.session ||
+                lease->WalletName() != signing_identity.name)
+                throw std::runtime_error("Recovered payment wallet selection changed");
+            auto pin = lease->CopyRecoverySeed(signing_identity.session);
+            for (const auto& coin : selected_utxos) {
+                if (coin.address.empty() || coin.script_pubkey.empty()) continue;
+                auto recorded = wallet_use->Wallet().getScriptPubKeyForAddress(coin.address);
+                if (!recorded || *recorded != coin.script_pubkey) continue;
+                auto key = lease->ResolveSigningKey(coin.script_pubkey, *pin);
+                if (key && key->secret.size() == 32) {
+                    change_address = coin.address;
+                    break;
+                }
+            }
+            if (change_address.empty()) {
+                result["error"] = "Recovered transparent wallet has no existing owned change address";
+                result["error_code"] = "wallet_v3_change_owner_unavailable";
+                return result;
+            }
+        } else if (!override_change_address.empty()) {
             change_address = override_change_address;
             if (ctx.logger) {
                 ctx.logger->debug("[wallet.sendtoaddress] Using client-specified change address: " + change_address.substr(0, 20) + "...");
@@ -3459,7 +3537,7 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
         } else {
             change_address = wallet_service->get().getNewAddress("change", "taproot");
         }
-        if (change_address.empty()) {
+        if (!recovered_v3_send && change_address.empty()) {
             // Fallback: use recipient address for change
             change_address = address;
             if (ctx.logger) {
@@ -3531,7 +3609,11 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
                 return result;
             }
 
-            if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
+            if (recovered_v3_send) {
+                if (RefuseIfLegacyTransparentTipNotCurrent(ctx, wallet_service, result)) return result;
+            } else if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) {
+                return result;
+            }
             auto sign_result=chainstate_service->signAndStageWalletPayment(
                 wallet_use->Wallet(),signing_identity,build_result.unsigned_tx,
                 dinero::PendingPaymentIntent{address,parsed_amount_una,""});
@@ -3628,6 +3710,8 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
         }
 
         result["available_keys"] = static_cast<int>(available_keys);
+        if (recovered_v3_send && RefuseAfterLegacyTransparentRead(ctx, wallet_service, result))
+            return result;
 
         if (ctx.logger) {
             ctx.logger->info("[wallet.sendtoaddress] Preview: " + std::to_string(amount_din) +

@@ -984,6 +984,7 @@ TEST(WalletCanonicalRecovery, CompletedTransparentWalletRefusesStaleSelectedTipB
         << stale_status.toStyledString();
     EXPECT_FALSE(stale_status["balance_available"].asBool());
     EXPECT_FALSE(stale_status.isMember("total_balance")) << stale_status.toStyledString();
+    EXPECT_FALSE(stale_status.isMember("spendable_balance")) << stale_status.toStyledString();
     const auto stale_sync=rpc_context_wallet_getsyncstate(request,din::obj());
     EXPECT_EQ(stale_sync["error_code"].asString(),"wallet_balance_not_current")
         << stale_sync.toStyledString();

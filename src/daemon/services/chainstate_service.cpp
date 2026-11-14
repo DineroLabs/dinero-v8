@@ -3338,6 +3338,36 @@ bool ChainstateService::HasFullArchiveWalletIndexV3() const {
     std::lock_guard<std::mutex> lock(wallet_index_use_mutex_);
     return utxo_index_ && utxo_index_->IsFullArchiveV3MetadataOnly();
 }
+bool ChainstateService::RecoveredV3TransparentSendSourceReady() {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    try {
+        auto self=weak_from_this().lock();
+        if(!self)return false;
+        auto use=AcquireWalletIndexUse(self);
+        auto& index=use->Index();
+        if(!index.IsFullArchiveV3MetadataOnly())return false;
+        std::lock_guard<std::mutex> snapshot_load(snapshot_load_mutex_);
+        std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+        if(safe_mode_active_||!chain_db_||!active_tip_||!consensus_utxo_set_||
+           assumeutxo_active_||compact_startup_||orchard_snapshot_startup_||
+           GetConfig().utreexo_stateless||GetSnapshotWalletRecoveryBaseHeight()!=0||
+           index.GetMetadata("wallet_snapshot_recovery_base_height")||
+           chain_db_->getPreBaseCoinSetBase().status()!=Status::NotFound||
+           active_tip_->height<Params().orchard_activation_height)return false;
+        const auto tip=chain_db_->getTip(),validated=chain_db_->getValidatedTip();
+        const auto selected_tip=UtreexoRpcSnapshotUnderLock();
+        if(!tip.ok()||!validated.ok()||!selected_tip.ok()||tip->height<0||
+           tip->hash!=active_tip_->hash||uint32_t(tip->height)!=active_tip_->height||
+           validated->hash!=tip->hash||validated->height!=tip->height||
+           selected_tip->block_hash!=tip->hash||selected_tip->height!=uint32_t(tip->height))
+            return false;
+        storage::RequireFullOrchardStorage(*chain_db_);
+        return true;
+    }catch(...){return false;}
+#else
+    return false;
+#endif
+}
 
 std::shared_ptr<ChainDB> ChainstateService::StageCompletedActivationRoot(const daemon::DatadirGuard& guard){
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
@@ -7668,12 +7698,19 @@ SignResult ChainstateService::signAndStageWalletPayment(WalletManager& wallet,
     try {
         if(activation_mutex_.HeldByCurrentThread())throw std::runtime_error("Payment source requires no borrowed selected lock");
         UTXOIndex* index=nullptr;
+        bool recovered_v3=false;
         {std::lock_guard<std::mutex> use(wallet_index_use_mutex_);
          if(!wallet_index_uses_by_thread_.count(std::this_thread::get_id())||!utxo_index_)
              throw std::runtime_error("Payment source lifetime unavailable");
          index=utxo_index_.get();}
         {auto lease=wallet.AcquireDatabaseLease();
-         if(!wallet.SoleDatabaseLeaseHeld()||!lease->Database()||lease->Session()!=identity.session||wallet.getUTXOIndex()!=index)
+         if(!wallet.SoleDatabaseLeaseHeld()||!lease->Database()||lease->Session()!=identity.session)
+             throw std::runtime_error("Payment wallet source binding changed");
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+         recovered_v3=index->IsFullArchiveV3MetadataOnly()&&wallet.getUTXOIndex()==nullptr&&
+             lease->LegacyTransparentState()==WalletManager::LegacyTransparentState::Complete;
+#endif
+         if(!recovered_v3&&wallet.getUTXOIndex()!=index)
              throw std::runtime_error("Payment wallet source binding changed");}
         {
             // LoadSnapshot takes this lock before acquiring the selected lock
@@ -7687,6 +7724,56 @@ SignResult ChainstateService::signAndStageWalletPayment(WalletManager& wallet,
             if(!tip.ok()||tip->height<0)
                 throw std::runtime_error("Payment durable tip unavailable");
             const bool aligned=tip->hash==active_tip_->hash&&uint32_t(tip->height)==active_tip_->height;
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            if(recovered_v3) {
+                // This wallet has only a recovered transparent inventory. It
+                // may use the ordinary payment owner only while both durable
+                // wallet receipts bind the exact selected, fully validated
+                // source. No snapshot or compact profile may borrow it.
+                const auto validated=chain_db_->getValidatedTip();
+                if(!aligned||!validated.ok()||validated->hash!=tip->hash||
+                   validated->height!=tip->height||assumeutxo_active_||compact_startup_||
+                   orchard_snapshot_startup_||GetSnapshotWalletRecoveryBaseHeight()!=0||
+                   index->GetMetadata("wallet_snapshot_recovery_base_height")||
+                   chain_db_->getPreBaseCoinSetBase().status()!=Status::NotFound||
+                   GetConfig().utreexo_stateless||!consensus_utxo_set_||
+                   active_tip_->height<Params().orchard_activation_height||
+                   !UtreexoRpcSnapshotUnderLock().ok())
+                    throw std::runtime_error("Recovered payment selected source unavailable");
+                storage::RequireFullOrchardStorage(*chain_db_);
+                auto lease=wallet.AcquireDatabaseLease();
+                if(lease->Session()!=identity.session||lease->WalletName()!=identity.name||
+                   lease->LegacyTransparentState()!=WalletManager::LegacyTransparentState::Complete||
+                   wallet.getUTXOIndex()!=nullptr)
+                    throw std::runtime_error("Recovered payment wallet owner changed");
+                lease->RequireLegacyTransparentFinancialReady();
+                const auto ordinary=RuntimeOrdinaryDelivery::ReadForWallet(wallet,identity.session);
+                const auto metadata=RuntimeIndexDelivery::ReadForWalletV3(*index,*lease);
+                if(!ordinary||!metadata||ordinary->cursor!=metadata->cursor||
+                   ordinary->origin_hash!=metadata->origin_hash||
+                   ordinary->origin_height!=metadata->origin_height||
+                   ordinary->tip_hash!=active_tip_->hash||metadata->tip_hash!=active_tip_->hash||
+                   ordinary->tip_height!=active_tip_->height||metadata->tip_height!=active_tip_->height)
+                    throw std::runtime_error("Recovered payment wallet receipts disagree");
+                const auto page=getRuntimeDeliveryPage(metadata->cursor,1);
+                if(!page.ok()||(*page)->head!=metadata->cursor||
+                   (*page)->next!=metadata->cursor||!(*page)->events.empty()||
+                   !(*page)->after_tip||(*page)->after_tip->first!=active_tip_->hash||
+                   (*page)->after_tip->second!=active_tip_->height)
+                    throw std::runtime_error("Recovered payment source advanced before signing");
+                for(const auto& selected_coin:input.selected_utxos) {
+                    const OutPoint point(TxId(selected_coin.txid),selected_coin.vout);
+                    const auto* live=consensus_utxo_set_->GetCoin(point);
+                    if(!live||live->is_confidential||!live->isMature(active_tip_->height)||
+                       live->value.GetUna()!=selected_coin.value.GetUna()||
+                       live->scriptPubKey!=selected_coin.spk||
+                       live->height!=selected_coin.height||
+                       live->isCoinbase!=selected_coin.is_coinbase)
+                        throw std::runtime_error("Recovered payment input no longer matches selected coins");
+                }
+                return SignWalletPaymentBeforeActivation(wallet,identity,input,intent);
+            }
+#endif
             const bool retained=HasRuntimeDeliveryHistory(*chain_db_);
             const auto orchard=chain_db_->getOrchardState();
             const auto retired=chain_db_->getLegacyRetirementState();

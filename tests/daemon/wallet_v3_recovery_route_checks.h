@@ -110,6 +110,170 @@ TEST(WalletV3RescanGate, AllEnrollmentStatesRefuseLegacyRpcAndDirectRescanWithou
     expect_refusal(WalletManager::LegacyTransparentState::Complete);
 }
 
+TEST(WalletV3Spend, RecoveredTransparentCoinUsesOwnedChangeAndRetainsReservationAcrossRestart) {
+    CanonicalRecoveryFixture f(true, true);
+    (void)f.PrepareFundedHistoricalWallet();
+    f.DowngradeToPreIdentityTransparentWallet();
+    (void)f.MineToWallet();
+    ASSERT_EQ(f.f.service->GetActiveTip()->height, 102u);
+
+    const auto index_path = f.f.path / "v3-spend-index";
+    { UTXOIndex v2(index_path.string()); ASSERT_TRUE(v2.Initialize()); }
+    (void)UpgradeFullArchiveWalletIndexSchemaToV3(index_path);
+    auto metadata = std::make_unique<UTXOIndex>(index_path.string());
+    ASSERT_TRUE(metadata->InitializeFullArchiveV3MetadataOnly());
+    {
+        auto use = WalletService::AcquireWalletUse(f.wallet);
+        use->Wallet().setUTXOIndex(nullptr);
+        use->Wallet().DisableLegacyRescansForFullArchiveV3();
+    }
+    struct RestoreIndex {
+        ChainstateService& source;
+        std::unique_ptr<UTXOIndex> original;
+        ~RestoreIndex() {
+            auto replacement = ShieldedStateStartupTestAccess::SwapWalletIndexForRpc(
+                source, std::move(original));
+            (void)replacement;
+        }
+    } restore{*f.f.service, ShieldedStateStartupTestAccess::SwapWalletIndexForRpc(
+        *f.f.service, std::move(metadata))};
+
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ExecutionContext request;
+    request.daemon = &f.context;
+    request.walletName = "canonical-recovery";
+    const auto ready_balance = rpc_context_wallet_getbalance(request, din::obj());
+    ASSERT_FALSE(ready_balance.isMember("error")) << ready_balance.toStyledString();
+    EXPECT_TRUE(ready_balance["send_ready"].asBool()) << ready_balance.toStyledString();
+    EXPECT_EQ(ready_balance["send_scope"].asString(), "transparent_recovered_v3");
+    EXPECT_GT(ready_balance["spendable"].asDouble(), 0.0);
+    // HTTP requests do not name the selected wallet. The status handler must
+    // pin that selection before it delegates to the balance reader.
+    auto http_request = request;
+    http_request.walletName.clear();
+    const auto ready_status = rpc_context_wallet_getstatus(http_request, din::obj());
+    ASSERT_FALSE(ready_status.isMember("error")) << ready_status.toStyledString();
+    EXPECT_TRUE(ready_status["send_ready"].asBool()) << ready_status.toStyledString();
+    EXPECT_EQ(ready_status["send_scope"].asString(), "transparent_recovered_v3");
+    EXPECT_DOUBLE_EQ(ready_status["spendable_balance"].asDouble(),
+                     ready_balance["spendable"].asDouble());
+    EXPECT_EQ(ready_status["immature_utxo_count"].asUInt(),
+              ready_balance["immature_utxo_count"].asUInt());
+    EXPECT_FALSE(ready_status.isMember("send_unavailable_reason"));
+    auto wrong_wallet = request;
+    wrong_wallet.walletName = "different-wallet";
+    const auto wrong_status = rpc_context_wallet_getstatus(wrong_wallet, din::obj());
+    EXPECT_EQ(wrong_status["error_code"].asString(), "wallet_balance_not_current")
+        << wrong_status.toStyledString();
+    EXPECT_FALSE(wrong_status.isMember("spendable_balance"));
+    din::Json payment = din::obj();
+    payment["address"] = OrchardMiningPayout;
+    payment["amount_una"] = Json::UInt64(100000);
+    payment["fee_rate"] = 1;
+    payment["preview"] = true;
+    ASSERT_NE(f.receive_address, OrchardMiningPayout);
+
+    // A selected-tip change without wallet reconciliation cannot sign from
+    // the old receipt, even though the ordinary coin rows still exist.
+    f.MineEmpty();
+    ASSERT_EQ(f.f.service->GetActiveTip()->height, 103u);
+    const auto stale = rpc_context_wallet_sendtoaddress(request, payment);
+    EXPECT_EQ(stale["error_code"].asString(), "wallet_balance_not_current")
+        << stale.toStyledString();
+    EXPECT_TRUE(f.wallet->get().getPendingPayments().empty());
+    error.clear();
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+
+    // A disconnect also invalidates the selected source. The H103 wallet
+    // receipt may not authorize a spend on the selected H102 branch.
+    ASSERT_TRUE(ShieldedStateStartupTestAccess::DisconnectBoundary(
+        *f.f.service, f.f.service->GetActiveTip()));
+    ASSERT_EQ(f.f.service->GetActiveTip()->height, 102u);
+    const auto reorged = rpc_context_wallet_sendtoaddress(request, payment);
+    EXPECT_EQ(reorged["error_code"].asString(), "wallet_balance_not_current")
+        << reorged.toStyledString();
+    EXPECT_TRUE(f.wallet->get().getPendingPayments().empty());
+    error.clear();
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+
+    payment["change_address"] = OrchardMiningPayout;
+    const auto override_change = rpc_context_wallet_sendtoaddress(request, payment);
+    EXPECT_EQ(override_change["error_code"].asString(),
+        "wallet_v3_change_override_unavailable") << override_change.toStyledString();
+    EXPECT_TRUE(f.wallet->get().getPendingPayments().empty());
+    payment.removeMember("change_address");
+
+    // A persisted/promoted snapshot base must not acquire the full-archive
+    // signing capability merely because its current receipts still compare.
+    ShieldedStateStartupTestAccess::SetRetainedSnapshotBaseForPayment(*f.f.service,1);
+    const auto snapshot_balance = rpc_context_wallet_getbalance(request, din::obj());
+    ASSERT_FALSE(snapshot_balance.isMember("error")) << snapshot_balance.toStyledString();
+    EXPECT_FALSE(snapshot_balance["send_ready"].asBool()) << snapshot_balance.toStyledString();
+    EXPECT_TRUE(snapshot_balance["spendable"].isNull()) << snapshot_balance.toStyledString();
+    const auto snapshot_status = rpc_context_wallet_getstatus(request, din::obj());
+    ASSERT_FALSE(snapshot_status.isMember("error")) << snapshot_status.toStyledString();
+    EXPECT_FALSE(snapshot_status["send_ready"].asBool()) << snapshot_status.toStyledString();
+    EXPECT_TRUE(snapshot_status["spendable_balance"].isNull()) << snapshot_status.toStyledString();
+    for (const bool preview : {true, false}) {
+        if (preview) payment["preview"] = true;
+        else payment.removeMember("preview");
+        const auto snapshot_refusal = rpc_context_wallet_sendtoaddress(request, payment);
+        EXPECT_EQ(snapshot_refusal["error_code"].asString(), "wallet_v3_send_source_unavailable")
+            << snapshot_refusal.toStyledString();
+        EXPECT_FALSE(snapshot_refusal.isMember("txid"));
+    }
+    EXPECT_TRUE(f.wallet->get().getPendingPayments().empty());
+    ShieldedStateStartupTestAccess::SetRetainedSnapshotBaseForPayment(*f.f.service,0);
+
+    payment["preview"] = true;
+    const auto preview = rpc_context_wallet_sendtoaddress(request, payment);
+    ASSERT_EQ(preview["status"].asString(), "preview") << preview.toStyledString();
+    EXPECT_EQ(preview["change_address"].asString(), f.receive_address);
+    EXPECT_GT(preview["available_keys"].asInt(), 0);
+    EXPECT_TRUE(f.wallet->get().getPendingPayments().empty());
+
+    payment.removeMember("preview");
+    const auto sent = rpc_context_wallet_sendtoaddress(request, payment);
+    ASSERT_EQ(sent["status"].asString(), "signed_and_submitted") << sent.toStyledString();
+    ASSERT_TRUE(sent["accepted"].asBool()) << sent.toStyledString();
+    EXPECT_EQ(sent["change_address"].asString(), f.receive_address);
+    ASSERT_EQ(f.wallet->get().getPendingPayments().size(), 1u);
+    const auto retained_txid = sent["txid"].asString();
+    ASSERT_EQ(retained_txid.size(), 64u);
+
+    // Reopening both wallet and index owners must preserve the same payment
+    // reservation. A second attempt may not reuse the funded input.
+    f.wallet->Stop();
+    f.context.wallet.reset();
+    f.wallet.reset();
+    f.wallet = std::make_shared<WalletService>();
+    f.context.wallet = f.wallet;
+    auto reopened = std::make_unique<UTXOIndex>(index_path.string());
+    ASSERT_TRUE(reopened->InitializeFullArchiveV3MetadataOnly());
+    auto closed = ShieldedStateStartupTestAccess::SwapWalletIndexForRpc(
+        *f.f.service, std::move(reopened));
+    ASSERT_TRUE(closed);
+    closed.reset();
+    ASSERT_TRUE(f.wallet->Init(f.context));
+    ASSERT_TRUE(f.wallet->Start());
+    {
+        auto use = WalletService::AcquireWalletUse(f.wallet);
+        use->Wallet().unlockWallet("canonical-fixture-pass", 0);
+        ASSERT_FALSE(use->Wallet().isWalletLocked());
+        const auto pending = use->Wallet().getPendingPayments();
+        ASSERT_EQ(pending.size(), 1u);
+        EXPECT_EQ(pending.front().txid, retained_txid);
+    }
+    const auto duplicate = rpc_context_wallet_sendtoaddress(request, payment);
+    EXPECT_TRUE(duplicate.isMember("error")) << duplicate.toStyledString();
+    EXPECT_FALSE(duplicate.isMember("txid"));
+    EXPECT_EQ(f.wallet->get().getPendingPayments().size(), 1u);
+}
+
 TEST(WalletV3ImportGuard, MandatoryDescriptorRescanRefusesBeforeAnyWalletWrite) {
     CanonicalRecoveryFixture f(false,true);
     (void)f.PrepareFundedHistoricalWallet();

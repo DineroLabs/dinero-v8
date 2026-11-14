@@ -6194,11 +6194,15 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(OrchardAccountCreation PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
   set_tests_properties(OrchardAccountIssuance PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;mandatory")
   add_test(NAME WalletCanonicalRecovery COMMAND test_assumeutxo_replay --gtest_filter=WalletCanonicalRecovery.*)
-  set_tests_properties(WalletCanonicalRecovery PROPERTIES TIMEOUT 120 LABELS "daemon;wallet;mandatory")
+  # A cold full-archive fixture takes about 165 seconds on the Linux host.
+  set_tests_properties(WalletCanonicalRecovery PROPERTIES TIMEOUT 300 LABELS "daemon;wallet;mandatory")
   if(DINERO_BUILD_ORCHARD_BACKEND)
     add_test(NAME WalletV3RescanGate COMMAND test_assumeutxo_replay
       --gtest_filter=WalletV3RescanGate.*)
     set_tests_properties(WalletV3RescanGate PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
+    add_test(NAME WalletV3Spend COMMAND test_assumeutxo_replay
+      --gtest_filter=WalletV3Spend.*)
+    set_tests_properties(WalletV3Spend PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
     add_test(NAME WalletV3CoverageSource COMMAND test_assumeutxo_replay
       --gtest_filter=WalletV3RecoveryRoute.FullArchiveSourceCapturesNamedWalletAtFixedPrefix)
     set_tests_properties(WalletV3CoverageSource PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
