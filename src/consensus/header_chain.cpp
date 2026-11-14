@@ -62,24 +62,70 @@ HeaderIndexEntry::HeaderIndexEntry(
         height = prev_entry->height + 1;
         chainwork = prev_entry->chainwork + header_work;
     }
+    BuildSkip();
+}
+
+namespace {
+// Turn the lowest set bit off.
+int64_t InvertLowestOne(int64_t n) { return n & (n - 1); }
+int64_t SkipHeightSigned(int64_t height) {
+    if (height < 2) return 0;
+    // Any number strictly lower than height is acceptable, but this
+    // construction keeps every lookup within O(log n) hops.
+    return (height & 1) ? InvertLowestOne(InvertLowestOne(height - 1)) + 1 : InvertLowestOne(height);
+}
+}  // namespace
+
+uint32_t HeaderIndexEntry::SkipHeight(uint32_t h) {
+    return static_cast<uint32_t>(SkipHeightSigned(h));
+}
+
+namespace {
+// True when every link from `e` down to genesis has height == parent + 1.
+// Entries at height >= 2 are consistent exactly when their skip link was
+// built (BuildSkip only links consistent ancestry), so this is O(1).
+bool AncestryConsistent(const HeaderIndexEntry* e) {
+    if (!e) return false;
+    if (e->height == 0) return e->parent == nullptr;
+    if (!e->parent || e->parent->height + 1 != e->height) return false;
+    if (e->height == 1) return e->parent->parent == nullptr;
+    return e->Skip() != nullptr;
+}
+}  // namespace
+
+void HeaderIndexEntry::BuildSkip() {
+    // Only link through height-consistent ancestry (a corrupt or legacy store
+    // may hold a parent whose height is not height - 1); elsewhere GetAncestor
+    // keeps the exact behaviour of the parent walk.
+    skip.set(parent && parent->height + 1 == height && AncestryConsistent(parent)
+                 ? parent->GetAncestor(SkipHeight(height)) : nullptr);
 }
 
 const HeaderIndexEntry* HeaderIndexEntry::GetAncestor(uint32_t ancestor_height) const {
     if (ancestor_height > height) {
         return nullptr;  // Can't get ancestor higher than current height
     }
-
-    if (ancestor_height == height) {
-        return this;
+    // Skip pointers when built; the parent link otherwise (copies, entries
+    // whose links are not yet built). Signed arithmetic avoids unsigned
+    // underflow near genesis.
+    // Heights are read from each entry, so without skip links (or across a
+    // height-inconsistent link, where none are built) this is exactly the
+    // original parent walk.
+    const int64_t target = ancestor_height;
+    const HeaderIndexEntry* walk = this;
+    while (walk && walk->height > target) {
+        const int64_t walk_height = walk->height;
+        const int64_t skip_height = SkipHeightSigned(walk_height);
+        const int64_t skip_height_prev = SkipHeightSigned(walk_height - 1);
+        const HeaderIndexEntry* skip_target = walk->skip.get();
+        if (skip_target && (skip_height == target ||
+            (skip_height > target && !(skip_height_prev < skip_height - 2 && skip_height_prev >= target)))) {
+            walk = skip_target;
+        } else {
+            walk = walk->parent;
+        }
     }
-
-    // Walk backwards through parent pointers
-    const HeaderIndexEntry* current = this;
-    while (current && current->height > ancestor_height) {
-        current = current->parent;
-    }
-
-    return (current && current->height == ancestor_height) ? current : nullptr;
+    return (walk && walk->height == ancestor_height) ? walk : nullptr;
 }
 
 uint32_t HeaderIndexEntry::GetMedianTimePast() const {
@@ -930,13 +976,12 @@ bool HeaderChainSelector::FindForkPointHash(
     const HeaderIndexEntry* b = b_it->second.get();
 
     // Bring both to same height
-    while (a->height > b->height) {
-        a = a->parent;
+    if (a->height > b->height) {
+        a = a->GetAncestor(b->height);
         if (!a) return false;
     }
-
-    while (b->height > a->height) {
-        b = b->parent;
+    if (b->height > a->height) {
+        b = b->GetAncestor(a->height);
         if (!b) return false;
     }
 
@@ -1006,6 +1051,18 @@ bool HeaderChainSelector::LoadFromStorage() {
                 entry->parent = parent_it->second.get();
             }
         }
+    }
+
+    // Third pass: skip pointers in ascending height, so every parent's own
+    // skip link exists when its children are built (hash-map order would
+    // fall back to linear walks and make reload quadratic).
+    {
+        std::vector<HeaderIndexEntry*> by_height;
+        by_height.reserve(header_index_.size());
+        for (auto& pair : header_index_) by_height.push_back(pair.second.get());
+        std::sort(by_height.begin(), by_height.end(),
+                  [](const auto* a, const auto* b) { return a->height < b->height; });
+        for (auto* entry : by_height) entry->BuildSkip();
     }
 
     // Restore best header
