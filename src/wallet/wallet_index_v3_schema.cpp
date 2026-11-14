@@ -396,6 +396,16 @@ std::optional<int64_t> ReadWalletIndexSchemaVersionReadOnly(
     if(error || (!std::filesystem::is_regular_file(status) &&
                  !std::filesystem::is_symlink(status)))
         Refuse("Wallet index schema probe source is not a regular file");
+    // SQLITE_OPEN_READONLY can still create WAL coordination sidecars. Reject
+    // a linked immediate parent before SQLite opens the index, so a failed
+    // startup cannot create those files outside its locked blockchain root.
+    // A directly symlinked v2 index remains supported below.
+    error.clear();
+    const auto parent=index_file.has_parent_path()?index_file.parent_path():std::filesystem::path{"."};
+    const auto parent_status=std::filesystem::symlink_status(parent,error);
+    if(error || std::filesystem::is_symlink(parent_status) ||
+       !std::filesystem::is_directory(parent_status))
+        Refuse("Wallet index schema probe source parent is linked or unavailable");
     // Legacy v2 accepts an explicitly symlinked index. Preserve that route:
     // follow the link only for this read-only version probe, then pass v2 to
     // its unchanged initializer. A v3 link still fails the authenticated
