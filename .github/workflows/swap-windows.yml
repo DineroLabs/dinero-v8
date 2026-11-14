@@ -164,6 +164,7 @@ jobs:
         shell: powershell
         run: |
           $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:QT_QPA_FONTDIR = "$env:WINDIR\Fonts"
           $env:PATH = "$env:QT_ROOT_DIR\bin;$env:PATH"
           ctest --test-dir build-msvc-qt -C Release -R '^(SwapTab|OverviewColumns)$' --output-on-failure | Tee-Object ctest.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
