@@ -28,9 +28,11 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <random>
 #include <string>
 #include <system_error>
+#include <unistd.h>
 #include <vector>
 
 using namespace dinero;
@@ -118,6 +120,35 @@ void TestDirectChain() {
           std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()) + " ms");
 }
 
+// A height-inconsistent link (corrupt or legacy store: parent height is not
+// height - 1) must not change any answer: no skip links are built through it
+// and GetAncestor stays exactly the original parent walk there.
+void TestInconsistentHeights() {
+    std::cout << "inconsistent heights..." << std::endl;
+    std::vector<std::unique_ptr<HeaderIndexEntry>> chain;
+    const HeaderIndexEntry* parent = nullptr;
+    for (uint32_t i = 0; i < 2000; ++i) {
+        chain.push_back(std::make_unique<HeaderIndexEntry>(
+            MakeHeader(parent ? parent->hash : uint256()), parent));
+        parent = chain.back().get();
+        if (i == 1000) {
+            // Gap as a store would load it: parent 999, entry claims 1040.
+            // Links are (re)built after heights are set, as LoadFromStorage does.
+            chain.back()->height += 40;
+            chain.back()->BuildSkip();
+        }
+    }
+    for (size_t i = 1000; i < chain.size(); ++i)
+        Check(chain[i]->Skip() == nullptr, "no skip link above an inconsistent link at index " + std::to_string(i));
+    Check(chain[999]->Skip() != nullptr, "skip links below the inconsistency remain");
+    for (const size_t from : {size_t{1999}, size_t{1500}, size_t{1001}, size_t{1000}, size_t{998}}) {
+        for (uint32_t to = 0; to <= chain[from]->height; to += 7) {
+            Check(chain[from]->GetAncestor(to) == LinearAncestor(chain[from].get(), to),
+                  "inconsistent parity from index " + std::to_string(from) + " to " + std::to_string(to));
+        }
+    }
+}
+
 // Reference ancestor through the selector's own value API (prev_hash links).
 std::optional<uint256> ReferenceAncestor(const HeaderChainSelector& sel, uint256 hash, uint32_t height) {
     for (;;) {
@@ -156,7 +187,7 @@ uint256 Extend(HeaderChainSelector& sel, uint256 tip, int n) {
 
 void TestSelectorForksEvictionAndReload() {
     std::cout << "selector forks, eviction, reload..." << std::endl;
-    const std::string db = (std::filesystem::temp_directory_path() / "test_header_skip_pointers_db").string();
+    const std::string db = (std::filesystem::temp_directory_path() / ("test_header_skip_pointers_db_" + std::to_string(::getpid()))).string();
     std::error_code ec;
     std::filesystem::remove_all(db, ec);
     std::vector<uint256> tips;
@@ -205,6 +236,7 @@ void TestSelectorForksEvictionAndReload() {
 int main() {
     SelectParams(Chain::REGTEST);
     TestDirectChain();
+    TestInconsistentHeights();
     TestSelectorForksEvictionAndReload();
     if (g_failures) {
         std::cerr << g_failures << " failure(s)" << std::endl;

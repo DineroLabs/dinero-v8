@@ -35,19 +35,6 @@ namespace dinero {
 class OrchardSnapshotStore;
 namespace consensus {
 
-/**
- * @brief Header-only index entry (no transactions, no UTXO)
- *
- * Phase N.0: Pure header view for fork-choice and header validation.
- *
- * Properties:
- * - No transaction data
- * - No UTXO state
- * - No disk persistence (memory-only initially)
- * - Suitable for header-first sync
- *
- * This structure contains only what can be validated from headers alone.
- */
 // A link that never survives a copy or move. HeaderIndexEntry values are
 // copied out of the selector with parent cleared; a copied skip pointer could
 // dangle after the selector lock is released, so copies start unlinked and
@@ -64,6 +51,20 @@ public:
 private:
     const struct HeaderIndexEntry* target_ = nullptr;
 };
+
+/**
+ * @brief Header-only index entry (no transactions, no UTXO)
+ *
+ * Phase N.0: Pure header view for fork-choice and header validation.
+ *
+ * Properties:
+ * - No transaction data
+ * - No UTXO state
+ * - No disk persistence (memory-only initially)
+ * - Suitable for header-first sync
+ *
+ * This structure contains only what can be validated from headers alone.
+ */
 
 struct HeaderIndexEntry {
     // Header identity (Phase M.0 compliant - uint256 is identity)
