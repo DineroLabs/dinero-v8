@@ -189,6 +189,18 @@ if(NOT WIN32)
   set_tests_properties(DaemonServiceRelease PROPERTIES
     LABELS "integration;restart;mandatory" TIMEOUT 300 RUN_SERIAL TRUE)
 
+  add_test(NAME WalletIndexV3StartupRefusal COMMAND python3 -B
+    ${CMAKE_SOURCE_DIR}/tests/integration/test_wallet_index_v3_startup_refusal.py
+    $<TARGET_FILE:dinerod> $<TARGET_FILE:test_daemon_service_release>)
+  set_tests_properties(WalletIndexV3StartupRefusal PROPERTIES
+    LABELS "integration;e2e-daemon;wallet;storage;mandatory" TIMEOUT 240 RUN_SERIAL TRUE)
+
+  add_test(NAME WalletIndexV3Status COMMAND python3 -B
+    ${CMAKE_SOURCE_DIR}/tests/integration/test_wallet_index_v3_status.py
+    $<TARGET_FILE:dinerod> $<TARGET_FILE:test_daemon_service_release>)
+  set_tests_properties(WalletIndexV3Status PROPERTIES
+    LABELS "integration;e2e-daemon;wallet;storage;mandatory" TIMEOUT 240 RUN_SERIAL TRUE)
+
   if(UNIX)
     add_test(NAME DockerEntrypointConfig COMMAND python3 -B
       ${CMAKE_SOURCE_DIR}/tests/integration/test_docker_entrypoint_config.py)
@@ -5951,6 +5963,10 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     --gtest_filter=AssumeUtxoReplay.*:SelectedWalletHistory.*:RuntimeOriginProjection.*:WalletRestorePreflight.*:SnapshotWalletSource.*:SnapshotWalletRecovery.*)
   add_test(NAME AssumeUtxoPromotion COMMAND test_assumeutxo_replay
     --gtest_filter=AssumeUtxoPromotion.*)
+  add_test(NAME WalletV3Maintenance COMMAND test_assumeutxo_replay
+    --gtest_filter=WalletV3Maintenance.*)
+  set_tests_properties(WalletV3Maintenance PROPERTIES
+    LABELS "daemon;assumeutxo;wallet-index-v3;focused" TIMEOUT 120)
   add_test(NAME StatefulSnapshotCache COMMAND test_assumeutxo_replay
     --gtest_filter=StatefulSnapshotCache.*)
   set_tests_properties(StatefulSnapshotCache PROPERTIES LABELS "snapshot;daemon;restart;mandatory" TIMEOUT 120)
@@ -6177,6 +6193,26 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(OrchardAccountIssuance PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;mandatory")
   add_test(NAME WalletCanonicalRecovery COMMAND test_assumeutxo_replay --gtest_filter=WalletCanonicalRecovery.*)
   set_tests_properties(WalletCanonicalRecovery PROPERTIES TIMEOUT 120 LABELS "daemon;wallet;mandatory")
+  if(DINERO_BUILD_ORCHARD_BACKEND)
+    add_test(NAME WalletV3RescanGate COMMAND test_assumeutxo_replay
+      --gtest_filter=WalletV3RescanGate.*)
+    set_tests_properties(WalletV3RescanGate PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
+    add_test(NAME WalletV3CoverageSource COMMAND test_assumeutxo_replay
+      --gtest_filter=WalletV3RecoveryRoute.FullArchiveSourceCapturesNamedWalletAtFixedPrefix)
+    set_tests_properties(WalletV3CoverageSource PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
+    add_test(NAME WalletV3RecoveryRoute COMMAND test_assumeutxo_replay
+      --gtest_filter=WalletV3RecoveryRoute.LegacyNamedWalletRecoversTypedCoinbaseWithoutV2IndexBinding)
+    set_tests_properties(WalletV3RecoveryRoute PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
+    add_test(NAME WalletV3RecoveryWorker COMMAND test_assumeutxo_replay
+      --gtest_filter=WalletV3RecoveryWorker.UnlockStartsOwnerScopedRecoveryWithoutLegacyWriter)
+    set_tests_properties(WalletV3RecoveryWorker PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
+    add_test(NAME WalletV3ColdRestart COMMAND test_assumeutxo_replay
+      --gtest_filter=WalletV3ColdRestart.NamedWalletReceiptsSurviveFreshServiceAndIndexHandles)
+    set_tests_properties(WalletV3ColdRestart PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
+    add_test(NAME WalletV3ImportGuard COMMAND test_assumeutxo_replay
+      --gtest_filter=WalletV3ImportGuard.MandatoryDescriptorRescanRefusesBeforeAnyWalletWrite)
+    set_tests_properties(WalletV3ImportGuard PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
+  endif()
   add_test(NAME VaultCanonicalObservation COMMAND test_assumeutxo_replay --gtest_filter=VaultCanonicalObservation.*)
   set_tests_properties(VaultCanonicalObservation PROPERTIES TIMEOUT 120 LABELS "daemon;vault;mandatory")
   add_test(NAME VaultSelectedSnapshot COMMAND test_assumeutxo_replay --gtest_filter=VaultSelectedSnapshot.*)

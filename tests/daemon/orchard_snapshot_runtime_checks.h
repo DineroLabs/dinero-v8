@@ -15,6 +15,7 @@
 #include "daemon/datadir_guard.h"
 #include "daemon/daemon_app.h"
 #include "wallet/bip39.h"
+#include "wallet/wallet_index_v3_schema.h"
 #include "storage/orchard_activation_origin.h"
 #include <sstream>
 #include <json/json.h>
@@ -2737,6 +2738,33 @@ TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles)
             ~ContextGuard(){BlockAcceptor::SetContext(prior);DaemonContext::setInstance(prior);}} guard;
         GetConfig().utreexo_stateless=stateless;
         for(unsigned run=0;run<2;++run) {
+            if(!stateless&&run==1) {
+                // Probe the full-v6 cold-restart Init route with a migrated
+                // wallet index, then restore the exact v2 backup so the
+                // existing full-v2 connect/reorg controls below still run.
+                const auto index_path=directory.path/"blockchain"/"utxo";
+                const auto upgraded=UpgradeFullArchiveWalletIndexSchemaToV3(index_path);
+                {
+                    auto probe_db=std::make_shared<ChainDB>();ASSERT_EQ(probe_db->init(path),Status::Ok);
+                    DaemonContext probe;probe.config=std::make_shared<ConfigService>();
+                    probe.config->Set("datadir",directory.path.string());
+                    probe.config->Set("assumeutxo_compact_bootstrap","0");
+                    probe.logger=std::make_shared<LoggerService>("");
+                    probe.block_storage=std::make_shared<BlockStorage>();
+                    ASSERT_EQ(probe.block_storage->init(directory.path/"files"),Status::Ok);
+                    auto service=std::make_shared<ChainstateService>();probe.chainstate=service;
+                    DaemonContext::setInstance(&probe);service->setOwnedChainDB(probe_db);
+                    ASSERT_TRUE(service->Init(probe));
+                    EXPECT_TRUE(service->HasFullArchiveWalletIndexV3());
+                    EXPECT_TRUE(service->utxoIndex()->IsFullArchiveV3MetadataOnly());
+                    service->Stop();probe.chainstate.reset();service.reset();probe_db.reset();
+                    BlockAcceptor::SetContext(guard.prior);DaemonContext::setInstance(guard.prior);
+                }
+                std::filesystem::remove(index_path.string()+"-wal");
+                std::filesystem::remove(index_path.string()+"-shm");
+                std::filesystem::copy_file(upgraded.rollback_backup,index_path,
+                    std::filesystem::copy_options::overwrite_existing);
+            }
             // A real executable has no permanent graph from its previous run.
             // Keep the earlier graph alive but detached until this service is
             // destroyed, rather than accidentally borrowing its undo locators.

@@ -78,6 +78,7 @@
 #include "consensus/chainstate_guard.h"  // Phase 6B: Thread-safe UTXO access
 #include "consensus/reindexer.h"  // Blockchain reindex functionality
 #include "wallet/utxo_index.h"    // For clearing stale reorg_in_progress marker after reindex
+#include "wallet/wallet_index_v3_schema.h"
 #include "consensus/parallel_block_validator.h"  // Phase 6B: Parallel validation
 #include "consensus/validation_queue.h"  // Phase 6B: ValidationQueue wiring
 #include "consensus/cpu_budget_monitor.h"  // Phase E.2.d / E.3.1: CPU budget monitoring
@@ -149,6 +150,68 @@ namespace dinero {
 // ============================================================================
 
 namespace {
+
+std::filesystem::path ReindexPromotionJournalPath(const std::filesystem::path& data_dir_path);
+
+void RequireUnlinkedWalletV3StartupPath(const std::filesystem::path& path,
+                                        bool directory, bool optional = false) {
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(path, error);
+    if (optional && (error == std::errc::no_such_file_or_directory ||
+                     (!error && status.type() == std::filesystem::file_type::not_found)))
+        return;
+    if (error || std::filesystem::is_symlink(status) ||
+        (directory ? !std::filesystem::is_directory(status) :
+                     !std::filesystem::is_regular_file(status)))
+        throw std::runtime_error("Wallet index v3 startup refuses missing or linked path: " + path.string());
+    if (!directory) {
+        const auto links = std::filesystem::hard_link_count(path, error);
+        if (error || links != 1)
+            throw std::runtime_error("Wallet index v3 startup refuses hardlinked file: " + path.string());
+    }
+}
+
+// The datadir lock pins the root, not its descendants. Check the actual v3
+// paths and chain source before ordinary startup opens either database for
+// writes. This mirrors the offline v2-to-v3 upgrade's source preflight, but
+// never upgrades or repairs a source during normal startup.
+void RequireFullArchiveWalletV3StartupSource(const std::filesystem::path& datadir,
+                                             const std::filesystem::path& chain_path,
+                                             const std::filesystem::path& index_path) {
+    const auto blockchain = chain_path.parent_path();
+    RequireUnlinkedWalletV3StartupPath(blockchain, true);
+    RequireUnlinkedWalletV3StartupPath(chain_path, true);
+    RequireUnlinkedWalletV3StartupPath(index_path, false);
+    for (const auto* suffix : {"-wal", "-shm", "-journal"}) {
+        auto sidecar = index_path;
+        sidecar += suffix;
+        RequireUnlinkedWalletV3StartupPath(sidecar, false, true);
+    }
+    if (!storage::OrchardHandoffControlsAbsent(blockchain))
+        throw std::runtime_error("Wallet index v3 startup refuses an activation handoff");
+    if (std::filesystem::exists(ReindexPromotionJournalPath(datadir)))
+        throw std::runtime_error("Wallet index v3 startup refuses interrupted reindex promotion");
+
+    ChainDB source;
+    const auto opened = source.initReadOnlyForWalletIndexMaintenance(chain_path);
+    if (opened != Status::Ok)
+        throw std::runtime_error(std::string("Wallet index v3 startup requires existing full ChainDB: ") +
+                                 StatusToString(opened));
+    const auto genesis = source.getBlockHashByHeight(0);
+    if (!genesis.ok() || genesis.value() != uint256::FromHexUnsafe(Params().genesis_hash))
+        throw std::runtime_error("Wallet index v3 startup chain genesis does not match selected network");
+    storage::RequireFullOrchardStorage(source);
+    if (storage::ReadOrchardSnapshotBase(source))
+        throw std::runtime_error("Wallet index v3 startup refuses a snapshot source");
+    if (source.getPreBaseCoinSetBase().status() != Status::NotFound)
+        throw std::runtime_error("Wallet index v3 startup refuses an imported pre-base source");
+    const auto prune_height = source.getPruneHeight();
+    if (!prune_height.ok() || prune_height.value() != 0)
+        throw std::runtime_error("Wallet index v3 startup requires unpruned block storage");
+    if (WalletIndexHasImportedSnapshotMarkerReadOnly(index_path))
+        throw std::runtime_error("Wallet index v3 startup refuses imported wallet snapshot state");
+    (void)RequireFullArchiveWalletIndexV3(index_path);
+}
 
 // Helper: Convert bytes to hex string
 std::string BytesToHex(const std::vector<uint8_t>& bytes) {
@@ -1014,12 +1077,6 @@ bool DaemonApp::Init(int argc, char** argv) {
         }
     };
 
-    ConfigurePoolAccountingRuntime();
-
-    if (pool_manager_runtime_) {
-        pool_manager_runtime_->setPaymentBackend(pool::MakeWalletPoolPaymentBackend(ctx_));
-    }
-
     // Phase 2: Data layer (depends on logger + config)
     auto chainstate = std::make_shared<ChainstateService>();
     std::cout << "[DaemonApp] Phase 2: Data layer" << std::endl;
@@ -1033,6 +1090,7 @@ bool DaemonApp::Init(int argc, char** argv) {
     // the retained snapshot proof, selected ancestry and current catalog.
     bool compact_snapshot_reopen = false;
     bool compact_activation_reopen = false;
+    bool full_archive_v3_preflight = false;
     std::unique_ptr<BlockStorage> startup_block_storage;
 
     try {
@@ -1056,6 +1114,48 @@ bool DaemonApp::Init(int argc, char** argv) {
 
         data_dir_path = datadir_str;
         chain_db_path = data_dir_path / "blockchain" / "chaindb";
+
+        // Detect v3 before handoff/reindex recovery, storage upgrade, or a
+        // read-write ChainDB open. A v3 index is metadata-only and must never
+        // enter a legacy repair or compact startup route. The explicit offline
+        // upgrade remains the only way to convert an ordinary v2 installation.
+        const auto startup_index_path = chain_db_path.parent_path() / "utxo";
+        const auto startup_index_version = ReadWalletIndexSchemaVersionReadOnly(startup_index_path);
+        if ((!startup_index_version || *startup_index_version != 3) &&
+            WalletIndexHasFullArchiveV3FootprintReadOnly(startup_index_path))
+            throw std::runtime_error("Wallet index v3 footprint remains; refusing legacy startup");
+        if (fresh_store_bootstrap_only_ && startup_index_version && *startup_index_version == 3) {
+            // The preliminary pass only creates a genuinely new store. An
+            // existing v3 source belongs to the real locked pass below;
+            // return before this pass can run handoff or reindex recovery.
+            fresh_store_created_ = false;
+            return true;
+        }
+        if (startup_index_version && *startup_index_version == 3) {
+            if (!locked_datadir_guard_ || !locked_datadir_guard_->IsHeld())
+                throw std::runtime_error("Wallet index v3 startup requires a locked datadir");
+            if (GetConfig().sync_profile != "mac_fullblock" ||
+                GetConfig().utreexo_stateless ||
+                ctx_.config->GetBool("utreexo-stateless", false) ||
+                !ctx_.config->GetBool("storage.archival", true) ||
+                !ctx_.config->GetString("storage.prune_target", "").empty())
+                throw std::runtime_error("Wallet index v3 startup requires full archival profile without pruning");
+            if (!ctx_.config->GetString("assumeutxo_snapshot", "").empty() ||
+                !ctx_.config->GetString("assumeutxo-snapshot", "").empty() ||
+                !ctx_.config->GetString("assumeutxo_snapshot_fallbacks", "").empty() ||
+                !ctx_.config->GetString("assumeutxo-snapshot-fallbacks", "").empty() ||
+                GetConfig().assumeutxo_forward_connect)
+                throw std::runtime_error("Wallet index v3 startup refuses configured snapshot bootstrap");
+            for (int i = 1; argv && i < argc; ++i) {
+                const std::string arg = argv[i];
+                if (arg.starts_with("--reindex") || arg.starts_with("--repair-") ||
+                    arg.starts_with("--recover-") || arg.starts_with("--rebuild-"))
+                    throw std::runtime_error("Wallet index v3 startup refuses legacy maintenance options");
+            }
+            RequireFullArchiveWalletV3StartupSource(data_dir_path, chain_db_path,
+                                                   startup_index_path);
+            full_archive_v3_preflight = true;
+        }
 
         // Never create/repair/open over a selected or interrupted activation
         // swap. This is routing refusal, not an owner factory. The dedicated
@@ -1177,6 +1277,7 @@ bool DaemonApp::Init(int argc, char** argv) {
             }
         }
         if (automatic_storage_upgrade_ && !fresh_store_bootstrap_only_ && !compact_activation_reopen &&
+            !full_archive_v3_preflight &&
             Params().orchard_activation_height != UINT32_MAX) {
             // A refusal keeps the legacy store: the node runs until Orchard
             // activation and retries on every start (see the header).
@@ -1248,11 +1349,35 @@ bool DaemonApp::Init(int argc, char** argv) {
             // misconfigured, unknown or malformed compact store.
             storage::RequireFullOrchardStorage(*chain_db_);
         }
+        // The full-archive v3 index is a separately authenticated wallet
+        // source. Until the service graph routes its per-wallet receipts and
+        // observations, never let either normal or v6-full startup pass it to
+        // UTXOIndex::Initialize(), which is the legacy read-write initializer.
+        // This probe runs under the main executable's DatadirGuard and makes
+        // no index/schema changes. Compact v2 still takes its existing path.
+        const auto wallet_index_path=chain_db_path.parent_path()/"utxo";
+        const auto wallet_index_version=ReadWalletIndexSchemaVersionReadOnly(wallet_index_path);
+        if(wallet_index_version && (*wallet_index_version<0 || *wallet_index_version>3))
+            throw std::runtime_error("Wallet index schema version unsupported at startup");
+        if(wallet_index_version && *wallet_index_version==3) {
+            if (!full_archive_v3_preflight || compact_snapshot_reopen)
+                throw std::runtime_error("Wallet index v3 startup route changed after source preflight");
+            // The first read-only preflight already checked the expensive
+            // backup and quarantined-row digests under this datadir lock.
+            std::cout << "[DaemonApp] Wallet index v3 full-archive metadata-only route" << std::endl;
+        }
         std::cout << "[DaemonApp] ✅ ChainDB constructed and initialized (ONE DB)" << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "[DaemonApp] ❌ Exception constructing ChainDB: " << e.what() << std::endl;
         return false;
     }
+
+    // Pool accounting creates its directory and SQLite database. Defer it
+    // until a v3 source has passed the read-only full-archive preflight, so a
+    // rejected launch cannot publish pool state beside an invalid index.
+    ConfigurePoolAccountingRuntime();
+    if (pool_manager_runtime_)
+        pool_manager_runtime_->setPaymentBackend(pool::MakeWalletPoolPaymentBackend(ctx_));
 
     // ChainDB is owned by DaemonApp; services use non-owning pointers.
     ChainDB* chain_db_ptr = chain_db_.get();

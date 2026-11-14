@@ -87,6 +87,28 @@ TEST(RuntimeDeliveryWorker, MissingBaselineRemainsDeferredWithoutEnrollment) {
     EXPECT_FALSE(RuntimeOrdinaryDelivery::ReadForWallet(use->Wallet(),session));
     EXPECT_FALSE(RuntimeIndexDelivery::ReadForWallet(use->Wallet(),index->Index(),session));
 }
+TEST(RuntimeDeliveryWorker, ResourceLimitRefusesWithoutRepeatedOriginReplay) {
+    CanonicalRecoveryFixture f(false,false);
+    f.DowngradeToPreIdentityTransparentWallet();
+    (void)f.MineToWallet(); // A real typed Orchard source behind old H101.
+    DeliveryWorker::Limits limits{1,std::chrono::milliseconds(20),1};
+    DeliveryWorker worker(f.f.service,f.wallet,limits);
+    worker.Start();
+    const auto first=WaitDeliveryWorker(worker,[](const auto& r){
+        return r.wallet==DeliveryWorker::WalletOutcome::ResourceLimited && r.slices>0;
+    });
+    EXPECT_EQ(first.wallet_recovery_attempts,1u);
+    const auto periodic=WaitDeliveryWorker(worker,[&](const auto& r){return r.slices>=first.slices+3;});
+    EXPECT_EQ(periodic.wallet,DeliveryWorker::WalletOutcome::ResourceLimited);
+    EXPECT_EQ(periodic.wallet_recovery_attempts,1u);
+    worker.RequestReplay();
+    const auto explicit_wake=WaitDeliveryWorker(worker,[&](const auto& r){return r.slices>periodic.slices;});
+    EXPECT_EQ(explicit_wake.wallet_recovery_attempts,1u);
+    worker.Stop();
+    auto lease=f.wallet->get().AcquireDatabaseLease();
+    EXPECT_EQ(lease->LegacyTransparentState(),WalletManager::LegacyTransparentState::Pending);
+    EXPECT_EQ(f.wallet->get().getBlockchainHeight(),101u);
+}
 TEST(RuntimeDeliveryWorker, BoundedSlicesDrainRetainedPlansWithoutCallbackAndRestartFromOrigin) {
     ReorgReadmissionFixture f;const auto block=f.Build();ASSERT_TRUE(block);ASSERT_TRUE(f.Submit(block->WireBytes()).accepted());
     auto* tip=f.f.service->GetActiveTip();f.Prepare({tip});f.Prepare({tip});const auto last=f.Prepare({tip});
