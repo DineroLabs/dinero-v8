@@ -728,9 +728,9 @@ std::unique_ptr<OrchardAccount0RecoveryPlan> OrchardAccountDelivery::PrepareReco
         const auto step=view.PrefixStep(current.Scan().Checkpoint().height+1);
         auto next=current.Advance(step.context,*step.block,*step.state,*step.authorizations);
         // This is an uncertified scan, not delivery. A fresh v6 source cannot
-        // undo below its real import floor; do not adopt pre-floor parent rows
-        // as though they were canonical event-0 positions.
-        next=next.WithParentSnapshotRevision(step.context.height==view.ActivationPrefixHeight()?0:saved->revision);
+        // undo below its real import floor, so no pre-floor state links a
+        // parent row (parent links require a delivered event).
+        next=next.WithParentSnapshotRevision(0);
         const auto bytes=next.Encode();
         {
             auto lease=w.AcquireDatabaseLease();RequireShieldFullSync(lease->Database());Transaction tx(lease->Database());

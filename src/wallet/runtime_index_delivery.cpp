@@ -4,6 +4,7 @@
 #include "wallet/orchard_ownership_inventory.h"
 #include "wallet/runtime_account_replay.h"
 #include "wallet/runtime_wallet_balance.h"
+#include "wallet/runtime_recovery_limits.h"
 #include "wallet/wallet_manager.h"
 #include "primitives/orchard_block_reader.h"
 #include "primitives/block.h"
@@ -582,12 +583,16 @@ void OrdinaryInt(sqlite3* db,const char* sql,int64_t value){Statement statement(
 } // namespace
 
 std::unique_ptr<RuntimeWalletOriginProjection> RuntimeOrdinaryDelivery::CaptureOriginDomain(
-        WalletManager& wallet,uint64_t session,UTXOIndex* index,bool existing_identity_only) {
+        WalletManager& wallet,uint64_t session,UTXOIndex* index,bool existing_identity_only,
+        size_t material_limit_bytes) {
+    if(!material_limit_bytes || material_limit_bytes>kWalletRecoveryMaterialLimitBytes)
+        Fail("Origin material budget invalid");
     const auto lease=wallet.AcquireDatabaseLease();
     if(wallet.database_leases_!=1 || lease->Session()!=session)
         Fail("Origin projection wallet ownership changed");
     auto result=std::unique_ptr<RuntimeWalletOriginProjection>(new RuntimeWalletOriginProjection());
     result->existing_identity_only_=existing_identity_only;result->session_=session;
+    result->material_limit_bytes_=material_limit_bytes;
     if(!existing_identity_only)result->identity_=lease->EnsureDeliveryIdentity();
     OrdinaryTransaction transaction(lease->Database());
     if(existing_identity_only)result->identity_=ExistingIdentity(lease->Database());
@@ -624,9 +629,9 @@ void RuntimeWalletOriginProjection::AppendValidated(const Block& block,uint32_t 
     // this only AFTER owned consensus replay of this body, and body ordering /
     // chain linkage stay the producer's burden, rechecked by CheckOriginDomain.
     // Failure discards the entire in-memory projection, never wallet state.
-    constexpr size_t limit=64*1024*1024;
     const auto charge=[&](size_t n) {
-        if(n>limit-retained_bytes_)Fail("Origin projection material limit");
+        if(retained_bytes_>material_limit_bytes_ || n>material_limit_bytes_-retained_bytes_)
+            throw RuntimeWalletCoverageMaterialLimit();
         retained_bytes_+=n;
     };
     if(block.header.timestamp>uint64_t(INT64_MAX))Fail("Origin projection time out of range");
@@ -670,21 +675,28 @@ std::optional<std::pair<uint256,uint32_t>> RuntimeWalletCoverageProjection::Pref
 
 std::shared_ptr<const RuntimeWalletCoverageProjection> RuntimeWalletCoverageProjection::Build(
         std::shared_ptr<const RuntimeWalletOriginProjection> origin,
-        std::shared_ptr<const RuntimeAccountReplay> replay,RuntimeOutboxCursor through) {
+        std::shared_ptr<const RuntimeAccountReplay> replay,RuntimeOutboxCursor through,
+        size_t material_limit_bytes) {
+    if(!material_limit_bytes || material_limit_bytes>kWalletRecoveryMaterialLimitBytes)
+        Fail("Coverage material budget invalid");
     if(!origin || !origin->existing_identity_only_ || !replay || !replay->Head().sequence ||
        origin->first_.cursor!=replay->Event(1)->cursor ||
        origin->first_.context.parent_hash!=replay->Event(1)->context.parent_hash)
         Fail("Coverage origin and runtime source differ");
     auto result=std::shared_ptr<RuntimeWalletCoverageProjection>(new RuntimeWalletCoverageProjection());
     result->origin_=std::move(origin);result->replay_=std::move(replay);
+    result->material_limit_bytes_=material_limit_bytes;
     result->profile_digest_=Profile(result->origin_->first_.context);
     result->coins_=result->origin_->Coins();
     result->tip_hash_=result->origin_->OriginHash();result->tip_height_=result->origin_->OriginHeight();
     // Operational retained-material bound, not a resident-memory certificate.
     // Charge the whole traversal, including activity subsequently disconnected.
     size_t charged=result->origin_->retained_bytes_;
-    constexpr size_t limit=64*1024*1024;
-    const auto charge=[&](size_t n){if(charged>limit || n>limit-charged)Fail("Coverage material limit");charged+=n;};
+    const auto charge=[&](size_t n){
+        if(charged>material_limit_bytes || n>material_limit_bytes-charged)
+            throw RuntimeWalletCoverageMaterialLimit();
+        charged+=n;
+    };
     const auto activity=[&](const Effect& e,uint32_t height) {
         Activity h{e.id,height,e.time,e.coinbase,e.spent,{}};
         charge(sizeof(Activity));
@@ -1192,7 +1204,8 @@ RuntimeIndexProgress RuntimeOrdinaryDelivery::AdvanceCoverage(WalletManager& wal
     // before wallet/SQL ownership; no selected-source callback occurs. No baseline adoption or full-store rebuild.
     const auto event=source.replay_->Event(source.Head().sequence);
     const auto prior_event=source.replay_->Event(source.Head().sequence-1);
-    const auto previous=RuntimeWalletCoverageProjection::Build(source.origin_,source.replay_,prior_event->cursor);
+    const auto previous=RuntimeWalletCoverageProjection::Build(source.origin_,source.replay_,prior_event->cursor,
+        source.material_limit_bytes_);
     if(event->direction!=RuntimeBlockDirection::Connect||event->previous_digest!=previous->Head().digest||
        event->context.parent_hash!=previous->TipHash()||uint64_t(event->context.height)!=uint64_t(previous->TipHeight())+1)
         Fail("Incremental coverage currently requires ONE contiguous Connect");

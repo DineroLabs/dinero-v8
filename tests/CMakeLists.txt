@@ -6141,6 +6141,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     set_tests_properties(OrchardDetachedCatalog PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
     add_test(NAME OrchardDetachedCoverage COMMAND test_assumeutxo_replay --gtest_filter=OrchardDetachedCoverage.*)
     set_tests_properties(OrchardDetachedCoverage PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
+    add_test(NAME RecoveryTailEffects COMMAND test_assumeutxo_replay --gtest_filter=RecoveryTailEffects.*)
+    set_tests_properties(RecoveryTailEffects PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;recovery;mandatory")
     add_test(NAME OrchardDetachedRecovery COMMAND test_assumeutxo_replay --gtest_filter=OrchardDetachedRecovery.*)
     set_tests_properties(OrchardDetachedRecovery PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;ownership;mandatory")
     add_test(NAME OrchardDetachedIssuance COMMAND test_assumeutxo_replay --gtest_filter=OrchardDetachedIssuance.*)
@@ -10188,6 +10190,18 @@ if(TARGET nodecore_ffi)
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_funded_crossing.py)
     set_tests_properties(NodeCoreFundedCrossing PROPERTIES TIMEOUT 360 RUN_SERIAL TRUE
       LABELS "integration;nodecore;orchard;restart;wallet")
+    add_test(NAME NodeCoreLatePhoneWalletRecovery COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
+      ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_late_phone_wallet_recovery.py)
+    set_tests_properties(NodeCoreLatePhoneWalletRecovery PROPERTIES TIMEOUT 420 RUN_SERIAL TRUE
+      LABELS "integration;nodecore;orchard;snapshot-v5;restart;wallet;recovery")
+    add_test(NAME NodeCoreLatePhoneMultiStepPrefixRecovery COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
+      ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_late_phone_multistep_prefix.py)
+    set_tests_properties(NodeCoreLatePhoneMultiStepPrefixRecovery PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE
+      LABELS "integration;nodecore;orchard;history;wallet;recovery")
     add_test(NAME NodeCoreAssumedFundedCrossing COMMAND ${CMAKE_COMMAND} -E env
       NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
       ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
@@ -10248,6 +10262,14 @@ if(TARGET nodecore_ffi)
       DINERO_SDK_POST_BASE_SHIELD=1 DINERO_SDK_MIXED_BASELINE=1
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_funded_crossing.py)
     set_tests_properties(NodeCoreImportedMixedBaseline PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE
+      LABELS "integration;nodecore;orchard;assumedmobile;wallet;recovery")
+    add_test(NAME NodeCoreImportedMixedResourceLimit COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
+      ACTIVATION_FIXTURE_GENERATOR=$<TARGET_FILE:test_assumeutxo_replay>
+      DINERO_SDK_ASSUMED_MOBILE_FIXTURE=1 DINERO_SDK_COMPACT_NEW_RESERVATION=1 DINERO_SDK_COMPACT_NEW_READY=1
+      DINERO_SDK_POST_BASE_SHIELD=1 DINERO_SDK_MIXED_BASELINE=1 DINERO_SDK_MIXED_RESOURCE_LIMIT=1
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_funded_crossing.py)
+    set_tests_properties(NodeCoreImportedMixedResourceLimit PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE
       LABELS "integration;nodecore;orchard;assumedmobile;wallet;recovery")
     add_test(NAME NodeCoreImportedBalanceRead COMMAND ${CMAKE_COMMAND} -E env
       NODECORE_DRIVER=$<TARGET_FILE:nodecore_activation_driver>
