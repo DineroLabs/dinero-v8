@@ -63,6 +63,9 @@ try:
     # delivery catches up, so it is not a snapshot-readiness predicate.
     ready = (snapshot["assumeutxo_active"] is True and
              snapshot["fatal"] is False and
+             snapshot["snapshot_base_height"] == 152700 and
+             snapshot["snapshot_base_block"] ==
+                 "00000005f90ed3ae11d7ee08745fb3ae329eeec25ed14f0fae3b94738b292781" and
              chain["blocks"] > 152700)
 except (ValueError, KeyError, TypeError, IndexError):
     ready = False
