@@ -17,6 +17,7 @@ inline QString appPageStyle() {
   return QStringLiteral(
     "QWidget { background: #181b20; color: #d6dde6; } "
     "QTabWidget::pane { border: 1px solid #2f343c; background: #1a1d22; border-radius: 8px; margin-top: 6px; } "
+    "QTabWidget#mainNavigationTabs::tab-bar { alignment: center; } "
     "QTabBar::tab { background: #242932; color: #d5dce5; border: 1px solid #353b45; border-bottom: 3px solid transparent; "
     "padding: 6px 8px; min-height: 20px; font-size: 12px; font-weight: 500; "
     "border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 2px; } "

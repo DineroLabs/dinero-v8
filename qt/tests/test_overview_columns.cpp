@@ -522,6 +522,38 @@ private Q_SLOTS:
                                     .arg(table->columnWidth(c))));
         QVERIFY(table->columnWidth(0) > table->columnWidth(1));
     }
+    void mainNavigationRowIsCentered() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QTcpServer endpoint;
+        QVERIFY(endpoint.listen(QHostAddress::LocalHost));
+        qputenv("DINERO_RPC_URL", QString("http://127.0.0.1:%1/").arg(endpoint.serverPort()).toUtf8());
+        QCoreApplication::setOrganizationName("DineroOverviewColumnsTest");
+        QCoreApplication::setApplicationName("IsolatedOverviewNavigation");
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        QSettings().setValue("updates/check_enabled", false);
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        if (auto* rpc = window.findChild<RpcClient*>()) {
+            rpc->setDatadir(dir.path());
+            rpc->setEndpoint(QUrl(QString("http://127.0.0.1:%1/").arg(endpoint.serverPort())));
+        }
+        auto* tabs = window.findChild<QTabWidget*>("mainNavigationTabs");
+        QVERIFY(tabs);
+        window.resize(1920, 1000);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QCoreApplication::processEvents();
+
+        QTabBar* bar = tabs->tabBar();
+        const int leftSpace = bar->x();
+        const int rightSpace = tabs->width() - (bar->x() + bar->width());
+        QVERIFY2(leftSpace + rightSpace >= 80,
+                 qPrintable(QString("main tabs have no spare width: %1 px").arg(tabs->width())));
+        QVERIFY2(qAbs(leftSpace - rightSpace) <= 6,
+                 qPrintable(QString("main navigation is off-center: left %1 px, right %2 px")
+                                .arg(leftSpace).arg(rightSpace)));
+    }
     void windowShrinksPastTheTabNames() {
         QTemporaryDir dir;
         QVERIFY(dir.isValid());

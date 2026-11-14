@@ -2463,6 +2463,7 @@ void MainWindow::setupUI() {
 
   // Tab widget
   auto *tabs = new QTabWidget;
+  tabs->setObjectName(QStringLiteral("mainNavigationTabs"));
   tabs->setIconSize(QSize(16, 16));
   // On macOS a tab bar without scroll buttons demands the full width of every
   // named tab as its minimum, so the window could not be made narrower than
