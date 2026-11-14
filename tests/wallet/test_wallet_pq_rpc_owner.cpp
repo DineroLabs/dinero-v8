@@ -35,6 +35,7 @@ protected:
         service=std::make_shared<dinero::WalletService>();daemon.wallet=service;
         ASSERT_TRUE(service->Init(daemon));
         index=std::make_unique<dinero::UTXOIndex>((root/"index.db").string());
+        ASSERT_TRUE(index->Initialize());
         auto& w=service->get();w.setUTXOIndex(index.get());
         w.create("other");w.create("owner");w.encryptWallet("owner-password");w.unlockWallet("owner-password",0);
         ctx.daemon=&daemon;ctx.walletName="owner";registerV7PqWalletMethods();
@@ -84,7 +85,10 @@ TEST_F(PqRpcOwner, ActualAdaptersRoundTripAndSelection) {
     for(auto name:{"wallet.getnewp2mraddress","wallet.listp2mraddresses","wallet.signp2mr","wallet.exportp2mrseed","wallet.importp2mrseed"}) {
         auto p=std::string(name)=="wallet.importp2mrseed" ? imported() : address_params(address);
         p["seed_hex"]=std::string(64,'8');p["derivation_path"]="external:wrong-selection";p["address_index"]=83;
-        EXPECT_FALSE(ok(call(name,p))) << name;
+        auto refusal=call(name,p);
+        EXPECT_FALSE(ok(refusal)) << name;
+        EXPECT_TRUE(refusal.isMember("error")) << name;
+        EXPECT_EQ(refusal["error"].asString(), "wallet_selection_changed") << name;
     }
     EXPECT_EQ(service->get().getCurrentWalletName(),"owner");ctx.walletName="owner";
     service->get().lockWallet();EXPECT_FALSE(ok(call("wallet.listp2mraddresses")));
@@ -106,7 +110,9 @@ TEST_F(PqRpcOwner, SessionPinnedAcrossEveryAdapter) {
 TEST_F(PqRpcOwner, BorrowedTransactionAndMissingStoreRefuse) {
     auto r=call("wallet.importp2mrseed",imported());ASSERT_TRUE(ok(r));auto p=address_params(r["address"].asString());
     auto& w=service->get();auto* db=w.getCurrentDatabase();ASSERT_EQ(sqlite3_exec(db,"BEGIN",nullptr,nullptr,nullptr),SQLITE_OK);
-    EXPECT_FALSE(ok(call("wallet.signp2mr",p)));EXPECT_EQ(sqlite3_get_autocommit(db),0);
+    auto refused=call("wallet.signp2mr",p);
+    EXPECT_EQ(refused["error"].asString(),"wallet_ownership_unavailable");
+    EXPECT_EQ(sqlite3_get_autocommit(db),0);
     ASSERT_EQ(sqlite3_exec(db,"ROLLBACK",nullptr,nullptr,nullptr),SQLITE_OK);EXPECT_TRUE(ok(call("wallet.signp2mr",p)));
     auto path=std::filesystem::path(w.GetV7P2MRStorePath());auto held=path;held+=".held";std::filesystem::rename(path,held);
     for(auto name:{"wallet.signp2mr","wallet.exportp2mrseed","wallet.listp2mraddresses"}) {

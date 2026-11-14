@@ -5958,9 +5958,10 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     ${CMAKE_SOURCE_DIR}/src
   )
   # Additional suites in this binary have separate bounded CTest registrations.
-  # Keep the original replay/history/projection cases here without duplicating them.
+  # Keep the original replay/history/projection and wallet-catchup cases here
+  # without duplicating the separately registered focused suites.
   add_test(NAME AssumeUtxoReplay COMMAND test_assumeutxo_replay
-    --gtest_filter=AssumeUtxoReplay.*:SelectedWalletHistory.*:RuntimeOriginProjection.*:WalletRestorePreflight.*:SnapshotWalletSource.*:SnapshotWalletRecovery.*)
+    --gtest_filter=AssumeUtxoReplay.*:SelectedWalletHistory.*:RuntimeOriginProjection.*:WalletRestorePreflight.*:SnapshotWalletSource.*:SnapshotWalletRecovery.*:WalletCatchup.*)
   add_test(NAME AssumeUtxoPromotion COMMAND test_assumeutxo_replay
     --gtest_filter=AssumeUtxoPromotion.*)
   add_test(NAME WalletV3Maintenance COMMAND test_assumeutxo_replay
@@ -6204,7 +6205,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
       --gtest_filter=WalletV3RecoveryRoute.LegacyNamedWalletRecoversTypedCoinbaseWithoutV2IndexBinding)
     set_tests_properties(WalletV3RecoveryRoute PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
     add_test(NAME WalletV3RecoveryWorker COMMAND test_assumeutxo_replay
-      --gtest_filter=WalletV3RecoveryWorker.UnlockStartsOwnerScopedRecoveryWithoutLegacyWriter)
+      --gtest_filter=WalletV3RecoveryWorker.*)
     set_tests_properties(WalletV3RecoveryWorker PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
     add_test(NAME WalletV3ColdRestart COMMAND test_assumeutxo_replay
       --gtest_filter=WalletV3ColdRestart.NamedWalletReceiptsSurviveFreshServiceAndIndexHandles)
