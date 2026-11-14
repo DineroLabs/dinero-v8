@@ -1,5 +1,6 @@
 #include "din_json.h"
 #include "rpc/rpc_registry.h"
+#include "rpc/legacy_transparent_freshness.h"
 
 #include "consensus/chainparams.h"
 #include "consensus/covenant_activation.h"
@@ -589,6 +590,13 @@ din::Json RpcCcvCreate(
                 UInt32(params, "counter", 0), data);
         } else {
             auto& wallet = ActiveWallet(context);
+            auto walletService = std::dynamic_pointer_cast<dinero::WalletService>(
+                context.daemon->wallet);
+            din::Json refusal;
+            if (RefuseIfLegacyTransparentAddressMutation(
+                    context, walletService, refusal)) {
+                throw std::runtime_error(refusal["error"].asString());
+            }
             const std::string ownerAddress = wallet.getNewAddress(
                 params.get("label", "ccv-owner").asString() +
                     " owner key",

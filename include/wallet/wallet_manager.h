@@ -167,8 +167,13 @@ public:
     HDWallet* getHDWallet() const { return hd_wallet_; }
 
     // UTXO Index integration (inject UTXOIndex pointer for address registration)
-    void setUTXOIndex(dinero::UTXOIndex* utxo_index) { utxo_index_ = utxo_index; }
+    void setUTXOIndex(dinero::UTXOIndex* utxo_index);
     dinero::UTXOIndex* getUTXOIndex() const { return utxo_index_; }
+    // Chainstate owns the metadata-only v3 index. Once selected for this
+    // process, legacy block/UTXO scanners must not write wallet rows even if
+    // a caller bypasses the RPC readiness check.
+    void DisableLegacyRescansForFullArchiveV3();
+    bool LegacyRescansDisabledForFullArchiveV3() const;
 
     // Descriptor Store integration (inject DescriptorStore pointer for descriptor-based address generation)
     void setDescriptorStore(din::DescriptorStore* descriptor_store) { descriptor_store_ = descriptor_store; }
@@ -283,6 +288,7 @@ public:
         const std::thread::id thread_;
         std::array<uint8_t, 64> bytes_{};
     };
+    enum class LegacyTransparentState { Absent, Pending, Complete };
     class DatabaseLease {
     public:
         ~DatabaseLease() noexcept;
@@ -303,6 +309,28 @@ public:
         // checked transaction commits before any separate-store delivery.
         // Does not certify key ownership, source history or recovery readiness.
         [[nodiscard]] std::string EnsureDeliveryIdentity();
+        // A legacy transparent wallet has no Orchard account catalog. The
+        // migration marker is strict: an absent column is the old schema,
+        // while NULL or an unknown value in a present column is corruption.
+        [[nodiscard]] auto LegacyTransparentState() const -> WalletManager::LegacyTransparentState;
+        // Return the durable scan height only for a wallet with no delivery
+        // identity and no Orchard catalog/owner. Read-only; a malformed old
+        // schema is an error rather than proof of a safe empty balance.
+        [[nodiscard]] std::optional<uint32_t> UnenrolledLegacyTransparentScanHeight() const;
+        // Enroll a never-enrolled legacy wallet atomically. The identity and
+        // pending marker become visible together, or neither does.
+        [[nodiscard]] std::string BeginLegacyTransparentMigration();
+        // Explicit full-archive v3 enrollment. Authenticates this named
+        // wallet's unlocked seed and complete address/import inventory under
+        // one durable transaction. An existing nonzero delivery ID is kept.
+        [[nodiscard]] std::string BeginLegacyTransparentMigrationV3(
+            const dinero::UTXOIndex& metadata_index, uint64_t expected_session);
+        // Financial reads/sends refuse pending migration, and refuse the
+        // brief complete-before-height-publication window.
+        void RequireLegacyTransparentFinancialReady() const;
+        // An identity alone never makes this transparent-only wallet an
+        // Orchard account or a source of Orchard binding authority.
+        void RequireOrchardWalletReady() const;
         // Read an existing nonzero identity in one checked SQLite snapshot.
         // Never enroll/create an identity, change schema, or finish a caller's
         // transaction. This identifies a database; it does not authenticate keys.
@@ -408,6 +436,10 @@ public:
     // transaction; the last lease rolls back any transaction left open;
     // commit must be checked by the caller before publishing memory/readiness.
     [[nodiscard]] std::unique_ptr<DatabaseLease> AcquireDatabaseLease();
+    // Publish already committed recovery height in memory only. SQL writes
+    // would invalidate the exact ordinary-delivery receipt.
+    void PublishRecoveredBlockchainHeight(uint32_t expected_previous,
+                                          uint32_t recovered, uint64_t session);
 
     // Legacy borrowed access: this pointer alone does not pin wallet lifetime.
     sqlite3* getCurrentDatabase() const;
@@ -565,6 +597,7 @@ public:
         int64_t time;
         std::string label;
         bool is_coinbase;
+        uint32_t height{0};
     };
     std::vector<TransactionInfo> getTransactionHistory(int limit = 100, int offset = 0) const;
     std::vector<TransactionInfo> getAddressHistory(const std::string& address, int limit = 100) const;
@@ -1178,6 +1211,7 @@ private:
     sqlite3* db_ = nullptr;               // Current wallet's database (wallet_<name>.db)
     sqlite3* registry_db_ = nullptr;      // Wallet registry database (wallet_registry.db)
     mutable std::recursive_mutex database_lifecycle_mutex_;
+    bool full_archive_v3_legacy_rescans_disabled_ = false; // same lock; one-way per manager
     size_t database_leases_ = 0; // protected by database_lifecycle_mutex_
     size_t recovery_seeds_ = 0; // same lock; recovery seed must die before last lease
     const std::shared_ptr<const uint8_t> instance_token_ = std::make_shared<const uint8_t>(0);

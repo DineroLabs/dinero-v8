@@ -1,4 +1,5 @@
 #include "wallet/runtime_index_delivery.h"
+#include "wallet/runtime_ordinary_tip.h"
 #include "wallet/runtime_origin_projection.h"
 #include "wallet/orchard_account_delivery.h"
 #include "wallet/orchard_ownership_inventory.h"
@@ -6,6 +7,8 @@
 #include "wallet/runtime_wallet_balance.h"
 #include "wallet/runtime_recovery_limits.h"
 #include "wallet/wallet_manager.h"
+#include "wallet/wallet_index_v3_owner.h"
+#include "wallet/wallet_index_v3_schema.h"
 #include "primitives/orchard_block_reader.h"
 #include "primitives/block.h"
 #include <algorithm>
@@ -17,6 +20,7 @@
 #include <memory>
 #include <stdexcept>
 #include <set>
+#include <filesystem>
 
 namespace dinero {
 namespace {
@@ -270,6 +274,7 @@ std::set<TxOutPoint> IndexOriginRows(sqlite3* db,const ScriptOwners& scripts,con
 } // namespace
 
 void RuntimeIndexDelivery::CaptureOriginDomain(UTXOIndex& index,RuntimeWalletOriginProjection& source) {
+    index.RequireLegacyCoinAccess();
     std::lock_guard<std::recursive_mutex> lock(index.db_mutex_);std::lock_guard<std::mutex> scripts(index.scripts_mutex_);
     if(!index.db_ || index.atomic_write_active_ || !sqlite3_get_autocommit(index.db_))Fail("Origin index ownership unavailable");
     source.index_scripts_=index.watched_scripts_;source.index_historical_scripts_=index.historical_scripts_;source.index_path_=index.db_path_;
@@ -280,6 +285,7 @@ void RuntimeIndexDelivery::CaptureOriginDomain(UTXOIndex& index,RuntimeWalletOri
     }
 }
 void RuntimeIndexDelivery::CheckOriginDomain(UTXOIndex& index,const RuntimeWalletOriginProjection& source) {
+    index.RequireLegacyCoinAccess();
     std::lock_guard<std::recursive_mutex> lock(index.db_mutex_);std::lock_guard<std::mutex> scripts(index.scripts_mutex_);
     if(!index.db_ || index.atomic_write_active_ || !sqlite3_get_autocommit(index.db_) ||
        !source.index_scripts_ || *source.index_scripts_!=index.watched_scripts_ ||
@@ -288,6 +294,7 @@ void RuntimeIndexDelivery::CheckOriginDomain(UTXOIndex& index,const RuntimeWalle
 }
 
 std::optional<RuntimeIndexProgress> RuntimeIndexDelivery::Read(UTXOIndex& index,const std::string& identity,const HistoricalScripts* historical) {
+    index.RequireLegacyCoinAccess();
     std::lock_guard<std::recursive_mutex> lock(index.db_mutex_);std::lock_guard<std::mutex> scripts(index.scripts_mutex_);
     if(!index.db_ || !sqlite3_get_autocommit(index.db_))Fail("Index delivery read ownership unavailable");
     if((historical && *historical!=index.historical_scripts_) || (!historical && !index.historical_scripts_.empty()))
@@ -297,6 +304,7 @@ std::optional<RuntimeIndexProgress> RuntimeIndexDelivery::Read(UTXOIndex& index,
 }
 RuntimeIndexProgress RuntimeIndexDelivery::Apply(UTXOIndex& index,const std::string& identity,const RuntimeOutboxEvent& event,const RuntimeWalletOriginProjection* origin,const std::function<void()>& finish,const HistoricalScripts* historical,
         const RuntimeWalletCoverageProjection* previous,const RuntimeWalletCoverageProjection* target_source,const std::function<void()>& source_before_commit) {
+    index.RequireLegacyCoinAccess();
     const auto effects=Effects(event);Identity(identity);
     if((previous||target_source||source_before_commit)&&(!previous||!target_source||!source_before_commit||origin||
        previous->Origin().OriginHash()!=target_source->Origin().OriginHash()||target_source->Head()!=event.cursor))
@@ -822,6 +830,20 @@ std::optional<RuntimeIndexProgress> RuntimeOrdinaryDelivery::ReadForWallet(Walle
     OrdinaryTransaction transaction(db);const auto scripts=OrdinaryScripts(*lease);const auto receipt=OrdinaryRead(db,identity,scripts.digest);
     transaction.Commit();return receipt?std::optional(receipt->progress):std::nullopt;
 }
+std::optional<std::pair<uint256, uint32_t>> ReadRuntimeOrdinaryWalletTip(
+        WalletManager& wallet, uint64_t expected_session) {
+    const auto receipt = RuntimeOrdinaryDelivery::ReadForWallet(wallet, expected_session);
+    if (!receipt) return std::nullopt;
+    return std::pair{receipt->tip_hash, receipt->tip_height};
+}
+bool RuntimeV3IndexWalletTipCurrent(UTXOIndex& index, WalletManager::DatabaseLease& lease,
+        const uint256& selected_hash, uint32_t selected_height) {
+    const auto receipt = RuntimeIndexDelivery::ReadForWalletV3(index, lease);
+    return receipt && receipt->tip_hash == selected_hash && receipt->tip_height == selected_height;
+}
+bool IsRuntimeV3MetadataIndex(const UTXOIndex& index) {
+    return index.IsFullArchiveV3MetadataOnly();
+}
 void RuntimeOrdinaryDelivery::AdoptOrigin(WalletManager& wallet,UTXOIndex& index,const RuntimeWalletOriginProjection& source) {
     const auto lease=wallet.AcquireDatabaseLease();
     if(wallet.database_leases_!=1 || lease->Session()!=source.session_ || lease->EnsureDeliveryIdentity()!=source.identity_ ||
@@ -904,8 +926,18 @@ void CoverageDurability(sqlite3* db) {
         Fail("Coverage durability unavailable");
 }
 std::set<TxOutPoint> CoverageIndexRows(sqlite3* db,const ScriptOwners& scripts,const ScriptOwners& historical,
-        const RuntimeWalletCoverageProjection& source) {
-    Statement q(db,"SELECT txid,vout,value,spk,path,height,spend_height,is_coinbase,is_confidential,owner_kind,owner_reference FROM wallet_utxos");
+        const RuntimeWalletCoverageProjection& source,const WalletIndexV3OwnerToken* owner=nullptr,
+        const WalletManager::DatabaseLease* lease=nullptr) {
+    const char* sql=owner ?
+        "SELECT txid,vout,value,spk,path,height,spend_height,is_coinbase,is_confidential,owner_kind,owner_reference "
+        "FROM wallet_utxos WHERE wallet_identity=?" :
+        "SELECT txid,vout,value,spk,path,height,spend_height,is_coinbase,is_confidential,owner_kind,owner_reference "
+        "FROM wallet_utxos";
+    Statement q(db,sql);
+    if(owner) {
+        if(!lease)Fail("Coverage v3 owner lease unavailable");
+        owner->BindCurrentIdentity(q.value,1,*lease);
+    }
     std::set<TxOutPoint> existing;int rc;
     while((rc=sqlite3_step(q.value))==SQLITE_ROW) {
         const auto point=CoveragePoint(q.value,0,1);const auto found=source.ObservedCoins().find(point);
@@ -926,13 +958,85 @@ std::set<TxOutPoint> CoverageIndexRows(sqlite3* db,const ScriptOwners& scripts,c
     }
     if(rc!=SQLITE_DONE)Fail("Coverage index inventory incomplete");return existing;
 }
+ScriptOwners V3RecordedPaths(WalletManager::DatabaseLease& lease) {
+    ScriptOwners paths;
+    Statement watched(lease.Database(),"SELECT script_pubkey,path FROM watch_scripts ORDER BY script_pubkey");
+    int rc;
+    while((rc=sqlite3_step(watched.value))==SQLITE_ROW) {
+        if(sqlite3_column_type(watched.value,0)!=SQLITE_BLOB ||
+           sqlite3_column_type(watched.value,1)!=SQLITE_TEXT)
+            Fail("Coverage v3 watched script type invalid");
+        const auto* script=static_cast<const uint8_t*>(sqlite3_column_blob(watched.value,0));
+        const int script_size=sqlite3_column_bytes(watched.value,0);
+        const auto* path=static_cast<const char*>(sqlite3_column_blob(watched.value,1));
+        const int path_size=sqlite3_column_bytes(watched.value,1);
+        if(!script||script_size<=0||script_size>10000||!path||path_size<=0||path_size>512||
+           std::memchr(path,0,path_size) ||
+           !paths.emplace(std::vector<uint8_t>(script,script+script_size),std::string(path,path_size)).second)
+            Fail("Coverage v3 watched script malformed");
+    }
+    if(rc!=SQLITE_DONE)Fail("Coverage v3 watched script inventory incomplete");
+    return paths;
+}
+struct V3IndexConnection {
+    sqlite3* db=nullptr;
+    explicit V3IndexConnection(const std::filesystem::path& path,bool write=false) {
+        std::error_code error;
+        if(std::filesystem::is_symlink(std::filesystem::symlink_status(path,error))||error)
+            Fail("Coverage v3 index link refused");
+        const auto parent=path.parent_path().empty()?std::filesystem::path("."):path.parent_path();
+        const auto canonical=std::filesystem::canonical(parent,error);
+        if(error)Fail("Coverage v3 index parent unavailable");
+        const auto utf8=(canonical/path.filename()).u8string();
+        const std::string filename(reinterpret_cast<const char*>(utf8.data()),utf8.size());
+        if(sqlite3_open_v2(filename.c_str(),&db,
+                (write?SQLITE_OPEN_READWRITE:SQLITE_OPEN_READONLY)|SQLITE_OPEN_FULLMUTEX|SQLITE_OPEN_NOFOLLOW,
+                nullptr)!=SQLITE_OK) {
+            sqlite3_close(db);db=nullptr;Fail("Coverage v3 index open failed");
+        }
+        sqlite3_busy_timeout(db,10000);
+        try {
+            RequireFullArchiveWalletIndexV3(db,path);
+            if(write)CoverageDurability(db);
+        } catch(...) {sqlite3_close(db);db=nullptr;throw;}
+    }
+    ~V3IndexConnection(){sqlite3_close(db);}
+    V3IndexConnection(const V3IndexConnection&)=delete;
+    V3IndexConnection& operator=(const V3IndexConnection&)=delete;
+};
+std::optional<Receipt> V3Receipt(sqlite3* db,const WalletIndexV3OwnerToken& owner,
+        const WalletManager::DatabaseLease& lease,const std::string& identity,
+        const uint256& scripts,bool reconcile=false,std::string* raw_receipt=nullptr) {
+    Statement q(db,"SELECT receipt,invalidated FROM wallet_index_receipts_v3 WHERE wallet_identity=?");
+    owner.BindCurrentIdentity(q.value,1,lease);
+    const int rc=sqlite3_step(q.value);
+    if(rc==SQLITE_DONE)return {};
+    if(rc!=SQLITE_ROW || sqlite3_column_type(q.value,1)!=SQLITE_INTEGER)
+        Fail("Coverage v3 receipt row malformed");
+    const auto invalid=sqlite3_column_int64(q.value,1);
+    if(invalid!=0&&invalid!=1)Fail("Coverage v3 invalidation malformed");
+    std::optional<Receipt> result;
+    if(sqlite3_column_type(q.value,0)!=SQLITE_NULL) {
+        if(sqlite3_column_type(q.value,0)!=SQLITE_BLOB || invalid)
+            Fail("Coverage v3 receipt malformed or invalidated");
+        const auto* bytes=static_cast<const char*>(sqlite3_column_blob(q.value,0));
+        const int size=sqlite3_column_bytes(q.value,0);
+        if(!bytes||size<=0||size>2048)Fail("Coverage v3 receipt malformed");
+        const std::string serialized(bytes,size);
+        result=Decode(serialized,identity,scripts,"DNUI03");
+        if(raw_receipt)*raw_receipt=serialized;
+    } else if(invalid && !reconcile)Fail("Coverage v3 receipt invalidated");
+    if(sqlite3_step(q.value)!=SQLITE_DONE)Fail("Coverage v3 receipt duplicated");
+    return result;
+}
+void CurrentBalanceReceipt(const std::optional<Receipt>& receipt,const RuntimeWalletCoverageProjection& source);
 struct CoverageOrdinaryPlan {
     std::set<TxOutPoint> existing_coins;
     std::set<std::string> existing_history;
     std::set<std::string> unconfirm_history;
 };
 CoverageOrdinaryPlan CoverageOrdinaryRows(sqlite3* db,int wallet_id,const OrdinaryOwnership& scripts,
-        const RuntimeWalletCoverageProjection& source) {
+        const RuntimeWalletCoverageProjection& source,bool recover_missing_originated=false) {
     CoverageOrdinaryPlan plan;int rc;
     Statement coins(db,"SELECT wallet_id,txid,vout,amount,script_pubkey,height,is_coinbase,is_spent,spent_txid,spent_height FROM utxos");
     while((rc=sqlite3_step(coins.value))==SQLITE_ROW) {
@@ -980,13 +1084,15 @@ CoverageOrdinaryPlan CoverageOrdinaryRows(sqlite3* db,int wallet_id,const Ordina
             if(coin!=source.ObservedCoins().end())for(const auto& version:coin->second)
                 spends|=scripts.addresses.contains(version.output.scriptPubKey);
         }
-        if(spends&&!plan.existing_history.contains(id.AsUint256().GetHex()))
+        if(spends&&!plan.existing_history.contains(id.AsUint256().GetHex())&&
+           !(recover_missing_originated&&activity.height>source.Origin().OriginHeight()))
             Fail("Coverage originated history unavailable");
     }
     return plan;
 }
 void WriteCoverageOrdinary(sqlite3* db,int wallet_id,const OrdinaryOwnership& scripts,
-        const RuntimeWalletCoverageProjection& source,const CoverageOrdinaryPlan& plan) {
+        const RuntimeWalletCoverageProjection& source,const CoverageOrdinaryPlan& plan,
+        bool recover_missing_originated=false) {
     for(const auto& point:plan.existing_coins)if(!source.Coins().contains(point)) {
         // Only a matched, proved former creation can be removed.
         Statement remove(db,"DELETE FROM utxos WHERE wallet_id=? AND txid=? AND vout=?");
@@ -1024,17 +1130,29 @@ void WriteCoverageOrdinary(sqlite3* db,int wallet_id,const OrdinaryOwnership& sc
             confirm.Int(1,activity.height);confirm.Int(2,wallet_id);confirm.Text(3,id);confirm.Done();
             if(sqlite3_changes(db)<1)Fail("Coverage history confirmation failed");
         } else {
-            uint64_t credit=0;bool receives=false;std::string address;
+            uint64_t debit=0,credit=0;std::string address;
+            for(const auto& point:activity.inputs) {
+                const auto found=source.Coins().find(point);
+                if(found==source.Coins().end()||!scripts.addresses.contains(found->second.output.scriptPubKey))continue;
+                const auto value=found->second.output.value.GetUna();
+                if(value>uint64_t(INT64_MAX)-debit)Fail("Coverage history debit overflow");
+                debit+=value;
+                if(address.empty())address=scripts.addresses.at(found->second.output.scriptPubKey);
+            }
+            if(debit && (!recover_missing_originated || activity.height<=source.Origin().OriginHeight()))
+                Fail("Coverage originated history unavailable");
             for(const auto& output:activity.outputs) {
                 const auto owned=scripts.addresses.find(output.scriptPubKey);if(owned==scripts.addresses.end())continue;
                 const auto value=output.value.GetUna();if(value>uint64_t(INT64_MAX)-credit)Fail("Coverage history credit overflow");
-                credit+=value;receives=true;if(address.empty())address=owned->second;
+                credit+=value;if(address.empty())address=owned->second;
             }
-            if(!receives)continue;
+            if(!debit&&!credit)continue;
+            const auto net=int64_t(credit)-int64_t(debit);
             Statement add(db,"INSERT INTO transactions(wallet_id,txid,address,amount,confirmations,category,label,time,is_coinbase,height) VALUES(?,?,?,?,0,?,'',?,?,?)");
             add.Int(1,wallet_id);add.Text(2,id);add.Text(3,address);
-            if(sqlite3_bind_double(add.value,4,double(credit)/100000000.0)!=SQLITE_OK)Fail("Coverage history bind failed");
-            add.Text(5,activity.coinbase?"generate":"receive");add.Int(6,activity.time);add.Int(7,activity.coinbase);add.Int(8,activity.height);add.Done();
+            if(sqlite3_bind_double(add.value,4,double(net)/100000000.0)!=SQLITE_OK)Fail("Coverage history bind failed");
+            add.Text(5,activity.coinbase?"generate":debit?"send":"receive");
+            add.Int(6,activity.time);add.Int(7,activity.coinbase);add.Int(8,activity.height);add.Done();
             if(sqlite3_changes(db)!=1)Fail("Coverage history insertion failed");
         }
     }
@@ -1046,6 +1164,7 @@ void WriteCoverageOrdinary(sqlite3* db,int wallet_id,const OrdinaryOwnership& sc
 } // namespace
 
 bool RuntimeIndexDelivery::CoverageRequired(UTXOIndex& index,const std::string& identity,const HistoricalScripts* historical) {
+    index.RequireLegacyCoinAccess();
     std::lock_guard<std::recursive_mutex> lock(index.db_mutex_);std::lock_guard<std::mutex> scripts(index.scripts_mutex_);
     if(!index.db_||index.atomic_write_active_||!sqlite3_get_autocommit(index.db_))Fail("Coverage index read owner unavailable");
     const auto invalid=CoverageMetadata(index.db_,invalid_key,SQLITE_TEXT),receipt=CoverageMetadata(index.db_,receipt_key,SQLITE_BLOB);
@@ -1083,12 +1202,14 @@ bool RuntimeOrdinaryDelivery::CoverageRequiredForWallet(WalletManager& wallet,UT
 }
 
 void RuntimeIndexDelivery::CheckCoverageImportedCohort(UTXOIndex& index,const RuntimeWalletOriginProjection& origin){
+    index.RequireLegacyCoinAccess();
     std::lock_guard<std::recursive_mutex> lock(index.db_mutex_);
     if(!index.db_)Fail("Coverage imported index unavailable");
     CoverageImportedCohort(index.db_,origin.imported_cohort_);
 }
 void RuntimeIndexDelivery::ReconcileCoverage(UTXOIndex& index,const RuntimeWalletCoverageProjection& source,
         const std::function<void()>& finish,const std::function<void()>& source_before_commit) {
+    index.RequireLegacyCoinAccess();
     const auto& origin=source.Origin();
     std::lock_guard<std::recursive_mutex> lock(index.db_mutex_);std::lock_guard<std::mutex> scripts(index.scripts_mutex_);
     if(!index.db_||index.atomic_write_active_||!sqlite3_get_autocommit(index.db_)||
@@ -1134,6 +1255,269 @@ void RuntimeIndexDelivery::ReconcileCoverage(UTXOIndex& index,const RuntimeWalle
     finish();
     index.historical_scripts_.swap(published);
 }
+
+std::optional<RuntimeIndexProgress> RuntimeIndexDelivery::ReadForWalletV3(
+        WalletManager& wallet,UTXOIndex& index,uint64_t expected_session) {
+    const auto lease=wallet.AcquireDatabaseLease();
+    if(!wallet.SoleDatabaseLeaseHeld()||lease->Session()!=expected_session)
+        Fail("Coverage v3 wallet owner changed");
+    return ReadForWalletV3(index,*lease);
+}
+std::optional<RuntimeIndexProgress> RuntimeIndexDelivery::ReadForWalletV3(
+        UTXOIndex& index,WalletManager::DatabaseLease& lease) {
+    if(!lease.Database() || lease.LegacyTransparentState()==WalletManager::LegacyTransparentState::Absent)
+        Fail("Coverage v3 wallet owner changed");
+    OrdinaryTransaction wallet_read(lease.Database());
+    const auto identity=ExistingIdentity(lease.Database());
+    const auto owner=WalletIndexV3OwnerToken::Capture(lease);
+    const auto domain=OrdinaryScripts(lease);
+    const auto paths=V3RecordedPaths(lease);
+    for(const auto& [script,address]:domain.addresses)
+        if(!paths.contains(script) && !domain.historical.contains(script))
+            Fail("Coverage v3 address lacks an index owner");
+    for(const auto& [script,path]:paths)
+        if(!domain.addresses.contains(script))
+            Fail("Coverage v3 watched script lacks a proved wallet address");
+    const auto scripts=IndexScripts(paths,domain.historical);
+    std::lock_guard<std::recursive_mutex> index_lock(index.db_mutex_);
+    if(index.open_mode_!=UTXOIndex::OpenMode::FullArchiveV3MetadataOnly || !index.db_ ||
+       index.atomic_write_active_ || !sqlite3_get_autocommit(index.db_))
+        Fail("Coverage v3 metadata index unavailable");
+    // The metadata handle was fully verified, including its immutable v2
+    // backup and quarantined rows, when it opened. Reuse that same handle for
+    // each financial read. A read transaction binds schema, guards and owner
+    // receipt to one SQLite snapshot without repeating the full backup scan.
+    Exec(index.db_,"BEGIN");
+    bool index_read_active=true;
+    try {
+        RequireFullArchiveWalletIndexV3ReadGuards(index.db_,
+            index.verified_v3_rollback_digest_,index.verified_v3_legacy_guard_digest_);
+        const auto receipt=V3Receipt(index.db_,owner,lease,identity,scripts);
+        owner.RequireCurrent(lease);
+        Exec(index.db_,"COMMIT");index_read_active=false;
+        wallet_read.Commit();
+        return receipt?std::optional(receipt->progress):std::nullopt;
+    } catch(...) {
+        if(index_read_active)sqlite3_exec(index.db_,"ROLLBACK",nullptr,nullptr,nullptr);
+        throw;
+    }
+}
+
+RuntimeIndexProgress RuntimeIndexDelivery::ReconcileCoverageV3(WalletManager& wallet,
+        UTXOIndex& index,const RuntimeWalletCoverageProjection& source,
+        const V3SourceCommit& source_commit) {
+    const auto& origin=source.Origin();
+    if(!source_commit || !origin.existing_identity_only_ || origin.imported_cohort_ ||
+       origin.index_scripts_ || !source.replay_ || source.Head()!=source.replay_->Head())
+        Fail("Coverage v3 requires complete full-archive transparent source");
+    RuntimeOrdinaryDelivery::CheckOriginDomain(wallet,origin,nullptr);
+    const auto lease=wallet.AcquireDatabaseLease();
+    if(!wallet.SoleDatabaseLeaseHeld() || lease->Session()!=origin.session_ || !lease->Database() ||
+       lease->LegacyTransparentState()!=WalletManager::LegacyTransparentState::Pending)
+        Fail("Coverage v3 pending wallet owner changed");
+    OrdinaryTransaction wallet_read(lease->Database());
+    const auto identity=ExistingIdentity(lease->Database());
+    if(identity!=origin.identity_)Fail("Coverage v3 wallet identity changed");
+    const auto owner=WalletIndexV3OwnerToken::Capture(*lease);
+    const auto domain=OrdinaryScripts(*lease);
+    if(domain.digest!=origin.scripts_digest_ || domain.historical!=origin.historical_scripts_ ||
+       domain.addresses!=origin.scripts_)
+        Fail("Coverage v3 script domain changed");
+    const auto paths=V3RecordedPaths(*lease);
+    for(const auto& [script,address]:domain.addresses)
+        if(!paths.contains(script) && !domain.historical.contains(script))
+            Fail("Coverage v3 address lacks an index owner");
+    for(const auto& [script,path]:paths)
+        if(!domain.addresses.contains(script))
+            Fail("Coverage v3 watched script lacks a proved wallet address");
+    const auto scripts=IndexScripts(paths,domain.historical);
+    std::lock_guard<std::recursive_mutex> index_lock(index.db_mutex_);
+    if(index.open_mode_!=UTXOIndex::OpenMode::FullArchiveV3MetadataOnly || !index.db_ ||
+       index.atomic_write_active_ || !sqlite3_get_autocommit(index.db_))
+        Fail("Coverage v3 metadata index unavailable");
+    V3IndexConnection stored(std::filesystem::u8path(index.db_path_),true);
+    Exec(stored.db,"BEGIN IMMEDIATE");bool owns_transaction=true;
+    try {
+        RequireFullArchiveWalletIndexV3(stored.db,std::filesystem::u8path(index.db_path_));
+        std::string old_bytes;
+        const auto receipt=V3Receipt(stored.db,owner,*lease,identity,scripts,true,&old_bytes);
+        if(receipt)CheckCoverageReceipt(old_bytes,"DNUI03",identity,source);
+        const auto existing=CoverageIndexRows(stored.db,paths,domain.historical,source,&owner,lease.get());
+        for(const auto& point:existing)if(!source.Coins().contains(point)) {
+            Statement remove(stored.db,"DELETE FROM wallet_utxos WHERE wallet_identity=? AND txid=? AND vout=?");
+            owner.BindCurrentIdentity(remove.value,1,*lease);
+            remove.Text(2,point.txid.AsUint256().GetHex());remove.Int(3,point.vout);remove.Done();
+            if(sqlite3_changes(stored.db)!=1)Fail("Coverage v3 disconnected row removal failed");
+        }
+        for(const auto& [point,coin]:source.Coins()) {
+            if(coin.output.value.GetUna()>uint64_t(INT64_MAX))Fail("Coverage v3 amount overflow");
+            WalletUTXO row(point.txid,point.vout,coin.output.value,coin.output.scriptPubKey,"",coin.height,coin.coinbase);
+            if(!SetIndexOwner(row,paths,domain.historical))continue;
+            if(!existing.contains(point)) {
+                Statement add(stored.db,"INSERT INTO wallet_utxos(wallet_identity,txid,vout,value,spk,path,height,"
+                    "spend_height,is_coinbase,owner_kind,owner_reference) VALUES(?,?,?,?,?,?,?,?,?,?,?)");
+                owner.BindCurrentIdentity(add.value,1,*lease);
+                add.Text(2,point.txid.AsUint256().GetHex());add.Int(3,point.vout);
+                add.Int(4,coin.output.value.GetUna());
+                if(sqlite3_bind_blob(add.value,5,coin.output.scriptPubKey.data(),
+                        int(coin.output.scriptPubKey.size()),SQLITE_TRANSIENT)!=SQLITE_OK)
+                    Fail("Coverage v3 script binding failed");
+                add.Text(6,row.path);add.Int(7,coin.height);
+                if(coin.spent)add.Int(8,coin.spent->height);
+                add.Int(9,coin.coinbase);add.Int(10,static_cast<uint8_t>(row.owner_kind));
+                add.Text(11,row.owner_reference);add.Done();
+                if(sqlite3_changes(stored.db)!=1)Fail("Coverage v3 row insertion failed");
+            } else {
+                Statement update(stored.db,"UPDATE wallet_utxos SET height=?,spend_height=? "
+                    "WHERE wallet_identity=? AND txid=? AND vout=?");
+                update.Int(1,coin.height);if(coin.spent)update.Int(2,coin.spent->height);
+                else if(sqlite3_bind_null(update.value,2)!=SQLITE_OK)Fail("Coverage v3 spend bind failed");
+                owner.BindCurrentIdentity(update.value,3,*lease);
+                update.Text(4,point.txid.AsUint256().GetHex());update.Int(5,point.vout);update.Done();
+                if(sqlite3_changes(stored.db)!=1)Fail("Coverage v3 row update failed");
+            }
+        }
+        Receipt next{{source.Head(),origin.OriginHash(),source.TipHash(),origin.OriginHeight(),source.TipHeight()},
+            Profile(origin.first_.context)};
+        Statement seal(stored.db,"INSERT INTO wallet_index_receipts_v3(wallet_identity,receipt,invalidated) "
+            "VALUES(?,?,0) ON CONFLICT(wallet_identity) DO UPDATE SET receipt=excluded.receipt,invalidated=0");
+        owner.BindCurrentIdentity(seal.value,1,*lease);
+        seal.Blob(2,Encode(next,identity,scripts,"DNUI03"));seal.Done();
+        owner.RequireCurrent(*lease);
+        source_commit([&] {
+            if(!owns_transaction)Fail("Coverage v3 source commit already used");
+            owner.RequireCurrent(*lease);
+            Exec(stored.db,"COMMIT");owns_transaction=false;
+        });
+        if(owns_transaction)Fail("Coverage v3 source lock did not commit");
+        wallet_read.Commit();
+        return next.progress;
+    } catch(...) {
+        if(owns_transaction)sqlite3_exec(stored.db,"ROLLBACK",nullptr,nullptr,nullptr);
+        throw;
+    }
+}
+RuntimeIndexProgress RuntimeIndexDelivery::ApplyForWalletV3(WalletManager& wallet,UTXOIndex& index,
+        uint64_t expected_session,const RuntimeOutboxEvent& event,const V3SourceCommit& source_commit) {
+    if(!source_commit)Fail("V3 delivery selected source unavailable");
+    const auto effects=Effects(event);
+    const auto lease=wallet.AcquireDatabaseLease();
+    if(!wallet.SoleDatabaseLeaseHeld() || lease->Session()!=expected_session || !lease->Database() ||
+       lease->LegacyTransparentState()!=WalletManager::LegacyTransparentState::Complete)
+        Fail("V3 delivery selected wallet unavailable");
+    OrdinaryTransaction wallet_read(lease->Database());
+    const auto identity=ExistingIdentity(lease->Database());
+    const auto owner=WalletIndexV3OwnerToken::Capture(*lease);
+    const auto domain=OrdinaryScripts(*lease);
+    const auto paths=V3RecordedPaths(*lease);
+    for(const auto& [script,address]:domain.addresses)
+        if(!paths.contains(script) && !domain.historical.contains(script))
+            Fail("V3 delivery address lacks an index owner");
+    for(const auto& [script,path]:paths)
+        if(!domain.addresses.contains(script))
+            Fail("V3 delivery watched script lacks a proved wallet address");
+    const auto scripts=IndexScripts(paths,domain.historical);
+    std::lock_guard<std::recursive_mutex> index_lock(index.db_mutex_);
+    if(index.open_mode_!=UTXOIndex::OpenMode::FullArchiveV3MetadataOnly || !index.db_ ||
+       index.atomic_write_active_ || !sqlite3_get_autocommit(index.db_))
+        Fail("V3 delivery metadata index unavailable");
+    V3IndexConnection stored(std::filesystem::u8path(index.db_path_),true);
+    Exec(stored.db,"BEGIN IMMEDIATE");bool transaction=true;
+    try {
+        const auto old=V3Receipt(stored.db,owner,*lease,identity,scripts);
+        if(!old)Fail("V3 delivery requires proved index baseline");
+        const auto before=Before(event),after=After(event);
+        const auto profile=Profile(event.context);
+        const bool already=old->progress.cursor==event.cursor;
+        if(already) {
+            if(old->profile!=profile || Tip{old->progress.tip_hash,old->progress.tip_height}!=after)
+                Fail("V3 delivery replay mismatch");
+        } else {
+            const auto& p=old->progress;
+            if(p.cursor.sequence==UINT64_MAX || event.cursor.sequence!=p.cursor.sequence+1 ||
+               event.previous_digest!=p.cursor.digest || old->profile!=profile ||
+               Tip{p.tip_hash,p.tip_height}!=before)
+                Fail("V3 delivery source discontinuity");
+            if(event.direction==RuntimeBlockDirection::Disconnect) {
+                Statement remove(stored.db,"DELETE FROM wallet_utxos WHERE wallet_identity=? AND height=?");
+                owner.BindCurrentIdentity(remove.value,1,*lease);remove.Int(2,event.context.height);remove.Done();
+                Statement restore(stored.db,"UPDATE wallet_utxos SET spend_height=NULL "
+                    "WHERE wallet_identity=? AND spend_height=?");
+                owner.BindCurrentIdentity(restore.value,1,*lease);restore.Int(2,event.context.height);restore.Done();
+            } else for(const auto& effect:effects) {
+                for(const auto& point:effect.spent) {
+                    Statement prior(stored.db,"SELECT spend_height FROM wallet_utxos "
+                        "WHERE wallet_identity=? AND txid=? AND vout=?");
+                    owner.BindCurrentIdentity(prior.value,1,*lease);
+                    prior.Text(2,point.txid.AsUint256().GetHex());prior.Int(3,point.vout);
+                    const int present=sqlite3_step(prior.value);
+                    if(present==SQLITE_DONE)continue;
+                    if(present!=SQLITE_ROW || sqlite3_column_type(prior.value,0)!=SQLITE_NULL ||
+                       sqlite3_step(prior.value)!=SQLITE_DONE)
+                        Fail("V3 delivery owned spend conflicts with index history");
+                    Statement spend(stored.db,"UPDATE wallet_utxos SET spend_height=? "
+                        "WHERE wallet_identity=? AND txid=? AND vout=? AND spend_height IS NULL");
+                    spend.Int(1,event.context.height);owner.BindCurrentIdentity(spend.value,2,*lease);
+                    spend.Text(3,point.txid.AsUint256().GetHex());spend.Int(4,point.vout);spend.Done();
+                    if(sqlite3_changes(stored.db)!=1)Fail("V3 delivery owned spend changed");
+                }
+                for(const auto& output:effect.created) {
+                    if(output.amount>uint64_t(INT64_MAX))Fail("V3 delivery amount out of range");
+                    WalletUTXO row(output.txid,output.n,AmountUna::Una(output.amount),output.script,"",
+                        event.context.height,output.coinbase);
+                    if(!SetIndexOwner(row,paths,domain.historical))continue;
+                    Statement add(stored.db,"INSERT INTO wallet_utxos(wallet_identity,txid,vout,value,spk,path,height,"
+                        "is_coinbase,owner_kind,owner_reference) VALUES(?,?,?,?,?,?,?,?,?,?)");
+                    owner.BindCurrentIdentity(add.value,1,*lease);
+                    add.Text(2,output.txid.AsUint256().GetHex());add.Int(3,output.n);add.Int(4,output.amount);
+                    if(sqlite3_bind_blob(add.value,5,output.script.data(),int(output.script.size()),SQLITE_TRANSIENT)!=SQLITE_OK)
+                        Fail("V3 delivery script binding failed");
+                    add.Text(6,row.path);add.Int(7,event.context.height);add.Int(8,output.coinbase);
+                    add.Int(9,static_cast<uint8_t>(row.owner_kind));add.Text(10,row.owner_reference);add.Done();
+                    if(sqlite3_changes(stored.db)!=1)Fail("V3 delivery output insertion failed");
+                }
+            }
+            Receipt next{{event.cursor,old->progress.origin_hash,after.first,old->progress.origin_height,after.second},profile};
+            Statement seal(stored.db,"UPDATE wallet_index_receipts_v3 SET receipt=?,invalidated=0 WHERE wallet_identity=?");
+            seal.Blob(1,Encode(next,identity,scripts,"DNUI03"));owner.BindCurrentIdentity(seal.value,2,*lease);seal.Done();
+            if(sqlite3_changes(stored.db)!=1)Fail("V3 delivery receipt seal failed");
+        }
+        bool committed=false;
+        source_commit([&] {
+            if(committed)Fail("V3 delivery selected source commit repeated");
+            owner.RequireCurrent(*lease);
+            Exec(stored.db,"COMMIT");transaction=false;committed=true;
+        });
+        if(!committed)Fail("V3 delivery selected source did not commit");
+        wallet_read.Commit();
+        return already?old->progress:RuntimeIndexProgress{event.cursor,old->progress.origin_hash,
+            After(event).first,old->progress.origin_height,After(event).second};
+    } catch(...) {
+        if(transaction)sqlite3_exec(stored.db,"ROLLBACK",nullptr,nullptr,nullptr);
+        throw;
+    }
+}
+void RuntimeIndexDelivery::WithCurrentV3Receipt(WalletManager::DatabaseLease& lease,UTXOIndex& index,
+        const RuntimeWalletCoverageProjection& source,const uint256& index_scripts,
+        const std::function<void()>& publish) {
+    if(!publish)Fail("Coverage v3 ordinary publisher unavailable");
+    std::lock_guard<std::recursive_mutex> index_lock(index.db_mutex_);
+    if(index.open_mode_!=UTXOIndex::OpenMode::FullArchiveV3MetadataOnly || !index.db_ ||
+       index.atomic_write_active_ || !sqlite3_get_autocommit(index.db_))
+        Fail("Coverage v3 ordinary metadata index unavailable");
+    V3IndexConnection stored(std::filesystem::u8path(index.db_path_),true);
+    Exec(stored.db,"BEGIN IMMEDIATE");bool transaction=true;
+    try {
+        const auto owner=WalletIndexV3OwnerToken::Capture(lease);
+        CurrentBalanceReceipt(V3Receipt(stored.db,owner,lease,source.Origin().identity_,index_scripts),source);
+        publish();
+        owner.RequireCurrent(lease);
+        Exec(stored.db,"COMMIT");transaction=false;
+    } catch(...) {
+        if(transaction)sqlite3_exec(stored.db,"ROLLBACK",nullptr,nullptr,nullptr);
+        throw;
+    }
+}
 std::unique_ptr<wallet::OrchardCatalogCapture> RuntimeOrdinaryDelivery::PrepareCoverage(
         WalletManager& wallet,const RuntimeWalletCoverageProjection& source) {
     {
@@ -1157,6 +1541,7 @@ void CurrentBalanceReceipt(const std::optional<Receipt>& receipt,const RuntimeWa
 // Reuse the original exact current inventory contract before/after delivery;
 // a receipt checksum or apparent subset alone never grants baseline authority.
 void RuntimeIndexDelivery::CheckIncrementalRows(UTXOIndex& index,const RuntimeWalletCoverageProjection& source){
+    index.RequireLegacyCoinAccess();
     const auto& origin=source.Origin();
     if(!index.db_||!origin.index_scripts_||*origin.index_scripts_!=index.watched_scripts_||
        origin.historical_scripts_!=index.historical_scripts_||origin.index_path_!=index.db_path_)
@@ -1278,6 +1663,7 @@ RuntimeIndexProgress RuntimeOrdinaryDelivery::AdvanceCoverage(WalletManager& wal
 
 void RuntimeIndexDelivery::WithCoverageBalance(UTXOIndex& index,const RuntimeWalletCoverageProjection& source,
         const std::function<void()>& capture) {
+    index.RequireLegacyCoinAccess();
     const auto& origin=source.Origin();
     std::lock_guard<std::recursive_mutex> lock(index.db_mutex_);std::lock_guard<std::mutex> scripts(index.scripts_mutex_);
     if(!capture||!index.db_||index.atomic_write_active_||!sqlite3_get_autocommit(index.db_)||
@@ -1453,12 +1839,171 @@ void RuntimeOrdinaryDelivery::ReconcileCoverage(WalletManager& wallet,UTXOIndex&
     },source_before_commit);
 }
 
+void RuntimeOrdinaryDelivery::ReconcileLegacyTransparentCoverage(WalletManager& wallet,UTXOIndex& index,
+        const RuntimeWalletCoverageProjection& source,const std::function<void()>& source_before_commit) {
+    const auto& origin=source.Origin();
+    if(!source_before_commit || origin.imported_cohort_)
+        Fail("Legacy transparent coverage requires a live full archival source");
+    auto lease=wallet.AcquireDatabaseLease();
+    if(wallet.database_leases_!=1 || lease->Session()!=origin.session_ || !origin.existing_identity_only_ ||
+       !origin.index_scripts_ || wallet.current_wallet_id_<0 ||
+       lease->LegacyTransparentState()!=WalletManager::LegacyTransparentState::Pending)
+        Fail("Legacy transparent migration owner changed");
+    auto* db=lease->Database();CoverageDurability(db);OrdinaryTransaction transaction(db);
+    if(ExistingIdentity(db)!=origin.identity_)Fail("Legacy transparent identity changed");
+    const auto scripts=OrdinaryScripts(*lease);
+    if(scripts.digest!=origin.scripts_digest_)Fail("Legacy transparent script domain changed");
+    auto pin=lease->CopyRecoverySeed(origin.session_);
+    lease->ValidateRecoveryInventoryInTransaction(*pin);
+    // A pending local payment or shielded owner cannot be silently relabelled
+    // as a transparent-only canonical history. Leave it untouched for an
+    // explicit recovery path that can authenticate those operations.
+    if(!lease->ReadPendingPaymentsInTransaction(*pin).empty())
+        Fail("Legacy transparent migration has pending payments");
+    {
+        Statement pending(db,"SELECT 1 FROM transactions WHERE height=0 AND category IN ('send','shield','unshield') LIMIT 1");
+        if(sqlite3_step(pending.value)!=SQLITE_DONE)
+            Fail("Legacy transparent migration has unresolved local history");
+    }
+    if(!source.replay_ || source.Head()!=source.replay_->Head())
+        Fail("Legacy transparent coverage is not the complete checked source");
+    std::map<std::vector<uint8_t>,std::string> watched;
+    Statement paths(db,"SELECT script_pubkey,path FROM watch_scripts");int path_rc;
+    while((path_rc=sqlite3_step(paths.value))==SQLITE_ROW) {
+        const auto* bytes=static_cast<const uint8_t*>(sqlite3_column_blob(paths.value,0));
+        const int size=sqlite3_column_bytes(paths.value,0);
+        if(sqlite3_column_type(paths.value,0)!=SQLITE_BLOB || !bytes || size<=0 || size>10000 ||
+           !watched.emplace(std::vector<uint8_t>(bytes,bytes+size),CoverageText(paths.value,1)).second)
+            Fail("Legacy transparent watched domain malformed");
+    }
+    if(path_rc!=SQLITE_DONE || watched!=*origin.index_scripts_)
+        Fail("Legacy transparent index and durable scripts differ");
+    const auto plan=CoverageOrdinaryRows(db,wallet.current_wallet_id_,scripts,source,true);
+    if(OrdinaryColumns(db)) {
+        Statement q(db,"SELECT runtime_ordinary_receipt,runtime_ordinary_invalid FROM wallet_meta WHERE id=1");
+        if(sqlite3_step(q.value)!=SQLITE_ROW)Fail("Legacy transparent metadata missing");
+        const auto invalid=CoverageInt(q.value,1);if(invalid!=0&&invalid!=1)Fail("Legacy transparent invalidation malformed");
+        if(sqlite3_column_type(q.value,0)!=SQLITE_NULL) {
+            const auto* bytes=static_cast<const char*>(sqlite3_column_blob(q.value,0));
+            const int n=sqlite3_column_bytes(q.value,0);
+            if(sqlite3_column_type(q.value,0)!=SQLITE_BLOB || !bytes || n<=0 || n>2048)
+                Fail("Legacy transparent receipt malformed");
+            CheckCoverageReceipt(std::string(bytes,n),"DNOW01",origin.identity_,source);
+        }
+        if(sqlite3_step(q.value)!=SQLITE_DONE)Fail("Legacy transparent metadata incomplete");
+        OrdinaryGuards(db,false);
+    } else {
+        Exec(db,"ALTER TABLE wallet_meta ADD COLUMN runtime_ordinary_receipt BLOB");
+        Exec(db,"ALTER TABLE wallet_meta ADD COLUMN runtime_ordinary_invalid INTEGER NOT NULL DEFAULT 0");
+        OrdinaryGuards(db,true);
+    }
+    RuntimeIndexDelivery::ReconcileCoverage(index,source,[&] {
+        WriteCoverageOrdinary(db,wallet.current_wallet_id_,scripts,source,plan,true);
+        // sync_meta's update trigger revokes an older ordinary receipt. Seal
+        // the new receipt AFTER the scan height, in the same durable commit.
+        Statement scan(db,"UPDATE sync_meta SET last_scanned_height=?,scan_complete=1 WHERE id=1");
+        scan.Int(1,source.TipHeight());scan.Done();
+        if(sqlite3_changes(db)!=1)Fail("Legacy transparent scan watermark unavailable");
+        Receipt next{{source.Head(),origin.OriginHash(),source.TipHash(),origin.OriginHeight(),source.TipHeight()},
+            Profile(origin.first_.context)};
+        Statement seal(db,"UPDATE wallet_meta SET runtime_ordinary_receipt=?,runtime_ordinary_invalid=0,"
+            "runtime_legacy_transparent_state_v1='complete' WHERE id=1 AND runtime_legacy_transparent_state_v1='pending'");
+        seal.Blob(1,Encode(next,origin.identity_,scripts.digest,"DNOW01"));seal.Done();
+        if(sqlite3_changes(db)!=1)Fail("Legacy transparent completion marker unavailable");
+        RuntimeIndexDelivery::CheckCoverageImportedCohort(index,origin);
+        source_before_commit();
+        transaction.Commit();
+    },source_before_commit);
+}
+
+void RuntimeOrdinaryDelivery::ReconcileLegacyTransparentCoverageV3(WalletManager& wallet,UTXOIndex& index,
+        const RuntimeWalletCoverageProjection& source,
+        const RuntimeIndexDelivery::V3SourceCommit& source_commit) {
+    const auto& origin=source.Origin();
+    if(!source_commit || origin.imported_cohort_ || origin.index_scripts_ || !source.replay_ ||
+       source.Head()!=source.replay_->Head())
+        Fail("Coverage v3 ordinary requires complete full-archive transparent source");
+    // The first durable commit changes only this wallet's index rows/receipt.
+    // Pending remains in the wallet if this second phase is interrupted.
+    (void)RuntimeIndexDelivery::ReconcileCoverageV3(wallet,index,source,source_commit);
+
+    auto lease=wallet.AcquireDatabaseLease();
+    if(!wallet.SoleDatabaseLeaseHeld() || lease->Session()!=origin.session_ || !lease->Database() ||
+       wallet.current_wallet_id_<0 || lease->LegacyTransparentState()!=WalletManager::LegacyTransparentState::Pending)
+        Fail("Coverage v3 ordinary pending wallet owner changed");
+    auto* db=lease->Database();CoverageDurability(db);OrdinaryTransaction transaction(db);
+    if(ExistingIdentity(db)!=origin.identity_)Fail("Coverage v3 ordinary identity changed");
+    const auto scripts=OrdinaryScripts(*lease);
+    if(scripts.digest!=origin.scripts_digest_ || scripts.addresses!=origin.scripts_ ||
+       scripts.historical!=origin.historical_scripts_)
+        Fail("Coverage v3 ordinary script domain changed");
+    const auto paths=V3RecordedPaths(*lease);
+    for(const auto& [script,address]:scripts.addresses)
+        if(!paths.contains(script) && !scripts.historical.contains(script))
+            Fail("Coverage v3 ordinary address lacks an index owner");
+    for(const auto& [script,path]:paths)
+        if(!scripts.addresses.contains(script))
+            Fail("Coverage v3 ordinary watched script lacks a proved wallet address");
+    const auto index_scripts=IndexScripts(paths,scripts.historical);
+    auto pin=lease->CopyRecoverySeed(origin.session_);
+    lease->ValidateRecoveryInventoryInTransaction(*pin);
+    if(!lease->ReadPendingPaymentsInTransaction(*pin).empty())
+        Fail("Coverage v3 ordinary has pending payments");
+    {
+        Statement pending(db,"SELECT 1 FROM transactions WHERE height=0 AND category IN ('send','shield','unshield') LIMIT 1");
+        if(sqlite3_step(pending.value)!=SQLITE_DONE)
+            Fail("Coverage v3 ordinary has unresolved local history");
+    }
+    const auto plan=CoverageOrdinaryRows(db,wallet.current_wallet_id_,scripts,source,true);
+    if(OrdinaryColumns(db)) {
+        Statement q(db,"SELECT runtime_ordinary_receipt,runtime_ordinary_invalid FROM wallet_meta WHERE id=1");
+        if(sqlite3_step(q.value)!=SQLITE_ROW)Fail("Coverage v3 ordinary metadata missing");
+        const auto invalid=CoverageInt(q.value,1);
+        if(invalid!=0&&invalid!=1)Fail("Coverage v3 ordinary invalidation malformed");
+        if(sqlite3_column_type(q.value,0)!=SQLITE_NULL) {
+            const auto* bytes=static_cast<const char*>(sqlite3_column_blob(q.value,0));
+            const int n=sqlite3_column_bytes(q.value,0);
+            if(sqlite3_column_type(q.value,0)!=SQLITE_BLOB||!bytes||n<=0||n>2048)
+                Fail("Coverage v3 ordinary receipt malformed");
+            CheckCoverageReceipt(std::string(bytes,n),"DNOW01",origin.identity_,source);
+        }
+        if(sqlite3_step(q.value)!=SQLITE_DONE)Fail("Coverage v3 ordinary metadata incomplete");
+        OrdinaryGuards(db,false);
+    } else {
+        Exec(db,"ALTER TABLE wallet_meta ADD COLUMN runtime_ordinary_receipt BLOB");
+        Exec(db,"ALTER TABLE wallet_meta ADD COLUMN runtime_ordinary_invalid INTEGER NOT NULL DEFAULT 0");
+        OrdinaryGuards(db,true);
+    }
+    RuntimeIndexDelivery::WithCurrentV3Receipt(*lease,index,source,index_scripts,[&] {
+        bool wallet_committed=false;
+        source_commit([&] {
+            if(wallet_committed)Fail("Coverage v3 ordinary source commit already used");
+            WriteCoverageOrdinary(db,wallet.current_wallet_id_,scripts,source,plan,true);
+            // The sync_meta trigger revokes older receipts. Seal only after
+            // the scan height and all ordinary rows are in this transaction.
+            Statement scan(db,"UPDATE sync_meta SET last_scanned_height=?,scan_complete=1 WHERE id=1");
+            scan.Int(1,source.TipHeight());scan.Done();
+            if(sqlite3_changes(db)!=1)Fail("Coverage v3 ordinary scan watermark unavailable");
+            Receipt next{{source.Head(),origin.OriginHash(),source.TipHash(),origin.OriginHeight(),source.TipHeight()},
+                Profile(origin.first_.context)};
+            Statement seal(db,"UPDATE wallet_meta SET runtime_ordinary_receipt=?,runtime_ordinary_invalid=0,"
+                "runtime_legacy_transparent_state_v1='complete' WHERE id=1 AND runtime_legacy_transparent_state_v1='pending'");
+            seal.Blob(1,Encode(next,origin.identity_,scripts.digest,"DNOW01"));seal.Done();
+            if(sqlite3_changes(db)!=1)Fail("Coverage v3 ordinary completion marker unavailable");
+            transaction.Commit();wallet_committed=true;
+        });
+        if(!wallet_committed)Fail("Coverage v3 ordinary source lock did not commit");
+    });
+}
+
 RuntimeIndexProgress RuntimeOrdinaryDelivery::ApplyForWallet(WalletManager& wallet,uint64_t session,const RuntimeOutboxEvent& event) {
     return Apply(wallet,session,event,nullptr);
 }
 RuntimeIndexProgress RuntimeOrdinaryDelivery::Apply(WalletManager& wallet,uint64_t session,const RuntimeOutboxEvent& event,const RuntimeWalletOriginProjection* origin) {
     (void)Effects(event); // Keep original typed refusal before wallet ownership.
     const auto lease=wallet.AcquireDatabaseLease();if(lease->Session()!=session)Fail("Wallet delivery selection changed");
+    if(lease->LegacyTransparentState()==WalletManager::LegacyTransparentState::Pending)
+        Fail("Legacy transparent coverage required before incremental delivery");
     const auto identity=lease->EnsureDeliveryIdentity();auto* db=lease->Database();
     if(wallet.current_wallet_id_<0)Fail("Ordinary delivery wallet unavailable");
     OrdinaryTransaction transaction(db);
@@ -1558,6 +2103,11 @@ RuntimeIndexProgress RuntimeOrdinaryDelivery::ApplyInTransaction(WalletManager& 
     Exec(db,"UPDATE utxos SET is_mature=CASE WHEN is_coinbase=0 OR confirmations>=100 THEN 1 ELSE 0 END");
     OrdinaryInt(db,"UPDATE transactions SET confirmations=CASE WHEN height>0 THEN MAX(0,?-height+1) ELSE 0 END",after.second);
     OrdinaryInt(db,"INSERT INTO tip(rowid,height) VALUES(1,?) ON CONFLICT(rowid) DO UPDATE SET height=excluded.height",after.second);
+    if(lease->LegacyTransparentState()==WalletManager::LegacyTransparentState::Complete) {
+        Statement scan(db,"UPDATE sync_meta SET last_scanned_height=?,scan_complete=1 WHERE id=1");
+        scan.Int(1,after.second);scan.Done();
+        if(sqlite3_changes(db)!=1)Fail("Legacy transparent incremental scan watermark unavailable");
+    }
     Receipt next;next.profile=profile;next.progress={event.cursor,old?old->progress.origin_hash:before.first,after.first,old?old->progress.origin_height:before.second,after.second};
     const auto bytes=Encode(next,identity,scripts.digest,"DNOW01");
     Statement checkpoint(db,"UPDATE wallet_meta SET runtime_ordinary_receipt=?,runtime_ordinary_invalid=0 WHERE id=1");checkpoint.Blob(1,bytes);checkpoint.Done();

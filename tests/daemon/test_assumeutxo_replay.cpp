@@ -181,14 +181,21 @@ static int TestProcessId() {
 }
 
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
+struct RuntimeV3ReadTestAccess {
+    static sqlite3* Connection(UTXOIndex& index) { return index.db_; }
+};
 struct RuntimeOriginProjectionTestAccess {
     static auto Capture(WalletManager& wallet,uint64_t session) {return RuntimeOrdinaryDelivery::CaptureOriginDomain(wallet,session);}
+    static auto CaptureBudget(WalletManager& wallet,uint64_t session,size_t bytes) {
+        return RuntimeOrdinaryDelivery::CaptureOriginDomain(wallet,session,nullptr,false,bytes);
+    }
     static void Check(WalletManager& wallet,const RuntimeWalletOriginProjection& p) {RuntimeOrdinaryDelivery::CheckOriginDomain(wallet,p);}
     static auto Create(const std::vector<uint8_t>& script) {
         auto p=std::unique_ptr<RuntimeWalletOriginProjection>(new RuntimeWalletOriginProjection());
         p->scripts_[script]="fixture";return p;
     }
     static void Append(RuntimeWalletOriginProjection& p,const Block& b,uint32_t height) {p.AppendValidated(b,height);}
+    static void SetMaterialBudget(RuntimeWalletOriginProjection& p,size_t bytes) {p.material_limit_bytes_=bytes;}
     static void SetRetainedCharge(RuntimeWalletOriginProjection& p,size_t bytes) {p.retained_bytes_=bytes;}
     static auto PrepareCoverage(WalletManager& wallet,const RuntimeWalletCoverageProjection& source){
         return RuntimeOrdinaryDelivery::PrepareCoverage(wallet,source);
@@ -320,6 +327,22 @@ struct ShieldedStateStartupTestAccess {
     static void PublishEnrollmentParent(ChainstateService& service,CBlockIndex& tip) {
         auto selected=service.AcquireBlockIngressActivationLock();
         service.PublishActiveTipLocked(&tip,ChainstateService::TipPublishReason::kStartupLoad);
+    }
+    // RPC refusal fixture only: substitute an already-verified v3 metadata
+    // handle while no WalletIndexUse exists, then restore the original handle
+    // before the initialized chainstate and wallet fixtures are destroyed.
+    static std::unique_ptr<UTXOIndex> SwapWalletIndexForRpc(
+            ChainstateService& service,std::unique_ptr<UTXOIndex> replacement) {
+        std::lock_guard<std::mutex> lock(service.wallet_index_use_mutex_);
+        if(service.wallet_index_uses_ || !replacement || !service.utxo_index_)
+            throw std::runtime_error("RPC index fixture requires idle initialized owner");
+        auto previous=std::move(service.utxo_index_);
+        service.utxo_index_=std::move(replacement);
+        return previous;
+    }
+    static StatusOr<std::shared_ptr<const RuntimeOutboxPage>> ReadDeliveryPrefix(
+            ChainstateService& service,const RuntimeOutboxCursor& captured_head) {
+        return service.getRuntimeDeliveryPageAtPrefix(captured_head,captured_head,1,16*1024*1024);
     }
 #endif
     static void Select(ChainstateService& service, CBlockIndex& tip) {
@@ -877,6 +900,8 @@ TEST(RuntimeOriginProjection, BindsCapturedWalletAndScriptDomain) {
     const auto dir=std::filesystem::temp_directory_path()/("origin_wallet_domain_"+std::to_string(TestProcessId()));
     WalletManager wallet(dir);wallet.create("origin");wallet.open("origin");
     const auto session=wallet.AcquireDatabaseLease()->Session();
+    EXPECT_THROW(RuntimeOriginProjectionTestAccess::CaptureBudget(wallet,session,128*1024*1024+1),
+        std::runtime_error);
     {const auto lease=wallet.AcquireDatabaseLease();
      EXPECT_THROW(RuntimeOriginProjectionTestAccess::Capture(wallet,session),std::runtime_error);}
     auto p=RuntimeOriginProjectionTestAccess::Capture(wallet,session);
@@ -921,6 +946,20 @@ TEST(RuntimeOriginProjection, KeepsSpentCoinsAndExactTransactionHistory) {
     auto unsupported=source[0];unsupported.vtx[0].vout[0].is_confidential=true;
     auto other=RuntimeOriginProjectionTestAccess::Create(owned);
     EXPECT_THROW(RuntimeOriginProjectionTestAccess::Append(*other,unsupported,1),std::runtime_error);
+}
+TEST(RuntimeOriginProjection, ArchivalBudgetRequiresExplicitBoundedSelection) {
+    auto source=BuildDeterministicChain(1);ASSERT_EQ(source.size(),1u);
+    const auto owned=source[0].vtx[0].vout[0].scriptPubKey;
+    constexpr size_t compact_limit=64*1024*1024;
+    auto compact=RuntimeOriginProjectionTestAccess::Create(owned);
+    RuntimeOriginProjectionTestAccess::SetRetainedCharge(*compact,compact_limit-1);
+    EXPECT_THROW(RuntimeOriginProjectionTestAccess::Append(*compact,source[0],1),
+        RuntimeWalletCoverageMaterialLimit);
+    auto archival=RuntimeOriginProjectionTestAccess::Create(owned);
+    RuntimeOriginProjectionTestAccess::SetRetainedCharge(*archival,compact_limit-1);
+    RuntimeOriginProjectionTestAccess::SetMaterialBudget(*archival,128*1024*1024);
+    EXPECT_NO_THROW(RuntimeOriginProjectionTestAccess::Append(*archival,source[0],1));
+    EXPECT_EQ(archival->Transactions().size(),1u);
 }
 
 TEST(RuntimeOriginProjection, PhoneRecoveryMaterialBoundIs128MiB) {
@@ -1041,6 +1080,7 @@ int main(int argc, char** argv) {
 #include "orchard_branch_ancestry_checks.h"
 
 #include "wallet_service_owner_checks.h"
+#include "wallet_catchup_checks.h"
 
 #include "chainstate_wallet_index_owner_checks.h"
 #include "wallet_restore_preflight_checks.h"
@@ -1048,6 +1088,10 @@ int main(int argc, char** argv) {
 #include "stateful_snapshot_cache_checks.h"
 
 #include "wallet_canonical_recovery_checks.h"
+#ifdef DINERO_TEST_ORCHARD_ORIGIN
+#include "wallet_v3_recovery_route_checks.h"
+#endif
+#include "wallet_v3_maintenance_checks.h"
 #include "orchard_rpc_binding_fixture.h"
 #include "orchard_account_issuance_checks.h"
 #include "runtime_delivery_worker_checks.h"

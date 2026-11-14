@@ -1,5 +1,6 @@
 #include "rpc/rpc_registry.h"
 #include "rpc/amount_parser.h"
+#include "rpc/legacy_transparent_freshness.h"
 #include "dpi/dpi_protocol.h"
 #include "wallet/schnorr_signer.h"
 #include "wallet/psbt.h"
@@ -204,6 +205,12 @@ din::Json rpc_dpi_createinvoice(const ExecutionContext& ctx, const din::Json& pa
 
     if (wallet_service->get().isWalletLocked()) {
         result["error"] = "Wallet is locked. Use wallet.unlock first.";
+        return result;
+    }
+
+    // The transparent-only migration has no Orchard account catalog. Issuing
+    // a new receive script would invalidate its certified ordinary receipt.
+    if (RefuseIfLegacyTransparentAddressMutation(ctx, wallet_service, result)) {
         return result;
     }
 

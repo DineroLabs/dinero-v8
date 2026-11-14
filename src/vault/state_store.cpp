@@ -86,6 +86,7 @@ struct VaultStateTransaction::Impl {
     Impl(WalletManager& manager,uint64_t session,const VaultStateDomain& d)
         :lease(manager.AcquireDatabaseLease()),domain(d) {
         Check(session!=0 && lease->Session()==session && lease->Database());db=lease->Database();
+        lease->RequireOrchardWalletReady();
         Check(domain.network<=2 && Nonzero(domain.genesis));
         seed=lease->CopyRecoverySeed(session);Check(seed->Bytes().size()==64);
         Check(sqlite3_get_autocommit(db));Exec(db,"PRAGMA synchronous=FULL");

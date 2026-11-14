@@ -128,6 +128,27 @@ def main():
         save()
         print('PASS ' + name, flush=True)
 
+    def tree_digest(root):
+        digest = hashlib.sha256()
+        for path in sorted(root.rglob('*')):
+            if path.is_file():
+                digest.update(str(path.relative_to(root)).encode())
+                digest.update(hashlib.sha256(path.read_bytes()).digest())
+        return digest.hexdigest()
+
+    def early_refusal(node):
+        # The v3 footprint preflight refuses a linked blockchain parent
+        # before any write-open or legacy storage migration can run.
+        try:
+            started = node.start()
+        except AssertionError as error:
+            assert str(error).startswith('startup exited; see '), error
+            started = node.process.poll()
+        assert started is not None and started != 0, 'linked blockchain unexpectedly started'
+        node.observation['exit'] = started
+        save()
+        return node.log.read_text()
+
     save()
     try:
         # The resolved control executes first, so a pre-fix binary's retained
@@ -180,6 +201,15 @@ def main():
                 target = node.datadir / 'blockchain-target'
                 shutil.copytree(source, target / 'chaindb')
                 (node.datadir / 'blockchain').symlink_to(target.resolve(), target_is_directory=True)
+                original_source = tree_digest(target)
+                log = early_refusal(node)
+                assert 'Wallet index startup source probe refused: Wallet index v3 footprint directory unavailable' in log
+                assert tree_digest(target) == original_source
+                assert not separated(node.datadir)
+                assert not list(target.glob('chaindb.upgrade-*'))
+                assert not (target / 'chaindb.legacy-v1').exists()
+                check('blockchain-symlink-refused-before-storage-open', source=original_source)
+                continue
             assert node.start() == 0
             assert node.rpc('getnetworkinfo')['storage_upgrade_refused'] is True
             assert not separated(node.datadir)

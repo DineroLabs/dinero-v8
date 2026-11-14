@@ -114,6 +114,7 @@ void RuntimeDeliveryWorker::RecoverWallet(Report& report,
         if(resource_blocked_session==session){report.wallet=WalletOutcome::ResourceLimited;return;}
         resource_blocked_session.reset();
         auto index=ChainstateService::AcquireWalletIndexUse(source_);
+        const bool full_archive_v3=index->Index().IsFullArchiveV3MetadataOnly();
         const auto refuse_resource_limit=[&](Status status){
             if(status!=Status::ResourceLimit)return;
             resource_blocked_session=session;report.wallet=WalletOutcome::ResourceLimited;
@@ -122,20 +123,28 @@ void RuntimeDeliveryWorker::RecoverWallet(Report& report,
         if(recovery_attempts!=std::numeric_limits<uint64_t>::max())++recovery_attempts;
         report.wallet_recovery_attempts=recovery_attempts;
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
-        const auto mixed=source_->resumeRuntimeImportedMixedRecovery(use->Wallet(),index->Index(),session,
-            limits_.legacy_material_limit_bytes);
-        if(!mixed.ok()){refuse_resource_limit(mixed.status());return;}
-        if(*mixed){report.wallet=WalletOutcome::AppliedImportedMixedPrefix;
-            report.wallet_head=(*mixed)->observed_head;return;}
-        // Explicit source-composition routing, NEVER a catch/fallback after a
-        // mixed recovery failure. Imported failure remains closed/deferred.
-        const auto orchard=source_->resumeRuntimeImportedOrchardRecovery(use->Wallet(),index->Index(),session);
-        if(!orchard.ok()){refuse_resource_limit(orchard.status());return;}
-        if(*orchard){
-            report.wallet=WalletOutcome::AppliedOrchardPrefix;report.wallet_head=(*orchard)->observed_head;return;
+        // Full-archive v3 owns metadata only. Its transparent recovery must
+        // bypass imported snapshot and Orchard-account recovery entirely.
+        if(!full_archive_v3) {
+            const auto mixed=source_->resumeRuntimeImportedMixedRecovery(use->Wallet(),index->Index(),session,
+                limits_.legacy_material_limit_bytes);
+            if(!mixed.ok()){refuse_resource_limit(mixed.status());return;}
+            if(*mixed){report.wallet=WalletOutcome::AppliedImportedMixedPrefix;
+                report.wallet_head=(*mixed)->observed_head;return;}
+            // Explicit source-composition routing, NEVER a catch/fallback
+            // after a mixed recovery failure. Imported failure stays deferred.
+            const auto orchard=source_->resumeRuntimeImportedOrchardRecovery(use->Wallet(),index->Index(),session);
+            if(!orchard.ok()){refuse_resource_limit(orchard.status());return;}
+            if(*orchard){
+                report.wallet=WalletOutcome::AppliedOrchardPrefix;report.wallet_head=(*orchard)->observed_head;return;
+            }
         }
 #endif
-        const auto recovered=source_->resumeRuntimeWalletRecoveryIfNeeded(use->Wallet(),index->Index(),session);
+        const auto recovered=full_archive_v3 ?
+            source_->resumeRuntimeWalletRecoveryV3IfNeeded(use->Wallet(),index->Index(),session,
+                limits_.legacy_material_limit_bytes) :
+            source_->resumeRuntimeWalletRecoveryIfNeeded(use->Wallet(),index->Index(),session,
+                limits_.legacy_material_limit_bytes);
         if (!recovered.ok()){refuse_resource_limit(recovered.status());return;}
         if (!*recovered) {report.wallet=WalletOutcome::NoLog;return;}
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
@@ -151,6 +160,14 @@ void RuntimeDeliveryWorker::RestoreRetiredLegacyPendingNotes() const {
         height = source_->getBlockHeight();
     }
     if (!consensus::OrchardActiveForHeight(Params(), height)) return;
+    // A full-archive v3 index is a metadata-only owner source. Its wallet
+    // recovery is transparent-only, including the locked/un-enrolled first
+    // pass. The legacy shielded restore opens and writes a separate sidecar,
+    // outside the v3 wallet receipt, so never run it for this source type.
+    {
+        auto index=ChainstateService::AcquireWalletIndexUse(source_);
+        if (index->Index().IsFullArchiveV3MetadataOnly()) return;
+    }
     // Read the committed tip before acquiring the wallet owner. The mempool's
     // block-connected update has evicted every retired legacy spend by now.
     auto use = WalletService::AcquireWalletUse(wallet_);

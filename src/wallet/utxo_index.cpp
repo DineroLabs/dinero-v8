@@ -1,4 +1,5 @@
 #include "wallet/utxo_index.h"
+#include "wallet/wallet_index_v3_schema.h"
 #include "sqlite_open.h"
 #include "wallet/hd_wallet.h"
 #include "address/addr_codec.h"
@@ -81,6 +82,8 @@ UTXOIndex::UTXOIndex(const std::string& db_path)
 
 UTXOIndex::~UTXOIndex() {
     FinalizeStatements();
+    verified_v3_rollback_digest_.clear();
+    verified_v3_legacy_guard_digest_.clear();
     if (db_) {
         sqlite3_close(db_);
     }
@@ -89,6 +92,10 @@ UTXOIndex::~UTXOIndex() {
 bool UTXOIndex::Initialize() {
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     if (atomic_write_active_) return false;
+    if (open_mode_ == OpenMode::FullArchiveV3MetadataOnly) return false;
+    open_mode_ = OpenMode::Uninitialized;
+    verified_v3_rollback_digest_.clear();
+    verified_v3_legacy_guard_digest_.clear();
     historical_scripts_.clear();
     // M.5.2: Guard against re-initialization (lifecycle safety)
     // If already initialized, clean up first to prevent memory leaks
@@ -110,16 +117,73 @@ bool UTXOIndex::Initialize() {
 
     if (!CreateTables()) {
         std::cerr << "ERROR: Failed to create UTXO tables" << std::endl;
+        sqlite3_close(db_);
+        db_ = nullptr;
         return false;
     }
 
     if (!PrepareStatements()) {
         std::cerr << "ERROR: Failed to prepare UTXO statements" << std::endl;
+        FinalizeStatements();
+        sqlite3_close(db_);
+        db_ = nullptr;
         return false;
     }
 
+    open_mode_ = OpenMode::LegacyV2;
     std::cout << "INFO: UTXO index initialized successfully" << std::endl;
     return true;
+}
+
+bool UTXOIndex::InitializeFullArchiveV3MetadataOnly() {
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+    if (db_ || atomic_write_active_) return false;
+    const std::filesystem::path path=std::filesystem::u8path(db_path_);
+    std::error_code path_error;
+    if (std::filesystem::is_symlink(std::filesystem::symlink_status(path,path_error)) || path_error ||
+        !std::filesystem::is_regular_file(path)) return false;
+    const auto parent=path.parent_path().empty()?std::filesystem::path("."):path.parent_path();
+    const auto canonical_parent=std::filesystem::canonical(parent,path_error);
+    if (path_error) return false;
+    const auto utf8 = (canonical_parent/path.filename()).u8string();
+    const std::string filename(reinterpret_cast<const char*>(utf8.data()),utf8.size());
+    sqlite3* opened=nullptr;
+    if (sqlite3_open_v2(filename.c_str(),&opened,
+            SQLITE_OPEN_READWRITE|SQLITE_OPEN_FULLMUTEX|SQLITE_OPEN_NOFOLLOW,nullptr)!=SQLITE_OK) {
+        sqlite3_close(opened);
+        return false;
+    }
+    db_ = opened;
+    try {
+        // Verify this exact handle before any PRAGMA can touch the target.
+        const auto verified=RequireFullArchiveWalletIndexV3(db_, path);
+        sqlite3_busy_timeout(db_,5000);
+        if (!apply_sqlite_pragmas(db_))
+            throw std::runtime_error("Wallet index v3 metadata pragmas unavailable");
+        verified_v3_rollback_digest_=verified.rollback_digest;
+        verified_v3_legacy_guard_digest_=verified.legacy_guard_digest;
+        open_mode_ = OpenMode::FullArchiveV3MetadataOnly;
+        return true;
+    } catch (const std::exception& error) {
+        g_logger.error(std::string("[UTXOIndex] v3 metadata-only open refused: ") + error.what());
+        sqlite3_close(db_);
+        db_ = nullptr;
+        verified_v3_rollback_digest_.clear();
+        verified_v3_legacy_guard_digest_.clear();
+        open_mode_ = OpenMode::Uninitialized;
+        return false;
+    }
+}
+
+bool UTXOIndex::IsFullArchiveV3MetadataOnly() const {
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+    return open_mode_==OpenMode::FullArchiveV3MetadataOnly && db_!=nullptr;
+}
+
+void UTXOIndex::RequireLegacyCoinAccess() const {
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+    if (open_mode_ != OpenMode::LegacyV2)
+        throw std::runtime_error("Legacy wallet coin API unavailable for v3 index");
 }
 
 namespace {
@@ -426,6 +490,7 @@ void UTXOIndex::FinalizeStatements() {
 }
 
 bool UTXOIndex::AddUTXO(const WalletUTXO& utxo) {
+    RequireLegacyCoinAccess();
     // A public provenance tag is not an authenticated inventory or chain proof.
     if (utxo.owner_kind != WalletOutputOwner::RecordedPath || !utxo.owner_reference.empty())
         return false;
@@ -455,6 +520,7 @@ bool UTXOIndex::AddUTXO(const WalletUTXO& utxo) {
 
 bool UTXOIndex::AddUTXOForDelivery(const WalletUTXO& utxo,
         const std::map<std::vector<uint8_t>,std::string>& authenticated_historical) {
+    RequireLegacyCoinAccess();
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     if (!db_ || !atomic_write_active_ || sqlite3_get_autocommit(db_)) return false;
     if (utxo.owner_kind == WalletOutputOwner::RecordedPath) return AddUTXO(utxo);
@@ -467,6 +533,7 @@ bool UTXOIndex::AddUTXOForDelivery(const WalletUTXO& utxo,
 }
 
 bool UTXOIndex::AddUTXORow(const WalletUTXO& utxo) {
+    RequireLegacyCoinAccess();
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     if (!db_ || !stmt_add_utxo_ || utxo.value.GetUna() > uint64_t(INT64_MAX) ||
         (utxo.utreexo_position && *utxo.utreexo_position > uint64_t(INT64_MAX)) ||
@@ -497,6 +564,7 @@ bool UTXOIndex::AddUTXORow(const WalletUTXO& utxo) {
 }
 
 bool UTXOIndex::SpendUTXO(const TxId& txid, uint32_t vout, uint32_t height) {
+    RequireLegacyCoinAccess();
     // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
@@ -517,6 +585,7 @@ bool UTXOIndex::SpendUTXO(const TxId& txid, uint32_t vout, uint32_t height) {
 }
 
 bool UTXOIndex::DeleteUTXO(const TxId& txid, uint32_t vout) {
+    RequireLegacyCoinAccess();
     // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
@@ -548,6 +617,7 @@ bool UTXOIndex::DeleteUTXO(const TxId& txid, uint32_t vout) {
 }
 
 bool UTXOIndex::IsUTXOSpent(const TxId& txid, uint32_t vout) const {
+    RequireLegacyCoinAccess();
     // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
@@ -567,6 +637,7 @@ bool UTXOIndex::IsUTXOSpent(const TxId& txid, uint32_t vout) const {
 }
 
 WalletUTXO UTXOIndex::DecodeOwnedRow(sqlite3_stmt* q) const {
+    RequireLegacyCoinAccess();
     const auto integer=[&](int n,int64_t low,int64_t high) {
         if(sqlite3_column_type(q,n)!=SQLITE_INTEGER)throw std::runtime_error("Wallet coin integer type invalid");
         const auto value=sqlite3_column_int64(q,n);
@@ -611,6 +682,7 @@ WalletUTXO UTXOIndex::DecodeOwnedRow(sqlite3_stmt* q) const {
 }
 
 std::vector<WalletUTXO> UTXOIndex::GetUnspentUTXOs() const {
+    RequireLegacyCoinAccess();
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     if(!db_ || !stmt_get_unspent_)throw std::runtime_error("Wallet coin reader unavailable");
     auto* q=stmt_get_unspent_;sqlite3_reset(q);
@@ -622,6 +694,7 @@ std::vector<WalletUTXO> UTXOIndex::GetUnspentUTXOs() const {
 }
 
 std::optional<WalletUTXO> UTXOIndex::GetUTXO(const TxId& txid,uint32_t vout) const {
+    RequireLegacyCoinAccess();
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     if(!db_ || !stmt_get_utxo_)throw std::runtime_error("Wallet coin reader unavailable");
     auto* q=stmt_get_utxo_;sqlite3_reset(q);sqlite3_clear_bindings(q);
@@ -648,6 +721,7 @@ bool UTXOIndex::GetUTXO(const TxId& txid, uint32_t vout, WalletUTXO& utxo) const
 
 // Phase M.6.2: Return AmountUna for type safety
 AmountUna UTXOIndex::GetBalance() const {
+    RequireLegacyCoinAccess();
     auto balance=AmountUna::Zero();
     for(const auto& coin:GetUnspentUTXOs()) {
         const auto next=balance.Add(coin.value);
@@ -657,6 +731,7 @@ AmountUna UTXOIndex::GetBalance() const {
 }
 
 AmountUna UTXOIndex::GetBalanceForPath(const std::string& path_prefix) const {
+    RequireLegacyCoinAccess();
     // LIKE remains SQLite's existing path selection rule. Validate all rows in
     // the same implicit read snapshot; an unauthenticated owner is not zero.
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
@@ -671,6 +746,7 @@ AmountUna UTXOIndex::GetBalanceForPath(const std::string& path_prefix) const {
 
 // Phase 44.1: UTXO count for AssumeUTXO verification
 Result<uint64_t> UTXOIndex::GetUTXOCount() const {
+    RequireLegacyCoinAccess();
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     // M.5.2 FIX: Correct table name (was "utxos", should be "wallet_utxos")
@@ -692,6 +768,7 @@ Result<uint64_t> UTXOIndex::GetUTXOCount() const {
 }
 
 BalanceDetail UTXOIndex::GetBalanceWithMaturity(int current_height) const {
+    RequireLegacyCoinAccess();
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     const auto coins=GetUnspentUTXOs();BalanceDetail result;
     const auto add=[](AmountUna& target,AmountUna value) {
@@ -711,6 +788,7 @@ BalanceDetail UTXOIndex::GetBalanceWithMaturity(int current_height) const {
 }
 
 std::optional<std::string> UTXOIndex::IsOurScript(const std::vector<uint8_t>& scriptPubKey) const {
+    RequireLegacyCoinAccess();
     std::lock_guard<std::recursive_mutex> database(db_mutex_);
     if(historical_scripts_.contains(scriptPubKey))
         throw std::runtime_error("Historical script requires typed canonical wallet delivery");
@@ -726,11 +804,13 @@ std::optional<std::string> UTXOIndex::IsOurScript(const std::vector<uint8_t>& sc
 }
 
 void UTXOIndex::RegisterAddress(const std::vector<uint8_t>& scriptPubKey, const std::string& derivation_path) {
+    RequireLegacyCoinAccess();
     std::lock_guard<std::mutex> lock(scripts_mutex_);
     watched_scripts_[scriptPubKey] = derivation_path;
 }
 
 void UTXOIndex::MergeRegisteredAddresses(const std::map<std::vector<uint8_t>, std::string>& scripts) {
+    RequireLegacyCoinAccess();
     std::lock_guard<std::mutex> lock(scripts_mutex_);
     auto merged = watched_scripts_;
     for (const auto& [script, path] : scripts) {
@@ -744,6 +824,7 @@ void UTXOIndex::MergeRegisteredAddresses(const std::map<std::vector<uint8_t>, st
 }
 
 void UTXOIndex::ClearRegisteredAddresses() {
+    RequireLegacyCoinAccess();
     std::lock_guard<std::recursive_mutex> database(db_mutex_);
     std::lock_guard<std::mutex> lock(scripts_mutex_);
     historical_scripts_.clear();
@@ -751,6 +832,7 @@ void UTXOIndex::ClearRegisteredAddresses() {
 }
 
 void UTXOIndex::ProcessBlock(int height, const std::vector<std::string>& block_txs) {
+    RequireLegacyCoinAccess();
     // ✅ LOCK: Protect entire SQLite transaction (must be atomic)
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     if (atomic_write_active_)
@@ -776,6 +858,7 @@ void UTXOIndex::ProcessBlock(int height, const std::vector<std::string>& block_t
 }
 
 void UTXOIndex::RevertBlock(int height) {
+    RequireLegacyCoinAccess();
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     if (!db_ || height < 0)
         throw std::invalid_argument("Invalid wallet UTXO rollback context");
@@ -815,6 +898,7 @@ void UTXOIndex::RevertBlock(int height) {
 // Removes phantom UTXOs that exist in wallet but not in consensus
 // This should be called after reorg completes to ensure consistency
 size_t UTXOIndex::ValidateAgainstConsensus(std::function<bool(const TxId& txid, uint32_t vout)> consensus_has_utxo) {
+    RequireLegacyCoinAccess();
     // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
@@ -886,6 +970,7 @@ void UTXOIndex::ScanBlockIdempotent(int height, const std::string& block_hash,
                                                                 std::vector<std::pair<std::vector<uint8_t>, AmountUna>>,
                                                                 std::vector<std::pair<std::string, uint32_t>>,
                                                                 bool>>& transactions) {
+    RequireLegacyCoinAccess();
     // ✅ LOCK: Protect entire SQLite transaction (must be atomic)
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     if (atomic_write_active_)
@@ -1060,6 +1145,7 @@ std::vector<uint8_t> TransactionProcessor::ExtractTaprootPubkey(const std::vecto
 // ============================================================================
 
 bool UTXOIndex::AddConfidentialUTXO(const ZKOutput& zk_output) {
+    RequireLegacyCoinAccess();
     // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
@@ -1108,6 +1194,7 @@ bool UTXOIndex::AddConfidentialUTXO(const ZKOutput& zk_output) {
 }
 
 std::vector<WalletUTXO> UTXOIndex::GetConfidentialUTXOs() const {
+    RequireLegacyCoinAccess();
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     const auto coins=GetUnspentUTXOs();std::vector<WalletUTXO> result;
     std::lock_guard<std::mutex> scripts(scripts_mutex_);
@@ -1121,6 +1208,7 @@ std::vector<WalletUTXO> UTXOIndex::GetConfidentialUTXOs() const {
 }
 
 AmountUna UTXOIndex::GetConfidentialBalance() const {
+    RequireLegacyCoinAccess();
     auto balance=AmountUna::Zero();
     for(const auto& coin:GetConfidentialUTXOs()) {
         const auto next=balance.Add(coin.value);if(!next)throw std::runtime_error("Wallet balance overflow");balance=*next;
@@ -1129,6 +1217,7 @@ AmountUna UTXOIndex::GetConfidentialBalance() const {
 }
 
 AmountUna UTXOIndex::GetTotalBalance() const {
+    RequireLegacyCoinAccess();
     // Derive both components from one checked inventory/snapshot, retaining
     // this API's existing inclusive base plus watched confidential convention.
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
@@ -1145,6 +1234,7 @@ std::vector<ZKOutput> UTXOIndex::ScanForNewConfidentialOutputs(
     int last_scanned_height,
     int current_height,
     const std::vector<uint8_t>& view_key) {
+    RequireLegacyCoinAccess();
 
     // NOTE: This method is a placeholder for now.
     // The actual scanning is performed by ZKWalletSync, which:
@@ -1166,6 +1256,7 @@ std::vector<ZKOutput> UTXOIndex::ScanForNewConfidentialOutputs(
 // ═══════════════════════════════════════════════════════════════════════════
 
 void UTXOIndex::ApplyAtomically(const std::function<void()>& writes) {
+    RequireLegacyCoinAccess();
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     if (!db_ || atomic_write_active_ || !sqlite3_get_autocommit(db_))
         throw std::runtime_error("Wallet UTXO write ownership unavailable");
@@ -1189,6 +1280,7 @@ void UTXOIndex::ApplyAtomically(const std::function<void()>& writes) {
 }
 
 bool UTXOIndex::BeginTransaction() {
+    RequireLegacyCoinAccess();
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     if (atomic_write_active_) return false;
 
@@ -1206,6 +1298,7 @@ bool UTXOIndex::BeginTransaction() {
 }
 
 bool UTXOIndex::CommitTransaction() {
+    RequireLegacyCoinAccess();
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     if (atomic_write_active_) return false;
 
@@ -1223,6 +1316,7 @@ bool UTXOIndex::CommitTransaction() {
 }
 
 bool UTXOIndex::RollbackTransaction() {
+    RequireLegacyCoinAccess();
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
     if (atomic_write_active_) return false;
 
@@ -1244,6 +1338,7 @@ bool UTXOIndex::RollbackTransaction() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 bool UTXOIndex::ClearAll() {
+    RequireLegacyCoinAccess();
     // ⚠️ DANGER: This deletes ALL UTXOs and metadata
     // Only use for AssumeUTXO rollback on validation failure
 
@@ -1306,7 +1401,7 @@ bool UTXOIndex::ClearAll() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 bool UTXOIndex::SetMetadata(const std::string& key, const std::string& value) {
-    if (key.starts_with("runtime_delivery:")) return false;
+    if (key.starts_with("runtime_delivery:") || key.starts_with("wallet_index_v3:")) return false;
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     const char* sql = "INSERT OR REPLACE INTO utxo_metadata (key, value) VALUES (?, ?)";
@@ -1335,29 +1430,50 @@ bool UTXOIndex::SetMetadata(const std::string& key, const std::string& value) {
 
 std::optional<std::string> UTXOIndex::GetMetadata(const std::string& key) const {
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+    const bool checked = open_mode_ == OpenMode::FullArchiveV3MetadataOnly;
+    if (checked && key.starts_with("runtime_delivery:"))
+        throw std::runtime_error("Legacy global wallet receipt unavailable in v3");
 
     const char* sql = "SELECT value FROM utxo_metadata WHERE key = ?";
     sqlite3_stmt* stmt = nullptr;
 
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        sqlite3_finalize(stmt);
+        if (checked) throw std::runtime_error("Wallet index v3 metadata query unavailable");
         g_logger.error("[UTXOIndex] Failed to prepare GetMetadata statement: " +
                       std::string(sqlite3_errmsg(db_)));
         return std::nullopt;
     }
 
-    sqlite3_bind_text(stmt, 1, key.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_bind_text(stmt, 1, key.c_str(), -1, SQLITE_TRANSIENT) != SQLITE_OK) {
+        sqlite3_finalize(stmt);
+        if (checked) throw std::runtime_error("Wallet index v3 metadata bind failed");
+        return std::nullopt;
+    }
 
     int rc = sqlite3_step(stmt);
     std::optional<std::string> result;
 
     if (rc == SQLITE_ROW) {
+        const int value_type=sqlite3_column_type(stmt,0);
         const unsigned char* value = sqlite3_column_text(stmt, 0);
-        if (value) {
-            result = std::string(reinterpret_cast<const char*>(value));
+        if (checked && (value_type != SQLITE_TEXT || !value)) {
+            sqlite3_finalize(stmt);
+            throw std::runtime_error("Wallet index v3 metadata value malformed");
         }
+        if (value) result = std::string(reinterpret_cast<const char*>(value),sqlite3_column_bytes(stmt,0));
+        if (checked && sqlite3_step(stmt) != SQLITE_DONE) {
+            sqlite3_finalize(stmt);
+            throw std::runtime_error("Wallet index v3 metadata query incomplete");
+        }
+    } else if (checked && rc != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        throw std::runtime_error("Wallet index v3 metadata read failed");
     }
 
-    sqlite3_finalize(stmt);
+    const int finished = sqlite3_finalize(stmt);
+    if (checked && finished != SQLITE_OK)
+        throw std::runtime_error("Wallet index v3 metadata finalize failed");
     return result;
 }
 
@@ -1391,7 +1507,7 @@ std::map<std::string,std::string> UTXOIndex::ReadAssumedStartupMetadata() const 
 }
 
 bool UTXOIndex::DeleteMetadata(const std::string& key) {
-    if (key.starts_with("runtime_delivery:")) return false;
+    if (key.starts_with("runtime_delivery:") || key.starts_with("wallet_index_v3:")) return false;
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     const char* sql = "DELETE FROM utxo_metadata WHERE key = ?";
@@ -1419,6 +1535,7 @@ bool UTXOIndex::DeleteMetadata(const std::string& key) {
 
 // Phase 11a: Get Utreexo position for proof generation
 std::optional<uint64_t> UTXOIndex::getUtreexoPosition(const TxId& txid, uint32_t vout) const {
+    RequireLegacyCoinAccess();
     // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 

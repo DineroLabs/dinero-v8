@@ -194,6 +194,8 @@ public:
     };
     [[nodiscard]] static std::unique_ptr<WalletIndexUse> AcquireWalletIndexUse(
         std::shared_ptr<ChainstateService> source);
+    // Classification only; does not certify a selected wallet's v3 receipt.
+    bool HasFullArchiveWalletIndexV3() const;
 
     // Phase 39: ChainManager accessor (temporary - callers being migrated)
     ChainManager& chainManager();
@@ -1166,7 +1168,15 @@ public:
     // source has no canonical wallet log to resume. A nonnull result reports
     // an earned captured prefix, never lasting readiness or global inventory.
     StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
-        resumeRuntimeWalletRecoveryIfNeeded(WalletManager&, UTXOIndex&, uint64_t expected_session = 0);
+        resumeRuntimeWalletRecoveryIfNeeded(WalletManager&, UTXOIndex&, uint64_t expected_session = 0,
+            size_t legacy_material_limit_bytes = 128*1024*1024);
+    // Full-archive v3 has a metadata-only index and no legacy wallet worker.
+    // Enrolls one authenticated named wallet, restores its transparent history
+    // from a checked source prefix, then resumes both owner-scoped stores.
+    // A captured prefix is progress only; it is not whole-wallet readiness.
+    StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
+        resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager&, UTXOIndex& metadata_index,
+            uint64_t expected_session = 0, size_t material_limit_bytes = 128*1024*1024);
     // Distinct automatic Orchard-only delivery for the authenticated completed
     // imported owner. Null success means NOT this source composition; failure
     // never falls back to mixed replay or earns missing transparent baselines.
@@ -1203,6 +1213,13 @@ public:
     // Read-only source material: does not replace invalidated store receipts.
     StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> getRuntimeWalletCoverage(
         WalletManager&,uint64_t expected_session,UTXOIndex&) const;
+    // Full archival v3 capture owns no legacy index coin/script map. The
+    // metadata handle only authenticates the selected owner; source bytes are
+    // replayed from the verified chain at a retained outbox prefix. New tip
+    // extensions may follow that prefix, but a reorg of it is refused.
+    StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> getRuntimeWalletCoverageV3(
+        WalletManager&,uint64_t expected_session,UTXOIndex& metadata_index,
+        size_t material_limit_bytes = 128*1024*1024) const;
     // Recheck exact selected source and authenticate wallet owners/rows before
     // index-first and ordinary-second baseline commits. Not account catch-up
     // or all-consumer readiness; caller must complete normal recovery after it.
@@ -1774,7 +1791,8 @@ private:
     struct ImportedOrchardDeliverySource;
     StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> captureRuntimeWalletOrigin(
         WalletManager&,uint64_t,UTXOIndex*,bool existing_identity_only,bool public_history,bool& body_data_pending,
-        bool retained_history = false,size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes) const;
+        bool retained_history = false,size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes,
+        const std::optional<RuntimeOutboxCursor>& captured_head = std::nullopt) const;
     StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> captureRuntimeWalletCoverage(
         WalletManager&,uint64_t,UTXOIndex&,bool public_history,bool& body_data_pending,
         bool retained_history = false,size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes) const;
@@ -1825,6 +1843,7 @@ private:
     friend struct WalletBatchPaymentTestAccess;
     friend struct PreBaseLookupTestAccess;
     friend struct UtreexoProofCaptureTestAccess;
+    friend struct WalletV3MaintenanceTestAccess;
     struct ShieldedStateSnapshot {
         uint256 root;
         uint64_t tree_size{0};

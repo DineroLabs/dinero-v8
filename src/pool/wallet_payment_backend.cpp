@@ -22,6 +22,7 @@ bool NonzeroPoolWallet(const auto& v) {return std::any_of(v.begin(),v.end(),[](u
 PoolPaymentWalletBinding CaptureBinding(WalletManager& manager,const WalletSigningIdentity& selected,const PoolPaymentFunding& funding) {
     RequirePoolWallet(!funding.wallet_name.empty() && selected.name==funding.wallet_name && selected.session);
     auto lease=manager.AcquireDatabaseLease();RequirePoolWallet(lease->WalletName()==selected.name && lease->Session()==selected.session);
+    lease->RequireOrchardWalletReady();
     auto seed=lease->CopyRecoverySeed(selected.session);RequirePoolWallet(seed->Bytes().size()==64);
     auto* db=lease->Database();RequirePoolWallet(db && sqlite3_get_autocommit(db));
     sqlite3_stmt* raw=nullptr;const int prepared=sqlite3_prepare_v2(db,"SELECT runtime_delivery_id FROM wallet_meta WHERE id=1",-1,&raw,nullptr);

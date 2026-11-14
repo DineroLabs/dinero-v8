@@ -30,6 +30,14 @@ on:
         description: 'Optional full reviewed SHA for Linux-only candidate packages'
         required: false
         type: string
+      snapshot_payload_url:
+        description: 'For candidate_source: qualified full-v6 snapshot.dat HTTPS URL'
+        required: false
+        type: string
+      snapshot_manifest_url:
+        description: 'For candidate_source: full-v6 manifest.json HTTPS URL; sibling .sig required'
+        required: false
+        type: string
 
 permissions:
   # Draft releases are intentionally used as the staging area for verified
@@ -101,6 +109,11 @@ jobs:
       - name: Check Orchard package-report refusal policy
         run: python3 scripts/tests/test_verify_orchard_package.py -v
 
+      - name: Check full-v6 desktop snapshot wiring and profile admission
+        run: |
+          python3 -B scripts/ci/test_snapshot_wiring.py -v
+          python3 -B packaging/snapshot/test_desktop_primary_profile.py -v
+
   linux-desktop:
     name: Linux x86_64 — Qt desktop packages
     if: github.event_name == 'workflow_dispatch'
@@ -171,6 +184,9 @@ jobs:
             echo "sv2_commit=$SV2_HEAD"
             echo "runner=${RUNNER_OS} ${RUNNER_ARCH}"
           } | tee desktop-release-provenance-linux.txt
+
+      - name: Require full-v6 wiring in the immutable source
+        run: python3 -B scripts/ci/test_snapshot_wiring.py -v
 
       - name: Overlay reviewed Linux packaging helpers
         run: |
@@ -268,12 +284,28 @@ jobs:
           python3 "${GITHUB_WORKSPACE}/tooling/scripts/ci/check_reachability_stack.py" \
             --dinerod build-desktop/dinerod --cli build-desktop/dinero-cli
 
-      - name: Fetch and verify snapshot pair
+      - name: Fetch full-v6 primary and exact recovery bases
         env:
           GH_TOKEN: ${{ github.token }}
+          SNAPSHOT_PAYLOAD_URL: ${{ inputs.snapshot_payload_url }}
+          SNAPSHOT_MANIFEST_URL: ${{ inputs.snapshot_manifest_url }}
         run: |
           mkdir -p release-inputs
-          gh release download "${{ inputs.candidate_source && 'v8.2.2' || inputs.release_tag }}" \
+          if [ -n "${{ inputs.candidate_source }}" ]; then
+            python3 packaging/snapshot/fetch_desktop_primary.py \
+              --payload-url "$SNAPSHOT_PAYLOAD_URL" \
+              --manifest-url "$SNAPSHOT_MANIFEST_URL" \
+              --destination release-inputs
+          else
+            gh release download "${{ inputs.release_tag }}" \
+              --repo DineroLabs/dinero-v8 \
+              --pattern dinero-assumeutxo-150521-v6-full.dat \
+              --pattern dinero-assumeutxo-150521-v6-full.dat.manifest.json \
+              --pattern dinero-assumeutxo-150521-v6-full.dat.publisher.manifest.json \
+              --pattern dinero-assumeutxo-150521-v6-full.dat.publisher.manifest.sig \
+              --dir release-inputs
+          fi
+          gh release download v8.2.2 \
             --repo DineroLabs/dinero-v8 \
             --pattern dinero-assumeutxo-148375-v5.dat \
             --pattern dinero-assumeutxo-148375-v5.dat.manifest.json \
@@ -288,12 +320,14 @@ jobs:
             --pattern utxo-snapshot-65300.dat \
             --pattern utxo-snapshot-65300.dat.manifest.json \
             --dir release-inputs
-          echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat" >> "$GITHUB_ENV"
-          echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat.manifest.json" >> "$GITHUB_ENV"
-          echo "DINERO_SNAPSHOT_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-99677-v4.dat" >> "$GITHUB_ENV"
-          echo "DINERO_SNAPSHOT_LEGACY_FALLBACK_DAT=$PWD/release-inputs/utxo-snapshot-65300.dat" >> "$GITHUB_ENV"
-          echo "DINERO_SNAPSHOT_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-99677-v4.manifest.json" >> "$GITHUB_ENV"
-          echo "DINERO_SNAPSHOT_LEGACY_FALLBACK_MANIFEST=$PWD/release-inputs/utxo-snapshot-65300.dat.manifest.json" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-150521-v6-full.dat" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-150521-v6-full.dat.manifest.json" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat.manifest.json" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_LEGACY_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-99677-v4.dat" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_LEGACY_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-99677-v4.manifest.json" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_OLDEST_FALLBACK_DAT=$PWD/release-inputs/utxo-snapshot-65300.dat" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_OLDEST_FALLBACK_MANIFEST=$PWD/release-inputs/utxo-snapshot-65300.dat.manifest.json" >> "$GITHUB_ENV"
 
       - name: Install pinned linuxdeploy tools
         run: |
@@ -413,6 +447,7 @@ jobs:
             source/dist/dinero-qt-desktop_${{ steps.provenance.outputs.version }}-1_amd64.deb
             source/dist/SHA256SUMS-linux-x86_64-desktop-${{ steps.provenance.outputs.version }}
             source/desktop-release-provenance-linux.txt
+            source/release-inputs/*publisher.*
           if-no-files-found: error
           retention-days: 14
 
@@ -472,15 +507,21 @@ jobs:
             echo "runner=${RUNNER_OS} ${RUNNER_ARCH}"
           } | tee desktop-release-provenance-macos-x86_64.txt
 
+      - name: Require full-v6 wiring in the immutable source
+        run: python3 -B scripts/ci/test_snapshot_wiring.py -v
+
       - name: Overlay reviewed architecture-aware packaging helpers
         run: |
-          cp "${GITHUB_WORKSPACE}/tooling/packaging/mac/build-installer.sh" packaging/mac/
+          cmp -s "${GITHUB_WORKSPACE}/tooling/packaging/mac/build-installer.sh" packaging/mac/build-installer.sh || {
+            echo 'Immutable source and reviewed tooling have different Mac installer helpers' >&2
+            exit 1
+          }
           cp "${GITHUB_WORKSPACE}/tooling/packaging/mac/assert-v8-release-lane.sh" packaging/mac/
           chmod +x packaging/mac/build-installer.sh packaging/mac/assert-v8-release-lane.sh
 
       - name: Install Rust and build tools
         run: |
-          brew install ninja ccache gnupg qt
+          brew install ninja ccache gnupg qt openssl@3
           echo "$(brew --prefix qt)/bin" >> "$GITHUB_PATH"
           echo "QT_PREFIX=$(brew --prefix qt)" >> "$GITHUB_ENV"
 
@@ -524,12 +565,19 @@ jobs:
           bash scripts/fetch-tor-expert-bundle.sh x86_64 "$RUNNER_TEMP/tor-expert-bundle"
           echo "DINERO_TOR_BUNDLE_DIR=$RUNNER_TEMP/tor-expert-bundle" >> "$GITHUB_ENV"
 
-      - name: Fetch and verify snapshot pair
+      - name: Fetch full-v6 primary and exact recovery bases
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p release-inputs
           gh release download "${{ inputs.release_tag }}" \
+            --repo DineroLabs/dinero-v8 \
+            --pattern dinero-assumeutxo-150521-v6-full.dat \
+            --pattern dinero-assumeutxo-150521-v6-full.dat.manifest.json \
+            --pattern dinero-assumeutxo-150521-v6-full.dat.publisher.manifest.json \
+            --pattern dinero-assumeutxo-150521-v6-full.dat.publisher.manifest.sig \
+            --dir release-inputs
+          gh release download v8.2.2 \
             --repo DineroLabs/dinero-v8 \
             --pattern dinero-assumeutxo-148375-v5.dat \
             --pattern dinero-assumeutxo-148375-v5.dat.manifest.json \
@@ -544,12 +592,14 @@ jobs:
             --pattern utxo-snapshot-65300.dat \
             --pattern utxo-snapshot-65300.dat.manifest.json \
             --dir release-inputs
-          echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat" >> "$GITHUB_ENV"
-          echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat.manifest.json" >> "$GITHUB_ENV"
-          echo "DINERO_SNAPSHOT_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-99677-v4.dat" >> "$GITHUB_ENV"
-          echo "DINERO_SNAPSHOT_LEGACY_FALLBACK_DAT=$PWD/release-inputs/utxo-snapshot-65300.dat" >> "$GITHUB_ENV"
-          echo "DINERO_SNAPSHOT_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-99677-v4.manifest.json" >> "$GITHUB_ENV"
-          echo "DINERO_SNAPSHOT_LEGACY_FALLBACK_MANIFEST=$PWD/release-inputs/utxo-snapshot-65300.dat.manifest.json" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-150521-v6-full.dat" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-150521-v6-full.dat.manifest.json" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat.manifest.json" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_LEGACY_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-99677-v4.dat" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_LEGACY_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-99677-v4.manifest.json" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_OLDEST_FALLBACK_DAT=$PWD/release-inputs/utxo-snapshot-65300.dat" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_OLDEST_FALLBACK_MANIFEST=$PWD/release-inputs/utxo-snapshot-65300.dat.manifest.json" >> "$GITHUB_ENV"
 
       - name: Configure exact Intel release
         env:
@@ -592,7 +642,10 @@ jobs:
         env:
           DINERO_RELEASE_ARCH: x86_64
         run: |
-          bash packaging/mac/build-installer.sh \
+          # Scope the Ed25519 verifier to OpenSSL 3 without changing the build toolchain.
+          OPENSSL_BIN="$(brew --prefix openssl@3)/bin"
+          "$OPENSSL_BIN/openssl" version | grep -Eq '^OpenSSL 3[.]'
+          PATH="$OPENSSL_BIN:$PATH" bash packaging/mac/build-installer.sh \
             --version "${{ steps.provenance.outputs.version }}" \
             --arch x86_64 \
             --build-dir build-desktop

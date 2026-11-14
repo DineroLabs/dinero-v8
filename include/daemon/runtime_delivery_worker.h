@@ -33,7 +33,8 @@ public:
         bool running = false;
         bool source_deferred = true;
         WalletOutcome wallet = WalletOutcome::Deferred;
-        // Process-local count of canonical wallet recovery cycles.
+        // Process-local diagnostic: actual canonical wallet recovery calls.
+        // Repeated resource-limited wakes must leave this count unchanged.
         uint64_t wallet_recovery_attempts = 0;
         std::optional<RuntimeOutboxCursor> wallet_head;
         std::optional<RuntimeOutboxCursor> reorg_head;

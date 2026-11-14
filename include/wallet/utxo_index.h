@@ -142,12 +142,19 @@ class UTXOIndex {
     friend class RuntimeIndexDelivery;
     friend struct UTXOIndexSchemaTestAccess;
     friend struct UTXOIndexHistoricalTestAccess;
+    friend struct RuntimeV3ReadTestAccess;
 public:
     explicit UTXOIndex(const std::string& db_path);
     ~UTXOIndex();
 
     // Database initialization
     bool Initialize();
+    // Full-archive v3 startup may read/write chainstate metadata while the
+    // legacy coin API remains unavailable. The schema must already be v3 and
+    // its immutable v2 rollback backup must verify on this same connection.
+    // Compact/phone callers continue using Initialize() and v2.
+    bool InitializeFullArchiveV3MetadataOnly();
+    bool IsFullArchiveV3MetadataOnly() const;
 
     // UTXO operations (wallet layer - not consensus interface)
     // Creation replay preserves an existing spend height. Undo must use
@@ -246,6 +253,13 @@ public:
     void ClearRegisteredAddresses();
     
 private:
+    enum class OpenMode { Uninitialized, LegacyV2, FullArchiveV3MetadataOnly };
+    void RequireLegacyCoinAccess() const;
+    OpenMode open_mode_ = OpenMode::Uninitialized;
+    // Captured only after full v3 backup/quarantine verification on db_.
+    // db_mutex_ protects these alongside the SQLite handle.
+    std::string verified_v3_rollback_digest_;
+    std::string verified_v3_legacy_guard_digest_;
     sqlite3* db_;
     std::string db_path_;
     

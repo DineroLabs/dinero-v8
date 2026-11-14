@@ -83,6 +83,7 @@ bool OrchardBindingShape(const din::Json& value) {
 }
 #if DINERO_WALLET_RAW_ORCHARD
 std::string OrchardBindingValue(dinero::WalletManager::DatabaseLease& lease) {
+    lease.RequireOrchardWalletReady();
     const auto bytes=lease.RpcBinding();
     return util::hex(std::vector<unsigned char>(bytes.begin(),bytes.end()));
 }

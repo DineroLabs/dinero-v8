@@ -21,7 +21,7 @@ cmake_minimum_required(VERSION 3.21)
 # In a monorepo release the root owns the shared version. Keep a standalone
 # fallback for legacy direct builds of qt/.
 if(NOT DEFINED DINERO_MONOREPO_VERSION)
-  set(DINERO_MONOREPO_VERSION 8.2.2)
+  set(DINERO_MONOREPO_VERSION 8.2.3)
 endif()
 project(dinero-qt VERSION ${DINERO_MONOREPO_VERSION} LANGUAGES CXX)
 
@@ -1441,6 +1441,13 @@ if(BUILD_TESTING)
     QT_NO_KEYWORDS $<TARGET_PROPERTY:dinero-qt,COMPILE_DEFINITIONS>)
   add_test(NAME OverviewColumns COMMAND test_overview_columns)
   set_tests_properties(OverviewColumns PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+  if(UNIX AND TARGET dinerod)
+    add_test(NAME OverviewMiningRewardsRealRpc
+      COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overview_mining_rewards_regtest.sh
+        $<TARGET_FILE:dinerod> $<TARGET_FILE:test_overview_columns>)
+    set_tests_properties(OverviewMiningRewardsRealRpc PROPERTIES
+      TIMEOUT 180 LABELS "qt;rpc;regtest;wallet")
+  endif()
 
   add_executable(test_covenants_tab ${_wallet_test_sources} tests/test_covenants_tab.cpp)
   target_link_libraries(test_covenants_tab PRIVATE
