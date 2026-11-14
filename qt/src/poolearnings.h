@@ -12,12 +12,10 @@
 //     the operator sweeps their fee to cold storage. Right as a balance,
 //     wrong as earnings.
 //   * `blockchain.getaddresshistory` reports each receipt, so summing
-//     the receipts gives a figure that only ever rises.
+//     complete, anchored history gives payments on the selected chain.
 //
-// The history walk can be incomplete in three ways, and each one turns
-// the sum into a lower bound. Presenting a lower bound as the total
-// would tell an operator their pool paid them less than it did, so
-// incompleteness is detected and named rather than hidden.
+// An unanchored or incomplete history is an observation, not a lifetime
+// total. A reorg or malformed reply invalidates even that observation.
 //
 // Header-only and free of widget dependencies so it can be tested
 // without constructing a panel.
@@ -38,23 +36,73 @@ struct Received {
     qint64 total_una = 0;
     /// How many receipts that sum covers.
     int count = 0;
-    /// False when the node could not show the whole history, which makes
-    /// `total_una` a floor rather than the truth.
+    /// False unless the node explicitly certified complete coverage.
     bool complete = true;
-    /// Why it is a floor. Empty if and only if `complete`.
+    /// True when no amount from this walk may be displayed (reorg/error).
+    bool unusable = false;
+    /// Why the result is incomplete or unusable. Empty only when complete.
     QString caveat;
+    struct Anchor {
+        int height;
+        QString hash;
+
+        QJsonObject toJson() const {
+            return {{QStringLiteral("height"), height}, {QStringLiteral("hash"), hash}};
+        }
+    };
+    /// Page one's canonical scan-start block. Later requests carry this.
+    std::optional<Anchor> anchor;
+    /// The bound sent with the current page. A daemon that ignores the
+    /// bound must not make a repeated page look like a complete walk.
+    std::optional<int> requested_from_height;
+    int pages = 0;
 };
+
+inline std::optional<Received::Anchor> pageAnchor(const QJsonObject& coverage) {
+    const QJsonValue height = coverage.value(QStringLiteral("scan_from_height"));
+    const QJsonValue hash_value = coverage.value(QStringLiteral("scan_from_hash"));
+    if (!height.isDouble() || !hash_value.isString()) return std::nullopt;
+    const int h = height.toInt(-1);
+    if (h < 0 || height.toDouble() != static_cast<double>(h)) return std::nullopt;
+    const QString hash = hash_value.toString();
+    if (hash.size() != 64) return std::nullopt;
+    for (const QChar c : hash) {
+        if (!((c >= QLatin1Char('0') && c <= QLatin1Char('9')) ||
+              (c >= QLatin1Char('a') && c <= QLatin1Char('f')) ||
+              (c >= QLatin1Char('A') && c <= QLatin1Char('F')))) {
+            return std::nullopt;
+        }
+    }
+    return Received::Anchor{h, hash};
+}
+
+inline QJsonArray historyRequest(const QString& address, int count) {
+    return QJsonArray{address, count};
+}
+
+inline QJsonArray historyRequest(const QString& address, int count,
+                                 int from_height, Received& acc) {
+    acc.requested_from_height = from_height;
+    QJsonArray params{address, count, from_height};
+    if (acc.anchor) params.append(acc.anchor->toJson());
+    return params;
+}
+
+inline void invalidate(Received& acc, const QString& reason) {
+    acc.total_una = 0;
+    acc.count = 0;
+    acc.complete = false;
+    acc.unusable = true;
+    acc.caveat = reason;
+}
 
 /// Whether a reply belongs to the address we asked about.
 ///
-/// `RpcClient` broadcasts every reply to every connected widget, and
-/// mainwindow's address explorer calls these same two RPCs on the same
-/// client. Without this check, searching an address over there repaints
-/// the Pool tab's earnings with that address's numbers.
+/// The per-request reply route keeps the explorer's same-address call out
+/// of this panel; an echoed address is an additional response check.
 ///
-/// A node that does not echo `address` back leaves nothing to compare,
-/// so the reply is accepted and the caller's in-flight bookkeeping is
-/// the only guard.
+/// Older nodes may not echo `address`, so the reply route remains the
+/// primary guard in that case.
 inline bool isForAddress(const QJsonObject& result, const QString& expected) {
     const QJsonValue echoed = result.value(QStringLiteral("address"));
     if (!echoed.isString()) {
@@ -72,9 +120,64 @@ inline bool isForAddress(const QJsonObject& result, const QString& expected) {
 ///
 /// Fold one page into a running total.
 inline void addPage(Received& acc, const QJsonObject& page) {
+    if (acc.unusable) return;
+    const QJsonValue nested_error = page.value(QStringLiteral("error"));
+    if (!nested_error.isUndefined() && !nested_error.isNull()) {
+        invalidate(acc, QStringLiteral("The node could not verify this address's history. Please retry."));
+        return;
+    }
+    const QJsonValue coverage_value = page.value(QStringLiteral("history_coverage"));
+    const QJsonObject coverage = coverage_value.toObject();
+    if (coverage.value(QStringLiteral("chain_changed")).toBool() ||
+        page.value(QStringLiteral("chain_changed")).toBool()) {
+        invalidate(acc, QStringLiteral("The chain changed while reading this address. Please retry."));
+        return;
+    }
+    if (!page.value(QStringLiteral("transactions")).isArray()) {
+        invalidate(acc, QStringLiteral("The node returned malformed address history. Please retry."));
+        return;
+    }
+    const std::optional<Received::Anchor> current_anchor = pageAnchor(coverage);
+    if (acc.pages > 0 && acc.anchor &&
+        (!coverage_value.isObject() || !current_anchor ||
+         !acc.requested_from_height ||
+         current_anchor->height != *acc.requested_from_height ||
+         !coverage.value(QStringLiteral("chain_changed")).isBool() ||
+         !page.value(QStringLiteral("history_complete")).isBool())) {
+        invalidate(acc, QStringLiteral(
+            "The node could not confirm the same chain across history pages. Please retry."));
+        return;
+    }
+    if (acc.pages == 0) {
+        acc.anchor = current_anchor;
+        if (!acc.anchor || !coverage.value(QStringLiteral("chain_changed")).isBool()) {
+            acc.complete = false;
+            acc.caveat = QStringLiteral(
+                "Observed payments only. This node cannot anchor history pages to one chain; "
+                "the lifetime total is unavailable.");
+        }
+    }
+    ++acc.pages;
     const QJsonArray txs = page.value(QStringLiteral("transactions")).toArray();
     for (const QJsonValue& value : txs) {
+        if (!value.isObject()) {
+            invalidate(acc, QStringLiteral("The node returned a malformed history entry. Please retry."));
+            return;
+        }
         const QJsonObject entry = value.toObject();
+        const QJsonValue height_value = entry.value(QStringLiteral("height"));
+        const int height = height_value.toInt(-1);
+        const QJsonValue type_value = entry.value(QStringLiteral("type"));
+        if (!height_value.isDouble() || height < 0 ||
+            height_value.toDouble() != static_cast<double>(height) ||
+            (acc.pages == 1 && acc.anchor && height > acc.anchor->height) ||
+            (acc.requested_from_height && height > *acc.requested_from_height) ||
+            !type_value.isString() ||
+            (type_value.toString() != QLatin1String("receive") &&
+             type_value.toString() != QLatin1String("send"))) {
+            invalidate(acc, QStringLiteral("The node returned a malformed history entry. Please retry."));
+            return;
+        }
         // Sends are the operator moving their own money out. Counting
         // them at all would either double-count the receipt that funded
         // them or turn this figure back into a balance.
@@ -86,15 +189,21 @@ inline void addPage(Received& acc, const QJsonObject& page) {
         // and an ordinary payment landing there is not pool income — on
         // DineroSJ two such payments account for 1,500 DIN of a balance
         // that is otherwise all block rewards. A node that omits the flag
-        // is not saying "not mined", so a missing flag still counts.
+        // is not saying "not mined", so it remains an observed receipt,
+        // but cannot support an exact pool-reward claim.
         const QJsonValue coinbase = entry.value(QStringLiteral("is_coinbase"));
         if (coinbase.isBool() && !coinbase.toBool()) {
             continue;
         }
+        if (!coinbase.isBool()) {
+            acc.complete = false;
+            acc.caveat = QStringLiteral(
+                "Observed payments only — the node did not identify every receipt as a block reward.");
+        }
         if (entry.value(QStringLiteral("amount_hidden")).toBool()) {
             acc.complete = false;
             acc.caveat = QStringLiteral(
-                "At least this much — one or more payments to this address are confidential and "
+                "Observed payments only — one or more payments to this address are confidential and "
                 "their amounts cannot be read.");
             continue;
         }
@@ -102,24 +211,26 @@ inline void addPage(Received& acc, const QJsonObject& page) {
         if (!amount.isDouble()) {
             acc.complete = false;
             acc.caveat = QStringLiteral(
-                "At least this much — the node returned an entry whose amount could not be read.");
+                "Observed payments only — the node returned an entry whose amount could not be read.");
             continue;
         }
         acc.total_una += static_cast<qint64>(amount.toDouble());
         ++acc.count;
     }
 
-    // A node that cannot see its own history outranks the rest: it is the
-    // one the operator can actually act on, and it is the common case,
-    // since RUN-A-POOL.md has every new operator bootstrap from a
-    // snapshot.
-    if (page.contains(QStringLiteral("history_complete")) &&
+    // Only the explicit assumed_utxo reason justifies snapshot wording.
+    // Other incomplete replies may contain gaps or unresolved inputs.
+    if (!page.value(QStringLiteral("history_complete")).isBool() ||
         !page.value(QStringLiteral("history_complete")).toBool()) {
         acc.complete = false;
-        acc.caveat = QStringLiteral(
-            "At least this much — this node was bootstrapped from a snapshot and does not hold "
-            "the block bodies before its snapshot base, so earlier payments cannot be counted. "
-            "Reindexing the node from genesis is what makes this figure exact.");
+        if (coverage.value(QStringLiteral("stop_reason")).toString() == QLatin1String("assumed_utxo")) {
+            acc.caveat = QStringLiteral(
+                "Observed payments only — this snapshot node cannot read payments before its snapshot base.");
+        } else {
+            acc.caveat = QStringLiteral(
+                "Observed payments only — this node reported incomplete address history; "
+                "the lifetime total is unavailable.");
+        }
     }
 }
 
@@ -147,12 +258,44 @@ inline std::optional<int> nextFromHeight(const QJsonObject& page, int requested_
     return lowest - 1;
 }
 
+inline std::optional<int> nextPageStart(Received& acc, const QJsonObject& page,
+                                       int requested_count) {
+    if (acc.unusable) return std::nullopt;
+    const auto next = nextFromHeight(page, requested_count);
+    if (next && acc.requested_from_height && *next >= *acc.requested_from_height) {
+        invalidate(acc, QStringLiteral("The node repeated a history page. Please retry."));
+        return std::nullopt;
+    }
+    return next;
+}
+
 /// Paging gave up before the history ran out. The only case where the
 /// total really is truncated.
 inline void markPageCapReached(Received& acc) {
+    if (acc.unusable) return;
     acc.complete = false;
-    acc.caveat = QStringLiteral(
-        "At least this much — the address has more history than this check reads in one go.");
+    if (acc.caveat.isEmpty()) {
+        acc.caveat = QStringLiteral(
+            "Observed payments only — this address has more history than this check reads in one go.");
+    }
+}
+
+/// The panel's amount line. A reorg/error must not retain even the amount
+/// accumulated before the failed page; incomplete walks are labelled as
+/// observed rather than as an exact lifetime figure.
+inline QString renderLifetimeHtml(const Received& acc, const QString& formatted_amount,
+                                  const QString& detail, bool final_page) {
+    if (acc.unusable) {
+        return QStringLiteral("<span style='color:#ff6b6b;'>%1</span>")
+            .arg(acc.caveat.toHtmlEscaped());
+    }
+    return QStringLiteral(
+               "<span style='font-size:19px; font-weight:700; color:#51cf66;'>%1</span>"
+               "<span style='color:#9fb3c8; font-size:11px;'> %2</span>"
+               "<br/><span style='color:#9fb3c8; font-size:11px;'>%3</span>")
+        .arg(formatted_amount,
+             acc.complete && final_page ? QStringLiteral("lifetime") : QStringLiteral("observed"),
+             detail);
 }
 
 /// One page, for callers that do not page. Kept so a single reply can be

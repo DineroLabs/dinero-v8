@@ -11,7 +11,7 @@ foreach(REQUIRED_TEXT
     "req.setAttribute(kKindAttr, kKindStatus)"
     "if (status_in_flight_)"
     "if (payout_in_flight_)"
-    "if (earnings_in_flight_)")
+    "if (earnings_in_flight_ || lifetime_in_flight_)")
   string(FIND "${POOL_SOURCE}" "${REQUIRED_TEXT}" FOUND_AT)
   if(FOUND_AT EQUAL -1)
     message(FATAL_ERROR "Pool panel safety regression: missing '${REQUIRED_TEXT}'")
@@ -34,8 +34,8 @@ foreach(REQUIRED_TEXT
     "setOperatorAuthenticated(true)"
     "setOperatorAuthenticated(false)"
     # The earnings card reports TWO figures and they must stay
-    # distinguishable. Lifetime only ever rises; unspent falls when the
-    # operator moves funds out. Collapsing them, or labelling one as the
+    # distinguishable. Observed receipts and unspent balance answer
+    # different questions. Collapsing them, or labelling one as the
     # other, is the regression this guards — it previously read a bare
     # unspent balance under an earnings heading.
     "Fee earnings (verified on-chain)"
@@ -45,7 +45,13 @@ foreach(REQUIRED_TEXT
     # the balance call. `getaddressbalance` is a UTXO-set sum: using it
     # here would make "lifetime" fall every time the operator swept their
     # fee, which is the exact mislabel above wearing a new name.
-    "blockchain.getaddresshistory")
+    "blockchain.getaddresshistory"
+    "poolearnings::historyRequest"
+    # The address explorer can request the same address through the shared
+    # RpcClient. Per-call routes keep its reply out of this earnings walk.
+    "rpc_->callAs"
+    "expected_history_reply_"
+    "expected_balance_reply_")
   string(FIND "${POOL_SOURCE}" "${REQUIRED_TEXT}" FOUND_AT)
   if(FOUND_AT EQUAL -1)
     message(FATAL_ERROR "Pool cockpit regression: missing '${REQUIRED_TEXT}'")
@@ -58,9 +64,9 @@ if(NOT FALSE_EARNINGS_AT EQUAL -1)
 endif()
 
 # A single page of history is 200 entries against addresses that hold
-# thousands, so a lifetime total that does not page is a floor presented
-# as a total — on DineroSJ it read 2,000 DIN against a true 33,905.
-string(FIND "${POOL_SOURCE}" "nextFromHeight" PAGING_AT)
+# thousands. The helper suppresses another request after a failed page,
+# while the request helper adds the page-one anchor to later pages.
+string(FIND "${POOL_SOURCE}" "nextPageStart" PAGING_AT)
 if(PAGING_AT EQUAL -1)
   message(FATAL_ERROR
     "Pool cockpit regression: lifetime earnings no longer page the full address history")
@@ -86,6 +92,12 @@ string(FIND "${VAULT_GATED_SOURCE}" "poolPanel_ = new PoolPanel" POOL_IN_VAULT_G
 if(NOT POOL_IN_VAULT_GATE EQUAL -1)
   message(FATAL_ERROR
     "Pool panel visibility regression: Pool tab is coupled to the disabled Liquidity Vault gate")
+endif()
+
+string(FIND "${MAINWINDOW_SOURCE}"
+  "method.startsWith(QStringLiteral(\"pool.earnings.\"))" POOL_ERROR_ROUTING_AT)
+if(POOL_ERROR_ROUTING_AT EQUAL -1)
+  message(FATAL_ERROR "Pool reply errors can leak into the global error banner")
 endif()
 
 message(STATUS "Qt Pool panel transport and single-flight safety checks passed")
