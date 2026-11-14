@@ -30,6 +30,7 @@
 #include "daemon/runtime_block_reader.h"
 #include "orchard_transaction.h"
 #endif
+#include <cctype>
 #include <cstring>
 #include <optional>
 #include <sstream>
@@ -457,6 +458,8 @@ Json rpc_getaddressmempool(const ExecutionContext& ctx, const Json& params) {
  * Params: [0] address (string, required)
  *         [1] count (int, optional, default 50, max 200)
  *         [2] from_height (int, optional, default tip)
+ *         [3] anchor (object, optional): {height, hash} of page 1's scan start;
+ *             chain_changed/history_complete=false if no longer canonical
  * Returns: { address, from_height, transactions: [...] }
  */
 // Address scans must read blocks of both families. An Orchard block cannot be
@@ -467,6 +470,94 @@ Json rpc_getaddressmempool(const ExecutionContext& ctx, const Json& params) {
 struct ScannedTransaction {
     dinero::Transaction tx;
     dinero::uint256 txid;
+};
+// What a canonical history scan actually read. history_complete is a
+// full-history claim, so any height whose hash or block body could not be
+// read, any spent output that could not be resolved, or a canonical chain
+// change during the scan makes it false. Stopping at the caller's count is
+// a requested bound, not missing data: it is reported as stop_reason
+// count_limit and leaves history_complete unchanged, because paging clients
+// treat a short page as exhaustion.
+// Optional cross-page anchor: page 1's (scan_from_height, scan_from_hash).
+// A later page checks that this block is still canonical before and after
+// its own scan; since a block hash commits to its ancestry, a holding anchor
+// keeps every height at or below it on page 1's branch.
+struct HistoryAnchor {
+    int height = 0;
+    std::string hash; // lowercase display hex, 64 characters
+};
+// Absent or null means no anchor. Anything else must be an object with a
+// non-negative integer "height" and a 64-hex-digit "hash".
+static bool ParseHistoryAnchor(const Json& value, std::optional<HistoryAnchor>& anchor, Json& error) {
+    anchor.reset();
+    if (value.isNull()) return true;
+    if (!value.isObject() || !value.isMember("height") || !value["height"].isInt() ||
+        value["height"].asInt() < 0 || !value.isMember("hash") || !value["hash"].isString()) {
+        error["code"] = -8;
+        error["message"] = "anchor must be {height: non-negative integer, hash: 64 hex digits}";
+        return false;
+    }
+    std::string hash = value["hash"].asString();
+    if (hash.size() != 64 || !std::all_of(hash.begin(), hash.end(), [](unsigned char c) { return std::isxdigit(c); })) {
+        error["code"] = -8;
+        error["message"] = "anchor must be {height: non-negative integer, hash: 64 hex digits}";
+        return false;
+    }
+    std::transform(hash.begin(), hash.end(), hash.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    anchor = HistoryAnchor{value["height"].asInt(), hash};
+    return true;
+}
+struct HistoryCoverage {
+    static constexpr size_t kMaxListedHeights = 32;
+    std::optional<HistoryAnchor> anchor;
+    int scan_from_height = -1;
+    int lowest_scanned_height = -1;
+    bool stopped_at_limit = false;
+    uint64_t skipped_heights = 0;
+    std::vector<int> skipped_height_list;
+    uint64_t unresolved_inputs = 0;
+    bool chain_changed = false;
+    std::optional<dinero::uint256> start_hash;
+
+    bool AnchorHolds(const dinero::ChainDB& chain_db) const {
+        if (!anchor) return true;
+        auto hash = chain_db.getBlockHashByHeight(anchor->height);
+        return hash.ok() && hash.value().GetHex() == anchor->hash;
+    }
+    void Begin(const dinero::ChainDB& chain_db, int height) {
+        scan_from_height = height;
+        if (!AnchorHolds(chain_db)) chain_changed = true;
+        if (height < 0) return;
+        auto hash = chain_db.getBlockHashByHeight(height);
+        if (hash.ok()) start_hash = hash.value();
+    }
+    void Skip(int height) {
+        ++skipped_heights;
+        if (skipped_height_list.size() < kMaxListedHeights) skipped_height_list.push_back(height);
+    }
+    void Finish(const dinero::ChainDB& chain_db) {
+        if (!AnchorHolds(chain_db)) chain_changed = true;
+        if (scan_from_height < 0) return;
+        auto hash = chain_db.getBlockHashByHeight(scan_from_height);
+        if (!start_hash || !hash.ok() || hash.value() != *start_hash) chain_changed = true;
+    }
+    bool Complete(bool assumed_utxo) const {
+        return !assumed_utxo && skipped_heights == 0 && unresolved_inputs == 0 && !chain_changed;
+    }
+    Json ToJson(bool assumed_utxo) const {
+        Json out(::Json::objectValue);
+        out["scan_from_height"] = scan_from_height;
+        out["scan_from_hash"] = start_hash ? start_hash->GetHex() : std::string();
+        out["lowest_scanned_height"] = lowest_scanned_height;
+        out["stop_reason"] = assumed_utxo ? "assumed_utxo" : stopped_at_limit ? "count_limit" : "genesis";
+        out["skipped_heights"] = static_cast<::Json::Value::UInt64>(skipped_heights);
+        Json listed(::Json::arrayValue);
+        for (int height : skipped_height_list) listed.append(height);
+        out["skipped_height_list"] = listed;
+        out["unresolved_inputs"] = static_cast<::Json::Value::UInt64>(unresolved_inputs);
+        out["chain_changed"] = chain_changed;
+        return out;
+    }
 };
 #if DINERO_WALLET_RAW_ORCHARD
 // A scanning view only: the transparent inputs/outputs of an Orchard
@@ -582,6 +673,14 @@ Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
             if (from_height > tip_height) from_height = tip_height;
             if (from_height < 0) from_height = 0;
         }
+        std::optional<HistoryAnchor> anchor;
+        if (params.size() > 3) {
+            Json anchor_error;
+            if (!ParseHistoryAnchor(params[3], anchor, anchor_error)) {
+                result["error"] = anchor_error;
+                return result;
+            }
+        }
 
         ::Json::Value txs_arr(::Json::arrayValue);
         int found = 0;
@@ -589,12 +688,16 @@ Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
         // AssumeUTXO proves current spendable state but does not promise that
         // pre-base block bodies are locally available. Report this explicitly
         // instead of returning a deceptively complete empty history.
+        HistoryCoverage coverage;
+        coverage.anchor = anchor;
+        coverage.Begin(*chain_db, assumed_utxo ? -1 : from_height);
         for (int h = assumed_utxo ? -1 : from_height; h >= 0 && found < count; --h) {
+            coverage.lowest_scanned_height = h;
             auto hash_result = chain_db->getBlockHashByHeight(h);
-            if (!hash_result.ok()) continue;
+            if (!hash_result.ok()) { coverage.Skip(h); continue; }
 
             std::vector<ScannedTransaction> scanned;
-            if (!ReadScannedBlock(*chainstate, hash_result.value(), h, scanned)) continue;
+            if (!ReadScannedBlock(*chainstate, hash_result.value(), h, scanned)) { coverage.Skip(h); continue; }
 
             for (const auto& [tx, real_txid] : scanned) {
                 bool has_output = false;
@@ -640,6 +743,8 @@ Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
                                     visible_amount -= static_cast<int64_t>(spent_output.value.GetUna());
                                 }
                             }
+                        } else {
+                            ++coverage.unresolved_inputs;
                         }
                     }
                 }
@@ -683,10 +788,13 @@ Json rpc_getaddresshistory(const ExecutionContext& ctx, const Json& params) {
             }
         }
 
+        coverage.stopped_at_limit = found >= count;
+        coverage.Finish(*chain_db);
         result["address"] = address;
         result["from_height"] = from_height;
         result["transactions"] = txs_arr;
-        result["history_complete"] = !assumed_utxo;
+        result["history_complete"] = coverage.Complete(assumed_utxo);
+        result["history_coverage"] = coverage.ToJson(assumed_utxo);
 
     } catch (const std::exception& e) {
         result["error"]["code"] = -1;
@@ -769,6 +877,16 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
         const int tip_height = assumed_utxo
             ? static_cast<int>(chainstate->getBlockHeight())
             : tip_result.value().height;
+        // Pin the canonical start while the selected chain is still held.
+        HistoryCoverage coverage;
+        {
+            Json anchor_error;
+            if (!ParseHistoryAnchor(params.isMember("anchor") ? params["anchor"] : Json(), coverage.anchor, anchor_error)) {
+                result["error"] = anchor_error;
+                return result;
+            }
+        }
+        coverage.Begin(*chain_db, assumed_utxo ? -1 : tip_height);
         bool scan_timed_out = false;
         size_t visited = 0;
         const auto keep_scanning = [&] {
@@ -831,10 +949,11 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
                 result["error"]["message"] = "batch discovery timed out";
                 return result;
             }
+            coverage.lowest_scanned_height = height;
             auto hash_result = chain_db->getBlockHashByHeight(height);
-            if (!hash_result.ok()) continue;
+            if (!hash_result.ok()) { coverage.Skip(height); continue; }
             std::vector<ScannedTransaction> scanned;
-            if (!ReadScannedBlock(*chainstate, hash_result.value(), height, scanned)) continue;
+            if (!ReadScannedBlock(*chainstate, hash_result.value(), height, scanned)) { coverage.Skip(height); continue; }
             for (const auto& [tx, real_txid] : scanned) {
                 struct Match {
                     bool input = false;
@@ -870,7 +989,7 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
                     for (const auto& input : tx.vin) {
                         const auto previous = PreviousOutput(*chain_db, *chainstate,
                             input.prevout.txid.AsUint256(), input.prevout.vout);
-                        if (!previous) continue;
+                        if (!previous) { ++coverage.unresolved_inputs; continue; }
                         const auto& output = *previous;
                         tx_has_conf_inputs = tx_has_conf_inputs || output.is_confidential;
                         auto found = script_to_index.find(bytesToHex(output.scriptPubKey));
@@ -924,8 +1043,11 @@ static Json computeAddressBatch(const ExecutionContext& ctx,
             item["transactions"] = state.transactions;
             address_results[state.address] = item;
         }
+        coverage.stopped_at_limit = history_transactions >= static_cast<size_t>(count);
+        coverage.Finish(*chain_db);
         result["tip_height"] = tip_height;
-        result["history_complete"] = !assumed_utxo;
+        result["history_complete"] = coverage.Complete(assumed_utxo);
+        result["history_coverage"] = coverage.ToJson(assumed_utxo);
         result["history_count"] = count;
         result["history_limit"] = MAX_BATCH_HISTORY;
         result["history_scope"] = "wallet_global";
@@ -980,7 +1102,16 @@ Json rpc_getaddressbatch(const ExecutionContext& ctx, const Json& params) {
     };
 
     std::ostringstream key_builder;
+    std::optional<HistoryAnchor> anchor;
+    {
+        Json anchor_error;
+        if (!ParseHistoryAnchor(params.isMember("anchor") ? params["anchor"] : Json(), anchor, anchor_error)) {
+            result["error"] = anchor_error;
+            return result;
+        }
+    }
     key_builder << ctx.daemon->chainstate->getBestBlockHash() << ':' << history_count;
+    if (anchor) key_builder << ":anchor:" << anchor->height << ':' << anchor->hash;
     for (const auto& address : addresses) key_builder << ':' << address;
     const std::string key = key_builder.str();
     const auto now = BatchClock::now();
