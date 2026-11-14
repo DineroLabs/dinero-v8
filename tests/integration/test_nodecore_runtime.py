@@ -353,12 +353,19 @@ def storage_readiness(node):
     original_seeds = seeds(linked)
     (linked/"blockchain").rename(linked/"private-blockchain")
     (linked/"blockchain").symlink_to(linked/"private-blockchain", target_is_directory=True)
-    check("preactivation refusal can still report its status", node.start(linked, network="mainnet", sync_profile="ios_utreexo") == 0)
-    report = node.rpc("orchard.getactivationstatus")
-    check("inner-symlink migration guard still refuses", report["storage_upgrade_refused"] is True, report)
+    private_source = linked / "private-blockchain"
+    def source_digests():
+        return {str(path.relative_to(private_source)): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in private_source.rglob("*") if path.is_file()}
+    original_source = source_digests()
+    started = node.start(linked, network="mainnet", sync_profile="ios_utreexo")
+    check("linked blockchain refuses before embedded services start", started != 0, started)
+    report = node.call("status")
+    # The C ABI returns no status JSON when startup refused before services
+    # become queryable; the driver serializes that nullptr as JSON null.
+    check("linked blockchain leaves embedded node stopped", report is None, report)
     check("refusal does not publish separated layout", not layout(linked) and not (linked/"blockchain"/"chaindb.legacy-v1").exists())
-    check("refusal keeps canonical genesis", state(node) == before)
-    check("refused store closes", node.call("stop") == 0)
+    check("refusal keeps canonical source", source_digests() == original_source)
     check("refusal keeps wallet seed", seeds(linked) == original_seeds)
 
 
