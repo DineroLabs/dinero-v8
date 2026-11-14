@@ -8681,6 +8681,11 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
     sendSubmissionPending_ = false;
   if (!rpc_) return;  // Guard: shutting down
 
+  // PoolPanel owns these per-call routes and shows their errors in its own
+  // earnings card. An explorer request for the same address has a different
+  // route and must not turn a pool-only error into a global error banner.
+  if (method.startsWith(QStringLiteral("pool.earnings."))) return;
+
   if (method.startsWith(QLatin1String("overview.miningrewards:"))) {
     if (!walletSwitchInFlight_ && method == miningRewardsReplyAlias()) {
       // The HTTP dispatcher normalizes a wallet_balance_not_current result to

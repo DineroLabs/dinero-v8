@@ -28,6 +28,7 @@
 #include <QSettings>
 #include <QTimer>
 #include <QUrl>
+#include <QUuid>
 
 #include <algorithm>
 #include <cmath>
@@ -432,7 +433,8 @@ void PoolPanel::setupUi() {
     auto* earn_hint = new QLabel(
         "Read from your node, not from the pool \xE2\x80\x94 so it is still right when the pool is "
         "down, and it cannot be overstated by a pool reporting on itself."
-        "<br/><b>Lifetime</b> is every fee ever paid to this address and only ever rises. "
+        "<br/><b>Lifetime</b> is available when the node confirms complete history on one chain. "
+        "Otherwise receipts are marked observed, or the check asks you to retry. "
         "<b>Unspent</b> is what is still sitting there, so it falls when you move funds out.");
     earn_hint->setWordWrap(true);
     earn_hint->setTextFormat(Qt::RichText);
@@ -459,6 +461,7 @@ void PoolPanel::setupUi() {
     earn_layout->addWidget(lbl_lifetime_);
 
     lbl_earnings_ = new QLabel("\xE2\x80\x93");
+    lbl_earnings_->setObjectName("poolUnspent");
     lbl_earnings_->setTextFormat(Qt::RichText);
     lbl_earnings_->setWordWrap(true);
     lbl_earnings_->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -1347,7 +1350,7 @@ void PoolPanel::reconcileFeeJournal(qint64 observed) {
 }
 
 void PoolPanel::onCheckEarningsClicked() {
-    if (earnings_in_flight_) {
+    if (earnings_in_flight_ || lifetime_in_flight_) {
         return;
     }
     const QString addr = fee_address_input_->text().trimmed();
@@ -1367,8 +1370,20 @@ void PoolPanel::onCheckEarningsClicked() {
     earnings_in_flight_ = true;
     lifetime_in_flight_ = true;
     btn_check_earnings_->setEnabled(false);
-    rpc_->call("blockchain.getaddressbalance", QJsonArray{addr});
-    rpc_->call("blockchain.getaddresshistory", QJsonArray{addr, kEarningsHistoryPage});
+    expected_balance_reply_ = QStringLiteral("pool.earnings.balance.") +
+        QUuid::createUuid().toString(QUuid::WithoutBraces);
+    rpc_->callAs("blockchain.getaddressbalance", QJsonArray{addr}, expected_balance_reply_);
+    requestHistoryPage();
+}
+
+void PoolPanel::requestHistoryPage(std::optional<int> from_height) {
+    expected_history_reply_ = QStringLiteral("pool.earnings.history.") +
+        QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const QJsonArray params = from_height
+        ? poolearnings::historyRequest(earnings_address_, kEarningsHistoryPage,
+                                       *from_height, lifetime_acc_)
+        : poolearnings::historyRequest(earnings_address_, kEarningsHistoryPage);
+    rpc_->callAs("blockchain.getaddresshistory", params, expected_history_reply_);
 }
 
 void PoolPanel::finishEarningsRequest() {
@@ -1387,13 +1402,24 @@ void PoolPanel::applyLifetime(const QJsonValue& result) {
     poolearnings::addPage(lifetime_acc_, page);
     ++lifetime_pages_;
 
+    if (lifetime_acc_.unusable) {
+        lifetime_in_flight_ = false;
+        renderLifetime(/*final=*/true);
+        return;
+    }
+
     // One reply is a page, not the history. Keep asking until the node
     // returns a short page, or until the guard trips.
-    const std::optional<int> next = poolearnings::nextFromHeight(page, kEarningsHistoryPage);
+    const std::optional<int> next = poolearnings::nextPageStart(lifetime_acc_, page,
+                                                               kEarningsHistoryPage);
+    if (lifetime_acc_.unusable) {
+        lifetime_in_flight_ = false;
+        renderLifetime(/*final=*/true);
+        return;
+    }
     if (next && lifetime_pages_ < kEarningsMaxPages) {
         renderLifetime(/*final=*/false);
-        rpc_->call("blockchain.getaddresshistory",
-                   QJsonArray{earnings_address_, kEarningsHistoryPage, *next});
+        requestHistoryPage(*next);
         return;
     }
     if (next) {
@@ -1416,30 +1442,36 @@ void PoolPanel::renderLifetime(bool final_page) {
                      .arg(r.count == 1 ? "payment" : "payments");
     }
     lbl_lifetime_->setText(
-        QString("<span style='font-size:19px; font-weight:700; color:#51cf66;'>%1</span>"
-                "<span style='color:#9fb3c8; font-size:11px;'> lifetime</span>"
-                "<br/><span style='color:#9fb3c8; font-size:11px;'>%2</span>")
-            .arg(formatDin(r.total_una), detail));
+        poolearnings::renderLifetimeHtml(r, formatDin(r.total_una), detail, final_page));
 }
 
 void PoolPanel::onRpcResult(const QString& method, const QJsonValue& result) {
-    if (method == "blockchain.getaddresshistory") {
-        if (!lifetime_in_flight_ ||
-            !poolearnings::isForAddress(result.toObject(), earnings_address_)) {
+    if (!expected_history_reply_.isEmpty() && method == expected_history_reply_) {
+        if (!lifetime_in_flight_) return;
+        expected_history_reply_.clear();
+        if (!poolearnings::isForAddress(result.toObject(), earnings_address_)) {
+            poolearnings::invalidate(lifetime_acc_,
+                QStringLiteral("The node returned history for another address. Please retry."));
+            lifetime_in_flight_ = false;
+            renderLifetime(/*final=*/true);
+            finishEarningsRequest();
             return;
         }
         applyLifetime(result);
         finishEarningsRequest();
         return;
     }
-    if (method != "blockchain.getaddressbalance") {
+    if (expected_balance_reply_.isEmpty() || method != expected_balance_reply_) {
         return;
     }
-    if (!earnings_in_flight_ || !poolearnings::isForAddress(result.toObject(), earnings_address_)) {
-        return;
-    }
+    if (!earnings_in_flight_) return;
+    expected_balance_reply_.clear();
     earnings_in_flight_ = false;
     finishEarningsRequest();
+    if (!poolearnings::isForAddress(result.toObject(), earnings_address_)) {
+        lbl_earnings_->setText("<span style='color:#ff6b6b;'>The node returned a balance for another address.</span>");
+        return;
+    }
     if (!result.isObject()) {
         lbl_earnings_->setText("<span style='color:#ff6b6b;'>Unexpected reply from the node.</span>");
         return;
@@ -1460,7 +1492,7 @@ void PoolPanel::onRpcResult(const QString& method, const QJsonValue& result) {
         QString("<span style='font-size:15px; font-weight:600; color:#51cf66;'>%1</span>"
                 "<span style='color:#9fb3c8; font-size:11px;'> unspent now</span>"
                 "<br/><span style='color:#9fb3c8; font-size:11px;'>Confirmed outputs still sitting at this "
-                "address. Lower than lifetime by whatever you have already moved out.</span>")
+                "address. This balance falls when funds move out; the separate history line counts receipts.</span>")
             .arg(formatDin(*balance)));
 }
 
@@ -1471,18 +1503,21 @@ void PoolPanel::onRpcError(const QString& method, int code, const QString& messa
     // Reported per line: the balance and the history fail independently,
     // and a node that can answer one but not the other should still show
     // the answer it has rather than blanking both.
-    if (method == "blockchain.getaddresshistory") {
+    if (!expected_history_reply_.isEmpty() && method == expected_history_reply_) {
         if (!lifetime_in_flight_) {
             return;
         }
+        expected_history_reply_.clear();
         lifetime_in_flight_ = false;
         lbl_lifetime_->setText(rendered);
         finishEarningsRequest();
         return;
     }
-    if (method != "blockchain.getaddressbalance" || !earnings_in_flight_) {
+    if (expected_balance_reply_.isEmpty() || method != expected_balance_reply_ ||
+        !earnings_in_flight_) {
         return;
     }
+    expected_balance_reply_.clear();
     earnings_in_flight_ = false;
     finishEarningsRequest();
     lbl_earnings_->setText(rendered);
