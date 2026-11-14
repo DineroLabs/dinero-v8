@@ -159,8 +159,10 @@ TEST(WalletV3Spend, RecoveredTransparentCoinUsesOwnedChangeAndRetainsReservation
     EXPECT_EQ(ready_status["send_scope"].asString(), "transparent_recovered_v3");
     EXPECT_DOUBLE_EQ(ready_status["spendable_balance"].asDouble(),
                      ready_balance["spendable"].asDouble());
-    EXPECT_EQ(ready_status["immature_utxo_count"].asUInt(),
-              ready_balance["immature_utxo_count"].asUInt());
+    // The status-only count is one immature mined coin in this fixture.
+    // getbalance's frozen schema does not expose this diagnostic field.
+    EXPECT_EQ(ready_status["immature_utxo_count"].asUInt(), 1u);
+    EXPECT_FALSE(ready_balance.isMember("immature_utxo_count"));
     EXPECT_FALSE(ready_status.isMember("send_unavailable_reason"));
     auto wrong_wallet = request;
     wrong_wallet.walletName = "different-wallet";
