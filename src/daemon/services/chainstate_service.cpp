@@ -7543,12 +7543,12 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
     if(activation_mutex_.HeldByCurrentThread())return Status::Invalid;
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     try {
-        bool empty=false;
+        bool empty=false;RuntimeOutboxCursor outbox_head{};
         {
             std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
             const auto first=getRuntimeDeliveryPage({},1);
             if(!first.ok())return first.status();
-            empty=!(*first)->head.sequence;
+            empty=!(*first)->head.sequence;outbox_head=(*first)->head;
         }
         if(empty){
             auto self=std::const_pointer_cast<ChainstateService>(weak_from_this().lock());
@@ -7618,10 +7618,14 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             }else{phone_replay_.reset();phone_replay_base_.reset();}
             captured_head.reset();
         }
+        {std::lock_guard memo(phone_prefix_pending_mutex_);
+         if(phone_prefix_pending_head_&&*phone_prefix_pending_head_==std::pair{outbox_head.sequence,outbox_head.digest}&&!phone())return Status::Invalid;}
+        ++phone_replay_source_reads_;
         auto material=RuntimeAccountReplay::ReadSource(read);
         if(const auto base=RuntimeAccountReplay::ActivationPrefixBase(material)){
             const auto ready=phone();
-            if(!ready)return Status::Invalid;
+            if(!ready){std::lock_guard memo(phone_prefix_pending_mutex_);phone_prefix_pending_head_=std::pair{outbox_head.sequence,outbox_head.digest};return Status::Invalid;}
+            {std::lock_guard memo(phone_prefix_pending_mutex_);phone_prefix_pending_head_.reset();}
             const auto& [source,target,download,history]=*ready;
             if(base->second!=target.base||base->first<target.activation||base->first>target.height)return Status::Invalid;
             auto verifier=source->PreparePhoneHistoryVerifier(history->activation_proof,target);

@@ -1075,6 +1075,8 @@ public:
     std::pair<uint64_t,uint64_t> PhoneReplayCaptureCounts() const{
         return {phone_replay_full_builds_.load(),phone_replay_extensions_.load()};
     }
+    // Full outbox material reads by getRuntimeAccountReplay (diagnostics/tests).
+    uint64_t PhoneReplaySourceReads() const{return phone_replay_source_reads_.load();}
     // Read-only archival source. No selected lock during proof work; a real
     // service-use pins DB/header lifetimes through shutdown and rechecks them.
     StatusOr<std::shared_ptr<const consensus::OrchardSnapshotSection>> captureOrchardActivationProof(
@@ -2119,7 +2121,12 @@ private:
     mutable std::mutex phone_replay_mutex_;
     mutable std::shared_ptr<const RuntimeAccountReplay> phone_replay_;
     mutable std::optional<std::pair<uint32_t,uint256>> phone_replay_base_;
-    mutable std::atomic<uint64_t> phone_replay_full_builds_{0},phone_replay_extensions_{0};
+    mutable std::atomic<uint64_t> phone_replay_full_builds_{0},phone_replay_extensions_{0},phone_replay_source_reads_{0};
+    // Outbox head whose material needs the phone activation prefix while no
+    // verified history is available. Until the head changes or history is
+    // ready, a capture refuses without re-reading the whole outbox.
+    mutable std::mutex phone_prefix_pending_mutex_;
+    mutable std::optional<std::pair<uint64_t,uint256>> phone_prefix_pending_head_; // sequence, digest
     mutable std::condition_variable wallet_index_use_changed_;
     std::map<std::thread::id,size_t> wallet_index_uses_by_thread_;
     size_t wallet_index_uses_=0;

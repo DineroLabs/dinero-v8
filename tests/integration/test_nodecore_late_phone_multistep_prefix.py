@@ -192,6 +192,9 @@ try:
     assert call('rpc',method='wallet.open',params=['late-phone-multistep-owner'])['success'] is True
     binding=call('rpc',method='wallet.orchard.getwalletbinding',params=dict(wallet_name='late-phone-multistep-owner'))
     bound=dict(wallet_binding=binding['wallet_binding'])
+    # While history cannot be ready, background delivery must not re-read
+    # the whole outbox every second (each read also rewrites a replay spool).
+    reads_before=call('sdk_activation_state')['phone_replay']['source_reads']
     online=[]
     for _ in range(6):
         progress=call('rpc',method='wallet.orchard.recoveraccount0',params=bound);online.append(progress)
@@ -201,6 +204,9 @@ try:
         assert progress.get('history_ready') is False,progress
         assert progress.get('history_requested') is False and progress.get('phase')=='awaiting_history_source',progress
         time.sleep(.5)
+    time.sleep(3)
+    reads_after=call('sdk_activation_state')['phone_replay']['source_reads']
+    assert reads_after-reads_before<=1,('not-ready replay re-read the outbox repeatedly',reads_before,reads_after)
     assert call('stop')==0
     process.stdin.close();process.wait(timeout=30);assert process.returncode==0,process.returncode
     success=True
