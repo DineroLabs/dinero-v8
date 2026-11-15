@@ -59,8 +59,10 @@ class AssumeUtxoReplayEngine {
 public:
     // RestoreBlock (default): a rejected block leaves the exact prior prefix,
     // so the caller may continue with another block. RetireOwner: no per-block
-    // restore state; a rejected block permanently retires the engine. Use it
-    // only when the caller discards the engine on any ConnectAndAdvance failure.
+    // restore state; a block that fails in ConnectBlock (validation or an
+    // exception) permanently retires the engine. Identity, header and height
+    // refusals happen before any state change and leave the engine usable.
+    // Use it only when the caller discards the engine on any failure.
     explicit AssumeUtxoReplayEngine(
         consensus::ReplayFailurePolicy policy = consensus::ReplayFailurePolicy::RestoreBlock);
     ~AssumeUtxoReplayEngine();
