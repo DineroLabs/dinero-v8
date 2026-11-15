@@ -14,7 +14,14 @@ class SnapshotWiring(unittest.TestCase):
         # Package defaults must follow the exact pinned primary and three
         # older recovery inputs. Native admission is qualified separately.
         self.names = pinned
+        self.primary_height = catalog['primary']['height']
         self.assertEqual(len(self.names), 4)
+
+    def test_release_notes_name_the_pinned_primary_height(self):
+        notes = (ROOT / 'packaging/RELEASE-NOTES-TEMPLATE.md').read_text(encoding='utf-8')
+        self.assertIn(f'| {self.primary_height:,} (preferred full-v6) |', notes)
+        self.assertIn(self.names[0], notes)
+        self.assertIn(f'SHA256SUMS-assumeutxo-{self.primary_height}', notes)
 
     def test_gui_selection_and_windows_derivation_cover_all_four(self):
         source = (ROOT / 'qt/src/main.cpp').read_text(encoding='utf-8')
@@ -79,14 +86,27 @@ class SnapshotWiring(unittest.TestCase):
             self.assertIn('cmp -s "${GITHUB_WORKSPACE}/tooling/packaging/mac/build-installer.sh" packaging/mac/build-installer.sh', source)
 
         smoke = (ROOT / '.github/workflows/windows-openssl-release-smoke.yml').read_text(encoding='utf-8')
-        self.assertIn("-SnapshotFileName 'dinero-assumeutxo-153051-v6-full.dat'", smoke)
+        self.assertIn("-SnapshotFileName 'dinero-assumeutxo-153578-v6-full.dat'", smoke)
         self.assertIn('fetch_desktop_primary.py', smoke)
-        self.assertIn('--publisher-signature snapshot-inputs/dinero-assumeutxo-153051-v6-full.dat.publisher.manifest.sig', smoke)
+        candidate_url = f'https://seed3.dinerolabs.org/v823-candidate/h{self.primary_height}'
+        for name, flag in [('snapshot.dat', '--payload-url'),
+                           ('manifest.json', '--manifest-url'),
+                           ('manifest.sig', '--signature-url')]:
+            self.assertIn(f"{flag} '{candidate_url}/{name}'", smoke)
+        self.assertIn('--publisher-signature snapshot-inputs/dinero-assumeutxo-153578-v6-full.dat.publisher.manifest.sig', smoke)
         version = re.search(r"-Version '([^']+)'", smoke)[1]
         filename = 'Dinero-Server-' + version + '-windows-x86_64-Setup.exe'
         self.assertEqual(smoke.count(filename), 2, 'Install and artifact paths must match the built version')
         numeric_version = version.split('-')[0] + '.0'
         self.assertIn("$numericVersion -ne '" + numeric_version + "'", smoke)
+
+    def test_pr_workflows_do_not_fetch_live_full_v6_primary_before_rotation(self):
+        for workflow in (ROOT / '.github/workflows').glob('*.yml'):
+            source = workflow.read_text(encoding='utf-8')
+            if 'pull_request:' not in source:
+                continue
+            with self.subTest(workflow=workflow.name):
+                self.assertNotRegex(source, r'https://[^\s\'"/]+/snapshot/full-v6/(?:latest/)?(?:snapshot\.dat|manifest\.json)')
 
 
 if __name__ == '__main__':
