@@ -41,10 +41,16 @@ RUN set -eux; \
     RECOVERY="https://github.com/DineroLabs/dinero-v8/releases/download/${RECOVERY_SNAPSHOT_RELEASE}"; \
     if [ -n "${PRIMARY_SNAPSHOT_PAYLOAD_URL}${PRIMARY_SNAPSHOT_MANIFEST_URL}${PRIMARY_SNAPSHOT_SIGNATURE_URL}" ]; then \
       test -n "${PRIMARY_SNAPSHOT_PAYLOAD_URL}" && test -n "${PRIMARY_SNAPSHOT_MANIFEST_URL}" && test -n "${PRIMARY_SNAPSHOT_SIGNATURE_URL}" || { echo 'all three signed snapshot URLs are required for pre-release bootstrap'; exit 1; }; \
+      RECENT_FALLBACK_PAYLOAD_URL='https://seed3.dinerolabs.org/v823-candidate/h153051-f7-05105aa3-20d87ae6/snapshot.dat'; \
+      RECENT_FALLBACK_MANIFEST_URL='https://seed3.dinerolabs.org/v823-candidate/h153051-f7-05105aa3-20d87ae6/manifest.json'; \
+      RECENT_FALLBACK_SIGNATURE_URL='https://seed3.dinerolabs.org/v823-candidate/h153051-f7-05105aa3-20d87ae6/manifest.sig'; \
     else \
       PRIMARY_SNAPSHOT_PAYLOAD_URL="${PRIMARY}/dinero-assumeutxo-153578-v6-full.dat"; \
       PRIMARY_SNAPSHOT_MANIFEST_URL="${PRIMARY}/dinero-assumeutxo-153578-v6-full.dat.publisher.manifest.json"; \
       PRIMARY_SNAPSHOT_SIGNATURE_URL="${PRIMARY}/dinero-assumeutxo-153578-v6-full.dat.publisher.manifest.sig"; \
+      RECENT_FALLBACK_PAYLOAD_URL="${PRIMARY}/dinero-assumeutxo-153051-v6-full.dat"; \
+      RECENT_FALLBACK_MANIFEST_URL="${PRIMARY}/dinero-assumeutxo-153051-v6-full.dat.publisher.manifest.json"; \
+      RECENT_FALLBACK_SIGNATURE_URL="${PRIMARY}/dinero-assumeutxo-153051-v6-full.dat.publisher.manifest.sig"; \
     fi; \
     if [ -n "${BINARY_TARBALL_URL}${BINARY_SUMS_URL}${BINARY_TARBALL_SHA256}${BINARY_SUMS_SHA256}" ]; then \
       test -n "${BINARY_TARBALL_URL}" && test -n "${BINARY_SUMS_URL}" && test -n "${BINARY_TARBALL_SHA256}" && test -n "${BINARY_SUMS_SHA256}" || { echo 'all exact candidate binary URLs and hashes are required'; exit 1; }; \
@@ -65,8 +71,9 @@ RUN set -eux; \
       --destination /tmp/dl --catalog /verify/desktop-inputs-candidate.json; \
     python3 /verify/fetch_desktop_primary.py \
       --fallback-height 153051 \
-      --payload-url 'https://seed3.dinerolabs.org/v823-candidate/h153051-f7-05105aa3-20d87ae6/snapshot.dat' \
-      --manifest-url 'https://seed3.dinerolabs.org/v823-candidate/h153051-f7-05105aa3-20d87ae6/manifest.json' \
+      --payload-url "${RECENT_FALLBACK_PAYLOAD_URL}" \
+      --manifest-url "${RECENT_FALLBACK_MANIFEST_URL}" \
+      --signature-url "${RECENT_FALLBACK_SIGNATURE_URL}" \
       --destination /tmp/dl --catalog /verify/desktop-inputs-candidate.json; \
     curl -fsSL -O "${RECOVERY}/dinero-assumeutxo-148375-v5.dat"; \
     curl -fsSL -O "${RECOVERY}/dinero-assumeutxo-148375-v5.dat.manifest.json"; \

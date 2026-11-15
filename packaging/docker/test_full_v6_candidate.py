@@ -154,6 +154,19 @@ class FullV6DockerCandidateTest(unittest.TestCase):
         self.assertIn("- name: Build and load\n        if: github.event_name != 'pull_request'", workflow)
         self.assertIn("- name: Admit exact full-v6 catalog primary\n        if: github.event_name != 'pull_request'", workflow)
 
+    def test_h153051_candidate_and_release_sources_are_distinct(self):
+        source = (ROOT / "Dockerfile").read_text()
+        conditional = source.split('if [ -n "${PRIMARY_SNAPSHOT_PAYLOAD_URL}${PRIMARY_SNAPSHOT_MANIFEST_URL}${PRIMARY_SNAPSHOT_SIGNATURE_URL}" ]; then', 1)[1]
+        candidate, release = conditional.split('    else \\\n', 1)
+        release = release.split('    fi; \\\n', 1)[0]
+        self.assertIn('h153051-f7-05105aa3-20d87ae6/snapshot.dat', candidate)
+        self.assertNotIn('h153051-f7-05105aa3-20d87ae6/', release)
+        for suffix in ('.dat', '.dat.publisher.manifest.json', '.dat.publisher.manifest.sig'):
+            self.assertIn('${PRIMARY}/dinero-assumeutxo-153051-v6-full' + suffix, release)
+        for variable in ('PAYLOAD', 'MANIFEST', 'SIGNATURE'):
+            self.assertIn('--' + ('payload' if variable == 'PAYLOAD' else 'manifest' if variable == 'MANIFEST' else 'signature') +
+                          '-url "${RECENT_FALLBACK_' + variable + '_URL}"', source)
+
     def test_compiled_daemon_identity_is_checked_separately_from_archive_receipt(self):
         expected_sha = 'a' * 40
         stub = self.root / 'dinerod'

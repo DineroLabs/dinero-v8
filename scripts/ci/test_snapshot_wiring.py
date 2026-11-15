@@ -124,6 +124,37 @@ class SnapshotWiring(unittest.TestCase):
             with self.subTest(workflow=workflow.name):
                 self.assertNotRegex(source, r'https://[^\s\'"/]+/snapshot/full-v6/(?:latest/)?(?:snapshot\.dat|manifest\.json)')
 
+    def test_h153051_release_builds_use_same_tag_signed_assets(self):
+        base = self.names[1]
+        signed_names = (base, base + '.manifest.json',
+                        base + '.publisher.manifest.json',
+                        base + '.publisher.manifest.sig')
+        candidate_route = 'h153051-f7-05105aa3-20d87ae6/'
+        desktop = (ROOT / '.github/workflows/desktop-release.yml').read_text(encoding='utf-8')
+        desktop_steps = desktop.split('- name: Fetch full-v6 primary and exact recovery bases')[1:]
+        self.assertEqual(len(desktop_steps), 2)
+        for index, fragment in enumerate(desktop_steps):
+            step = fragment.split('\n      - name:', 1)[0]
+            if index == 0:
+                candidate, release = step.split('          else\n', 1)
+                self.assertIn(candidate_route, candidate)
+                self.assertNotIn(candidate_route, release)
+            else:
+                release = step
+                self.assertNotIn(candidate_route, release)
+            self.assertIn('gh release download "${{ inputs.release_tag }}"', release)
+            for name in signed_names:
+                self.assertIn('--pattern ' + name, release)
+
+        windows = (ROOT / '.github/workflows/windows-release.yml').read_text(encoding='utf-8')
+        step = windows.split('- name: Fetch full-v6 primary and exact recovery bases', 1)[1].split('\n      - name:', 1)[0]
+        release, candidate = step.split('          else\n', 1)
+        self.assertIn(candidate_route, candidate)
+        self.assertNotIn(candidate_route, release)
+        self.assertIn('gh release download "$PRIMARY_RELEASE"', release)
+        for name in signed_names:
+            self.assertIn("--pattern '" + name + "'", release)
+
     def test_h153051_is_packaged_before_older_bases_in_every_runtime(self):
         for path in ('qt/src/main.cpp', 'docker-entrypoint.sh'):
             source = (ROOT / path).read_text(encoding='utf-8')
