@@ -62,6 +62,55 @@ def verify(payload: Path, manifest_path: Path, catalog_path: Path, expected_name
     return {"filename": expected_name, "height": height, "sha256": digest, "profile": profile}
 
 
+def verify_recent_fallback(payload: Path, manifest_path: Path, catalog_path: Path) -> dict:
+    """Admit the signed H153051 exact-lifecycle fallback without an age limit."""
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    if catalog.get("schema") != "dinero.desktop-snapshot-inputs.v1":
+        raise ValueError("unsupported desktop snapshot catalog")
+    matches = [entry for entry in catalog["fallbacks"] if entry.get("height") == 153051]
+    name = "dinero-assumeutxo-153051-v6-full.dat"
+    if (len(matches) != 1 or matches[0].get("filename") != name or
+            matches[0].get("format_version") != 6 or
+            matches[0].get("snapshot_profile") != "full"):
+        raise ValueError("qualified H153051 full-v6 fallback pin is unavailable")
+    pin = matches[0]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if (manifest.get("network") != "mainnet" or manifest.get("format_version") != 6 or
+            manifest.get("snapshot_profile") != "full" or
+            not isinstance(manifest.get("snapshot"), dict) or
+            manifest["snapshot"].get("snapshot_file") != name):
+        raise ValueError("H153051 fallback manifest is not mainnet full-v6")
+    for field in ("height", "block_hash", "bytes", "sha256"):
+        if manifest["snapshot"].get(field) != pin.get(field):
+            raise ValueError(f"H153051 fallback manifest differs from pinned {field}")
+    version, height, block_hash, profile = inspect(payload)
+    if (version, height, block_hash, profile) != (6, 153051, pin["block_hash"], "full"):
+        raise ValueError("H153051 fallback payload has the wrong base or profile")
+    if payload.stat().st_size != pin["bytes"]:
+        raise ValueError("H153051 fallback payload length differs from pin")
+    full_digest = hashlib.sha256()
+    with payload.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            full_digest.update(chunk)
+    digest = full_digest.hexdigest()
+    if digest != pin["sha256"]:
+        raise ValueError("H153051 fallback payload checksum differs from pin")
+    with payload.open("rb") as stream:
+        body_digest = hashlib.sha256()
+        remaining = pin["bytes"] - 32
+        if remaining < 68:
+            raise ValueError("H153051 fallback payload is too short")
+        while remaining:
+            chunk = stream.read(min(1024 * 1024, remaining))
+            if not chunk:
+                raise ValueError("truncated H153051 fallback payload")
+            body_digest.update(chunk)
+            remaining -= len(chunk)
+        if stream.read(32) != body_digest.digest():
+            raise ValueError("H153051 fallback internal checksum mismatch")
+    return {"filename": name, "height": height, "sha256": digest, "profile": profile}
+
+
 def verify_publisher(normalized_manifest: Path, publisher_manifest: Path,
                      publisher_signature: Path, expected_name: str,
                      publisher_key: Path | None = None) -> None:
@@ -100,11 +149,16 @@ if __name__ == "__main__":
     parser.add_argument("--catalog", type=Path, default=Path(__file__).with_name("desktop-inputs-candidate.json"))
     parser.add_argument("--publisher-manifest", type=Path)
     parser.add_argument("--publisher-signature", type=Path)
+    parser.add_argument("--recent-fallback", action="store_true", help="verify pinned H153051 full-v6 lifecycle fallback")
     args = parser.parse_args()
     try:
         if bool(args.publisher_manifest) != bool(args.publisher_signature):
             raise ValueError("publisher manifest and signature must be supplied together")
-        result = verify(args.payload, args.manifest, args.catalog, args.expected_name)
+        result = (verify_recent_fallback(args.payload, args.manifest, args.catalog)
+                  if args.recent_fallback else
+                  verify(args.payload, args.manifest, args.catalog, args.expected_name))
+        if args.recent_fallback and args.expected_name != result["filename"]:
+            raise ValueError("H153051 fallback filename differs from installed name")
         if args.publisher_manifest:
             verify_publisher(args.manifest, args.publisher_manifest,
                              args.publisher_signature, args.expected_name)

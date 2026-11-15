@@ -15,11 +15,17 @@ import time
 
 
 PRIMARY = "dinero-assumeutxo-153578-v6-full.dat"
+RECENT_FALLBACK = "dinero-assumeutxo-153051-v6-full.dat"
 REQUIRED = (
     PRIMARY,
     PRIMARY + ".manifest.json",
     PRIMARY + ".publisher.manifest.json",
     PRIMARY + ".publisher.manifest.sig",
+    RECENT_FALLBACK,
+    RECENT_FALLBACK + ".manifest.json",
+    RECENT_FALLBACK + ".publisher.manifest.json",
+    RECENT_FALLBACK + ".publisher.manifest.sig",
+    "SHA256SUMS-assumeutxo-153051",
 )
 
 
@@ -56,7 +62,7 @@ def wait(tag: str, repo: str, timeout_seconds: float, poll_seconds: float) -> bo
             missing = REQUIRED
             detail = "release lookup pending: " + str(error)[:200]
         if not missing:
-            print(f"four full-v6 release assets ready on {tag} after {attempts} checks", flush=True)
+            print(f"{len(REQUIRED)} full-v6 release assets ready on {tag} after {attempts} checks", flush=True)
             return True
         if detail != last_report:
             print(detail, flush=True)

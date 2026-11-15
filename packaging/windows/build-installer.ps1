@@ -65,6 +65,10 @@ param(
     [string]$SnapshotPath       = '',
     [string]$SnapshotManifestPath = '',
     [string]$SnapshotReleaseTag = 'v8.2.3',
+    [string]$SnapshotRecentFallbackFileName = '',
+    [string]$SnapshotRecentFallbackPath = '',
+    [string]$SnapshotRecentFallbackManifestPath = '',
+    [string]$SnapshotRecentFallbackReleaseTag = 'v8.2.3',
     [string]$SnapshotFallbackFileName   = '',
     [string]$SnapshotFallbackPath       = '',
     [string]$SnapshotFallbackManifestPath = '',
@@ -102,12 +106,16 @@ $Stage   = Join-Path $ScriptDir 'dist\installer-stage'
 $DistDir = Join-Path $ScriptDir 'dist'
 
 # Derive all installed filenames from the GUI's compiled-in constants.
-if ((-not $SnapshotFileName -or -not $SnapshotFallbackFileName -or -not $SnapshotLegacyFallbackFileName -or -not $SnapshotOldestFallbackFileName) -and -not $NoSnapshot) {
+if ((-not $SnapshotFileName -or -not $SnapshotRecentFallbackFileName -or -not $SnapshotFallbackFileName -or -not $SnapshotLegacyFallbackFileName -or -not $SnapshotOldestFallbackFileName) -and -not $NoSnapshot) {
     $qtMain = Join-Path $ProjectRoot 'qt\src\main.cpp'
     if (Test-Path $qtMain) {
         if (-not $SnapshotFileName) {
             $m = Select-String -Path $qtMain -Pattern 'kBundledSnapshotPrimary\[\]\s*=\s*"([^"]+)"' | Select-Object -First 1
             if ($m) { $SnapshotFileName = $m.Matches[0].Groups[1].Value }
+        }
+        if (-not $SnapshotRecentFallbackFileName) {
+            $m = Select-String -Path $qtMain -Pattern 'kBundledSnapshotRecentFallback\[\]\s*=\s*"([^"]+)"' | Select-Object -First 1
+            if ($m) { $SnapshotRecentFallbackFileName = $m.Matches[0].Groups[1].Value }
         }
         if (-not $SnapshotFallbackFileName) {
             $m = Select-String -Path $qtMain -Pattern 'kBundledSnapshotFallback\[\]\s*=\s*"([^"]+)"' | Select-Object -First 1
@@ -121,7 +129,7 @@ if ((-not $SnapshotFileName -or -not $SnapshotFallbackFileName -or -not $Snapsho
             $m = Select-String -Path $qtMain -Pattern 'kBundledSnapshotOldestFallback\[\]\s*=\s*"([^"]+)"' | Select-Object -First 1
             if ($m) { $SnapshotOldestFallbackFileName = $m.Matches[0].Groups[1].Value }
         }
-        Write-Host "Bundled snapshot names: primary=$SnapshotFileName fallbacks=$SnapshotFallbackFileName,$SnapshotLegacyFallbackFileName,$SnapshotOldestFallbackFileName"
+        Write-Host "Bundled snapshot names: primary=$SnapshotFileName fallbacks=$SnapshotRecentFallbackFileName,$SnapshotFallbackFileName,$SnapshotLegacyFallbackFileName,$SnapshotOldestFallbackFileName"
     }
 }
 
@@ -404,7 +412,7 @@ try {
     $ErrorActionPreference = $oldEAP
 }
 
-# Bundle the full-v6 primary and three prior exact lifecycle bases. The old
+# Bundle the full-v6 primary and four prior exact lifecycle bases. The old
 # files allow interrupted imports to restart after Program Files is replaced.
 $snap = Resolve-BundledSnapshot $SnapshotFileName $SnapshotPath $SnapshotReleaseTag 'primary'
 if ($snap) {
@@ -424,6 +432,20 @@ if ($snap) {
     }
 } elseif (-not $NoSnapshot) {
     throw 'Required primary snapshot missing; refusing to produce an installer that silently syncs from genesis.'
+}
+$recentSnap = Resolve-BundledSnapshot $SnapshotRecentFallbackFileName $SnapshotRecentFallbackPath $SnapshotRecentFallbackReleaseTag 'H153051 fallback'
+if ($recentSnap) {
+    $recentManifest = Resolve-BundledSnapshotManifest $SnapshotRecentFallbackFileName $recentSnap $SnapshotRecentFallbackManifestPath $SnapshotRecentFallbackReleaseTag 'H153051 fallback'
+    if (-not $recentManifest) { throw 'Required H153051 snapshot fallback manifest missing.' }
+    Assert-SnapshotManifest $recentSnap $recentManifest $SnapshotRecentFallbackFileName 'H153051 fallback'
+    $recentPublisherManifest = Resolve-PrimaryPublisherAsset $recentSnap "$SnapshotRecentFallbackFileName.publisher.manifest.json" $SnapshotRecentFallbackReleaseTag
+    $recentPublisherSignature = Resolve-PrimaryPublisherAsset $recentSnap "$SnapshotRecentFallbackFileName.publisher.manifest.sig" $SnapshotRecentFallbackReleaseTag
+    & python (Join-Path $ProjectRoot 'packaging\snapshot\check_desktop_primary.py') --recent-fallback --payload $recentSnap --manifest $recentManifest --expected-name $SnapshotRecentFallbackFileName --publisher-manifest $recentPublisherManifest --publisher-signature $recentPublisherSignature
+    if ($LASTEXITCODE -ne 0) { throw 'H153051 fallback is not the signed pinned full-v6 input.' }
+    Copy-Item $recentSnap (Join-Path $Stage $SnapshotRecentFallbackFileName)
+    Copy-Item $recentManifest (Join-Path $Stage "$SnapshotRecentFallbackFileName.manifest.json")
+} elseif (-not $NoSnapshot) {
+    throw 'Required H153051 exact-lifecycle snapshot fallback missing.'
 }
 $fallbackSnap = Resolve-BundledSnapshot $SnapshotFallbackFileName $SnapshotFallbackPath $SnapshotFallbackReleaseTag 'fallback'
 if ($fallbackSnap) {

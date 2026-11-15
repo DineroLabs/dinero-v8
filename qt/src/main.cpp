@@ -118,6 +118,7 @@ QStringList currentBootstrapAddnodes() {
 // ordinary synced datadir, but an interrupted first sync needs the exact old
 // artifact even after the app bundle has been upgraded.
 constexpr char kBundledSnapshotPrimary[] = "dinero-assumeutxo-153578-v6-full.dat";
+constexpr char kBundledSnapshotRecentFallback[] = "dinero-assumeutxo-153051-v6-full.dat";
 constexpr char kBundledSnapshotFallback[] = "dinero-assumeutxo-148375-v5.dat";
 constexpr char kBundledSnapshotLegacyFallback[] = "dinero-assumeutxo-99677-v4.dat";
 constexpr char kBundledSnapshotOldestFallback[] = "utxo-snapshot-65300.dat";
@@ -148,6 +149,7 @@ void appendAssumeUtxoSnapshotArgs(QStringList& args, const QString& datadir) {
 
     const auto selected = dinero::qt::SelectBundledSnapshots({
         findBundledSnapshot(kBundledSnapshotPrimary).toStdString(),
+        findBundledSnapshot(kBundledSnapshotRecentFallback).toStdString(),
         findBundledSnapshot(kBundledSnapshotFallback).toStdString(),
         findBundledSnapshot(kBundledSnapshotLegacyFallback).toStdString(),
         findBundledSnapshot(kBundledSnapshotOldestFallback).toStdString()});

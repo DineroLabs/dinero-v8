@@ -63,6 +63,11 @@ RUN set -eux; \
       --manifest-url "${PRIMARY_SNAPSHOT_MANIFEST_URL}" \
       --signature-url "${PRIMARY_SNAPSHOT_SIGNATURE_URL}" \
       --destination /tmp/dl --catalog /verify/desktop-inputs-candidate.json; \
+    python3 /verify/fetch_desktop_primary.py \
+      --fallback-height 153051 \
+      --payload-url 'https://seed3.dinerolabs.org/v823-candidate/h153051-f7-05105aa3-20d87ae6/snapshot.dat' \
+      --manifest-url 'https://seed3.dinerolabs.org/v823-candidate/h153051-f7-05105aa3-20d87ae6/manifest.json' \
+      --destination /tmp/dl --catalog /verify/desktop-inputs-candidate.json; \
     curl -fsSL -O "${RECOVERY}/dinero-assumeutxo-148375-v5.dat"; \
     curl -fsSL -O "${RECOVERY}/dinero-assumeutxo-148375-v5.dat.manifest.json"; \
     curl -fsSL -O "${RECOVERY}/dinero-assumeutxo-99677-v4.dat"; \
@@ -83,6 +88,7 @@ RUN set -eux; \
     cp "dinero-linux-x86_64-${DINERO_VERSION}/dinerod" /out/dinerod; \
     cp "dinero-linux-x86_64-${DINERO_VERSION}/dinero-cli" /out/dinero-cli; \
     cp dinero-assumeutxo-153578-v6-full.dat* \
+       dinero-assumeutxo-153051-v6-full.dat* \
        dinero-assumeutxo-148375-v5.dat* \
        dinero-assumeutxo-99677-v4.dat* \
        dinero-assumeutxo-73035-v4.dat* \
@@ -106,6 +112,7 @@ COPY --from=fetch /out/dinero-cli /usr/local/bin/dinero-cli
 COPY packaging/docker/check_binary_source.sh /verify/check_binary_source.sh
 RUN sh /verify/check_binary_source.sh /usr/local/bin/dinerod "${EXPECTED_SOURCE_SHA}" "${DINERO_VERSION}"
 COPY --from=fetch /out/dinero-assumeutxo-153578-v6-full.dat* /opt/dinero/
+COPY --from=fetch /out/dinero-assumeutxo-153051-v6-full.dat* /opt/dinero/
 COPY --from=fetch /out/dinero-assumeutxo-148375-v5.dat* /opt/dinero/
 COPY --from=fetch /out/dinero-assumeutxo-99677-v4.dat* /opt/dinero/
 COPY --from=fetch /out/dinero-assumeutxo-73035-v4.dat* /opt/dinero/
@@ -113,7 +120,7 @@ COPY --from=fetch /out/utxo-snapshot-65300.dat* /opt/dinero/
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 ENV DINERO_SNAPSHOT=/opt/dinero/dinero-assumeutxo-153578-v6-full.dat
-ENV DINERO_SNAPSHOT_FALLBACKS="/opt/dinero/dinero-assumeutxo-148375-v5.dat;/opt/dinero/dinero-assumeutxo-99677-v4.dat;/opt/dinero/dinero-assumeutxo-73035-v4.dat;/opt/dinero/utxo-snapshot-65300.dat"
+ENV DINERO_SNAPSHOT_FALLBACKS="/opt/dinero/dinero-assumeutxo-153051-v6-full.dat;/opt/dinero/dinero-assumeutxo-148375-v5.dat;/opt/dinero/dinero-assumeutxo-99677-v4.dat;/opt/dinero/dinero-assumeutxo-73035-v4.dat;/opt/dinero/utxo-snapshot-65300.dat"
 VOLUME /data
 EXPOSE 20999/tcp
 USER dinero

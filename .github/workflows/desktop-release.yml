@@ -312,6 +312,11 @@ jobs:
               --pattern dinero-assumeutxo-153578-v6-full.dat.publisher.manifest.sig \
               --dir release-inputs
           fi
+          python3 packaging/snapshot/fetch_desktop_primary.py \
+            --fallback-height 153051 \
+            --payload-url 'https://seed3.dinerolabs.org/v823-candidate/h153051-f7-05105aa3-20d87ae6/snapshot.dat' \
+            --manifest-url 'https://seed3.dinerolabs.org/v823-candidate/h153051-f7-05105aa3-20d87ae6/manifest.json' \
+            --destination release-inputs
           gh release download v8.2.2 \
             --repo DineroLabs/dinero-v8 \
             --pattern dinero-assumeutxo-148375-v5.dat \
@@ -329,6 +334,8 @@ jobs:
             --dir release-inputs
           echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-153578-v6-full.dat" >> "$GITHUB_ENV"
           echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-153578-v6-full.dat.manifest.json" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_RECENT_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-153051-v6-full.dat" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_RECENT_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-153051-v6-full.dat.manifest.json" >> "$GITHUB_ENV"
           echo "DINERO_SNAPSHOT_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat" >> "$GITHUB_ENV"
           echo "DINERO_SNAPSHOT_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat.manifest.json" >> "$GITHUB_ENV"
           echo "DINERO_SNAPSHOT_LEGACY_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-99677-v4.dat" >> "$GITHUB_ENV"
@@ -584,6 +591,11 @@ jobs:
             --pattern dinero-assumeutxo-153578-v6-full.dat.publisher.manifest.json \
             --pattern dinero-assumeutxo-153578-v6-full.dat.publisher.manifest.sig \
             --dir release-inputs
+          python3 packaging/snapshot/fetch_desktop_primary.py \
+            --fallback-height 153051 \
+            --payload-url 'https://seed3.dinerolabs.org/v823-candidate/h153051-f7-05105aa3-20d87ae6/snapshot.dat' \
+            --manifest-url 'https://seed3.dinerolabs.org/v823-candidate/h153051-f7-05105aa3-20d87ae6/manifest.json' \
+            --destination release-inputs
           gh release download v8.2.2 \
             --repo DineroLabs/dinero-v8 \
             --pattern dinero-assumeutxo-148375-v5.dat \
@@ -601,6 +613,8 @@ jobs:
             --dir release-inputs
           echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-153578-v6-full.dat" >> "$GITHUB_ENV"
           echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-153578-v6-full.dat.manifest.json" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_RECENT_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-153051-v6-full.dat" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_RECENT_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-153051-v6-full.dat.manifest.json" >> "$GITHUB_ENV"
           echo "DINERO_SNAPSHOT_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat" >> "$GITHUB_ENV"
           echo "DINERO_SNAPSHOT_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat.manifest.json" >> "$GITHUB_ENV"
           echo "DINERO_SNAPSHOT_LEGACY_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-99677-v4.dat" >> "$GITHUB_ENV"

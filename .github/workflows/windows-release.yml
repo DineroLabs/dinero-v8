@@ -155,6 +155,11 @@ jobs:
               --manifest-url "$SNAPSHOT_MANIFEST_URL" \
               --destination packaging/windows/dist
           fi
+          python packaging/snapshot/fetch_desktop_primary.py \
+            --fallback-height 153051 \
+            --payload-url 'https://seed3.dinerolabs.org/v823-candidate/h153051-f7-05105aa3-20d87ae6/snapshot.dat' \
+            --manifest-url 'https://seed3.dinerolabs.org/v823-candidate/h153051-f7-05105aa3-20d87ae6/manifest.json' \
+            --destination packaging/windows/dist
           gh release download v8.2.2 --repo DineroLabs/dinero-v8 \
             --pattern 'dinero-assumeutxo-148375-v5.dat' \
             --pattern 'dinero-assumeutxo-148375-v5.dat.manifest.json' \
@@ -404,6 +409,8 @@ jobs:
             -Sv2BuildDir 'dinero-sv2\target\release' `
             -SnapshotPath 'packaging\windows\dist\dinero-assumeutxo-153578-v6-full.dat' `
             -SnapshotManifestPath 'packaging\windows\dist\dinero-assumeutxo-153578-v6-full.dat.manifest.json' `
+            -SnapshotRecentFallbackPath 'packaging\windows\dist\dinero-assumeutxo-153051-v6-full.dat' `
+            -SnapshotRecentFallbackManifestPath 'packaging\windows\dist\dinero-assumeutxo-153051-v6-full.dat.manifest.json' `
             -SnapshotFallbackPath 'packaging\windows\dist\dinero-assumeutxo-148375-v5.dat' `
             -SnapshotFallbackManifestPath 'packaging\windows\dist\dinero-assumeutxo-148375-v5.dat.manifest.json' `
             -SnapshotLegacyFallbackPath 'packaging\windows\dist\dinero-assumeutxo-99677-v4.dat' `
