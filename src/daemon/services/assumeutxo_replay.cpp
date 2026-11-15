@@ -11,10 +11,11 @@
 
 namespace dinero::assumeutxo {
 
-AssumeUtxoReplayEngine::AssumeUtxoReplayEngine()
+AssumeUtxoReplayEngine::AssumeUtxoReplayEngine(consensus::ReplayFailurePolicy policy)
     : network_(Params().network_id),
       genesis_hash_(uint256::FromHexUnsafe(Params().genesis_hash)),
-      set_(consensus::ConsensusUTXOSet::CreateForReplay()),
+      failure_policy_(policy),
+      set_(consensus::ConsensusUTXOSet::CreateForReplay(policy)),
       validator_(std::make_unique<consensus::BlockValidator>(set_.get(),
           [this](const uint256& parent, uint32_t wanted) -> std::optional<uint64_t> {
               if (!seeded_ || parent != tip_hash_ || wanted > last_height_) return std::nullopt;
@@ -129,9 +130,17 @@ bool AssumeUtxoReplayEngine::ConnectAndAdvance(const Block& block, uint32_t heig
     }
     consensus::BlockUndo undo;
     try {
-        if (!validator_->ConnectBlock(block, height, block_hash, undo, error)) return false;
+        if (!validator_->ConnectBlock(block, height, block_hash, undo, error)) {
+            // RetireOwner keeps no pre-block state: a rejected block may have
+            // left partial effects, so this engine can never be used again.
+            if (failure_policy_ == consensus::ReplayFailurePolicy::RetireOwner) unavailable_ = true;
+            return false;
+        }
     } catch (...) {
         unavailable_ = true; error = "replay body or ancestry unavailable"; return false;
+    }
+    if (set_->ReplayRetired()) {
+        unavailable_ = true; error = "replay owner retired"; return false;
     }
     // No replay-spool mutex or SQL transaction spans expensive body validation.
     // If this private append fails after coin effects, retire the whole engine;

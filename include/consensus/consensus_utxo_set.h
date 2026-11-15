@@ -70,12 +70,23 @@ namespace consensus {
  * - Persistence adapter loads/saves snapshots externally
  * - Reorgs use Snapshot()/Restore() for trivial rollback
  */
+// What a private replay owner does when a block fails to connect.
+//  RestoreBlock: restore the exact pre-block state so the owner can continue.
+//    It costs a per-block forest clone, so every partition the block writes
+//    is copied and the replay grows superlinearly with forest size.
+//  RetireOwner: keep no per-block restore state; a failed block permanently
+//    retires the owner. Only for callers that discard the owner on any failure.
+enum class ReplayFailurePolicy { RestoreBlock, RetireOwner };
+
 class ConsensusUTXOSet : public IConsensusUTXOSet {
 public:
     ConsensusUTXOSet();
     // Explicit private replay construction. Does not change ordinary instances,
     // Snapshot/Restore support, or any guarded forest synchronization.
-    static std::unique_ptr<ConsensusUTXOSet> CreateForReplay();
+    static std::unique_ptr<ConsensusUTXOSet> CreateForReplay(
+        ReplayFailurePolicy policy = ReplayFailurePolicy::RestoreBlock);
+    // True once a RetireOwner replay owner has dropped an uncommitted block.
+    bool ReplayRetired() const noexcept { return replay_retired_; }
     std::unique_ptr<BlockConnectRollback> BeginBlockConnectRollback() override;
     ~ConsensusUTXOSet() override = default;
 
@@ -315,7 +326,11 @@ private:
     friend class PreparedUTXOPublication;
     friend struct ReplayCoinRollbackTestAccess;
     class ReplayBlockRollback;
+    class RetiringBlockRollback;
     bool replay_rollback_enabled_ = false;
+    ReplayFailurePolicy replay_failure_policy_ = ReplayFailurePolicy::RestoreBlock;
+    bool retiring_rollback_active_ = false;
+    bool replay_retired_ = false;
     ReplayBlockRollback* replay_rollback_ = nullptr;
     void RememberReplayCoin(const OutPoint& point);
     void RequireNoReplayRollback() const;

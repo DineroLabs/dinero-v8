@@ -8070,7 +8070,10 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
             }
             if(missing){body_data_pending=true;return Status::NotFound;}
         }
-        assumeutxo::AssumeUtxoReplayEngine replay;
+        // Disposable, fail-stop replay: any failure below returns before the
+        // engine or projection is used. It needs no per-block restore state,
+        // whose forest clone made this replay superlinear in chain length.
+        assumeutxo::AssumeUtxoReplayEngine replay(consensus::ReplayFailurePolicy::RetireOwner);
         for(uint32_t height=0;height<ancestry.size();++height) {
             const auto owned=read_body(height);if(!owned){body_data_pending=true;return Status::NotFound;}
             std::string error;

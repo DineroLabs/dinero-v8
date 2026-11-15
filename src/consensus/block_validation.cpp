@@ -2420,8 +2420,15 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
 
     if (consensus_utxo_set_) {
 
-        // 1. Clone current accumulator state (non-destructive simulation)
-        UtreexoForest snapshot = consensus_utxo_set_->GetForest().clone();
+        // 1. Clone current accumulator state (non-destructive simulation).
+        // A retiring private replay owner hands over its live forest instead:
+        // a clone would share every copy-on-write partition and copy each one
+        // this block writes. Any failure before the commit below retires it.
+        std::optional<UtreexoForest> transferred_forest;
+        if (replay_rollback) transferred_forest = replay_rollback->TakeForestForInPlaceConnect();
+        UtreexoForest snapshot = transferred_forest ? std::move(*transferred_forest)
+                                                    : consensus_utxo_set_->GetForest().clone();
+        transferred_forest.reset();
 
         // Phase 8: Reset spent_outputs index for accumulator update
         size_t accumulator_spent_index = 0;

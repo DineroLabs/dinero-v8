@@ -96,15 +96,51 @@ private:
     bool active_ = true;
 };
 
-std::unique_ptr<ConsensusUTXOSet> ConsensusUTXOSet::CreateForReplay() {
+// RetireOwner policy: no forest clone and no coin journal. The returned owner is
+// still non-null, so ConnectBlock keeps skipping its pre-block snapshot. If it is
+// dropped without Commit (validation failure or exception), the set is retired:
+// its partially applied state may never begin another block.
+class ConsensusUTXOSet::RetiringBlockRollback final : public BlockConnectRollback {
+public:
+    explicit RetiringBlockRollback(ConsensusUTXOSet& owner) : owner_(owner) {
+        owner_.retiring_rollback_active_ = true;
+    }
+    ~RetiringBlockRollback() override {
+        owner_.retiring_rollback_active_ = false;
+        if (active_) owner_.replay_retired_ = true;
+    }
+    void Commit() noexcept override {
+        if (!active_) return;
+        owner_.retiring_rollback_active_ = false;
+        active_ = false;
+    }
+    size_t TouchedCoinCount() const noexcept override { return 0; }
+    std::optional<UtreexoForest> TakeForestForInPlaceConnect() override {
+        if (!active_ || taken_) throw std::logic_error("Replay forest transfer requires one active block");
+        taken_ = true;
+        std::unique_lock<std::shared_mutex> lock(owner_.forest_mutex_);
+        std::optional<UtreexoForest> live(std::move(owner_.forest_));
+        owner_.forest_ = UtreexoForest();
+        return live;
+    }
+private:
+    ConsensusUTXOSet& owner_;
+    bool active_ = true;
+    bool taken_ = false;
+};
+
+std::unique_ptr<ConsensusUTXOSet> ConsensusUTXOSet::CreateForReplay(ReplayFailurePolicy policy) {
     auto result = std::make_unique<ConsensusUTXOSet>();
     result->replay_rollback_enabled_ = true;
+    result->replay_failure_policy_ = policy;
     return result;
 }
 
 std::unique_ptr<BlockConnectRollback> ConsensusUTXOSet::BeginBlockConnectRollback() {
     if (!replay_rollback_enabled_) return nullptr;
     RequireNoReplayRollback();
+    if (replay_failure_policy_ == ReplayFailurePolicy::RetireOwner)
+        return std::make_unique<RetiringBlockRollback>(*this);
     auto owner = std::make_unique<ReplayBlockRollback>(*this);
     replay_rollback_ = owner.get();
     return owner;
@@ -115,7 +151,9 @@ void ConsensusUTXOSet::RememberReplayCoin(const OutPoint& point) {
 }
 
 void ConsensusUTXOSet::RequireNoReplayRollback() const {
-    if (replay_rollback_) throw std::logic_error("Replay block rollback already active");
+    if (replay_rollback_ || retiring_rollback_active_)
+        throw std::logic_error("Replay block rollback already active");
+    if (replay_retired_) throw std::logic_error("Replay owner retired after a failed block");
 }
 
 
