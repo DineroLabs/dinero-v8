@@ -3338,6 +3338,24 @@ bool ChainstateService::HasFullArchiveWalletIndexV3() const {
     std::lock_guard<std::mutex> lock(wallet_index_use_mutex_);
     return utxo_index_ && utxo_index_->IsFullArchiveV3MetadataOnly();
 }
+bool ChainstateService::FullArchiveV2LegacySourceUnderLock(const UTXOIndex& index) {
+    return !(GetConfig().utreexo_stateless || compact_startup_ || assumeutxo_active_ ||
+             orchard_snapshot_startup_ || GetSnapshotWalletRecoveryBaseHeight()!=0 ||
+             index.GetMetadata("wallet_snapshot_recovery_base_height") ||
+             chain_db_->getPreBaseCoinSetBase().status()!=Status::NotFound ||
+             !active_tip_ || active_tip_->height<Params().orchard_activation_height ||
+             !UtreexoRpcSnapshotUnderLock().ok());
+}
+bool ChainstateService::FullArchiveV2LegacySourceClass(const UTXOIndex& index) {
+    // The source half of FullArchiveV2LegacySourceUnderLock, without the
+    // moving tip/proof-snapshot conditions: this class never changes.
+    if(Params().orchard_activation_height==UINT32_MAX || index.IsFullArchiveV3MetadataOnly())return false;
+    std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+    return chain_db_ && !(GetConfig().utreexo_stateless || compact_startup_ || assumeutxo_active_ ||
+        orchard_snapshot_startup_ || GetSnapshotWalletRecoveryBaseHeight()!=0 ||
+        index.GetMetadata("wallet_snapshot_recovery_base_height") ||
+        chain_db_->getPreBaseCoinSetBase().status()!=Status::NotFound);
+}
 bool ChainstateService::RecoveredV3TransparentSendSourceReady() {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     try {
@@ -7285,44 +7303,16 @@ ChainstateService::resumeRuntimeWalletRecoveryIfNeeded(WalletManager& wallet, UT
             // transparent rows from a height alone.
             {
                 std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
-                if(GetConfig().utreexo_stateless || compact_startup_ || assumeutxo_active_ ||
-                   orchard_snapshot_startup_ || GetSnapshotWalletRecoveryBaseHeight()!=0 ||
-                   index.GetMetadata("wallet_snapshot_recovery_base_height") ||
-                   chain_db_->getPreBaseCoinSetBase().status()!=Status::NotFound ||
-                   !active_tip_ || active_tip_->height<Params().orchard_activation_height ||
-                   !UtreexoRpcSnapshotUnderLock().ok())return Status::Invalid;
+                if(!FullArchiveV2LegacySourceUnderLock(index))return Status::Invalid;
                 storage::RequireFullOrchardStorage(*chain_db_);
-                if(legacy_state==WalletManager::LegacyTransparentState::Absent) {
-                    auto lease=wallet.AcquireDatabaseLease();
-                    if(!wallet.SoleDatabaseLeaseHeld() || lease->Session()!=session ||
-                       wallet.getUTXOIndex()!=&index)return Status::Invalid;
-                    (void)lease->BeginLegacyTransparentMigration();
-                    legacy_state=WalletManager::LegacyTransparentState::Pending;
-                }
+                // Fail closed: automatic v2 migration of a full-archive legacy
+                // wallet replays the whole origin inline and cannot certify its
+                // old rows. Refuse before enrollment or any coverage capture;
+                // only `--upgrade-wallet-index-v3` migrates this class.
+                if(legacy_state!=WalletManager::LegacyTransparentState::Complete)
+                    return Status::Invalid;
             }
             const ChainstateRuntimeRecoverySource recovery_source(*this);
-            if(legacy_state==WalletManager::LegacyTransparentState::Pending) {
-                // Full archival desktop recovery can retain a large history.
-                // Compact/mobile coverage keeps the existing 64 MiB budget.
-                bool body_data_pending=false;
-                const auto coverage=captureRuntimeWalletCoverage(wallet,session,index,false,
-                    body_data_pending,false,legacy_material_limit_bytes);
-                if(!coverage.ok())return coverage.status();
-                std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
-                const auto page=getRuntimeDeliveryPage((*coverage)->Head(),1);
-                if(!page.ok() || safe_mode_active_ || (*page)->head!=(*coverage)->Head() ||
-                   (*page)->next!=(*coverage)->Head() || !(*page)->events.empty() ||
-                   !(*page)->after_tip || (*page)->after_tip->first!=(*coverage)->TipHash() ||
-                   (*page)->after_tip->second!=(*coverage)->TipHeight())return Status::Invalid;
-                RuntimeOrdinaryDelivery::ReconcileLegacyTransparentCoverage(wallet,index,**coverage,[&] {
-                    const auto fresh=getRuntimeDeliveryPage((*coverage)->Head(),1);
-                    if(!fresh.ok() || safe_mode_active_ || (*fresh)->head!=(*coverage)->Head() ||
-                       (*fresh)->next!=(*coverage)->Head() || !(*fresh)->events.empty() ||
-                       !(*fresh)->after_tip || (*fresh)->after_tip->first!=(*coverage)->TipHash() ||
-                       (*fresh)->after_tip->second!=(*coverage)->TipHeight())
-                        throw std::runtime_error("Legacy transparent selected source changed");
-                });
-            }
             const auto completed=RuntimeWalletRecovery::ResumeTransparentStores(
                 recovery_source,wallet,index,session);
             wallet.PublishRecoveredBlockchainHeight(wallet.getBlockchainHeight(),completed.applied.tip_height,session);

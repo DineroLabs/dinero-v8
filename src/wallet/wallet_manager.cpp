@@ -363,6 +363,13 @@ void WalletManager::DisableLegacyRescansForFullArchiveV3() {
     full_archive_v3_legacy_rescans_disabled_ = true;
 }
 
+void WalletManager::MarkFullArchiveV2LegacySource() {
+    std::lock_guard<std::recursive_mutex> lock(database_lifecycle_mutex_);
+    if (full_archive_v3_legacy_rescans_disabled_)
+        throw std::runtime_error("Full-archive v3 wallet source cannot be a v2 legacy source");
+    full_archive_v2_legacy_source_ = true;
+}
+
 bool WalletManager::LegacyRescansDisabledForFullArchiveV3() const {
     std::lock_guard<std::recursive_mutex> lock(database_lifecycle_mutex_);
     return full_archive_v3_legacy_rescans_disabled_;
@@ -3551,7 +3558,20 @@ WalletManager::DatabaseLease::UnenrolledLegacyTransparentScanHeight() const {
         "SELECT last_scanned_height FROM sync_meta WHERE id=1");
 }
 
+bool WalletManager::DatabaseLease::LegacyV3UpgradeRequired() const {
+    {
+        std::lock_guard<std::recursive_mutex> lock(owner_.database_lifecycle_mutex_);
+        if (!owner_.full_archive_v2_legacy_source_) return false;
+    }
+    const auto state = LegacyTransparentState();
+    if (state == WalletManager::LegacyTransparentState::Pending) return true;
+    return state == WalletManager::LegacyTransparentState::Absent &&
+           UnenrolledLegacyTransparentScanHeight().has_value();
+}
+
 void WalletManager::DatabaseLease::RequireLegacyTransparentFinancialReady() const {
+    if (LegacyV3UpgradeRequired())
+        throw std::runtime_error(WalletManager::kLegacyWalletV3UpgradeRequired);
     const auto state = LegacyTransparentState();
     if (state == WalletManager::LegacyTransparentState::Pending)
         throw std::runtime_error("Legacy transparent wallet migration pending");

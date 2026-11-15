@@ -1245,20 +1245,21 @@ offerFullArchiveWalletIndexUpgrade(const QString& datadir) {
   choice.setWindowTitle(QStringLiteral("Update wallet history"));
   choice.setText(QStringLiteral("Update full-node wallet history"));
   choice.setInformativeText(QStringLiteral(
-      "Your existing wallet index needs an offline update to show transparent "
-      "payments and mining rewards received after Orchard activation. Dinero "
-      "will verify the source and make a separate rollback copy before changing "
-      "the index. Your wallet keys are not changed. The daemon starts after "
-      "the update.\n\n"
-      "If you choose Not now, your wallet data stays unchanged, but recent "
-      "rewards and sending may remain unavailable until history is updated."));
+      "This existing full-node data needs an offline wallet-index update before "
+      "the desktop app can open it. Dinero will verify the source and make a "
+      "separate rollback copy before changing the index. Your wallet keys are "
+      "not changed. The node starts after the update.\n\n"
+      "If you choose Not now, Dinero quits without starting the node and your "
+      "data stays unchanged. You can update the next time you open Dinero."));
   auto* upgrade = choice.addButton(QStringLiteral("Update history"), QMessageBox::AcceptRole);
   auto* later = choice.addButton(QStringLiteral("Not now"), QMessageBox::RejectRole);
   choice.setDefaultButton(later);
   choice.setEscapeButton(later);
   choice.exec();
-  if (choice.clickedButton() != upgrade)
-    return WalletIndexStartupMode::LegacyOrUnavailable;
+  if (!dinero::qt::ShouldLaunchDaemonAfterWalletIndexChoice(
+          choice.clickedButton() == upgrade ? dinero::qt::WalletIndexUpgradeChoice::Update
+                                            : dinero::qt::WalletIndexUpgradeChoice::NotNow))
+    return std::nullopt;
 
   const auto updated = runWalletIndexMaintenance(
       daemonPath, QStringList{QStringLiteral("--upgrade-wallet-index-v3")} + rootArgs,

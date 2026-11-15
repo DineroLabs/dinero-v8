@@ -174,6 +174,16 @@ public:
     // a caller bypasses the RPC readiness check.
     void DisableLegacyRescansForFullArchiveV3();
     bool LegacyRescansDisabledForFullArchiveV3() const;
+    // A full-archive v2 source (no stateless, compact, assumeutxo, snapshot
+    // or imported base) with Orchard configured. Its never-enrolled or
+    // pending legacy transparent wallet is never migrated automatically; the
+    // supported path is the offline `dinerod --upgrade-wallet-index-v3`.
+    // Set once when chainstate binds the v2 index; one-way per manager.
+    void MarkFullArchiveV2LegacySource();
+    static constexpr const char* kLegacyWalletV3UpgradeRequired =
+        "Wallet index upgrade required: stop dinerod and run "
+        "`dinerod --upgrade-wallet-index-v3 --datadir=<dir>`, then restart. "
+        "Balances stay unavailable until the upgrade completes.";
 
     // Descriptor Store integration (inject DescriptorStore pointer for descriptor-based address generation)
     void setDescriptorStore(din::DescriptorStore* descriptor_store) { descriptor_store_ = descriptor_store; }
@@ -328,6 +338,9 @@ public:
         // Financial reads/sends refuse pending migration, and refuse the
         // brief complete-before-height-publication window.
         void RequireLegacyTransparentFinancialReady() const;
+        // Non-mutating: this wallet is a never-enrolled (absent) or pending
+        // legacy transparent wallet on a full-archive v2 source.
+        [[nodiscard]] bool LegacyV3UpgradeRequired() const;
         // An identity alone never makes this transparent-only wallet an
         // Orchard account or a source of Orchard binding authority.
         void RequireOrchardWalletReady() const;
@@ -1212,6 +1225,7 @@ private:
     sqlite3* registry_db_ = nullptr;      // Wallet registry database (wallet_registry.db)
     mutable std::recursive_mutex database_lifecycle_mutex_;
     bool full_archive_v3_legacy_rescans_disabled_ = false; // same lock; one-way per manager
+    bool full_archive_v2_legacy_source_ = false; // same lock; one-way per manager
     size_t database_leases_ = 0; // protected by database_lifecycle_mutex_
     size_t recovery_seeds_ = 0; // same lock; recovery seed must die before last lease
     const std::shared_ptr<const uint8_t> instance_token_ = std::make_shared<const uint8_t>(0);

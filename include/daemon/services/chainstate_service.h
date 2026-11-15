@@ -196,6 +196,11 @@ public:
         std::shared_ptr<ChainstateService> source);
     // Classification only; does not certify a selected wallet's v3 receipt.
     bool HasFullArchiveWalletIndexV3() const;
+    // Static source class for a v2 index bind: Orchard configured and no
+    // stateless, compact, assumeutxo, snapshot or imported pre-base source.
+    // An incomplete legacy wallet on this class needs the offline v3 upgrade
+    // (WalletManager::MarkFullArchiveV2LegacySource); never auto-migrated.
+    bool FullArchiveV2LegacySourceClass(const UTXOIndex& index);
     // Source-side capability hint for a current recovered transparent wallet.
     // Signing rechecks every condition and both wallet receipts under the
     // selected lock; this alone never authorizes a payment.
@@ -1796,6 +1801,9 @@ private:
     StatusOr<std::unique_ptr<const ImportedWalletSource>> CaptureImportedWalletSourceUnderLock(
         const std::unique_lock<std::mutex>& snapshot, UTXOIndex&);
     struct ImportedOrchardDeliverySource;
+    // Requires activation_mutex_. The full-archive admission for a legacy
+    // transparent wallet: no compact, stateless, snapshot or imported base.
+    bool FullArchiveV2LegacySourceUnderLock(const UTXOIndex& index);
     StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> captureRuntimeWalletOrigin(
         WalletManager&,uint64_t,UTXOIndex*,bool existing_identity_only,bool public_history,bool& body_data_pending,
         bool retained_history = false,size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes,

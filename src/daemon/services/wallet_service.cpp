@@ -219,6 +219,10 @@ bool WalletService::Start() {
             logger_interface_->info("[WalletService] v3 metadata-only index retained by chainstate");
         } else if (utxo_index) {
             wallet_mgr_->setUTXOIndex(utxo_index);
+            if (chainstate_ && chainstate_->FullArchiveV2LegacySourceClass(*utxo_index)) {
+                wallet_mgr_->MarkFullArchiveV2LegacySource();
+                logger_interface_->info("[WalletService] Full-archive v2 source: incomplete legacy wallets require the offline v3 upgrade");
+            }
             logger_interface_->info("[WalletService] ✅ UTXOIndex set in WalletManager");
         } else {
             logger_interface_->error("[WalletService] ❌ CRITICAL: UTXOIndex not available!");
@@ -588,6 +592,8 @@ WalletService::CanonicalRecovery WalletService::RecoverActiveWalletFromCanonical
         const auto recovered=index->Index().IsFullArchiveV3MetadataOnly() ?
             chainstate_->resumeRuntimeWalletRecoveryV3IfNeeded(use->Wallet(),index->Index(),expected_session) :
             chainstate_->resumeRuntimeWalletRecoveryIfNeeded(use->Wallet(),index->Index(),expected_session);
+        if (!recovered.ok() && use->Wallet().AcquireDatabaseLease()->LegacyV3UpgradeRequired())
+            throw std::runtime_error(WalletManager::kLegacyWalletV3UpgradeRequired);
         if (!recovered.ok())
             throw std::runtime_error("canonical wallet recovery deferred: checked source, unlocked keys and authenticated store baselines are required");
         return *recovered ? CanonicalRecovery::AppliedPrefix : CanonicalRecovery::NotRequired;

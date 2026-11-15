@@ -6,6 +6,8 @@ using dinero::qt::kProductionDaemonBootstrapOwner;
 using dinero::qt::WalletIndexStartupMode;
 using dinero::qt::ShouldArmBundledSnapshot;
 using dinero::qt::ShouldOfferWalletIndexV3Upgrade;
+using dinero::qt::WalletIndexUpgradeChoice;
+using dinero::qt::ShouldLaunchDaemonAfterWalletIndexChoice;
 
 static_assert(kProductionDaemonBootstrapOwner == DaemonBootstrapOwner::ApplicationMain,
               "production startup must retain a single daemon-bootstrap owner");
@@ -21,6 +23,10 @@ static_assert(!ShouldOfferWalletIndexV3Upgrade(false),
               "an ineligible source must not be offered the offline upgrade");
 static_assert(ShouldOfferWalletIndexV3Upgrade(true),
               "an eligible installed wallet must be offered the offline upgrade");
+static_assert(!ShouldLaunchDaemonAfterWalletIndexChoice(WalletIndexUpgradeChoice::NotNow),
+              "a declined full-archive v2 update must quit before daemon spawn");
+static_assert(ShouldLaunchDaemonAfterWalletIndexChoice(WalletIndexUpgradeChoice::Update),
+              "an accepted update proceeds to the verified upgrade");
 
 int main() {
     return (!ShouldScheduleWindowDaemonStart(kProductionDaemonBootstrapOwner) &&
@@ -28,7 +34,9 @@ int main() {
             ShouldArmBundledSnapshot(WalletIndexStartupMode::LegacyOrUnavailable) &&
             !ShouldArmBundledSnapshot(WalletIndexStartupMode::FullArchiveV3) &&
             !ShouldOfferWalletIndexV3Upgrade(false) &&
-            ShouldOfferWalletIndexV3Upgrade(true))
+            ShouldOfferWalletIndexV3Upgrade(true) &&
+            !ShouldLaunchDaemonAfterWalletIndexChoice(WalletIndexUpgradeChoice::NotNow) &&
+            ShouldLaunchDaemonAfterWalletIndexChoice(WalletIndexUpgradeChoice::Update))
                ? 0
                : 1;
 }

@@ -13,6 +13,8 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext&, const din::J
 din::Json rpc_context_wallet_getstatus(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_wallet_getsyncstate(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_wallet_unlock(const ExecutionContext&, const din::Json&);
+din::Json rpc_context_wallet_listunspent(const ExecutionContext&, const din::Json&);
+din::Json rpc_context_wallet_utxoproof(const ExecutionContext&, const din::Json&);
 namespace dinero {
 namespace {
 using Recovery=WalletService::CanonicalRecovery;
@@ -246,6 +248,22 @@ struct CanonicalRecoveryFixture : OrchardCycleFixture {
         return MempoolTransaction::FromOrchard(
             orchard::TransactionEnvelope::Create(0,{input},outputs,fee,bundle.Bytes()));
     }
+    // F9 removed automatic full-archive v2 migration. This reproduces the
+    // durable Complete state an earlier build could leave, so the retained
+    // Complete-v2 delivery/read paths stay covered. Never a product path.
+    void MigrateAsEarlierBuild() {
+        auto use=WalletService::AcquireWalletUse(wallet);
+        auto index=ChainstateService::AcquireWalletIndexUse(f.service);
+        uint64_t session=0;
+        {auto lease=use->Wallet().AcquireDatabaseLease();session=lease->Session();
+         if(lease->LegacyTransparentState()==WalletManager::LegacyTransparentState::Absent)
+             (void)lease->BeginLegacyTransparentMigration();}
+        const auto coverage=f.service->getRuntimeWalletCoverage(use->Wallet(),session,index->Index());
+        OrchardAdmissionFixture::Require(coverage.ok());
+        RuntimeOrdinaryDelivery::ReconcileLegacyTransparentCoverage(use->Wallet(),index->Index(),**coverage,[]{});
+        OrchardAdmissionFixture::Require(use->Wallet().AcquireDatabaseLease()->LegacyTransparentState()==
+            WalletManager::LegacyTransparentState::Complete);
+    }
     std::pair<uint64_t,double> PrepareFundedHistoricalWallet() {
         auto use=WalletService::AcquireWalletUse(wallet);
         auto index=ChainstateService::AcquireWalletIndexUse(f.service);
@@ -259,6 +277,25 @@ struct CanonicalRecoveryFixture : OrchardCycleFixture {
         return {coin->amount,balance.total};
     }
 };
+bool HasLegacyStateColumn(WalletManager& wallet) {
+    auto lease=wallet.AcquireDatabaseLease();sqlite3_stmt* q=nullptr;
+    OrchardAdmissionFixture::Require(sqlite3_prepare_v2(lease->Database(),
+        "SELECT 1 FROM pragma_table_info('wallet_meta') WHERE name='runtime_legacy_transparent_state_v1'",
+        -1,&q,nullptr)==SQLITE_OK);
+    const bool present=sqlite3_step(q)==SQLITE_ROW;sqlite3_finalize(q);return present;
+}
+// Pure SQL: RuntimeOrdinaryDelivery::ReadForWallet would itself create the
+// delivery identity, so it cannot prove that refusal wrote nothing.
+bool HasDeliveryIdentity(WalletManager& wallet) {
+    auto lease=wallet.AcquireDatabaseLease();sqlite3_stmt* q=nullptr;
+    OrchardAdmissionFixture::Require(sqlite3_prepare_v2(lease->Database(),
+        "SELECT 1 FROM pragma_table_info('wallet_meta') WHERE name='runtime_delivery_id'",-1,&q,nullptr)==SQLITE_OK);
+    const bool column=sqlite3_step(q)==SQLITE_ROW;sqlite3_finalize(q);
+    if(!column)return false;
+    OrchardAdmissionFixture::Require(sqlite3_prepare_v2(lease->Database(),
+        "SELECT runtime_delivery_id IS NOT NULL FROM wallet_meta WHERE id=1",-1,&q,nullptr)==SQLITE_OK);
+    const bool present=sqlite3_step(q)==SQLITE_ROW && sqlite3_column_int(q,0)==1;sqlite3_finalize(q);return present;
+}
 }
 TEST(WalletCanonicalRecovery, LegacyTransparentWalletEarnsActualCoinbaseWithoutCatalog) {
     CanonicalRecoveryFixture f(false,true);
@@ -283,6 +320,7 @@ TEST(WalletCanonicalRecovery, LegacyTransparentWalletEarnsActualCoinbaseWithoutC
         sqlite3_finalize(q);
     }
     use.reset();
+    f.MigrateAsEarlierBuild();
     EXPECT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(),Recovery::AppliedPrefix);
     ASSERT_TRUE(f.wallet->Start());
     use=WalletService::AcquireWalletUse(f.wallet);
@@ -788,6 +826,7 @@ TEST(WalletCanonicalRecovery, WalletSwitchNeverClaimsAnotherWalletIndexReceipt) 
     ASSERT_EQ(f.f.service->GetActiveTip()->height,103u);
     const auto primary_amount=f.MineToWallet(); // H104 credits only the first wallet.
     ASSERT_EQ(f.f.service->GetActiveTip()->height,104u);
+    f.MigrateAsEarlierBuild();
     ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(),Recovery::AppliedPrefix);
     {
         auto use=WalletService::AcquireWalletUse(f.wallet);
@@ -826,8 +865,9 @@ TEST(WalletCanonicalRecovery, WalletSwitchNeverClaimsAnotherWalletIndexReceipt) 
         const auto balance=rpc_context_wallet_getbalance(request,din::obj());
         EXPECT_EQ(balance["error_code"].asString(),"wallet_balance_not_current");
         EXPECT_FALSE(balance.isMember("total"));
+        // F9: refused before enrollment; the second wallet is never marked.
         auto lease=use->Wallet().AcquireDatabaseLease();
-        EXPECT_EQ(lease->LegacyTransparentState(),WalletManager::LegacyTransparentState::Pending);
+        EXPECT_EQ(lease->LegacyTransparentState(),WalletManager::LegacyTransparentState::Absent);
     }
     {
         auto use=WalletService::AcquireWalletUse(f.wallet);
@@ -854,6 +894,7 @@ TEST(WalletCanonicalRecovery, EmptyPreactivationHistoryRecoversTwoRealCoinbasesA
     const auto first=f.MineToWallet(); // H102, no preactivation wallet coins.
     const auto second=f.MineToWallet(); // H103, independent typed Orchard body.
     ASSERT_EQ(f.f.service->GetActiveTip()->height,103u);
+    f.MigrateAsEarlierBuild();
     ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(),Recovery::AppliedPrefix);
     {
         auto use=WalletService::AcquireWalletUse(f.wallet);
@@ -913,28 +954,25 @@ TEST(WalletCanonicalRecovery, EncryptedLegacyTransparentWalletWaitsForActualUnlo
     din::Json unlock(Json::arrayValue);unlock.append("canonical-fixture-pass");unlock.append(0);
     const auto response=rpc_context_wallet_unlock(request,unlock);
     ASSERT_TRUE(response["success"].asBool()) << response.toStyledString();
-    EXPECT_FALSE(response.isMember("recovery_warning")) << response.toStyledString();
-    const auto session=f.wallet->get().AcquireDatabaseLease()->Session();
+    // F9: unlock never runs full-archive v2 migration. Before WalletService
+    // starts, the inline call reaches the Core refusal; afterwards the armed
+    // source flag reports the offline upgrade without any inline call.
+    EXPECT_FALSE(response["recovery_warning"].asString().empty()) << response.toStyledString();
     {
         auto lease=f.wallet->get().AcquireDatabaseLease();
-        EXPECT_EQ(lease->LegacyTransparentState(),WalletManager::LegacyTransparentState::Complete);
+        EXPECT_EQ(lease->LegacyTransparentState(),WalletManager::LegacyTransparentState::Absent);
     }
-    const auto receipt=RuntimeOrdinaryDelivery::ReadForWallet(f.wallet->get(),session);
-    ASSERT_TRUE(receipt);
-    EXPECT_EQ(receipt->tip_height,103u);
-    EXPECT_EQ(receipt->tip_hash,f.f.service->GetActiveTip()->hash);
-    EXPECT_EQ(f.wallet->get().getBlockchainHeight(),103u);
-    EXPECT_GT(f.wallet->get().getBalance().total,0.0);
-    din::Json mined_request=din::obj();mined_request["type"]="mined";
-    const auto mined=rpc_context_wallet_listtransactions(request,mined_request);
-    ASSERT_TRUE(mined.isArray()) << mined.toStyledString();
-    ASSERT_EQ(mined.size(),2u);
-    for(const auto& entry:mined)EXPECT_GT(entry["time"].asDouble(),0.0);
+    EXPECT_FALSE(HasDeliveryIdentity(f.wallet->get()));
+    ASSERT_TRUE(f.wallet->Start());
     f.wallet->get().lockWallet();
-    f.wallet->get().open("canonical-recovery");
-    EXPECT_TRUE(f.wallet->get().isLocked());
-    EXPECT_EQ(f.wallet->get().getBlockchainHeight(),103u);
-    EXPECT_GT(f.wallet->get().getBalance().total,0.0);
+    const auto started=rpc_context_wallet_unlock(request,unlock);
+    ASSERT_TRUE(started["success"].asBool()) << started.toStyledString();
+    EXPECT_EQ(started["recovery_mode"].asString(),"upgrade_required") << started.toStyledString();
+    const auto refused=rpc_context_wallet_getbalance(request,din::obj());
+    EXPECT_EQ(refused["error_code"].asString(),"wallet_index_upgrade_required") << refused.toStyledString();
+    EXPECT_FALSE(refused.isMember("total"));
+    EXPECT_EQ(f.wallet->get().AcquireDatabaseLease()->LegacyTransparentState(),
+        WalletManager::LegacyTransparentState::Absent);
 }
 TEST(WalletCanonicalRecovery, EncryptedUnlockReportsSourceGapWithoutPublishingBalance) {
     CanonicalRecoveryFixture f(true,true);
@@ -951,7 +989,8 @@ TEST(WalletCanonicalRecovery, EncryptedUnlockReportsSourceGapWithoutPublishingBa
     EXPECT_FALSE(response.isMember("recovery_mode")) << response.toStyledString();
     EXPECT_FALSE(f.wallet->get().isLocked());
     auto lease=f.wallet->get().AcquireDatabaseLease();
-    EXPECT_EQ(lease->LegacyTransparentState(),WalletManager::LegacyTransparentState::Pending);
+    // F9: refused before enrollment, so no pending marker is written.
+    EXPECT_EQ(lease->LegacyTransparentState(),WalletManager::LegacyTransparentState::Absent);
     lease.reset();
     const auto balance=rpc_context_wallet_getbalance(request,din::obj());
     EXPECT_EQ(balance["error_code"].asString(),"wallet_balance_not_current") << balance.toStyledString();
@@ -966,6 +1005,7 @@ TEST(WalletCanonicalRecovery, CompletedTransparentWalletRefusesStaleSelectedTipB
     f.DowngradeToPreIdentityTransparentWallet();
     (void)f.MineToWallet();
     ASSERT_EQ(f.f.service->GetActiveTip()->height,102u);
+    f.MigrateAsEarlierBuild();
     ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(),Recovery::AppliedPrefix);
     // The selected chain advances while the wallet service is not started.
     // A complete receipt for H102 cannot authorize an H103 balance response.
@@ -1036,7 +1076,7 @@ TEST(WalletCanonicalRecovery, CompletedTransparentWalletRefusesStaleSelectedTipB
     EXPECT_EQ(f.f.ingress->mempool().size(),mempool_before);
     EXPECT_EQ(ordinary_invalid(),0) << "limited send changed the recovery receipt";
 }
-TEST(WalletCanonicalRecovery, MissingHistoricalBodyKeepsLegacyMigrationPending) {
+TEST(WalletCanonicalRecovery, MissingHistoricalBodyNeverEnrollsLegacyMigration) {
     CanonicalRecoveryFixture f(false,true);
     (void)f.PrepareFundedHistoricalWallet();
     f.DowngradeToPreIdentityTransparentWallet();
@@ -1047,14 +1087,18 @@ TEST(WalletCanonicalRecovery, MissingHistoricalBodyKeepsLegacyMigrationPending) 
     EXPECT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(),Recovery::Deferred);
     auto use=WalletService::AcquireWalletUse(f.wallet);
     auto lease=use->Wallet().AcquireDatabaseLease();
-    EXPECT_EQ(lease->LegacyTransparentState(),WalletManager::LegacyTransparentState::Pending);
+    EXPECT_EQ(lease->LegacyTransparentState(),WalletManager::LegacyTransparentState::Absent);
     sqlite3_stmt* scan=nullptr;
     ASSERT_EQ(sqlite3_prepare_v2(lease->Database(),
         "SELECT last_scanned_height FROM sync_meta WHERE id=1",-1,&scan,nullptr),SQLITE_OK);
     ASSERT_EQ(sqlite3_step(scan),SQLITE_ROW);
     EXPECT_EQ(sqlite3_column_int(scan,0),101);
     sqlite3_finalize(scan);
-    lease.reset();
+    lease.reset();use.reset();
+    // The started service arms the wallet-layer fence for this source class.
+    ASSERT_TRUE(f.wallet->Start());
+    use=WalletService::AcquireWalletUse(f.wallet);
+    EXPECT_TRUE(use->Wallet().AcquireDatabaseLease()->LegacyV3UpgradeRequired());
     EXPECT_THROW((void)use->Wallet().getBalance(),std::runtime_error);
 }
 TEST(WalletCanonicalRecovery, EarnedPrefixAndEncryptedUnlockRestoreActualNote) {
@@ -1116,6 +1160,110 @@ TEST(WalletCanonicalRecovery, RequiredWriteFailureRetainsPrefixForRetry) {
      ASSERT_EQ(sqlite3_exec(lease->Database(),"DROP TRIGGER refuse_recovery_account",nullptr,nullptr,nullptr),SQLITE_OK);}
     EXPECT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(),Recovery::AppliedPrefix);
     EXPECT_EQ(f.ReadAccount().account.Scan().BalanceUna(),500000u);
+}
+// F9: a never-enrolled or pending legacy transparent wallet on a full-archive
+// v2 source is never migrated automatically. Refusal is non-mutating, typed and
+// non-retryable; it leaves chain/sync introspection readable.
+namespace {
+void ExpectUpgradeRequiredReads(CanonicalRecoveryFixture& f,const std::string& coin_txid) {
+    ExecutionContext request;request.daemon=&f.context;request.walletName="canonical-recovery";
+    const auto expect_refused=[](const din::Json& r,const char* what) {
+        EXPECT_EQ(r["error_code"].asString(),"wallet_index_upgrade_required") << what << r.toStyledString();
+        EXPECT_FALSE(r["retryable"].asBool()) << what;
+        EXPECT_NE(r["error"].asString().find("--upgrade-wallet-index-v3"),std::string::npos) << what;
+    };
+    const auto balance=rpc_context_wallet_getbalance(request,din::obj());
+    expect_refused(balance,"getbalance");EXPECT_FALSE(balance.isMember("total"));
+    const auto info=rpc_context_wallet_getwalletinfo(request,din::obj());
+    expect_refused(info,"getwalletinfo");EXPECT_FALSE(info.isMember("balance"));
+    const auto unspent=rpc_context_wallet_listunspent(request,din::obj());
+    ASSERT_TRUE(unspent.isObject()) << unspent.toStyledString();
+    expect_refused(unspent,"listunspent");
+    din::Json history=din::obj();history["count"]=10;
+    const auto listed=rpc_context_wallet_listtransactions(request,history);
+    ASSERT_TRUE(listed.isObject()) << listed.toStyledString();
+    expect_refused(listed,"listtransactions");
+    din::Json proof(Json::arrayValue);proof.append(coin_txid+":0");
+    const auto utxo=rpc_context_wallet_utxoproof(request,proof);
+    expect_refused(utxo,"utxoproof");EXPECT_FALSE(utxo.isMember("amount_una"));
+    const auto status=rpc_context_wallet_getstatus(request,din::obj());
+    EXPECT_FALSE(status["balance_available"].asBool()) << status.toStyledString();
+    EXPECT_FALSE(status.isMember("total_balance")) << status.toStyledString();
+    const auto sync=rpc_context_wallet_getsyncstate(request,din::obj());
+    EXPECT_FALSE(sync.isMember("error")) << sync.toStyledString();
+    EXPECT_FALSE(sync["balance_available"].asBool()) << sync.toStyledString();
+    EXPECT_EQ(sync["error_code"].asString(),"wallet_index_upgrade_required") << sync.toStyledString();
+    // Sends use the same wallet-layer financial gate as the signer.
+    auto lease=f.wallet->get().AcquireDatabaseLease();
+    try { lease->RequireLegacyTransparentFinancialReady(); ADD_FAILURE() << "send gate admitted"; }
+    catch(const std::runtime_error& e) {
+        EXPECT_STREQ(e.what(),WalletManager::kLegacyWalletV3UpgradeRequired);
+    }
+}
+}
+TEST(WalletCanonicalRecovery, F9AbsentFullArchiveV2LegacyWalletRefusesAutomaticMigration) {
+    CanonicalRecoveryFixture f(true,true);
+    (void)f.PrepareFundedHistoricalWallet();
+    f.DowngradeToPreIdentityTransparentWallet();
+    (void)f.MineToWallet();(void)f.MineToWallet();
+    ASSERT_EQ(f.f.service->GetActiveTip()->height,103u);
+    f.wallet->get().lockWallet();
+    ASSERT_TRUE(f.wallet->Start());
+    // Unlock must not run the inline v2 origin capture.
+    ExecutionContext request;request.daemon=&f.context;request.walletName="canonical-recovery";
+    din::Json unlock(Json::arrayValue);unlock.append("canonical-fixture-pass");unlock.append(0);
+    const auto response=rpc_context_wallet_unlock(request,unlock);
+    ASSERT_TRUE(response["success"].asBool()) << response.toStyledString();
+    EXPECT_EQ(response["recovery_mode"].asString(),"upgrade_required") << response.toStyledString();
+    std::string error;
+    EXPECT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),Recovery::Deferred);
+    EXPECT_EQ(error,WalletManager::kLegacyWalletV3UpgradeRequired);
+    // Non-mutating: no enrollment marker, delivery id or ordinary receipt.
+    EXPECT_FALSE(HasLegacyStateColumn(f.wallet->get()));
+    {
+        auto lease=f.wallet->get().AcquireDatabaseLease();
+        EXPECT_EQ(lease->LegacyTransparentState(),WalletManager::LegacyTransparentState::Absent);
+        EXPECT_TRUE(lease->UnenrolledLegacyTransparentScanHeight().has_value());
+        EXPECT_TRUE(lease->LegacyV3UpgradeRequired());
+    }
+    EXPECT_FALSE(HasDeliveryIdentity(f.wallet->get()));
+    ExpectUpgradeRequiredReads(f,f.f.blocks[101].vtx.at(1).GetTxid().AsUint256().GetHex());
+    // Refused reads and sends are non-mutating too.
+    EXPECT_FALSE(HasDeliveryIdentity(f.wallet->get()));
+    EXPECT_FALSE(HasLegacyStateColumn(f.wallet->get()));
+    EXPECT_TRUE(f.wallet->get().AcquireDatabaseLease()->LegacyV3UpgradeRequired());
+}
+TEST(WalletCanonicalRecovery, F9PendingFullArchiveV2LegacyWalletStaysPendingWithoutCapture) {
+    CanonicalRecoveryFixture f(false,true);
+    (void)f.PrepareFundedHistoricalWallet();
+    f.DowngradeToPreIdentityTransparentWallet();
+    (void)f.MineToWallet();
+    ASSERT_TRUE(f.wallet->Start());
+    // Model a wallet an earlier build enrolled before its capture stopped.
+    {auto lease=f.wallet->get().AcquireDatabaseLease();(void)lease->BeginLegacyTransparentMigration();}
+    std::string error;
+    EXPECT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),Recovery::Deferred);
+    EXPECT_EQ(error,WalletManager::kLegacyWalletV3UpgradeRequired);
+    {
+        auto lease=f.wallet->get().AcquireDatabaseLease();
+        EXPECT_EQ(lease->LegacyTransparentState(),WalletManager::LegacyTransparentState::Pending);
+        EXPECT_TRUE(lease->LegacyV3UpgradeRequired());
+        EXPECT_FALSE(RuntimeOrdinaryDelivery::ReadForWallet(f.wallet->get(),lease->Session()));
+    }
+    ExpectUpgradeRequiredReads(f,f.f.blocks[101].vtx.at(1).GetTxid().AsUint256().GetHex());
+}
+TEST(WalletCanonicalRecovery, F9CatalogWalletOnFullArchiveV2IsNotUpgradeRequired) {
+    CanonicalRecoveryFixture f(false,true);
+    (void)f.PrepareFundedHistoricalWallet();
+    ASSERT_TRUE(f.wallet->Start());
+    auto lease=f.wallet->get().AcquireDatabaseLease();
+    EXPECT_EQ(lease->LegacyTransparentState(),WalletManager::LegacyTransparentState::Absent);
+    EXPECT_FALSE(lease->UnenrolledLegacyTransparentScanHeight().has_value());
+    EXPECT_FALSE(lease->LegacyV3UpgradeRequired());
+    lease.reset();
+    ExecutionContext request;request.daemon=&f.context;request.walletName="canonical-recovery";
+    const auto balance=rpc_context_wallet_getbalance(request,din::obj());
+    EXPECT_NE(balance["error_code"].asString(),"wallet_index_upgrade_required") << balance.toStyledString();
 }
 #endif
 } // namespace dinero

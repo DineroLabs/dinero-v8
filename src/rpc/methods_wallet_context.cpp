@@ -684,6 +684,12 @@ class LegacyBalanceNotCurrent final : public std::runtime_error {
 public:
     LegacyBalanceNotCurrent() : std::runtime_error(
         "Legacy transparent wallet is catching up to the selected chain") {}
+    // Not a catch-up: a full-archive v2 legacy wallet that only the offline
+    // v3 upgrade can migrate. Callers must not retry it.
+    struct UpgradeRequired {};
+    explicit LegacyBalanceNotCurrent(UpgradeRequired) : std::runtime_error(
+        dinero::WalletManager::kLegacyWalletV3UpgradeRequired), upgrade_required(true) {}
+    bool upgrade_required = false;
 };
 
 template <typename Read>
@@ -703,6 +709,8 @@ static auto ReadWithCurrentLegacyTransparentTip(
             throw std::runtime_error("Balance wallet ownership unavailable");
         selected_name = lease->WalletName();
         session = lease->Session();
+        if (lease->LegacyV3UpgradeRequired())
+            throw LegacyBalanceNotCurrent(LegacyBalanceNotCurrent::UpgradeRequired{});
         state = lease->LegacyTransparentState();
         if (state == dinero::WalletManager::LegacyTransparentState::Absent)
             unenrolled_scan_height = lease->UnenrolledLegacyTransparentScanHeight();
@@ -805,8 +813,9 @@ static dinero::WalletManager::BalanceSummary ReadCurrentWalletBalanceSummary(
 static void MarkLegacyBalanceNotCurrent(din::Json& result,
                                         const LegacyBalanceNotCurrent& error) {
     result["error"] = error.what();
-    result["error_code"] = "wallet_balance_not_current";
-    result["retryable"] = true;
+    result["error_code"] = error.upgrade_required ? "wallet_index_upgrade_required"
+                                                  : "wallet_balance_not_current";
+    result["retryable"] = !error.upgrade_required;
 }
 
 bool RefuseIfLegacyTransparentTipNotCurrent(
@@ -2892,6 +2901,11 @@ din::Json rpc_context_wallet_unlock(const ExecutionContext& ctx, const din::Json
             // worker certifies v3 recovery separately; the legacy snapshot
             // hook always refuses v3 and its warning is not recovery status.
             result["recovery_mode"] = "owner_scoped_async";
+        } else if (wallet_use->Wallet().AcquireDatabaseLease()->LegacyV3UpgradeRequired()) {
+            // Never run the full-archive v2 origin replay inline on this RPC;
+            // that class migrates only through the offline v3 upgrade.
+            result["recovery_mode"] = "upgrade_required";
+            result["recovery_warning"] = dinero::WalletManager::kLegacyWalletV3UpgradeRequired;
         } else {
             std::string recovery_error;
             if (!wallet_service->RecoverActiveWalletFromSnapshotIfNeeded(&recovery_error, unlocked_session)) {
@@ -4262,6 +4276,19 @@ din::Json rpc_context_wallet_utxoproof(const ExecutionContext& ctx, const din::J
         if (txid.size() != 64 || txid.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) {
             result["error"] = "Invalid txid: expected 32-byte hexadecimal value";
             return result;
+        }
+
+        // The v2 wallet index rows of an unmigrated full-archive legacy
+        // wallet are not current; never answer a wallet amount from them.
+        if (const auto wallet_service = ctx.daemon->wallet
+                ? std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet) : nullptr;
+            wallet_service && wallet_service->hasActiveWallet()) {
+            auto use = dinero::WalletService::AcquireWalletUse(wallet_service);
+            if (use->Wallet().AcquireDatabaseLease()->LegacyV3UpgradeRequired()) {
+                MarkLegacyBalanceNotCurrent(result,
+                    LegacyBalanceNotCurrent(LegacyBalanceNotCurrent::UpgradeRequired{}));
+                return result;
+            }
         }
 
         // The index is a recognition check only. Its metadata is not the

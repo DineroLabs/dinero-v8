@@ -32,6 +32,15 @@ constexpr bool ShouldOfferWalletIndexV3Upgrade(bool eligibleV2) noexcept {
     return eligibleV2;
 }
 
+// The desktop app never opens existing full-archive v2 data without the
+// offline update: Core refuses automatic v2 wallet migration, so a declined
+// update quits before dinerod is spawned instead of starting a node whose
+// wallet balances stay unavailable.
+enum class WalletIndexUpgradeChoice { Update, NotNow };
+constexpr bool ShouldLaunchDaemonAfterWalletIndexChoice(WalletIndexUpgradeChoice choice) noexcept {
+    return choice == WalletIndexUpgradeChoice::Update;
+}
+
 inline constexpr DaemonBootstrapOwner kProductionDaemonBootstrapOwner =
     DaemonBootstrapOwner::ApplicationMain;
 
