@@ -254,6 +254,7 @@ jobs:
         run: |
           cmake -S . -B build-desktop -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON \
             -DDINERO_USE_VENDORED_DEPS=ON \
             -DDINERO_BUILD_QT=ON \
             -DDINERO_BUILD_ORCHARD_BACKEND=ON \
@@ -274,6 +275,11 @@ jobs:
           cmake --build build-desktop -j"$(nproc)" --target \
             dinerod dinero-cli dinero-swap-tower dinero-qt dinero-miner dinero-stratum-worker \
             dinero-wallet-cli dinero-gpu-miner dinero-solo-miner-cli dinero-seeder
+
+      - name: Verify daemon output cannot block before the Qt event loop
+        run: |
+          cmake --build build-desktop --target test_daemon_output
+          ctest --test-dir build-desktop/qt -R '^DaemonOutputBeforeEventLoop$' --output-on-failure
 
       - name: Assert OpenSSL policy pin
         run: bash scripts/ci/check_openssl_version.sh build-desktop 3.5.7
@@ -608,6 +614,7 @@ jobs:
         run: |
           cmake -S . -B build-desktop -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON \
             -DCMAKE_PREFIX_PATH="$QT_PREFIX" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
             -DDINERO_USE_VENDORED_DEPS=ON \
@@ -633,6 +640,11 @@ jobs:
           cmake --build build-desktop -j"$(sysctl -n hw.ncpu)" --target \
             dinerod dinero-cli dinero-swap-tower dinero-qt dinero-miner dinero-stratum-worker \
             dinero-wallet-cli dinero-gpu-miner dinero-solo-miner-cli dinero-seeder
+
+      - name: Verify daemon output cannot block before the Qt event loop
+        run: |
+          cmake --build build-desktop --target test_daemon_output
+          ctest --test-dir build-desktop/qt -R '^DaemonOutputBeforeEventLoop$' --output-on-failure
 
       - name: Assert reachability stack
         run: |

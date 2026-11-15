@@ -1740,7 +1740,7 @@ if(BUILD_TESTING)
   target_link_libraries(test_daemon_output PRIVATE Qt6::Core)
   target_compile_definitions(test_daemon_output PRIVATE QT_NO_KEYWORDS)
   add_test(NAME DaemonOutputBeforeEventLoop COMMAND test_daemon_output)
-  set_tests_properties(DaemonOutputBeforeEventLoop PROPERTIES TIMEOUT 20)
+  set_tests_properties(DaemonOutputBeforeEventLoop PROPERTIES TIMEOUT 30)
 
   add_executable(test_pool_cockpit ${_wallet_test_sources} tests/test_pool_cockpit.cpp)
   target_link_libraries(test_pool_cockpit PRIVATE

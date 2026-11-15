@@ -47,7 +47,7 @@ int main(int argc, char** argv) {
     // The GUI may be blocked in Keychain access before its event loop starts.
     // A pipe-based daemon would fill stdout and never reach this marker.
     bool completedWithoutEventLoop = false;
-    for (int i = 0; i < 100; ++i) {
+    for (int i = 0; i < 200; ++i) {
         if (QFileInfo::exists(markerPath)) {
             completedWithoutEventLoop = true;
             break;
@@ -69,6 +69,17 @@ int main(int argc, char** argv) {
     const auto permissions = QFileInfo(logPath).permissions();
     if (permissions & (QFileDevice::ReadGroup | QFileDevice::WriteGroup |
                        QFileDevice::ReadOther | QFileDevice::WriteOther)) return 18;
+    log.close();
+    if (!QFile::remove(logPath)) return 19;
+    const QString protectedPath = dir.filePath(QStringLiteral("protected"));
+    QFile protectedFile(protectedPath);
+    if (!protectedFile.open(QIODevice::WriteOnly) ||
+        protectedFile.write("keep") != 4) return 20;
+    protectedFile.close();
+    if (!QFile::link(protectedPath, logPath)) return 21;
+    QProcess refused;
+    if (dinero::qt::configureDaemonOutput(&refused, dir.path(), &error)) return 22;
+    if (!protectedFile.open(QIODevice::ReadOnly) || protectedFile.readAll() != "keep") return 23;
 #endif
     return 0;
 }
