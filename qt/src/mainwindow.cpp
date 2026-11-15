@@ -6440,9 +6440,11 @@ void MainWindow::showWalletBalanceUnavailable() {
   updateWalletBalanceDisplay();
   updateWalletUIState();
   if (lblErrorMessage_) {
-    lblErrorMessage_->setText(walletBalanceAccepted_
-        ? "Wallet balance unavailable; showing the last verified amount. Sending paused."
-        : "Wallet balance unavailable; waiting for a complete wallet response.");
+    lblErrorMessage_->setText(walletRecoveryUnlockNeeded_ && !walletUnlocked_
+        ? "Wallet history is incomplete. Unlock this wallet to finish recovery; sending is paused."
+        : walletBalanceAccepted_
+          ? "Wallet balance unavailable; showing the last verified amount. Sending paused."
+          : "Wallet balance unavailable; waiting for a complete wallet response.");
     lblErrorMessage_->setVisible(true);
   }
 }
@@ -6865,8 +6867,10 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         showWalletBalanceUnavailable();
         return;
       }
+      const bool recoveringFromLockedWallet = walletRecoveryUnlockNeeded_;
       walletBalanceAccepted_ = true;
       walletBalanceUnavailable_ = false;
+      walletRecoveryUnlockNeeded_ = false;
       walletBalanceVerifiedAtMs_ = QDateTime::currentMSecsSinceEpoch();
       const auto sendReady = obj.value("send_ready");
       walletSendReady_ = sendReady.isUndefined() ||
@@ -6876,9 +6880,14 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       walletSendUnavailableReason_ = walletSendReady_ ? QString() :
           obj.value("send_unavailable_reason").toString(
               "Sending is unavailable for this wallet");
-      if (lblErrorMessage_ && lblErrorMessage_->text().startsWith("Wallet balance unavailable;")) {
+      if (lblErrorMessage_ &&
+          (lblErrorMessage_->text().startsWith("Wallet balance unavailable;") ||
+           lblErrorMessage_->text().startsWith("Wallet history is incomplete."))) {
         lblErrorMessage_->setVisible(false);
       }
+      if (recoveringFromLockedWallet && lblConnectionStatus_ &&
+          lblConnectionStatus_->text().startsWith("Wallet selected;"))
+        lblConnectionStatus_->setText("Wallet selected; balance current");
       double confirmed = obj["confirmed"].toDouble();
       double unconfirmed = obj["unconfirmed"].toDouble();
       double immature = obj["immature"].toDouble();
@@ -14789,6 +14798,11 @@ void MainWindow::onUnlockWallet() {
         } else {
           // SUCCESS: Wallet unlocked
           walletUnlocked_ = true;
+          const bool restoringHistory = walletRecoveryUnlockNeeded_;
+          if (restoringHistory) {
+            lblConnectionStatus_->setText("Wallet selected; history recovering");
+            showWalletBalanceUnavailable();
+          }
 
           // Use the same one-hour timeout as the daemon unlock request.
           unlockSecondsRemaining_ = kWalletUnlockTimeoutSeconds;
@@ -14806,11 +14820,12 @@ void MainWindow::onUnlockWallet() {
           // Update all wallet-dependent UI
           updateWalletUIState();
 
-          QMessageBox::information(this, "Success",
-            "✅ Wallet unlocked successfully!\n\n"
-            "• Taproot signing is now enabled\n"
-            "• Wallet will auto-lock in 1 hour\n"
-            "• You can now spend P2TR outputs and sign transactions");
+          QMessageBox::information(this, "Success", restoringHistory
+            ? "Wallet unlocked. History recovery is continuing. Sending will resume when the balance is current."
+            : "✅ Wallet unlocked successfully!\n\n"
+              "• Taproot signing is now enabled\n"
+              "• Wallet will auto-lock in 1 hour\n"
+              "• You can now spend P2TR outputs and sign transactions");
         }
       });
 
@@ -15014,6 +15029,7 @@ void MainWindow::clearWalletScopedUiState() {
   showMiningRewardsUnavailable();
   walletBalanceAccepted_ = false;
   walletBalanceUnavailable_ = false;
+  walletRecoveryUnlockNeeded_ = false;
   walletBalanceVerifiedAtMs_ = 0;
   walletSendReady_ = false;
   walletTransparentV3SendReady_ = false;
@@ -15153,6 +15169,8 @@ void MainWindow::finishConfirmedWalletSwitchWithoutBalance(const QString& reason
 
   const QString walletName = confirmedWalletOpenName_;
   const bool unlocked = confirmedWalletOpenUnlocked_;
+  const bool unlockForRecovery = !unlocked &&
+      reason.contains("Legacy transparent wallet is catching up", Qt::CaseInsensitive);
   walletSwitchInFlight_ = false;
   pendingWalletOpenName_.clear();
   confirmedWalletOpenName_.clear();
@@ -15178,8 +15196,11 @@ void MainWindow::finishConfirmedWalletSwitchWithoutBalance(const QString& reason
   if (vaultPanel_) vaultPanel_->refresh();
   if (shieldedWidget_) shieldedWidget_->refresh();
   if (tblContracts_) refreshContractsList();
+  walletRecoveryUnlockNeeded_ = unlockForRecovery;
   showWalletBalanceUnavailable();
-  lblConnectionStatus_->setText("Wallet selected; balance syncing");
+  lblConnectionStatus_->setText(unlockForRecovery
+      ? "Wallet selected; unlock to finish recovery"
+      : "Wallet selected; balance syncing");
   lblConnectionStatus_->setStyleSheet(headerPillStyle());
   lblConnectionStatus_->setToolTip(QString("Active wallet: %1. %2").arg(walletName, reason));
 }

@@ -69,6 +69,10 @@ private Q_SLOTS:
         QVERIFY(balance->text().contains("unavailable", Qt::CaseInsensitive));
         QVERIFY(!send->isEnabled());
         QVERIFY(lock->text().contains("Locked"));
+        QVERIFY(error->text().contains("Unlock this wallet to finish recovery"));
+        Q_EMIT rpc->rpcError("wallet.getbalance", -32603,
+            "Legacy transparent wallet is catching up to the selected chain");
+        QVERIFY(error->text().contains("Unlock this wallet to finish recovery"));
 
         // A transport error after a *different* confirmed open must also
         // finish the switch without inheriting India's financial state.
@@ -87,6 +91,18 @@ private Q_SLOTS:
         QVERIFY(error->text().startsWith("Wallet balance unavailable;"));
         Q_EMIT rpc->rpcError("wallet.getinfo", -32603, "Unexpected wallet metadata failure");
         QVERIFY(error->text().contains("Unexpected wallet metadata failure"));
+
+        // The balance refusal can arrive before the getinfo refusal too.
+        selector->setCurrentText("India");
+        load->click();
+        Q_EMIT rpc->rpcResult("wallet.open", QJsonObject{{"success", true}, {"wallet_name", "India"}, {"locked", true}});
+        Q_EMIT rpc->rpcError("wallet.getbalance", -32603,
+            "Legacy transparent wallet is catching up to the selected chain");
+        Q_EMIT rpc->rpcResult("wallet.getinfo", QJsonObject{
+            {"error", "Legacy transparent wallet is catching up to the selected chain"},
+            {"error_code", "wallet_balance_not_current"},
+            {"retryable", true}});
+        QVERIFY(error->text().contains("Unlock this wallet to finish recovery"));
     }
     void sharedCovenantComposerMovesWithoutDuplicatingState() {
         QTemporaryDir dir;

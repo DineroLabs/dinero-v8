@@ -847,6 +847,7 @@ private:
   double cachedTransparentBalance_ = 0.0;
   bool walletBalanceAccepted_ = false;
   bool walletBalanceUnavailable_ = false;
+  bool walletRecoveryUnlockNeeded_ = false;
   qint64 walletBalanceVerifiedAtMs_ = 0;
   bool walletSendReady_ = false;
   bool walletTransparentV3SendReady_ = false;
