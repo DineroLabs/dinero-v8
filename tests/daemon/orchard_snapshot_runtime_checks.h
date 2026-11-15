@@ -2967,6 +2967,16 @@ TEST(OrchardSnapshotRuntime, QueuedDownloadedHeaderIsRevalidatedWithoutSelectedP
 
 TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles) {
     using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
+    // This direct-service fixture selects its profile with utreexo_stateless.
+    // Earlier DaemonApp tests can leave a named profile in the process-global
+    // config; named profiles take precedence for archival replay admission.
+    struct SyncProfileScope {
+        std::string previous=GetConfig().sync_profile;
+        ~SyncProfileScope(){GetConfig().sync_profile=previous;}
+    } sync_profile_scope;
+    // Model a preceding daemon test even when this case runs alone.
+    GetConfig().sync_profile="mac_fullblock";
+    GetConfig().sync_profile.clear();
     OrchardCycleFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
     MutableParams().state_commitment_burial_depth=0;
     const auto receiver=orchard::WalletKeys::FromSeed(std::array<uint8_t,64>{53},0);
@@ -3046,6 +3056,7 @@ TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles)
         struct ContextGuard {DaemonContext* prior=DaemonContext::instance();
             ~ContextGuard(){BlockAcceptor::SetContext(prior);DaemonContext::setInstance(prior);}} guard;
         GetConfig().utreexo_stateless=stateless;
+        ASSERT_TRUE(GetConfig().sync_profile.empty());
         for(unsigned run=0;run<2;++run) {
             if(!stateless&&run==1) {
                 // Probe the full-v6 cold-restart Init route with a migrated
