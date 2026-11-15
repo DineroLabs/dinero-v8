@@ -240,7 +240,15 @@ case "$1" in
       *) exit 1 ;;
     esac
     exit 0 ;;
-  exec) exit 0 ;;
+  exec)
+    case "$*" in
+      *getsnapshotbootstrapstatus*)
+        echo '{"snapshot_bootstrap":{"assumeutxo_active":true,"fatal":false,"snapshot_base_height":152700,"snapshot_base_block":"00000005f90ed3ae11d7ee08745fb3ae329eeec25ed14f0fae3b94738b292781"}}' ;;
+      *getblockchaininfo*) echo '{"blocks":152701}' ;;
+      *getblockhash*) echo '"00000005f90ed3ae11d7ee08745fb3ae329eeec25ed14f0fae3b94738b292781"' ;;
+      *) exit 1 ;;
+    esac
+    exit 0 ;;
   logs)
     if [ "$DOCKER_MISSING_SNAPSHOT_LOG" != 1 ]; then
       echo '[entrypoint] assumeutxo_snapshot=yes assumeutxo_fallbacks=yes assumeutxo_forward_connect=yes'
@@ -261,6 +269,10 @@ exit 1
         self.assertIn('Docker restart daemon reached RPC readiness', result.stdout)
         starts = [line for line in calls.read_text().splitlines() if line.startswith('run -d ')]
         self.assertEqual(len(starts), 2)
+        for rpc in ('getsnapshotbootstrapstatus', 'getblockchaininfo', 'getblockhash 152700'):
+            self.assertGreaterEqual(
+                sum(line.startswith('exec ') and rpc in line for line in calls.read_text().splitlines()),
+                2, f'{rpc} was not checked on both the fresh and restart passes')
         self.assertEqual(starts[0].split('--mount ')[1].split(' ')[0],
                          starts[1].split('--mount ')[1].split(' ')[0])
 
