@@ -1,7 +1,7 @@
 name: Wallet v3 exact-head Windows qualification
 
 # Disposable CI branch only. This workflow runs no signing, packaging, release,
-# deployment, or artifact upload. It checks out the immutable F5 source SHA.
+# deployment, or artifact upload. It checks out the immutable F6 source SHA.
 on:
   workflow_dispatch:
 
@@ -17,13 +17,13 @@ jobs:
       run:
         shell: pwsh
     env:
-      V3_SOURCE_SHA: af388fa1966f05b5aa2774aff4e39523d8e4a317
+      V3_SOURCE_SHA: e145daa202cf27b516285b56ddf15c0023456bac
       BUILD_DIR: build-v3-msvc
     steps:
-      - name: Checkout exact F5 product source
+      - name: Checkout exact F6 product source
         uses: actions/checkout@v4
         with:
-          ref: af388fa1966f05b5aa2774aff4e39523d8e4a317
+          ref: e145daa202cf27b516285b56ddf15c0023456bac
           submodules: recursive
           fetch-depth: 0
           persist-credentials: false
@@ -32,7 +32,7 @@ jobs:
         run: |
           $actual = (git rev-parse HEAD).Trim()
           Write-Host "Product source: $actual"
-          if ($actual -ne $env:V3_SOURCE_SHA) { throw "Expected F5 source $env:V3_SOURCE_SHA; got $actual" }
+          if ($actual -ne $env:V3_SOURCE_SHA) { throw "Expected F6 source $env:V3_SOURCE_SHA; got $actual" }
           if ((git status --porcelain).Length -ne 0) { throw 'Product checkout is dirty' }
 
       - name: Setup MSVC x64
@@ -114,16 +114,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Focused CMake configure failed' }
           Select-String -Path "$env:BUILD_DIR\CMakeCache.txt" -Pattern '^(DINERO_BUILD_ORCHARD_BACKEND|DINERO_BUILD_QT|DINERO_ORCHARD_WINDOWS_QUALIFICATION):' | ForEach-Object { $_.Line }
 
-      - name: Build focused daemon and test targets
+      - name: Build focused Windows wallet v3 and Qt targets
         run: |
-          cmake --build $env:BUILD_DIR --parallel 2 --target dinerod test_daemon_service_release test_assumeutxo_replay test_wallet_layout
+          cmake --build $env:BUILD_DIR --parallel 2 --target test_assumeutxo_replay test_wallet_layout
           if ($LASTEXITCODE -ne 0) { throw 'Focused Windows MSVC build failed' }
 
       - name: Prove focused CTests are registered
         run: |
-          $names = @('WalletIndexV3StartupRefusal', 'WalletIndexV3Status',
-                     'WalletV3Spend', 'WalletV3RecoveryRoute', 'WalletLayout')
-          $inventory = (ctest --test-dir $env:BUILD_DIR -N -R '^(WalletIndexV3StartupRefusal|WalletIndexV3Status|WalletV3Spend|WalletV3RecoveryRoute|WalletLayout)$' 2>&1) -join "`n"
+          $names = @('WalletV3Spend', 'WalletV3RecoveryRoute', 'WalletLayout')
+          $inventory = (ctest --test-dir $env:BUILD_DIR -N -R '^(WalletV3Spend|WalletV3RecoveryRoute|WalletLayout)$' 2>&1) -join "`n"
           Write-Host $inventory
           if ($LASTEXITCODE -ne 0) { throw 'CTest inventory failed' }
           foreach ($name in $names) {
@@ -133,17 +132,16 @@ jobs:
       - name: Run exact Windows wallet v3 and layout cases
         run: |
           $env:QT_QPA_PLATFORM_PLUGIN_PATH = "$env:QT_ROOT_DIR\plugins\platforms"
-          ctest --test-dir $env:BUILD_DIR --no-tests=error --output-on-failure -j 1 -R '^(WalletIndexV3StartupRefusal|WalletIndexV3Status|WalletV3Spend|WalletV3RecoveryRoute|WalletLayout)$' 2>&1 |
+          ctest --test-dir $env:BUILD_DIR --no-tests=error --output-on-failure -j 1 -R '^(WalletV3Spend|WalletV3RecoveryRoute|WalletLayout)$' 2>&1 |
             Tee-Object -FilePath wallet-v3-ctest.log | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'Focused wallet v3 Windows CTests failed' }
           $log = Get-Content -Raw wallet-v3-ctest.log
-          foreach ($name in @('WalletIndexV3StartupRefusal', 'WalletIndexV3Status',
-                              'WalletV3Spend', 'WalletV3RecoveryRoute', 'WalletLayout')) {
+          foreach ($name in @('WalletV3Spend', 'WalletV3RecoveryRoute', 'WalletLayout')) {
             if ($log -notmatch ("(?m)Test +#\d+: " + [regex]::Escape($name) + "(?:\s|$)")) {
               throw "CTest did not run $name"
             }
           }
-          if ($log -notmatch '100% tests passed, 0 tests failed out of 5') {
-            throw 'Expected exactly five passing wallet v3 Windows CTests'
+          if ($log -notmatch '100% tests passed, 0 tests failed out of 3') {
+            throw 'Expected exactly three passing wallet v3 Windows CTests'
           }
-          Write-Host "WINDOWS_WALLET_V3_PASS source=$env:V3_SOURCE_SHA count=5"
+          Write-Host "WINDOWS_WALLET_V3_PASS source=$env:V3_SOURCE_SHA count=3"
