@@ -17,6 +17,7 @@
 #include <string>
 #include "bundledsnapshotpolicy.h"
 #include "daemonstartuppolicy.h"
+#include "daemonoutput.h"
 #include <QMessageBox>
 #include <QPushButton>
 #include <QCheckBox>
@@ -477,41 +478,9 @@ static void assignDaemonToWinJobObject(QProcess* daemonProc) {
 // doesn't trigger a "daemon exited unexpectedly" dialog.
 static bool g_quittingCleanly = false;
 
-// Last N lines of dinerod's debug.log for fail-loud error dialogs.
-// Keep a bounded copy of dinerod's stdout/stderr because a double-clicked
-// application bundle has no parent terminal to retain it.
-constexpr char kDaemonCapturedOutputProperty[] = "_dineroDaemonCapturedOutput";
-constexpr qsizetype kDaemonCapturedOutputLimit = 64 * 1024;
-
-static void appendDaemonCapturedOutput(QProcess* process, const QByteArray& bytes,
-                                       dinero::DebugConsole* debugConsole) {
-    if (!process || bytes.isEmpty()) return;
-    QByteArray captured = process->property(kDaemonCapturedOutputProperty).toByteArray();
-    captured.append(bytes);
-    if (captured.size() > kDaemonCapturedOutputLimit) {
-        captured = captured.right(kDaemonCapturedOutputLimit);
-    }
-    process->setProperty(kDaemonCapturedOutputProperty, captured);
-    if (debugConsole) {
-        for (const QString& line : QString::fromUtf8(bytes).split('\n', Qt::SkipEmptyParts)) {
-            debugConsole->logDaemonOutput(line);
-        }
-    }
-}
-
-static void captureDaemonOutput(QProcess* process, dinero::DebugConsole* debugConsole) {
-    QObject::connect(process, &QProcess::readyReadStandardOutput,
-                     [process, debugConsole]() {
-        appendDaemonCapturedOutput(process, process->readAllStandardOutput(), debugConsole);
-    });
-    QObject::connect(process, &QProcess::readyReadStandardError,
-                     [process, debugConsole]() {
-        appendDaemonCapturedOutput(process, process->readAllStandardError(), debugConsole);
-    });
-}
-
 static QString daemonLogTail(const QString& datadir, int maxLines = 20) {
     const QStringList candidates = {
+        dinero::qt::daemonOutputLogPath(datadir),
         QDir(datadir).filePath("debug.log"),
         QDir(datadir).filePath("dinero.log"),
         QDir(datadir).filePath("p2p.log")};
@@ -583,16 +552,7 @@ static QString datadirLockDiagnostic(const QString& datadir) {
 }
 
 static QString daemonFailureDetails(QProcess* process, const QString& datadir) {
-    if (process) {
-        const QString captured = QString::fromUtf8(
-            process->property(kDaemonCapturedOutputProperty).toByteArray()).trimmed();
-        if (!captured.isEmpty()) {
-            const QStringList lines = captured.split('\n', Qt::SkipEmptyParts);
-            const int start = qMax(0, static_cast<int>(lines.size()) - 40);
-            return QStringLiteral("Captured dinerod output:\n\n%1\n\n%2")
-                .arg(lines.mid(start).join('\n'), datadirLockDiagnostic(datadir));
-        }
-    }
+    Q_UNUSED(process);
     return QStringLiteral("%1\n\n%2")
         .arg(daemonLogTail(datadir, 40), datadirLockDiagnostic(datadir));
 }
@@ -938,10 +898,15 @@ static QProcess* startDaemon(const QString& datadir, dinero::DebugConsole* debug
     // auto-observer by passing `-vault.address=<din1p…>` and
     // optional `-vault.account=<id>` on the daemon command line.
 
-    // Always retain a bounded tail so a double-clicked app can explain an
-    // early or runtime daemon failure. Forward the same stream to the optional
-    // debug console without relying on a debug.log that dinerod does not write.
-    captureDaemonOutput(daemonProc, debugConsole);
+    // A startup-time Keychain prompt can block the GUI event loop. Redirect
+    // both streams to a diagnostic file so dinerod never blocks on a full pipe.
+    Q_UNUSED(debugConsole);
+    QString outputError;
+    if (!dinero::qt::configureDaemonOutput(daemonProc, datadir, &outputError)) {
+        qWarning() << "Cannot configure daemon output:" << outputError;
+        delete daemonProc;
+        return nullptr;
+    }
 
     // Start the daemon
     daemonProc->start(daemonPath, args);
@@ -1452,7 +1417,12 @@ int main(int argc, char** argv) {
       wipeArgs << currentBootstrapAddnodes();
 
       daemonProcess = new QProcess(QCoreApplication::instance());
-      captureDaemonOutput(daemonProcess, g_debugConsole.data());
+      QString outputError;
+      if (!dinero::qt::configureDaemonOutput(daemonProcess, datadir, &outputError)) {
+        QMessageBox::critical(nullptr, "Error", outputError);
+        delete daemonProcess;
+        return 1;
+      }
       daemonProcess->start(daemonPath, wipeArgs);
 
       if (!daemonProcess->waitForStarted(5000)) {

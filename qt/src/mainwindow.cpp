@@ -9,6 +9,7 @@
 #include "miningrewards.h"
 #include "inforow.h"
 #include "mainwindow.h"
+#include "daemonoutput.h"
 #if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
 #include "orchardwidget.h"
 #endif
@@ -9040,6 +9041,17 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
 
         qDebug() << "🗂️ Using datadir:" << datadir;
 
+        QString outputError;
+        if (!dinero::qt::configureDaemonOutput(daemonProcess_, datadir, &outputError)) {
+          qWarning() << "Cannot configure daemon output:" << outputError;
+          lblConnectionStatus_->setText("Daemon start failed");
+          lblConnectionStatus_->setStyleSheet(headerPillStyle());
+          delete daemonProcess_;
+          daemonProcess_ = nullptr;
+          showingDialog = false;
+          return;
+        }
+
         daemonProcess_->setProgram(daemonPath);
         daemonProcess_->setArguments(QStringList()
           << QString("--datadir=%1").arg(datadir)
@@ -14456,6 +14468,16 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
   qDebug() << "Starting daemon:" << dinerodPath << args << "showFeedback=" << showFeedback
            << "openLogWindow=" << openLogWindow;
 
+  QString outputError;
+  if (!dinero::qt::configureDaemonOutput(daemonProcess_, datadir, &outputError)) {
+    suppressErrorDialogs_ = false;
+    qWarning() << "Cannot configure daemon output:" << outputError;
+    if (showFeedback) {
+      QMessageBox::critical(this, "Start Failed", outputError);
+    }
+    return false;
+  }
+
   daemonProcess_->start(dinerodPath, args);
 
   if (!daemonProcess_->waitForStarted(3000)) {
@@ -14476,10 +14498,10 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
   if (openLogWindow) {
     QString terminalCmd;
 #ifdef Q_OS_MAC
-    const QString debugLog = datadir + "/debug.log";
+    const QString debugLog = dinero::qt::daemonOutputLogPath(datadir);
     terminalCmd = QString("osascript -e 'tell application \"Terminal\" to do script \"echo \\\"Dinero Daemon Output\\\"; echo \\\"===================\\\"; tail -f %1\"'").arg(debugLog);
 #else
-    const QString debugLog = datadir + "/debug.log";
+    const QString debugLog = dinero::qt::daemonOutputLogPath(datadir);
     terminalCmd = QString("xterm -e 'tail -f %1' &").arg(debugLog);
 #endif
     QProcess::startDetached("/bin/sh", QStringList() << "-c" << terminalCmd);

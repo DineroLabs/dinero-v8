@@ -551,6 +551,8 @@ set(GUI_SOURCES
   src/privatecovenantwidget.cpp
   src/privatecovenantwidget.h
   src/main.cpp
+  src/daemonoutput.cpp
+  src/daemonoutput.h
   src/rpcclient.cpp
   src/rpcclient.h
   src/changeaddressmanager.cpp
@@ -1732,6 +1734,13 @@ if(BUILD_TESTING)
   endif()
   target_compile_definitions(test_pool_token_store PRIVATE QT_NO_KEYWORDS)
   add_test(NAME PoolTokenStore COMMAND test_pool_token_store)
+
+  add_executable(test_daemon_output tests/test_daemon_output.cpp src/daemonoutput.cpp)
+  target_include_directories(test_daemon_output PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_daemon_output PRIVATE Qt6::Core)
+  target_compile_definitions(test_daemon_output PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME DaemonOutputBeforeEventLoop COMMAND test_daemon_output)
+  set_tests_properties(DaemonOutputBeforeEventLoop PROPERTIES TIMEOUT 20)
 
   add_executable(test_pool_cockpit ${_wallet_test_sources} tests/test_pool_cockpit.cpp)
   target_link_libraries(test_pool_cockpit PRIVATE
