@@ -13,6 +13,7 @@
 namespace dinero {
 namespace {
 void RequireExpectedDatabase(const WalletManager::DatabaseLease& lease, const WalletSigningIdentity& identity) {
+    lease.RequireLegacyTransparentFinancialReady();
     if (identity.database_id && lease.ReadDeliveryIdentity() != *identity.database_id)
         throw std::runtime_error("Payment payer database identity changed");
 }

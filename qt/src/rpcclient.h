@@ -31,6 +31,9 @@ public:
 
   // RPC calls
   void call(const QString& method, const QJsonArray& params = {});
+  // Send positional params while routing the reply to one consumer. The
+  // alias is local metadata and never appears in the JSON-RPC request.
+  void callAs(const QString& method, const QJsonArray& params, const QString& replyAs);
   void callNamed(const QString& method, const QJsonObject& params);
   // Same request as callNamed, but rpcResult/rpcError report it as `replyAs`,
   // so a second consumer of a shared method gets its own reply route.

@@ -24,21 +24,28 @@ jobs:
     name: Fetch qualified snapshot inputs
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # Draft release downloads need push-level visibility. Isolate that token
-    # from the job that checks out and compiles pull-request code.
     permissions:
-      contents: write
+      contents: read
     steps:
-      - name: Fetch pinned snapshot inputs without executing repository code
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch signed, pinned H153578 full-v6 snapshot
         run: |
-          mkdir -p snapshot-inputs
-          gh release download v8.2.2 --repo DineroLabs/dinero-v8 \
-            --pattern 'dinero-assumeutxo-148375-v5.dat' \
-            --pattern 'dinero-assumeutxo-148375-v5.dat.manifest.json' \
-            --dir snapshot-inputs --clobber
-          echo '41b4bb8ee5b1b4a354b0d3bdd03b7dee4372cfecd1a8ef1bf5c01bff0ed991e7  snapshot-inputs/dinero-assumeutxo-148375-v5.dat' | sha256sum --check
+          # Use the immutable staged candidate while the public full-v6
+          # primary alias still serves H153051. The publisher signature and
+          # exact catalog identity are checked before the Windows build.
+          python packaging/snapshot/fetch_desktop_primary.py \
+            --payload-url 'https://seed3.dinerolabs.org/v823-candidate/h153578/snapshot.dat' \
+            --manifest-url 'https://seed3.dinerolabs.org/v823-candidate/h153578/manifest.json' \
+            --signature-url 'https://seed3.dinerolabs.org/v823-candidate/h153578/manifest.sig' \
+            --destination snapshot-inputs
+          python packaging/snapshot/check_desktop_primary.py \
+            --payload snapshot-inputs/dinero-assumeutxo-153578-v6-full.dat \
+            --manifest snapshot-inputs/dinero-assumeutxo-153578-v6-full.dat.manifest.json \
+            --publisher-manifest snapshot-inputs/dinero-assumeutxo-153578-v6-full.dat.publisher.manifest.json \
+            --publisher-signature snapshot-inputs/dinero-assumeutxo-153578-v6-full.dat.publisher.manifest.sig \
+            --expected-name dinero-assumeutxo-153578-v6-full.dat
       - uses: actions/upload-artifact@v4
         with:
           name: windows-smoke-snapshot-inputs
@@ -145,17 +152,16 @@ jobs:
       - name: Build Windows server release and installer
         shell: powershell
         run: |
-          # Historical v5 snapshot for this OpenSSL/NSIS build smoke. Full-v6
-          # release admission runs in windows-release.yml once pinned.
+          # Exercise the same signed full-v6 primary as Windows Release.
           .\packaging\windows\build-server-installer.ps1 `
             -Version '8.2.3-openssl357-ci' `
             -BuildDir 'build-msvc-server' `
             -VcpkgRoot "$env:VCPKG_INSTALLATION_ROOT" `
             -VcpkgBin "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" `
-            -SnapshotFileName 'dinero-assumeutxo-148375-v5.dat' `
-            -SnapshotReleaseTag 'v8.2.2' `
-            -SnapshotPath 'packaging\windows\dist\dinero-assumeutxo-148375-v5.dat' `
-            -SnapshotManifestPath 'packaging\windows\dist\dinero-assumeutxo-148375-v5.dat.manifest.json'
+            -SnapshotFileName 'dinero-assumeutxo-153578-v6-full.dat' `
+            -SnapshotReleaseTag 'v8.2.3' `
+            -SnapshotPath 'packaging\windows\dist\dinero-assumeutxo-153578-v6-full.dat' `
+            -SnapshotManifestPath 'packaging\windows\dist\dinero-assumeutxo-153578-v6-full.dat.manifest.json'
 
       - name: Assert the linked OpenSSL version
         shell: powershell

@@ -16,7 +16,8 @@ enum class Status {
     Serialization,
     Corruption,
     Io,
-    Internal
+    Internal,
+    ResourceLimit
 };
 
 // Convert Status to human-readable string
@@ -30,6 +31,7 @@ inline const char* StatusToString(Status s) {
         case Status::Corruption: return "Corruption";
         case Status::Io: return "Io";
         case Status::Internal: return "Internal";
+        case Status::ResourceLimit: return "ResourceLimit";
     }
     return "Unknown";
 }

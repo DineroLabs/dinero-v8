@@ -292,6 +292,9 @@ void WalletWorker::ProcessDisconnect(uint32_t height, const Block& block,
     const auto database_lease = wallet_manager_ ? wallet_manager_->AcquireDatabaseLease() : nullptr;
     CheckWalletJobSession(database_lease.get(), session);
     if (database_lease && database_lease->Database() &&
+        database_lease->LegacyTransparentState() != WalletManager::LegacyTransparentState::Absent)
+        return; // Typed delivery owns this wallet's durable disconnect effects.
+    if (database_lease && database_lease->Database() &&
         !sqlite3_get_autocommit(database_lease->Database()))
         throw std::runtime_error("Wallet disconnect cannot adopt an active transaction");
     auto start = std::chrono::steady_clock::now();
@@ -326,6 +329,13 @@ void WalletWorker::ProcessDisconnect(uint32_t height, const Block& block,
 void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
                                   const std::vector<Transaction>& transactions,
                                   std::optional<uint64_t> session) {
+    {
+        auto early_lease = wallet_manager_ ? wallet_manager_->AcquireDatabaseLease() : nullptr;
+        CheckWalletJobSession(early_lease.get(), session);
+        if (early_lease && early_lease->Database() &&
+            early_lease->LegacyTransparentState() != WalletManager::LegacyTransparentState::Absent)
+            return; // Typed delivery owns this wallet's durable connect effects.
+    }
     auto start = std::chrono::steady_clock::now();
     std::cerr << "[WalletWorker] Processing block connect: height=" << height
               << " hash=" << hash.substr(0, 16) << "... txs=" << transactions.size() << std::endl;
@@ -350,6 +360,9 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
     const auto vault_observer = dinero::vault::CaptureVaultWalletOutputObserver();
     auto database_lease = wallet_manager_ ? wallet_manager_->AcquireDatabaseLease() : nullptr;
     CheckWalletJobSession(database_lease.get(), session);
+    if (database_lease && database_lease->Database() &&
+        database_lease->LegacyTransparentState() != WalletManager::LegacyTransparentState::Absent)
+        return; // The wallet may have enrolled while an ordinary job was paused.
     if(wallet_manager_&&wallet_manager_->snapshotRecoveryAlreadyApplied(height,hash))return;
     if (wallet_manager_) {
         std::string shielded_error;
@@ -611,6 +624,9 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
 void WalletWorker::ProcessReorg(const ReorgDiff& diff, std::optional<uint64_t> session) {
     const auto database_lease = wallet_manager_ ? wallet_manager_->AcquireDatabaseLease() : nullptr;
     CheckWalletJobSession(database_lease.get(), session);
+    if (database_lease && database_lease->Database() &&
+        database_lease->LegacyTransparentState() != WalletManager::LegacyTransparentState::Absent)
+        return; // Typed delivery owns this wallet's durable reorg effects.
     auto start = std::chrono::steady_clock::now();
     std::cerr << "[WalletWorker] Processing reorg: disconnect=" << diff.disconnect.size()
               << " connect=" << diff.connect.size() << std::endl;
@@ -673,6 +689,10 @@ void WalletWorker::ProcessReorg(const ReorgDiff& diff, std::optional<uint64_t> s
 namespace WalletNotify {
 
 void Initialize(UTXOIndex* utxo_index, class WalletManager* wallet_manager) {
+    if (utxo_index && utxo_index->IsFullArchiveV3MetadataOnly()) {
+        throw std::runtime_error(
+            "Full-archive v3 wallet index cannot start legacy wallet notifications");
+    }
     std::lock_guard<std::mutex> lock(g_wallet_worker_mutex);
     if (g_wallet_worker) {
         std::cerr << "[WalletNotify] Already initialized, ignoring" << std::endl;
@@ -684,6 +704,11 @@ void Initialize(UTXOIndex* utxo_index, class WalletManager* wallet_manager) {
     std::cerr << "[WalletNotify] ✅ Wallet notification system initialized"
               << (utxo_index ? " (with UTXO index)" : " (no UTXO index)")
               << (wallet_manager ? " (with WalletManager for persistence)" : " (no persistence)") << std::endl;
+}
+
+bool IsInitialized() {
+    std::lock_guard<std::mutex> lock(g_wallet_worker_mutex);
+    return static_cast<bool>(g_wallet_worker);
 }
 
 void Shutdown() {

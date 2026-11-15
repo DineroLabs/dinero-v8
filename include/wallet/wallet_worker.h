@@ -207,6 +207,9 @@ namespace WalletNotify {
     void Initialize(class UTXOIndex* utxo_index = nullptr,
                    class WalletManager* wallet_manager = nullptr);
 
+    // Startup guard: a v3 source must not inherit a legacy notification worker.
+    bool IsInitialized();
+
     // Shutdown the wallet notification system
     void Shutdown();
 

@@ -2,6 +2,9 @@
 #include "wallet/shielded_wallet_ops.h"
 #include "wallet/wallet_worker.h"
 #include "wallet/utxo_index.h"
+#include "wallet/wallet_index_v3_owner.h"
+#include "wallet/wallet_index_v3_coin_view.h"
+#include "wallet/wallet_index_v3_schema.h"
 #include "wallet/taproot_keys.h"
 #include "wallet/transaction_builder.h"
 #include "wallet/transaction_signer.h"
@@ -46,6 +49,12 @@ struct WalletWorkerTestAccess {
     static void Connect(WalletWorker& worker, uint32_t height,
                         const std::vector<Transaction>& transactions) {
         worker.ProcessConnect(height, std::string(64, '1'), transactions);
+    }
+    static void Disconnect(WalletWorker& worker, uint32_t height) {
+        worker.ProcessDisconnect(height, Block{});
+    }
+    static void Reorg(WalletWorker& worker) {
+        worker.ProcessReorg(ReorgDiff{{BlockRef{1, std::string(64, '1')}}, {}});
     }
 };
 }
@@ -103,9 +112,119 @@ protected:
     }
 };
 
+static void LegacyizeWallet(sqlite3* db) {
+    char* error = nullptr;
+    const char* sql =
+        "DELETE FROM settings WHERE key IN ('orchard_account_catalog_v1','wallet_initial_owner_v1');"
+        "DROP TABLE IF EXISTS orchard_wallet_retained;"
+        "DROP TABLE IF EXISTS orchard_wallet_snapshots;"
+        "DROP TABLE IF EXISTS orchard_wallet_schema;"
+        "DROP TABLE IF EXISTS shielded_state_v1;"
+        "ALTER TABLE wallet_meta DROP COLUMN runtime_delivery_id;";
+    const int rc = sqlite3_exec(db, sql, nullptr, nullptr, &error);
+    const std::string message = error ? error : "";
+    sqlite3_free(error);
+    if (rc != SQLITE_OK) throw std::runtime_error("Legacy fixture setup failed: " + message);
+}
+
+TEST_F(WalletDatabaseLeaseTest, LegacyMigrationIdentityAndPendingMarkerCommitTogether) {
+    wallet->open("owner");
+    LegacyizeWallet(wallet->getCurrentDatabase());
+    auto lease = wallet->AcquireDatabaseLease();
+    ASSERT_EQ(lease->LegacyTransparentState(),
+              dinero::WalletManager::LegacyTransparentState::Absent);
+    sqlite3_set_authorizer(lease->Database(),
+        [](void*, int op, const char* table, const char*, const char*, const char*) {
+            return op == SQLITE_UPDATE && table && std::string_view(table) == "wallet_meta"
+                ? SQLITE_DENY : SQLITE_OK;
+        }, nullptr);
+    EXPECT_THROW(lease->BeginLegacyTransparentMigration(), std::runtime_error);
+    sqlite3_set_authorizer(lease->Database(), nullptr, nullptr);
+    // The refused enrollment must roll back both schema additions and ID.
+    EXPECT_EQ(lease->LegacyTransparentState(),
+              dinero::WalletManager::LegacyTransparentState::Absent);
+    const auto session = lease->Session();
+    const auto identity = lease->BeginLegacyTransparentMigration();
+    ASSERT_EQ(identity.size(), 71u);
+    EXPECT_EQ(lease->LegacyTransparentState(),
+              dinero::WalletManager::LegacyTransparentState::Pending);
+    EXPECT_EQ(sqlite3_get_autocommit(lease->Database()), 1);
+    EXPECT_THROW(lease->RequireLegacyTransparentFinancialReady(), std::runtime_error);
+    EXPECT_THROW(lease->RequireOrchardWalletReady(), std::runtime_error);
+    EXPECT_THROW(lease->BeginLegacyTransparentMigration(), std::runtime_error);
+    lease.reset();
+    EXPECT_THROW(wallet->getBalance(), std::runtime_error);
+
+    auto* db = wallet->getCurrentDatabase();
+    Exec(db, "UPDATE wallet_meta SET runtime_legacy_transparent_state_v1='complete' WHERE id=1");
+    Exec(db, "INSERT INTO tip(rowid,height) VALUES(1,5) "
+             "ON CONFLICT(rowid) DO UPDATE SET height=excluded.height");
+    Exec(db, "UPDATE sync_meta SET last_scanned_height=5 WHERE id=1");
+    EXPECT_THROW(wallet->getBalance(), std::runtime_error);
+    wallet->PublishRecoveredBlockchainHeight(0, 5, session);
+    EXPECT_EQ(wallet->getBlockchainHeight(), 5u);
+    EXPECT_NO_THROW(wallet->getBalance());
+    EXPECT_THROW(wallet->AcquireDatabaseLease()->RequireOrchardWalletReady(), std::runtime_error);
+    Exec(db, "UPDATE wallet_meta SET runtime_delivery_id=NULL WHERE id=1");
+    EXPECT_THROW(wallet->AcquireDatabaseLease()->EnsureDeliveryIdentity(), std::runtime_error);
+    EXPECT_THROW(wallet->getBalance(), std::runtime_error);
+    Exec(db, "UPDATE wallet_meta SET runtime_legacy_transparent_state_v1=NULL WHERE id=1");
+    EXPECT_THROW(wallet->AcquireDatabaseLease()->LegacyTransparentState(), std::runtime_error);
+}
+
+TEST_F(WalletDatabaseLeaseTest, LegacyEnrollmentRefusesExistingIdentityWithoutMarker) {
+    wallet->open("owner");
+    LegacyizeWallet(wallet->getCurrentDatabase());
+    auto lease = wallet->AcquireDatabaseLease();
+    const auto identity = lease->EnsureDeliveryIdentity();
+    ASSERT_EQ(identity.size(), 71u);
+    EXPECT_THROW(lease->BeginLegacyTransparentMigration(), std::runtime_error);
+    EXPECT_EQ(lease->LegacyTransparentState(),
+              dinero::WalletManager::LegacyTransparentState::Absent);
+}
+
+TEST_F(WalletDatabaseLeaseTest, LegacyWorkerCallbacksLeaveTypedWalletUntouched) {
+    wallet->open("owner");
+    auto* db = wallet->getCurrentDatabase();
+    LegacyizeWallet(db);
+    {
+        auto lease = wallet->AcquireDatabaseLease();
+        (void)lease->BeginLegacyTransparentMigration();
+    }
+    dinero::UTXOIndex index((path / "typed-worker-index.sqlite").string());
+    ASSERT_TRUE(index.Initialize());
+    dinero::WalletWorker worker(&index, wallet.get());
+    const auto untouched = [&] {
+        sqlite3_stmt* raw = nullptr;
+        ASSERT_EQ(sqlite3_prepare_v2(db,
+            "SELECT (SELECT height FROM tip WHERE rowid=1),"
+            "(SELECT last_scanned_height FROM sync_meta WHERE id=1),"
+            "(SELECT count(*) FROM utxos)", -1, &raw, nullptr), SQLITE_OK);
+        std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> q(raw, sqlite3_finalize);
+        ASSERT_EQ(sqlite3_step(raw), SQLITE_ROW);
+        EXPECT_EQ(sqlite3_column_int(raw, 0), 0);
+        EXPECT_EQ(sqlite3_column_int(raw, 1), 0);
+        EXPECT_EQ(sqlite3_column_int(raw, 2), 0);
+        EXPECT_EQ(wallet->getBlockchainHeight(), 0u);
+    };
+    EXPECT_NO_THROW(dinero::WalletWorkerTestAccess::Connect(worker, 1, {}));
+    EXPECT_NO_THROW(dinero::WalletWorkerTestAccess::Disconnect(worker, 1));
+    EXPECT_NO_THROW(dinero::WalletWorkerTestAccess::Reorg(worker));
+    untouched();
+    Exec(db, "UPDATE wallet_meta SET runtime_legacy_transparent_state_v1='complete' WHERE id=1");
+    EXPECT_NO_THROW(dinero::WalletWorkerTestAccess::Connect(worker, 1, {}));
+    EXPECT_NO_THROW(dinero::WalletWorkerTestAccess::Disconnect(worker, 1));
+    EXPECT_NO_THROW(dinero::WalletWorkerTestAccess::Reorg(worker));
+    untouched();
+}
+
 TEST_F(WalletUtxoReadTest, CompleteRowsKeepEmptyDisplayAndDoNotWrite) {
     auto* db = wallet->getCurrentDatabase();
     const int changes = sqlite3_total_changes(db);
+    // The absent marker keeps ordinary wallet reads on their established path.
+    EXPECT_NO_THROW(wallet->getBalance());
+    EXPECT_NO_THROW(wallet->getAddressBalance("recorded display"));
+    EXPECT_NO_THROW(wallet->getTransactionHistory(10, 0));
     const auto rows = wallet->listUnspentUTXOs(0, 10);
     ASSERT_EQ(rows.size(), 2u);
     EXPECT_EQ(rows[0].amount_una, 300u); EXPECT_TRUE(rows[0].address.empty());
@@ -114,6 +233,27 @@ TEST_F(WalletUtxoReadTest, CompleteRowsKeepEmptyDisplayAndDoNotWrite) {
     EXPECT_TRUE(rows[1].derivation_path.empty());
     EXPECT_EQ(sqlite3_total_changes(db), changes);
     EXPECT_EQ(sqlite3_get_autocommit(db), 1);
+}
+
+TEST_F(WalletUtxoReadTest, SqlReadFailureCannotMasqueradeAsZeroBalance) {
+    auto* db = wallet->getCurrentDatabase();
+    const auto before = wallet->getBalance();
+    ASSERT_GT(before.confirmed, 0.0);
+    sqlite3_set_authorizer(db,
+        [](void*, int op, const char* table, const char*, const char*, const char*) {
+            return op == SQLITE_READ && table && std::string_view(table) == "utxos"
+                ? SQLITE_DENY : SQLITE_OK;
+        }, nullptr);
+    EXPECT_THROW((void)wallet->getBalance(), std::runtime_error);
+    sqlite3_set_authorizer(db, nullptr, nullptr);
+    EXPECT_EQ(wallet->getBalance().confirmed, before.confirmed);
+}
+
+TEST_F(WalletDatabaseLeaseTest, GenuinelyEmptyWalletBalanceIsZero) {
+    wallet->open("owner");
+    const auto balance = wallet->getBalance();
+    EXPECT_EQ(balance.total, 0.0);
+    EXPECT_EQ(balance.utxo_count, 0);
 }
 
 TEST_F(WalletUtxoReadTest, MalformedLaterRowNeverReturnsEarlierPrefix) {
@@ -1098,6 +1238,134 @@ TEST_F(WalletRecoveryKeyTest, RefusesExpiredEmptyAndReopenedSelection) {
 
 
 class WalletExistingIdentityTest : public WalletDatabaseLeaseTest {};
+TEST_F(WalletExistingIdentityTest, V3OwnerTokenRefusesAfterWalletSwitchAndReopen) {
+    wallet->open("owner");
+    auto lease=wallet->AcquireDatabaseLease();
+    auto old=dinero::WalletIndexV3OwnerToken::Capture(*lease);
+    old.RequireCurrent(*lease);
+    sqlite3_stmt* bound=nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(lease->Database(),"SELECT ?",-1,&bound,nullptr),SQLITE_OK);
+    old.BindCurrentIdentity(bound,1,*lease);
+    ASSERT_EQ(sqlite3_step(bound),SQLITE_ROW);
+    EXPECT_EQ(sqlite3_column_type(bound,0),SQLITE_BLOB);
+    EXPECT_EQ(sqlite3_column_bytes(bound,0),32);
+    ASSERT_EQ(sqlite3_finalize(bound),SQLITE_OK);
+    lease.reset();
+
+    wallet->create("other");wallet->open("other");
+    lease=wallet->AcquireDatabaseLease();
+    EXPECT_THROW(old.RequireCurrent(*lease),std::runtime_error);
+    sqlite3_stmt* foreign=nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(lease->Database(),"SELECT ?",-1,&foreign,nullptr),SQLITE_OK);
+    EXPECT_THROW(old.BindCurrentIdentity(foreign,1,*lease),std::runtime_error);
+    ASSERT_EQ(sqlite3_step(foreign),SQLITE_ROW);
+    EXPECT_EQ(sqlite3_column_type(foreign,0),SQLITE_NULL);
+    ASSERT_EQ(sqlite3_reset(foreign),SQLITE_OK);
+    ASSERT_EQ(sqlite3_clear_bindings(foreign),SQLITE_OK);
+    auto current=dinero::WalletIndexV3OwnerToken::Capture(*lease);
+    current.RequireCurrent(*lease);
+    current.BindCurrentIdentity(foreign,1,*lease);
+    ASSERT_EQ(sqlite3_step(foreign),SQLITE_ROW);
+    EXPECT_EQ(sqlite3_column_type(foreign,0),SQLITE_BLOB);
+    EXPECT_EQ(sqlite3_column_bytes(foreign,0),32);
+    ASSERT_EQ(sqlite3_finalize(foreign),SQLITE_OK);
+    lease.reset();
+
+    wallet->open("owner");
+    lease=wallet->AcquireDatabaseLease();
+    EXPECT_THROW(old.RequireCurrent(*lease),std::runtime_error);
+    EXPECT_THROW(current.RequireCurrent(*lease),std::runtime_error);
+    dinero::WalletIndexV3OwnerToken::Capture(*lease).RequireCurrent(*lease);
+}
+TEST_F(WalletExistingIdentityTest, V3OwnerTokenNeverMintsAAbsentIdentity) {
+    wallet->open("owner");
+    auto lease=wallet->AcquireDatabaseLease();
+    Exec(lease->Database(),"UPDATE wallet_meta SET runtime_delivery_id=NULL WHERE id=1");
+    const auto before=sqlite3_total_changes(lease->Database());
+    EXPECT_THROW(dinero::WalletIndexV3OwnerToken::Capture(*lease),std::runtime_error);
+    EXPECT_EQ(sqlite3_total_changes(lease->Database()),before);
+}
+TEST_F(WalletExistingIdentityTest, V3OwnerCaptureRequiresDeliberateLegacyEnrollment) {
+    wallet->open("owner");
+    LegacyizeWallet(wallet->getCurrentDatabase());
+    auto lease=wallet->AcquireDatabaseLease();
+    const auto before=sqlite3_total_changes(lease->Database());
+    EXPECT_THROW(dinero::WalletIndexV3OwnerToken::Capture(*lease),std::runtime_error);
+    EXPECT_EQ(sqlite3_total_changes(lease->Database()),before);
+    ASSERT_EQ(lease->LegacyTransparentState(),
+              dinero::WalletManager::LegacyTransparentState::Absent);
+    const auto enrollment=lease->BeginLegacyTransparentMigration();
+    ASSERT_FALSE(enrollment.empty());
+    ASSERT_EQ(lease->LegacyTransparentState(),
+              dinero::WalletManager::LegacyTransparentState::Pending);
+    EXPECT_NO_THROW(dinero::WalletIndexV3OwnerToken::Capture(*lease).RequireCurrent(*lease));
+    EXPECT_THROW(lease->RequireLegacyTransparentFinancialReady(),std::runtime_error);
+}
+TEST_F(WalletExistingIdentityTest, V3OwnerBoundSqlKeepsSharedOutpointInSeparateWallets) {
+    const auto index_path=path/"shared-index.sqlite";
+    {dinero::UTXOIndex v2(index_path.string());ASSERT_TRUE(v2.Initialize());}
+    EXPECT_THROW(dinero::WalletIndexV3CoinView preupgrade(index_path),std::runtime_error);
+    {
+        sqlite3* before=nullptr;
+        ASSERT_EQ(sqlite3_open_v2(index_path.string().c_str(),&before,SQLITE_OPEN_READONLY,nullptr),SQLITE_OK);
+        std::unique_ptr<sqlite3,decltype(&sqlite3_close)> checked(before,sqlite3_close);
+        auto q=std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)>(nullptr,sqlite3_finalize);
+        sqlite3_stmt* raw_version=nullptr;
+        ASSERT_EQ(sqlite3_prepare_v2(checked.get(),"PRAGMA user_version",-1,&raw_version,nullptr),SQLITE_OK);
+        q.reset(raw_version);
+        ASSERT_EQ(sqlite3_step(q.get()),SQLITE_ROW);
+        EXPECT_EQ(sqlite3_column_int(q.get(),0),2);
+    }
+    dinero::UpgradeFullArchiveWalletIndexSchemaToV3(index_path);
+    sqlite3* raw=nullptr;
+    ASSERT_EQ(sqlite3_open_v2(index_path.string().c_str(),&raw,SQLITE_OPEN_READWRITE,nullptr),SQLITE_OK);
+    std::unique_ptr<sqlite3,decltype(&sqlite3_close)> index(raw,sqlite3_close);
+    dinero::WalletIndexV3CoinView view(index_path);
+    const auto statement=[&](const char* sql){
+        sqlite3_stmt* value=nullptr;
+        if(sqlite3_prepare_v2(index.get(),sql,-1,&value,nullptr)!=SQLITE_OK)
+            throw std::runtime_error("v3 owner SQL prepare failed");
+        return std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)>(value,sqlite3_finalize);
+    };
+    const auto insert=[&](const dinero::WalletIndexV3OwnerToken& owner,
+                          const dinero::WalletManager::DatabaseLease& lease,int value){
+        auto q=statement("INSERT INTO wallet_utxos(wallet_identity,txid,vout,value,spk,path,height) "
+                         "VALUES(?,printf('%064x',77),0,?,X'51201122','m/86/0',101)");
+        owner.BindCurrentIdentity(q.get(),1,lease);
+        if(sqlite3_bind_int(q.get(),2,value)!=SQLITE_OK||sqlite3_step(q.get())!=SQLITE_DONE)
+            throw std::runtime_error("v3 owner SQL insert failed");
+    };
+    const auto read=[&](const dinero::WalletIndexV3OwnerToken& owner,
+                        const dinero::WalletManager::DatabaseLease& lease){
+        return view.ReadRawCoinValue(owner,lease,std::string(62,'0')+"4d",0);
+    };
+    wallet->open("owner");
+    auto lease=wallet->AcquireDatabaseLease();
+    auto first=dinero::WalletIndexV3OwnerToken::Capture(*lease);
+    insert(first,*lease,111);EXPECT_EQ(read(first,*lease),111u);
+    EXPECT_EQ(view.CountRawUnspent(first,*lease),1u);
+    lease.reset();
+
+    wallet->create("other");wallet->open("other");
+    lease=wallet->AcquireDatabaseLease();
+    EXPECT_THROW(read(first,*lease),std::runtime_error);
+    auto second=dinero::WalletIndexV3OwnerToken::Capture(*lease);
+    insert(second,*lease,222);EXPECT_EQ(read(second,*lease),222u);
+    EXPECT_EQ(view.CountRawUnspent(second,*lease),1u);
+    lease.reset();
+
+    wallet->open("owner");lease=wallet->AcquireDatabaseLease();
+    EXPECT_THROW(read(first,*lease),std::runtime_error); // Same wallet, new session.
+    auto current=dinero::WalletIndexV3OwnerToken::Capture(*lease);
+    EXPECT_EQ(read(current,*lease),111u);
+    EXPECT_EQ(view.CountRawUnspent(current,*lease),1u);
+    auto q=statement("SELECT count(*) FROM wallet_utxos");
+    ASSERT_EQ(sqlite3_step(q.get()),SQLITE_ROW);
+    EXPECT_EQ(sqlite3_column_int(q.get(),0),2); // Same outpoint in two identities.
+    q.reset();
+    Exec(index.get(),"DROP TRIGGER runtime_delivery_v3_delete");
+    EXPECT_THROW(view.CountRawUnspent(current,*lease),std::runtime_error);
+}
 TEST_F(WalletExistingIdentityTest, ReadOnlyAndSameSeedLease) {
     wallet->open("owner");std::array<uint8_t,32> original{};
     {auto lease=wallet->AcquireDatabaseLease();auto* db=lease->Database();const auto writes=sqlite3_total_changes(db);

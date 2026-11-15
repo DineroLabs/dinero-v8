@@ -44,23 +44,23 @@ class WaitReleaseAssetsTests(unittest.TestCase):
             self.assertTrue(kwargs["timeout"] > 0)
         return success, len(calls), stdout.getvalue(), stderr.getvalue()
 
-    def test_waits_for_all_four_uploaded_nonempty_assets(self):
-        not_uploaded = self.uploaded(NAMES[:3]) + [
-            {"name": NAMES[3], "size": 1, "state": "new"}]
-        empty = self.uploaded(NAMES[:3]) + [
-            {"name": NAMES[3], "size": 0, "state": "uploaded"}]
+    def test_waits_for_all_pinned_uploaded_nonempty_assets(self):
+        not_uploaded = self.uploaded(NAMES[:-1]) + [
+            {"name": NAMES[-1], "size": 1, "state": "new"}]
+        empty = self.uploaded(NAMES[:-1]) + [
+            {"name": NAMES[-1], "size": 0, "state": "uploaded"}]
         success, calls, stdout, stderr = self.run_wait([
             "error", not_uploaded, empty, self.uploaded(NAMES)])
         self.assertTrue(success, stderr)
         self.assertGreaterEqual(calls, 4)
-        self.assertIn("four full-v6 release assets ready", stdout)
+        self.assertIn(f"{len(NAMES)} full-v6 release assets ready", stdout)
 
     def test_times_out_with_exact_missing_asset(self):
         success, calls, _, stderr = self.run_wait([
-            self.uploaded(NAMES[:3])], timeout=0.04)
+            self.uploaded(NAMES[:-1])], timeout=0.04)
         self.assertFalse(success)
         self.assertGreaterEqual(calls, 1)
-        self.assertIn(NAMES[3], stderr)
+        self.assertIn(NAMES[-1], stderr)
 
     def test_workflow_runs_test_and_waits_only_in_tag_path(self):
         source = WORKFLOW.read_text()

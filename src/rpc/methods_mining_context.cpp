@@ -24,6 +24,7 @@
 #include "din_json.h"
 #include "rpc/rpc_registry.h"
 #include "rpc/mining_policy.h"  // Phase E.1: Policy view abstraction
+#include "rpc/legacy_transparent_freshness.h"
 #include "daemon/config.h"      // GetConfig() for sync-profile mining gates
 #include "daemon/daemon_context.h"
 #include "daemon/services/mining_service.h"
@@ -797,6 +798,7 @@ din::Json rpc_context_mining_setaddress(const ExecutionContext& ctx, const din::
                 result["error"]["message"] = "No active wallet. Use wallet.load first.";
                 return result;
             }
+            if (RefuseIfLegacyTransparentAddressMutation(ctx, wallet, result)) return result;
             address = wallet->get().getNewAddress("mining");
             result["derived_from_wallet"] = true;
         } catch (const std::exception& e) {

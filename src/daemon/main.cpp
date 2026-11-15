@@ -11,7 +11,13 @@
 #include "daemon/db_repair.h"  // Database repair utility
 #include "daemon/doctor/doctor_command.h"  // dinerod doctor subcommand
 #include "daemon/datadir_guard.h"
+#include "daemon/services/config_service.h"
 #include "daemon/genesis_guard.h"  // Stale chain data detection
+#include "storage/chain_db.h"
+#include "storage/orchard_snapshot_base.h"
+#include "storage/orchard_handoff_names.h"
+#include "storage/orchard_storage_mode.h"
+#include "wallet/wallet_index_v3_schema.h"
 // NOTE: Stratum removed from dinerod - use separate dinero-stratum binary
 #include "build/build_identity.h"
 #include "consensus/chain_identity.h"
@@ -28,6 +34,8 @@
 #include <cerrno>
 #include <cstring>
 #include <cstdlib>
+#include <filesystem>
+#include <stdexcept>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -69,6 +77,142 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service);
 namespace {
 
 using ShutdownClock = std::chrono::steady_clock;
+
+void RequireUnlinkedMaintenancePath(const std::filesystem::path& path,
+                                    bool directory, bool optional = false) {
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(path, error);
+    if (optional && (error == std::errc::no_such_file_or_directory ||
+                     (!error && status.type() == std::filesystem::file_type::not_found)))
+        return;
+    if (error || std::filesystem::is_symlink(status) ||
+        (directory ? !std::filesystem::is_directory(status) :
+                     !std::filesystem::is_regular_file(status)))
+        throw std::runtime_error("Wallet index v3 upgrade refuses missing or linked path: " + path.string());
+    if (!directory) {
+        const auto links = std::filesystem::hard_link_count(path, error);
+        if (error || links != 1)
+            throw std::runtime_error("Wallet index v3 upgrade refuses hardlinked file: " + path.string());
+    }
+}
+
+// Explicit, offline index maintenance. This runs with the native datadir
+// guard held and before either DaemonApp (including its bootstrap pass) is
+// constructed. No wallet, pool, RPC or network service can start here.
+int RunOfflineWalletIndexV3Upgrade(const dinero::daemon::DatadirGuard& guard,
+                                   int argc, char* argv[], bool status_only = false) {
+    try {
+        if (!guard.IsHeld())
+            throw std::runtime_error("Wallet index v3 upgrade requires a locked datadir");
+        dinero::ConfigService config;
+        config.Set("datadir", guard.DataDir().string());
+        std::string conf_path;
+        for (int i = 1; i < argc; ++i) {
+            const std::string arg = argv[i];
+            if (arg == "--upgrade-wallet-index-v3" || arg == "--wallet-index-v3-status" ||
+                arg == "--regtest" ||
+                arg == "-regtest" || arg == "--testnet" || arg == "-testnet") continue;
+            if (arg == "--datadir" || arg == "-datadir" ||
+                arg == "--conf" || arg == "-conf") {
+                if (++i >= argc || !argv[i] || !*argv[i] || argv[i][0] == '-')
+                    throw std::runtime_error("Wallet index v3 upgrade option needs a path");
+                if (arg == "--conf" || arg == "-conf") conf_path = argv[i];
+                continue;
+            }
+            if (arg.starts_with("--datadir=") || arg.starts_with("-datadir=")) {
+                if (arg.substr(arg.find('=') + 1).empty())
+                    throw std::runtime_error("Wallet index v3 upgrade needs an explicit datadir");
+                continue;
+            }
+            if (arg.starts_with("--conf=") || arg.starts_with("-conf=")) {
+                conf_path = arg.substr(arg.find('=') + 1);
+                if (conf_path.empty())
+                    throw std::runtime_error("Wallet index v3 upgrade config path is empty");
+                continue;
+            }
+            throw std::runtime_error("Wallet index v3 upgrade refuses unrelated option: " + arg);
+        }
+        if (!config.LoadConfigFile(conf_path.empty() ? config.DefaultConfigPath() : conf_path))
+            throw std::runtime_error("Wallet index v3 upgrade cannot read config");
+        const auto profile = config.GetString("sync-profile", "mac_fullblock");
+        if (profile != "mac_fullblock" || config.GetBool("utreexo-stateless", false) ||
+            !config.GetBool("storage.archival", true) ||
+            !config.GetString("storage.prune_target", "").empty())
+            throw std::runtime_error("Wallet index v3 upgrade requires full archival profile without pruning");
+
+        const auto blockchain = guard.DataDir() / "blockchain";
+        const auto chain_path = blockchain / "chaindb";
+        const auto index_path = blockchain / "utxo";
+        // The datadir guard pins the root, not its descendants. A linked
+        // index or SQLite sidecar could escape the clone lock and mutate a
+        // different datadir when SQLite opens it read-write.
+        RequireUnlinkedMaintenancePath(blockchain, true);
+        RequireUnlinkedMaintenancePath(chain_path, true);
+        // Inspect a missing index for a surviving v3 backup before the usual
+        // missing-file refusal. Reject linked files and SQLite sidecars first,
+        // so the read-only probe never follows a linked source out of the
+        // locked root.
+        RequireUnlinkedMaintenancePath(index_path, false, true);
+        for (const auto* suffix : {"-wal", "-shm", "-journal"}) {
+            auto sidecar = index_path;
+            sidecar += suffix;
+            RequireUnlinkedMaintenancePath(sidecar, false, true);
+        }
+        const auto version = dinero::ReadWalletIndexSchemaVersionReadOnly(index_path);
+        // A published v2 backup is the valid interrupted-upgrade state.
+        // The offline upgrader verifies it against the v2 source before
+        // committing; normal daemon startup still fences that same backup.
+        const bool valid_v2_retry_candidate = version && *version == 2;
+        if ((!version || *version != 3) &&
+            dinero::WalletIndexHasFullArchiveV3FootprintReadOnly(
+                index_path, !valid_v2_retry_candidate))
+            throw std::runtime_error("Wallet index v3 footprint remains; refusing legacy offline upgrade or status");
+        RequireUnlinkedMaintenancePath(index_path, false);
+        if (!dinero::storage::OrchardHandoffControlsAbsent(blockchain))
+            throw std::runtime_error("Wallet index v3 upgrade refuses an activation handoff");
+        dinero::ChainDB chain;
+        const auto opened = chain.initReadOnlyForWalletIndexMaintenance(chain_path);
+        if (opened != dinero::Status::Ok)
+            throw std::runtime_error(std::string("Wallet index v3 upgrade requires existing full ChainDB: ") +
+                                     dinero::StatusToString(opened));
+        const auto genesis = chain.getBlockHashByHeight(0);
+        if (!genesis.ok() ||
+            genesis.value() != dinero::uint256::FromHexUnsafe(dinero::Params().genesis_hash))
+            throw std::runtime_error("Wallet index v3 upgrade chain genesis does not match selected network");
+        dinero::storage::RequireFullOrchardStorage(chain);
+        if (dinero::storage::ReadOrchardSnapshotBase(chain))
+            throw std::runtime_error("Wallet index v3 upgrade refuses a snapshot source");
+        const auto prebase = chain.getPreBaseCoinSetBase();
+        if (prebase.status() != dinero::Status::NotFound)
+            throw std::runtime_error("Wallet index v3 upgrade refuses an imported pre-base source");
+        const auto prune_height = chain.getPruneHeight();
+        if (!prune_height.ok() || prune_height.value() != 0)
+            throw std::runtime_error("Wallet index v3 upgrade requires unpruned block storage");
+        if (!version || (*version != 2 && *version != 3))
+            throw std::runtime_error("Wallet index v3 upgrade requires an initialized v2 or verifiable v3 index");
+        if (dinero::WalletIndexHasImportedSnapshotMarkerReadOnly(index_path))
+            throw std::runtime_error("Wallet index v3 upgrade refuses imported wallet snapshot state");
+        if (status_only) {
+            // SQLite's read-only WAL connection can create an empty -wal and
+            // a -shm coordination file. It must not write index pages,
+            // checkpoint a durable WAL, or create a rollback backup.
+            if (*version == 3) (void)dinero::RequireFullArchiveWalletIndexV3(index_path);
+            std::cout << "wallet_index_v3_status="
+                      << (*version == 2 ? "upgrade_available" : "ready") << '\n';
+            return 0;
+        }
+        const auto upgraded = dinero::UpgradeFullArchiveWalletIndexSchemaToV3(index_path);
+        const auto verified = dinero::RequireFullArchiveWalletIndexV3(index_path);
+        if (verified.rollback_backup != upgraded.rollback_backup)
+            throw std::runtime_error("Wallet index v3 upgrade backup changed during verification");
+        std::cout << "Wallet index v3 offline upgrade verified; rollback backup: "
+                  << verified.rollback_backup << '\n';
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << "Wallet index v3 offline upgrade refused: " << error.what() << '\n';
+        return 1;
+    }
+}
 
 const char* GetHomeDirEnv() {
     const char* home = std::getenv("HOME");
@@ -410,6 +554,8 @@ void print_usage(const char* program_name) {
     std::cout << "  --reindex-chainstate           Rebuild UTXO set only (faster, keeps block index)\n";
     std::cout << "  --repair-db                    Scan databases for issues (read-only report)\n";
     std::cout << "  --repair-db --confirm          Scan AND repair detected issues\n";
+    std::cout << "  --upgrade-wallet-index-v3 --datadir=<dir>  Offline full-archive v2 index upgrade; exits after verification\n";
+    std::cout << "  --wallet-index-v3-status --datadir=<dir>  Read-only full-archive wallet index preflight\n";
     std::cout << "  --wipe-stale-chain             Wipe incompatible chain data (backs up wallet first)\n";
     std::cout << "\n";
     std::cout << "Diagnostics:\n";
@@ -469,6 +615,8 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
     bool do_reindex = false;
     bool do_reindex_chainstate = false;
     bool do_repair_db = false;
+    bool upgrade_wallet_index_v3 = false;
+    bool wallet_index_v3_status = false;
     bool repair_confirm = false;
     bool wipe_stale_chain = false;
     long embedded_parent_pid = 0;
@@ -618,6 +766,14 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
             do_reindex_chainstate = true;
         } else if (arg == "--repair-db") {
             do_repair_db = true;
+        } else if (arg == "--upgrade-wallet-index-v3") {
+            upgrade_wallet_index_v3 = true;
+        } else if (arg == "--wallet-index-v3-status") {
+            wallet_index_v3_status = true;
+        } else if (arg.starts_with("--upgrade-wallet-index-v3=")) {
+            std::cerr << "Use --upgrade-wallet-index-v3 without a value\n"; return 1;
+        } else if (arg.starts_with("--wallet-index-v3-status=")) {
+            std::cerr << "Use --wallet-index-v3-status without a value\n"; return 1;
         } else if (arg == "--confirm") {
             repair_confirm = true;
         } else if (arg == "--wipe-stale-chain" || arg == "--auto-wipe-stale-chain") {
@@ -664,6 +820,35 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
     // Use default port if neither CLI nor env var specified
     if (wallet_socket_port == 0) {
         wallet_socket_port = 50051;  // Default
+    }
+
+    if (upgrade_wallet_index_v3 && wallet_index_v3_status) {
+        std::cerr << "Choose one wallet index v3 maintenance command\n";
+        return 1;
+    }
+    if ((upgrade_wallet_index_v3 || wallet_index_v3_status) &&
+        (!explicit_datadir || run_as_daemon || running_as_windows_service ||
+         do_reindex || do_reindex_chainstate || do_repair_db || repair_confirm ||
+         wipe_stale_chain || embedded_parent_pid > 0 || show_help || show_version ||
+         (use_regtest && use_testnet))) {
+        std::cerr << "Wallet index v3 upgrade requires an explicit datadir and foreground-only maintenance\n";
+        return 1;
+    }
+    if (upgrade_wallet_index_v3 || wallet_index_v3_status) {
+        for (int i = 1; i < argc; ++i) {
+            const std::string arg = argv[i];
+            if ((arg == "--datadir" || arg == "-datadir" ||
+                 arg == "--conf" || arg == "-conf") &&
+                (i + 1 >= argc || !argv[i + 1] || !*argv[i + 1] || argv[i + 1][0] == '-')) {
+                std::cerr << "Wallet index v3 upgrade option needs a path\n";
+                return 1;
+            }
+            if ((arg.starts_with("--datadir=") || arg.starts_with("-datadir=")) &&
+                arg.find('=') == arg.size() - 1) {
+                std::cerr << "Wallet index v3 upgrade needs an explicit datadir\n";
+                return 1;
+            }
+        }
     }
 
     if (show_help) {
@@ -719,7 +904,30 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
             }
         }
 
-        // Run repair utility and exit
+        // Repair scans open ChainDB and --confirm may rewrite it. Hold the
+        // same root lock as normal startup and refuse the v3 wallet source
+        // before the repair utility can open either database.
+        if (std::filesystem::exists(repair_datadir)) {
+            dinero::daemon::DatadirGuard repair_guard;
+            std::string guard_error;
+            if (!repair_guard.Acquire(repair_datadir, guard_error)) {
+                std::cerr << "[FATAL] " << guard_error << "\n";
+                return 1;
+            }
+            try {
+                const auto index_path = repair_guard.DataDir() / "blockchain" / "utxo";
+                const auto version = dinero::ReadWalletIndexSchemaVersionReadOnly(index_path);
+                if ((version && *version == 3) ||
+                    dinero::WalletIndexHasFullArchiveV3FootprintReadOnly(index_path)) {
+                    std::cerr << "Wallet index v3 repair refused: source or footprint remains; use the verified offline rollback or a separate full-archive recovery procedure\n";
+                    return 1;
+                }
+            } catch (const std::exception& error) {
+                std::cerr << "Wallet index repair source probe refused: " << error.what() << '\n';
+                return 1;
+            }
+            return dinero::repair::run_repair_db(repair_guard.DataDir().string(), repair_confirm);
+        }
         return dinero::repair::run_repair_db(repair_datadir, repair_confirm);
     }
 
@@ -806,6 +1014,34 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
         std::cerr << error.what() << "\n"; return 1;
     }
 
+    // This maintenance command must not run the ordinary genesis guard:
+    // checkGenesisGuard opens ChainDB read-write and can normalize a legacy
+    // store. The command's own read-only check binds the selected genesis.
+    if (upgrade_wallet_index_v3 || wallet_index_v3_status) {
+        dinero::SelectParams(use_regtest ? dinero::Chain::REGTEST :
+                             use_testnet ? dinero::Chain::TESTNET : dinero::Chain::MAINNET);
+        return RunOfflineWalletIndexV3Upgrade(datadir_guard, argc, argv, wallet_index_v3_status);
+    }
+
+    bool full_archive_wallet_index_v3 = false;
+    try {
+        if (!startup_datadir.empty()) {
+            const auto index_path = std::filesystem::path(startup_datadir) / "blockchain" / "utxo";
+            const auto version = dinero::ReadWalletIndexSchemaVersionReadOnly(index_path);
+            full_archive_wallet_index_v3 = version && *version == 3;
+            if (!full_archive_wallet_index_v3 &&
+                dinero::WalletIndexHasFullArchiveV3FootprintReadOnly(index_path))
+                throw std::runtime_error("Wallet index v3 footprint remains; refusing legacy startup and chain wipe");
+        }
+    } catch (const std::exception& error) {
+        std::cerr << "Wallet index startup source probe refused: " << error.what() << '\n';
+        return 1;
+    }
+    if (full_archive_wallet_index_v3 && wipe_stale_chain) {
+        std::cerr << "Wallet index v3 startup refuses --wipe-stale-chain; preserve the full-archive wallet source\n";
+        return 1;
+    }
+
     // ══════════════════════════════════════════════════════════════════════
     // Genesis Guard: detect stale/incompatible chain data before full init
     //
@@ -813,7 +1049,7 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
     // double-fork path caused restart-only crashes on macOS in daemon mode.
     // Non-daemon launches still preserve the original exit-code behavior.
     // ══════════════════════════════════════════════════════════════════════
-    {
+    if (!full_archive_wallet_index_v3) {
         if (!startup_datadir.empty()) {
             auto guard_result = dinero::checkGenesisGuard(startup_datadir);
 
@@ -837,6 +1073,11 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
             }
             // OK and NO_DB: proceed normally
         }
+    } else {
+        // checkGenesisGuard opens ChainDB read-write and may normalize a
+        // legacy layout. DaemonApp validates v3's genesis read-only under the
+        // held lock before any chain or wallet service starts.
+        std::cout << "[GenesisGuard] Wallet index v3: deferred to read-only full-archive source preflight\n";
     }
 
     // Print version banner (after daemonization, so only final process prints)

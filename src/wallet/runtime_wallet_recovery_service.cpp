@@ -25,7 +25,7 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>>
 ChainstateRuntimeRecoverySource::GetWalletCoverage(WalletManager& wallet,
                                                    uint64_t expected_session,
                                                    UTXOIndex& index) const {
-    return chain_.getRuntimeWalletCoverage(wallet, expected_session, index);
+    return chain_.getRuntimeWalletCoverage(wallet, expected_session, index, material_limit_bytes_);
 }
 
 Status ChainstateRuntimeRecoverySource::ReconcileWalletCoverage(

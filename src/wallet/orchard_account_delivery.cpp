@@ -59,6 +59,17 @@ orchard::WalletStorageIdentity Identity(const std::string& id,const OrchardAccou
 // must refuse without enrollment, including under a caller-owned transaction.
 orchard::WalletStorageIdentity ExistingIdentity(sqlite3* db,const OrchardAccountDelivery::Profile& p,bool require_retained=true){
     Check(db&&!sqlite3_get_autocommit(db));
+    // A transparent-only legacy wallet may have a real delivery ID but no
+    // Orchard account authority. Its marker must never become a usable
+    // Orchard identity through a direct C++ replay/issuance caller.
+    {
+        struct Statement {sqlite3_stmt* p=nullptr;~Statement(){sqlite3_finalize(p);}} column;
+        Check(sqlite3_prepare_v2(db,
+            "SELECT 1 FROM pragma_table_info('wallet_meta') WHERE name='runtime_legacy_transparent_state_v1'",
+            -1,&column.p,nullptr)==SQLITE_OK);
+        const int rc=sqlite3_step(column.p);
+        Check(rc==SQLITE_DONE); // Any present marker column is a refusal.
+    }
     struct Statement { sqlite3_stmt* p=nullptr;~Statement(){sqlite3_finalize(p);} } q;
     Check(sqlite3_prepare_v2(db,"SELECT runtime_delivery_id FROM wallet_meta WHERE id=1",-1,&q.p,nullptr)==SQLITE_OK);
     Check(sqlite3_step(q.p)==SQLITE_ROW&&sqlite3_column_type(q.p,0)==SQLITE_BLOB&&sqlite3_column_bytes(q.p,0)==32);
@@ -268,6 +279,7 @@ struct OrchardAccountDelivery::Owner {
          store(lease->Database(),identity,seed->Bytes()){}
     orchard::WalletStorageIdentity Bind(uint64_t session,const OrchardAccountDelivery::Profile& p,bool existing_only,bool creating){
         Check(lease->Session()==session&&lease->Database());
+        lease->RequireOrchardWalletReady();
         Check(p.domain.network_code<=2&&p.account<0x80000000&&p.activation>0);
         // Refuse missing/locked keys before identity initialization can write.
         seed=lease->CopyRecoverySeed(session);
@@ -308,6 +320,7 @@ struct OrchardAccountDelivery::Owner {
          store(lease->Database(),identity,seed->Bytes()){}
     orchard::WalletStorageIdentity BindExistingRead(uint64_t session,const Profile& p){
         Check(lease->Session()==session&&lease->Database()&&!sqlite3_get_autocommit(lease->Database()));
+        lease->RequireOrchardWalletReady();
         Check(p.domain.network_code<=2&&p.account<0x80000000&&p.activation>0);
         seed=lease->CopyRecoverySeed(session);
         // Read() historically accepts snapshots predating retained history.
@@ -728,9 +741,9 @@ std::unique_ptr<OrchardAccount0RecoveryPlan> OrchardAccountDelivery::PrepareReco
         const auto step=view.PrefixStep(current.Scan().Checkpoint().height+1);
         auto next=current.Advance(step.context,*step.block,*step.state,*step.authorizations);
         // This is an uncertified scan, not delivery. A fresh v6 source cannot
-        // undo below its real import floor; do not adopt pre-floor parent rows
-        // as though they were canonical event-0 positions.
-        next=next.WithParentSnapshotRevision(step.context.height==view.ActivationPrefixHeight()?0:saved->revision);
+        // undo below its real import floor, so no pre-floor state links a
+        // parent row (parent links require a delivered event).
+        next=next.WithParentSnapshotRevision(0);
         const auto bytes=next.Encode();
         {
             auto lease=w.AcquireDatabaseLease();RequireShieldFullSync(lease->Database());Transaction tx(lease->Database());

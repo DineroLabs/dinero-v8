@@ -44,13 +44,19 @@ public:
         if(!proof||!request)return {};
         try{request->CheckSelected(*headers_);return proof;}catch(...){return {};}
     }
-    void Wake(){cv_.notify_one();}
+    void Wake(){{std::lock_guard lock(mutex_);woken_=true;}cv_.notify_one();}
+    // Idle workers (no catalog needed, or a completed flight) wait up to IdleWait instead
+    // of polling every 50 ms; any request, packet or stop still wakes them.
+    static constexpr std::chrono::milliseconds IdleWait{1000},ActiveWait{50};
+    uint64_t Iterations()const{return iterations_.load();}
+
     void Stop(){
         std::lock_guard joining(join_mutex_);
         {std::lock_guard lock(mutex_);stop_=true;queue_.clear();flight_.reset();proof_.reset();ready_.reset();}
         cv_.notify_all();if(worker_.joinable())worker_.join();
     }
 private:
+    std::atomic<uint64_t> iterations_{0};bool woken_=false;
     struct Packet{Peer peer;std::string command;Bytes bytes;};
     static bool Equal(const Peer& a,const Peer& b){return a.address==b.address&&a.session==b.session;}
     void Run()noexcept {
@@ -71,14 +77,15 @@ private:
         // Timer drives rate-limit/retry/deadline checks even without packets;
         // packet notification drives the next sequential flight immediately.
         // Never borrow the daemon's five-second general scheduler.
+        bool idle=false;
         for(;;){
             std::optional<Packet> packet;
             {std::unique_lock lock(mutex_);
-             cv_.wait_for(lock,std::chrono::milliseconds(50),[&]{return stop_||!queue_.empty();});
+             cv_.wait_for(lock,idle?IdleWait:ActiveWait,[&]{return stop_||!queue_.empty()||woken_;});woken_=false;++iterations_;idle=false;
              if(stop_)break;
              if(!queue_.empty()){packet=std::move(queue_.front());queue_.pop_front();}}
             try {
-                if(!needed_()){clear();continue;}
+                if(!needed_()){clear();idle=true;continue;}
                 // Poll the local selected branch even after a completed flight;
                 // no peer response may pin a losing activation proof forever.
                 if(client){
@@ -87,7 +94,7 @@ private:
                         {std::lock_guard lock(mutex_);selected=ready_;}
                         if(selected)selected->CheckSelected(*headers_);
                         else clear();
-                        continue;
+                        idle=true;continue;
                     }
                     const auto connected=peers_();
                     if(!std::any_of(connected.begin(),connected.end(),[&](const auto& p){

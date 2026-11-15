@@ -42,7 +42,8 @@
      "total": 100.0,
      "total_with_confidential": 100.0,
      "unconfirmed": 0.0,
-     "utxo_count": 1
+     "utxo_count": 1,
+     "walletname": "w5"
     }
    },
    "http_status": 200,
@@ -392,7 +393,8 @@
      "total": 99.99999846,
      "total_with_confidential": 99.99999846,
      "unconfirmed": 0.0,
-     "utxo_count": 2
+     "utxo_count": 2,
+     "walletname": "w5"
     }
    },
    "http_status": 200,
@@ -535,7 +537,8 @@
      "total": 99.99999846,
      "total_with_confidential": 99.99999846,
      "unconfirmed": 0.0,
-     "utxo_count": 2
+     "utxo_count": 2,
+     "walletname": "w5"
     }
    },
    "http_status": 200,
@@ -719,7 +722,8 @@
      "total": 0.0,
      "total_with_confidential": 0.0,
      "unconfirmed": 0.0,
-     "utxo_count": 0
+     "utxo_count": 0,
+     "walletname": "snapshot-recovered"
     }
    },
    "http_status": 200,

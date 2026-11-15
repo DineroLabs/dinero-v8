@@ -1,5 +1,10 @@
 #pragma once
 #include "p2p/wallet_funding_download.h"
+#ifdef DINERO_TEST_ORCHARD_ORIGIN
+#include "p2p/wallet_input_proof.h"
+#include "p2p/orchard_catalog_download.h"
+#include "p2p/orchard_phone_history.h"
+#endif
 namespace dinero {
 TEST(WalletFundingDownload, NewInputProofCodecBounds){
     using W=p2p::WalletInputProof;
@@ -53,6 +58,50 @@ TEST(WalletFundingDownload, CurrentSourceChangeCancelsBlockedInputFlight){
     while(count()<2&&std::chrono::steady_clock::now()<until)std::this_thread::sleep_for(std::chrono::milliseconds(10));
     download.Stop();ASSERT_EQ(count(),2u);EXPECT_EQ(sent[0].tip,request.tip);EXPECT_EQ(sent[1].tip,changed.tip);
     EXPECT_NE(sent[0].nonce,sent[1].nonce);
+}
+#endif
+// Idle P2P history workers once polled every 50 ms for the whole process
+// lifetime (a measurable share of phone CPU). With nothing wanted, in
+// flight or selected they must wait about a second per iteration, while a
+// new request still wakes them at once.
+TEST(WalletFundingDownload, IdleHistoryWorkersWaitAndRequestsWakeImmediately){
+    using Peer=p2p::WalletFundingDownload::Peer;const Peer peer{"idle-peer",31,ServiceFlags::NODE_NETWORK};
+    std::mutex mutex;std::optional<std::chrono::steady_clock::time_point> sent;
+    p2p::WalletFundingDownload funding([&]{return std::vector{peer};},[&](const auto&,const auto&,const auto&){
+        std::lock_guard lock(mutex);if(!sent)sent=std::chrono::steady_clock::now();return true;});
+    const auto start=funding.Iterations();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    // 50 ms polling would take about 50 iterations here; idle waits take about 3.
+    EXPECT_LE(funding.Iterations()-start,5u);
+    // A new request is served without waiting out the idle timeout.
+    const auto requested=std::chrono::steady_clock::now();
+    uint256 wanted;wanted.data[0]=0x5a;EXPECT_FALSE(funding.Request(wanted));
+    const auto until=requested+std::chrono::seconds(2);
+    for(;;){{std::lock_guard lock(mutex);if(sent||std::chrono::steady_clock::now()>until)break;}
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));}
+    {std::lock_guard lock(mutex);ASSERT_TRUE(sent);
+     EXPECT_LT(*sent-requested,std::chrono::milliseconds(300));}
+    funding.Stop();
+}
+#ifdef DINERO_TEST_ORCHARD_ORIGIN
+TEST(WalletFundingDownload, IdleOrchardHistoryWorkersWait){
+    const auto headers=std::make_shared<consensus::HeaderChainSelector>();
+    const auto work=std::filesystem::temp_directory_path()/("idle-history-workers-"+std::to_string(::getpid()));
+    std::filesystem::create_directories(work);
+    p2p::WalletInputProofDownload inputs([]{return std::vector<p2p::OrchardCatalogClient::Peer>{};},
+        [](const auto&,const auto&,const auto&){return false;});
+    p2p::OrchardCatalogDownload catalog(headers,work,[]{return false;},
+        []{return std::vector<p2p::OrchardCatalogClient::Peer>{};},[](const auto&,const auto&,const auto&){return false;});
+    p2p::OrchardPhoneHistoryDownload history(headers,work,[]{return std::optional<p2p::OrchardPhoneHistoryTarget>{};},
+        []{return std::shared_ptr<const consensus::OrchardSnapshotSection>{};},[](auto,const auto&){return std::unique_ptr<OrchardBoundaryReplay>{};},
+        []{return std::vector<p2p::OrchardCatalogClient::Peer>{};},[](const auto&,const auto&,const auto&){return false;});
+    const auto start=std::make_tuple(inputs.Iterations(),catalog.Iterations(),history.Iterations());
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    EXPECT_LE(inputs.Iterations()-std::get<0>(start),5u);
+    EXPECT_LE(catalog.Iterations()-std::get<1>(start),5u);
+    EXPECT_LE(history.Iterations()-std::get<2>(start),5u);
+    history.Stop();catalog.Stop();inputs.Stop();
+    std::error_code ignored;std::filesystem::remove_all(work,ignored);
 }
 #endif
 TEST(WalletFundingDownload, BoundedRequestsAndStoppedOwner){

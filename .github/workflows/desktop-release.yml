@@ -76,6 +76,7 @@ jobs:
             packaging/mac/assert-v8-release-lane.sh \
             packaging/mac/build-installer.sh \
             packaging/mac/sign-notarize-release.sh
+          python3 -B scripts/ci/test_macos_release_asset_names.py -v
           for script in packaging/mac/build-installer.sh packaging/mac/sign-notarize-release.sh; do
             set +e
             output=$("$script" --arch powerpc --version 0.0.0-test 2>&1)
@@ -253,6 +254,7 @@ jobs:
         run: |
           cmake -S . -B build-desktop -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON \
             -DDINERO_USE_VENDORED_DEPS=ON \
             -DDINERO_BUILD_QT=ON \
             -DDINERO_BUILD_ORCHARD_BACKEND=ON \
@@ -273,6 +275,11 @@ jobs:
           cmake --build build-desktop -j"$(nproc)" --target \
             dinerod dinero-cli dinero-swap-tower dinero-qt dinero-miner dinero-stratum-worker \
             dinero-wallet-cli dinero-gpu-miner dinero-solo-miner-cli dinero-seeder
+
+      - name: Verify daemon output cannot block before the Qt event loop
+        run: |
+          cmake --build build-desktop --target test_daemon_output
+          ctest --test-dir build-desktop/qt -R '^DaemonOutputBeforeEventLoop$' --output-on-failure
 
       - name: Assert OpenSSL policy pin
         run: bash scripts/ci/check_openssl_version.sh build-desktop 3.5.7
@@ -296,13 +303,25 @@ jobs:
               --payload-url "$SNAPSHOT_PAYLOAD_URL" \
               --manifest-url "$SNAPSHOT_MANIFEST_URL" \
               --destination release-inputs
+            python3 packaging/snapshot/fetch_desktop_primary.py \
+              --fallback-height 153051 \
+              --payload-url 'https://seed3.dinerolabs.org/v823-candidate/h153051-f7-05105aa3-20d87ae6/snapshot.dat' \
+              --manifest-url 'https://seed3.dinerolabs.org/v823-candidate/h153051-f7-05105aa3-20d87ae6/manifest.json' \
+              --destination release-inputs
           else
             gh release download "${{ inputs.release_tag }}" \
               --repo DineroLabs/dinero-v8 \
-              --pattern dinero-assumeutxo-150521-v6-full.dat \
-              --pattern dinero-assumeutxo-150521-v6-full.dat.manifest.json \
-              --pattern dinero-assumeutxo-150521-v6-full.dat.publisher.manifest.json \
-              --pattern dinero-assumeutxo-150521-v6-full.dat.publisher.manifest.sig \
+              --pattern dinero-assumeutxo-153578-v6-full.dat \
+              --pattern dinero-assumeutxo-153578-v6-full.dat.manifest.json \
+              --pattern dinero-assumeutxo-153578-v6-full.dat.publisher.manifest.json \
+              --pattern dinero-assumeutxo-153578-v6-full.dat.publisher.manifest.sig \
+              --dir release-inputs
+            gh release download "${{ inputs.release_tag }}" \
+              --repo DineroLabs/dinero-v8 \
+              --pattern dinero-assumeutxo-153051-v6-full.dat \
+              --pattern dinero-assumeutxo-153051-v6-full.dat.manifest.json \
+              --pattern dinero-assumeutxo-153051-v6-full.dat.publisher.manifest.json \
+              --pattern dinero-assumeutxo-153051-v6-full.dat.publisher.manifest.sig \
               --dir release-inputs
           fi
           gh release download v8.2.2 \
@@ -320,8 +339,10 @@ jobs:
             --pattern utxo-snapshot-65300.dat \
             --pattern utxo-snapshot-65300.dat.manifest.json \
             --dir release-inputs
-          echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-150521-v6-full.dat" >> "$GITHUB_ENV"
-          echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-150521-v6-full.dat.manifest.json" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-153578-v6-full.dat" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-153578-v6-full.dat.manifest.json" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_RECENT_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-153051-v6-full.dat" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_RECENT_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-153051-v6-full.dat.manifest.json" >> "$GITHUB_ENV"
           echo "DINERO_SNAPSHOT_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat" >> "$GITHUB_ENV"
           echo "DINERO_SNAPSHOT_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat.manifest.json" >> "$GITHUB_ENV"
           echo "DINERO_SNAPSHOT_LEGACY_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-99677-v4.dat" >> "$GITHUB_ENV"
@@ -572,10 +593,17 @@ jobs:
           mkdir -p release-inputs
           gh release download "${{ inputs.release_tag }}" \
             --repo DineroLabs/dinero-v8 \
-            --pattern dinero-assumeutxo-150521-v6-full.dat \
-            --pattern dinero-assumeutxo-150521-v6-full.dat.manifest.json \
-            --pattern dinero-assumeutxo-150521-v6-full.dat.publisher.manifest.json \
-            --pattern dinero-assumeutxo-150521-v6-full.dat.publisher.manifest.sig \
+            --pattern dinero-assumeutxo-153578-v6-full.dat \
+            --pattern dinero-assumeutxo-153578-v6-full.dat.manifest.json \
+            --pattern dinero-assumeutxo-153578-v6-full.dat.publisher.manifest.json \
+            --pattern dinero-assumeutxo-153578-v6-full.dat.publisher.manifest.sig \
+            --dir release-inputs
+          gh release download "${{ inputs.release_tag }}" \
+            --repo DineroLabs/dinero-v8 \
+            --pattern dinero-assumeutxo-153051-v6-full.dat \
+            --pattern dinero-assumeutxo-153051-v6-full.dat.manifest.json \
+            --pattern dinero-assumeutxo-153051-v6-full.dat.publisher.manifest.json \
+            --pattern dinero-assumeutxo-153051-v6-full.dat.publisher.manifest.sig \
             --dir release-inputs
           gh release download v8.2.2 \
             --repo DineroLabs/dinero-v8 \
@@ -592,8 +620,10 @@ jobs:
             --pattern utxo-snapshot-65300.dat \
             --pattern utxo-snapshot-65300.dat.manifest.json \
             --dir release-inputs
-          echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-150521-v6-full.dat" >> "$GITHUB_ENV"
-          echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-150521-v6-full.dat.manifest.json" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-153578-v6-full.dat" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-153578-v6-full.dat.manifest.json" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_RECENT_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-153051-v6-full.dat" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_RECENT_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-153051-v6-full.dat.manifest.json" >> "$GITHUB_ENV"
           echo "DINERO_SNAPSHOT_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat" >> "$GITHUB_ENV"
           echo "DINERO_SNAPSHOT_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat.manifest.json" >> "$GITHUB_ENV"
           echo "DINERO_SNAPSHOT_LEGACY_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-99677-v4.dat" >> "$GITHUB_ENV"
@@ -607,6 +637,7 @@ jobs:
         run: |
           cmake -S . -B build-desktop -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON \
             -DCMAKE_PREFIX_PATH="$QT_PREFIX" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
             -DDINERO_USE_VENDORED_DEPS=ON \
@@ -632,6 +663,11 @@ jobs:
           cmake --build build-desktop -j"$(sysctl -n hw.ncpu)" --target \
             dinerod dinero-cli dinero-swap-tower dinero-qt dinero-miner dinero-stratum-worker \
             dinero-wallet-cli dinero-gpu-miner dinero-solo-miner-cli dinero-seeder
+
+      - name: Verify daemon output cannot block before the Qt event loop
+        run: |
+          cmake --build build-desktop --target test_daemon_output
+          ctest --test-dir build-desktop/qt -R '^DaemonOutputBeforeEventLoop$' --output-on-failure
 
       - name: Assert reachability stack
         run: |

@@ -551,6 +551,8 @@ set(GUI_SOURCES
   src/privatecovenantwidget.cpp
   src/privatecovenantwidget.h
   src/main.cpp
+  src/daemonoutput.cpp
+  src/daemonoutput.h
   src/rpcclient.cpp
   src/rpcclient.h
   src/changeaddressmanager.cpp
@@ -1441,6 +1443,13 @@ if(BUILD_TESTING)
     QT_NO_KEYWORDS $<TARGET_PROPERTY:dinero-qt,COMPILE_DEFINITIONS>)
   add_test(NAME OverviewColumns COMMAND test_overview_columns)
   set_tests_properties(OverviewColumns PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+  if(UNIX AND TARGET dinerod)
+    add_test(NAME OverviewMiningRewardsRealRpc
+      COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overview_mining_rewards_regtest.sh
+        $<TARGET_FILE:dinerod> $<TARGET_FILE:test_overview_columns>)
+    set_tests_properties(OverviewMiningRewardsRealRpc PROPERTIES
+      TIMEOUT 180 LABELS "qt;rpc;regtest;wallet")
+  endif()
 
   add_executable(test_covenants_tab ${_wallet_test_sources} tests/test_covenants_tab.cpp)
   target_link_libraries(test_covenants_tab PRIVATE
@@ -1725,6 +1734,13 @@ if(BUILD_TESTING)
   endif()
   target_compile_definitions(test_pool_token_store PRIVATE QT_NO_KEYWORDS)
   add_test(NAME PoolTokenStore COMMAND test_pool_token_store)
+
+  add_executable(test_daemon_output tests/test_daemon_output.cpp src/daemonoutput.cpp)
+  target_include_directories(test_daemon_output PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_daemon_output PRIVATE Qt6::Core)
+  target_compile_definitions(test_daemon_output PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME DaemonOutputBeforeEventLoop COMMAND test_daemon_output)
+  set_tests_properties(DaemonOutputBeforeEventLoop PROPERTIES TIMEOUT 30)
 
   add_executable(test_pool_cockpit ${_wallet_test_sources} tests/test_pool_cockpit.cpp)
   target_link_libraries(test_pool_cockpit PRIVATE

@@ -7,8 +7,10 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPointer>
 #include <QPushButton>
 #include <QSettings>
+#include <QSignalSpy>
 #include <QTableWidget>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -93,6 +95,86 @@ public:
     void remove(const QString& a) override { items_->remove(a); }
 private:
     QHash<QString, QString>* items_;
+};
+
+// Holds the panel's 200-entry history reply while a same-address explorer
+// request returns a shorter page. Method-only routing would mistake that
+// explorer reply for the end of the pool earnings walk.
+class InterleavedHistoryRpc : public QObject {
+public:
+    InterleavedHistoryRpc() {
+        if (!server_.listen(QHostAddress::LocalHost)) qFatal("Interleaved RPC listener failed");
+        connect(&server_, &QTcpServer::newConnection, this, [this] {
+            while (QTcpSocket* socket = server_.nextPendingConnection()) {
+                connect(socket, &QTcpSocket::readyRead, socket, [this, socket] {
+                    if (socket->property("handled").toBool()) return;
+                    const QByteArray raw = socket->property("pending").toByteArray() + socket->readAll();
+                    socket->setProperty("pending", raw);
+                    const int split = raw.indexOf("\r\n\r\n");
+                    if (split < 0) return;
+                    const QJsonDocument doc = QJsonDocument::fromJson(raw.mid(split + 4));
+                    if (!doc.isObject()) return;
+                    socket->setProperty("handled", true);
+                    const QJsonObject request = doc.object();
+                    const QString method = request.value("method").toString();
+                    if (method == QLatin1String("blockchain.getaddressbalance")) {
+                        if (!held_pool_balance_) {
+                            held_pool_balance_ = socket;
+                        } else {
+                            ++explorer_balance_replies;
+                            respond(socket, QJsonObject{{"address", kFeeAddress},
+                                                        {"balance", 99900000000LL}});
+                        }
+                    } else if (method == QLatin1String("blockchain.getaddresshistory")) {
+                        const int count = request.value("params").toArray().at(1).toInt();
+                        if (count == 200) {
+                            held_pool_history_ = socket;
+                        } else {
+                            ++explorer_replies;
+                            respond(socket, history(5000000000LL));
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    QUrl url() const { return QUrl(QString("http://127.0.0.1:%1/").arg(server_.serverPort())); }
+    bool hasHeldPoolHistory() const { return !held_pool_history_.isNull(); }
+    bool hasHeldPoolBalance() const { return !held_pool_balance_.isNull(); }
+    void releasePoolHistory() {
+        if (held_pool_history_) respond(held_pool_history_, history(12300000000LL));
+    }
+    void releasePoolBalance() {
+        if (held_pool_balance_) {
+            respond(held_pool_balance_, QJsonObject{{"address", kFeeAddress},
+                                                    {"balance", 12300000000LL}});
+        }
+    }
+    int explorer_replies = 0;
+    int explorer_balance_replies = 0;
+
+private:
+    static QJsonObject history(qint64 una) {
+        return QJsonObject{
+            {"address", kFeeAddress}, {"history_complete", true},
+            {"history_coverage", QJsonObject{{"scan_from_height", 900},
+                                               {"scan_from_hash", QString(64, QLatin1Char('a'))},
+                                               {"chain_changed", false}, {"stop_reason", "genesis"}}},
+            {"transactions", QJsonArray{QJsonObject{{"type", "receive"}, {"height", 900},
+                                                    {"is_coinbase", true}, {"amount", una}}}}
+        };
+    }
+    static void respond(QTcpSocket* socket, const QJsonObject& result) {
+        const QByteArray body = QJsonDocument(QJsonObject{
+            {"jsonrpc", "2.0"}, {"id", 1}, {"result", result}}).toJson(QJsonDocument::Compact);
+        socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " +
+                      QByteArray::number(body.size()) + "\r\n\r\n" + body);
+        socket->disconnectFromHost();
+    }
+    QTcpServer server_;
+    QPointer<QTcpSocket> held_pool_history_;
+    QPointer<QTcpSocket> held_pool_balance_;
 };
 
 template <class T>
@@ -187,6 +269,45 @@ private Q_SLOTS:
         QCOMPARE(named<QLineEdit>(panel, "poolFeeAddress")->text(), kFeeAddress);
         QVERIFY2(named<QLabel>(panel, "poolLifetime")->text().contains("reading the chain"),
                  qPrintable(named<QLabel>(panel, "poolLifetime")->text()));
+    }
+
+    void sameAddressExplorerHistoryCannotFinishPoolEarnings() {
+        InterleavedHistoryRpc server;
+        QHash<QString, QString> keychain;
+        auto rpc = makeRpc();
+        rpc->setEndpoint(server.url());
+        PoolPanel panel(rpc.get(), nullptr, std::make_unique<FakeStore>(&keychain));
+        QSignalSpy results(rpc.get(), &RpcClient::rpcResult);
+        named<QLineEdit>(panel, "poolFeeAddress")->setText(kFeeAddress);
+        QVERIFY(QMetaObject::invokeMethod(&panel, "onCheckEarningsClicked", Qt::DirectConnection));
+        QTRY_VERIFY_WITH_TIMEOUT(server.hasHeldPoolHistory(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(server.hasHeldPoolBalance(), 5000);
+
+        // MainWindow's explorer uses the same method and address, but a
+        // smaller default page. Its reply arrives before the pool's page.
+        rpc->call("blockchain.getaddresshistory", QJsonArray{kFeeAddress, 50});
+        rpc->call("blockchain.getaddressbalance", QJsonArray{kFeeAddress});
+        QTRY_COMPARE_WITH_TIMEOUT(server.explorer_replies, 1, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(server.explorer_balance_replies, 1, 5000);
+        const auto sawRoute = [&results](const QString& route) {
+            for (const auto& reply : results) {
+                if (reply.at(0).toString() == route) return true;
+            }
+            return false;
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(sawRoute(QStringLiteral("blockchain.getaddresshistory")), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(sawRoute(QStringLiteral("blockchain.getaddressbalance")), 5000);
+        QVERIFY(named<QLabel>(panel, "poolLifetime")->text().contains("reading the chain"));
+        QVERIFY(named<QLabel>(panel, "poolUnspent")->text().contains("checking the chain"));
+
+        server.releasePoolHistory();
+        server.releasePoolBalance();
+        QTRY_VERIFY_WITH_TIMEOUT(
+            named<QLabel>(panel, "poolLifetime")->text().contains("123.00000000 DIN"), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            named<QLabel>(panel, "poolUnspent")->text().contains("123.00000000 DIN"), 5000);
+        QVERIFY(!named<QLabel>(panel, "poolLifetime")->text().contains("50.00000000 DIN"));
+        QVERIFY(!named<QLabel>(panel, "poolUnspent")->text().contains("999.00000000 DIN"));
     }
 
     void contributorsReadAsAddresses() {

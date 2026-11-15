@@ -59,6 +59,25 @@ TEST(WalletScriptReconciliation, ExpandedScriptDomainPreservesPendingAndAccountO
     const auto reconciled=f.Snapshot();ASSERT_EQ(f.f.service->reconcileRuntimeWalletCoverage(use->Wallet(),index->Index(),**source),Status::Ok);
     EXPECT_EQ(f.Snapshot(),reconciled);
 }
+TEST(WalletScriptReconciliation, CoverageMaterialLimitStopsEnrolledRecoveryAsResourceLimit) {
+    // An enrolled wallet whose script set changed needs coverage. When that
+    // capture exceeds the recovery material limit, the automatic recovery
+    // route must report ResourceLimit (so the delivery worker blocks the
+    // session) instead of Internal (which it retries every pass), and must
+    // leave both owners unchanged.
+    SharedPaymentFixture f;
+    // Enrolled: the wallet carries a delivery identity (as phone wallets do).
+    {auto lease=f.wallet->get().AcquireDatabaseLease();(void)lease->EnsureDeliveryIdentity();}
+    (void)f.wallet->get().getNewChangeAddress("","taproot");
+    const auto before=f.Snapshot(),index_before=CoverageIndexSnapshot(f);
+    auto use=WalletService::AcquireWalletUse(f.wallet);auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+    ASSERT_TRUE(RuntimeOrdinaryDelivery::CoverageRequiredForWallet(use->Wallet(),index->Index(),f.Selected().session));
+    const auto limited=f.f.service->resumeRuntimeWalletRecoveryIfNeeded(use->Wallet(),index->Index(),f.Selected().session,1);
+    EXPECT_FALSE(limited.ok());
+    EXPECT_EQ(limited.status(),Status::ResourceLimit);
+    EXPECT_EQ(f.Snapshot(),before);EXPECT_EQ(CoverageIndexSnapshot(f),index_before);
+    EXPECT_TRUE(RuntimeOrdinaryDelivery::CoverageRequiredForWallet(use->Wallet(),index->Index(),f.Selected().session));
+}
 TEST(WalletScriptReconciliation, PreparationCommitRefusalLeavesBothStoresUnchanged) {
     SharedPaymentFixture f;(void)f.wallet->get().getNewChangeAddress("","taproot");
     const auto source=CaptureScriptCoverage(f);ASSERT_TRUE(source.ok());

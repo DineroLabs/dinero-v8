@@ -27,6 +27,8 @@ RuntimeIndexProgress RuntimeIndexDelivery::ApplyForWallet(WalletManager& wallet,
                                                         const RuntimeOutboxEvent& event) {
     const auto lease=wallet.AcquireDatabaseLease();
     if(lease->Session()!=expected_session)throw std::runtime_error("Wallet delivery selection changed");
+    if(lease->LegacyTransparentState()==WalletManager::LegacyTransparentState::Pending)
+        throw std::runtime_error("Legacy transparent coverage required before incremental index delivery");
     const auto identity=lease->EnsureDeliveryIdentity();WalletIndexSnapshot snapshot(lease->Database());
     const auto historical=lease->ReadHistoricalImportScriptsInTransaction();
     return Apply(index,identity,event,nullptr,[&]{snapshot.Commit();},&historical);

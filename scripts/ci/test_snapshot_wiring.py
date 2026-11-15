@@ -11,30 +11,43 @@ class SnapshotWiring(unittest.TestCase):
     def setUp(self):
         catalog = json.loads((ROOT / 'packaging/snapshot/desktop-inputs-candidate.json').read_text(encoding='utf-8'))
         pinned = [catalog['primary']['filename'], *(e['filename'] for e in catalog['fallbacks'])]
-        # The public catalog remains at v5 until the H150521 full-v6 export is
-        # natively qualified. Wiring is tested against the provisional name;
-        # package admission still refuses an unpinned primary.
-        self.names = (["dinero-assumeutxo-150521-v6-full.dat", *pinned]
-                      if catalog['primary']['format_version'] == 5 else pinned)
-        self.assertEqual(len(self.names), 4)
+        # Package defaults must follow the exact pinned primary and four
+        # older recovery inputs. Native admission is qualified separately.
+        self.names = pinned
+        self.primary_height = catalog['primary']['height']
+        self.assertEqual(len(self.names), 5)
+        self.assertEqual(catalog['fallbacks'][0]['height'], 153051)
+        self.assertEqual(catalog['fallbacks'][0]['sha256'],
+                         '20d87ae691ebc9cd4c42a8800ce7d69af58a4bb97a565f4a8bc1532792fb513f')
 
-    def test_gui_selection_and_windows_derivation_cover_all_four(self):
+    def test_release_notes_name_the_pinned_primary_height(self):
+        notes = (ROOT / 'packaging/RELEASE-NOTES-TEMPLATE.md').read_text(encoding='utf-8')
+        self.assertIn(f'| {self.primary_height:,} (preferred full-v6) |', notes)
+        self.assertIn(self.names[0], notes)
+        self.assertIn(f'SHA256SUMS-assumeutxo-{self.primary_height}', notes)
+        self.assertIn('SHA256SUMS-assumeutxo-153051', notes)
+        self.assertIn(self.names[1] + '.publisher.manifest.sig', notes)
+
+    def test_gui_selection_and_windows_derivation_cover_all_five(self):
         source = (ROOT / 'qt/src/main.cpp').read_text(encoding='utf-8')
         builder = (ROOT / 'packaging/windows/build-installer.ps1').read_text(encoding='utf-8')
-        for name, constant in zip(self.names, ['Primary', 'Fallback', 'LegacyFallback', 'OldestFallback']):
+        for name, constant in zip(self.names, ['Primary', 'RecentFallback', 'Fallback', 'LegacyFallback', 'OldestFallback']):
             self.assertEqual(re.search(r'kBundledSnapshot' + constant + r'\[\]\s*=\s*"([^"]+)"', source)[1], name)
             self.assertIn('kBundledSnapshot' + constant + r'\[\]', builder)
         self.assertIn('SelectBundledSnapshots({', source)
         self.assertIn("fallbacks.join(';')", source)
         self.assertIn("throw 'Required older exact-lifecycle snapshot fallback missing.'", builder)
         self.assertIn("throw 'Required oldest exact-lifecycle snapshot fallback missing.'", builder)
+        self.assertIn("throw 'Required H153051 exact-lifecycle snapshot fallback missing.'", builder)
 
-    def test_linux_stages_all_four(self):
+    def test_linux_stages_all_five(self):
         source = (ROOT / 'packaging/linux/stage-snapshot-pair.sh').read_text(encoding='utf-8')
-        for name, variable in zip(self.names, ['PRIMARY_NAME', 'FALLBACK_NAME', 'LEGACY_FALLBACK_NAME', 'OLDEST_FALLBACK_NAME']):
+        for name, variable in zip(self.names, ['PRIMARY_NAME', 'RECENT_FALLBACK_NAME', 'FALLBACK_NAME', 'LEGACY_FALLBACK_NAME', 'OLDEST_FALLBACK_NAME']):
             self.assertEqual(re.search(r'^' + variable + r'="([^"]+)"', source, re.M)[1], name)
         self.assertIn('verify_and_stage "$LEGACY_FALLBACK_DATA"', source)
         self.assertIn('verify_and_stage "$OLDEST_FALLBACK_DATA"', source)
+        self.assertIn('verify_and_stage "$RECENT_FALLBACK_DATA"', source)
+        self.assertIn('--recent-fallback', source)
         self.assertIn('check_desktop_primary.py', source)
 
     def test_macos_defaults_and_copy_destinations_agree(self):
@@ -67,11 +80,19 @@ class SnapshotWiring(unittest.TestCase):
                     self.assertGreaterEqual(source.count(self.names[0] + '.publisher.manifest.json'), expected_count)
                     self.assertGreaterEqual(source.count(self.names[0] + '.publisher.manifest.sig'), expected_count)
                 self.assertIn(self.names[0] + '.manifest.json', source)
+                self.assertIn('--fallback-height 153051', source)
+                self.assertIn('h153051-f7-05105aa3-20d87ae6/', source)
+                self.assertIn(self.names[1], source)
+                if path.startswith('windows'):
+                    self.assertIn('-SnapshotRecentFallbackPath', source)
+                    self.assertIn('-SnapshotRecentFallbackManifestPath', source)
                 if path.startswith('windows'):
                     # The hosted Windows runner exposes Python as `python`;
                     # no setup-python step provides a `python3` executable.
                     self.assertNotRegex(source, r'\bpython3\b')
                 else:
+                    self.assertIn('DINERO_SNAPSHOT_RECENT_FALLBACK_DAT=', source)
+                    self.assertIn('DINERO_SNAPSHOT_RECENT_FALLBACK_MANIFEST=', source)
                     self.assertIn('DINERO_SNAPSHOT_LEGACY_FALLBACK_DAT=', source)
                     self.assertIn('DINERO_SNAPSHOT_LEGACY_FALLBACK_MANIFEST=', source)
                     self.assertIn('DINERO_SNAPSHOT_OLDEST_FALLBACK_DAT=', source)
@@ -81,12 +102,72 @@ class SnapshotWiring(unittest.TestCase):
             self.assertIn('cmp -s "${GITHUB_WORKSPACE}/tooling/packaging/mac/build-installer.sh" packaging/mac/build-installer.sh', source)
 
         smoke = (ROOT / '.github/workflows/windows-openssl-release-smoke.yml').read_text(encoding='utf-8')
-        self.assertIn("-SnapshotFileName 'dinero-assumeutxo-148375-v5.dat'", smoke)
+        self.assertIn("-SnapshotFileName 'dinero-assumeutxo-153578-v6-full.dat'", smoke)
+        self.assertIn('fetch_desktop_primary.py', smoke)
+        candidate_url = f'https://seed3.dinerolabs.org/v823-candidate/h{self.primary_height}'
+        for name, flag in [('snapshot.dat', '--payload-url'),
+                           ('manifest.json', '--manifest-url'),
+                           ('manifest.sig', '--signature-url')]:
+            self.assertIn(f"{flag} '{candidate_url}/{name}'", smoke)
+        self.assertIn('--publisher-signature snapshot-inputs/dinero-assumeutxo-153578-v6-full.dat.publisher.manifest.sig', smoke)
         version = re.search(r"-Version '([^']+)'", smoke)[1]
         filename = 'Dinero-Server-' + version + '-windows-x86_64-Setup.exe'
         self.assertEqual(smoke.count(filename), 2, 'Install and artifact paths must match the built version')
         numeric_version = version.split('-')[0] + '.0'
         self.assertIn("$numericVersion -ne '" + numeric_version + "'", smoke)
+
+    def test_pr_workflows_do_not_fetch_live_full_v6_primary_before_rotation(self):
+        for workflow in (ROOT / '.github/workflows').glob('*.yml'):
+            source = workflow.read_text(encoding='utf-8')
+            if 'pull_request:' not in source:
+                continue
+            with self.subTest(workflow=workflow.name):
+                self.assertNotRegex(source, r'https://[^\s\'"/]+/snapshot/full-v6/(?:latest/)?(?:snapshot\.dat|manifest\.json)')
+
+    def test_h153051_release_builds_use_same_tag_signed_assets(self):
+        base = self.names[1]
+        signed_names = (base, base + '.manifest.json',
+                        base + '.publisher.manifest.json',
+                        base + '.publisher.manifest.sig')
+        candidate_route = 'h153051-f7-05105aa3-20d87ae6/'
+        desktop = (ROOT / '.github/workflows/desktop-release.yml').read_text(encoding='utf-8')
+        desktop_steps = desktop.split('- name: Fetch full-v6 primary and exact recovery bases')[1:]
+        self.assertEqual(len(desktop_steps), 2)
+        for index, fragment in enumerate(desktop_steps):
+            step = fragment.split('\n      - name:', 1)[0]
+            if index == 0:
+                candidate, release = step.split('          else\n', 1)
+                self.assertIn(candidate_route, candidate)
+                self.assertNotIn(candidate_route, release)
+            else:
+                release = step
+                self.assertNotIn(candidate_route, release)
+            self.assertIn('gh release download "${{ inputs.release_tag }}"', release)
+            for name in signed_names:
+                self.assertIn('--pattern ' + name, release)
+
+        windows = (ROOT / '.github/workflows/windows-release.yml').read_text(encoding='utf-8')
+        step = windows.split('- name: Fetch full-v6 primary and exact recovery bases', 1)[1].split('\n      - name:', 1)[0]
+        release, candidate = step.split('          else\n', 1)
+        self.assertIn(candidate_route, candidate)
+        self.assertNotIn(candidate_route, release)
+        self.assertIn('gh release download "$PRIMARY_RELEASE"', release)
+        for name in signed_names:
+            self.assertIn("--pattern '" + name + "'", release)
+
+    def test_h153051_is_packaged_before_older_bases_in_every_runtime(self):
+        for path in ('qt/src/main.cpp', 'docker-entrypoint.sh'):
+            source = (ROOT / path).read_text(encoding='utf-8')
+            with self.subTest(path=path):
+                self.assertIn(self.names[1], source)
+                self.assertLess(source.index(self.names[1]), source.index(self.names[2]))
+        docker = (ROOT / 'Dockerfile').read_text(encoding='utf-8')
+        fallback_list = re.search(r'ENV DINERO_SNAPSHOT_FALLBACKS="([^"]+)"', docker)[1]
+        self.assertLess(fallback_list.index(self.names[1]), fallback_list.index(self.names[2]))
+        self.assertIn('dinero-assumeutxo-153051-v6-full.dat*',
+                      (ROOT / 'Dockerfile').read_text(encoding='utf-8'))
+        self.assertIn('recent-fallback',
+                      (ROOT / 'packaging/mac/build-installer.sh').read_text(encoding='utf-8'))
 
 
 if __name__ == '__main__':

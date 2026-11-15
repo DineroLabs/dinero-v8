@@ -7,6 +7,7 @@
 
 #include "rpc/rpc_method_builder.h"
 #include "rpc/methods_mining_extras.h"
+#include "rpc/legacy_transparent_freshness.h"
 #include "common/logger.h"
 #include "daemon/daemon_context.h"
 #include "daemon/services/chainstate_service.h"
@@ -255,12 +256,15 @@ void registerMiningExtrasMethodsVNext() {
         .result("array", "Array of generated block hashes")
         .handler([](const ExecutionContext& ctx, const din::Json& params) -> din::Json {
             // Get wallet address or use fallback
+            din::Json result;
             std::string address = "";
 
             // Try to get address from wallet
             if (ctx.daemon && ctx.daemon->wallet) {
+                auto wallet_svc = std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
+                if (wallet_svc && wallet_svc->hasActiveWallet() &&
+                    RefuseIfLegacyTransparentAddressMutation(ctx, wallet_svc, result)) return result;
                 try {
-                    auto wallet_svc = std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
                     if (wallet_svc) {
                         auto& mgr = wallet_svc->get();
                         address = mgr.getNewAddress("mining", "taproot");

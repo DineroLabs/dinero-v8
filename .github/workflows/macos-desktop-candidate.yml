@@ -45,6 +45,7 @@ jobs:
           python3 -B scripts/ci/test_desktop_candidate.py -v
           python3 -B scripts/ci/test_macos_minimum.py -v
           python3 -B scripts/ci/test_macos_desktop_payload.py -v
+          python3 -B scripts/ci/test_macos_release_asset_names.py -v
           python3 -B scripts/ci/test_snapshot_wiring.py -v
           python3 -B packaging/snapshot/test_desktop_primary_profile.py -v
       - name: Require an immutable candidate input
@@ -131,7 +132,7 @@ jobs:
             echo 'variant=${{ matrix.variant }}'
             echo 'qt_version=${{ matrix.qt }}'
             echo 'deployment_target=13.0'
-            echo 'snapshot_inputs=provisional H150521 full-v6 primary from pinned HTTPS inputs; H148375/H99677/H65300 recovery bases'
+            echo 'snapshot_inputs=signed H153578 full-v6 primary from pinned HTTPS inputs; H153051/H148375/H99677/H65300 recovery bases'
             echo "source_commit=$SOURCE_HEAD"
             echo "tooling_commit=$TOOLING_HEAD"
             echo "sv2_commit=$SV2_HEAD"
@@ -227,6 +228,11 @@ jobs:
             --payload-url "$SNAPSHOT_PAYLOAD_URL" \
             --manifest-url "$SNAPSHOT_MANIFEST_URL" \
             --destination release-inputs
+          PATH="$OPENSSL_BIN:$PATH" python3 packaging/snapshot/fetch_desktop_primary.py \
+            --fallback-height 153051 \
+            --payload-url 'https://seed3.dinerolabs.org/v823-candidate/h153051-f7-05105aa3-20d87ae6/snapshot.dat' \
+            --manifest-url 'https://seed3.dinerolabs.org/v823-candidate/h153051-f7-05105aa3-20d87ae6/manifest.json' \
+            --destination release-inputs
           gh release download v8.2.2 \
             --repo DineroLabs/dinero-v8 \
             --pattern dinero-assumeutxo-148375-v5.dat \
@@ -243,8 +249,10 @@ jobs:
             --pattern utxo-snapshot-65300.dat.manifest.json \
             --dir release-inputs
           {
-            echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-150521-v6-full.dat"
-            echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-150521-v6-full.dat.manifest.json"
+            echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-153578-v6-full.dat"
+            echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-153578-v6-full.dat.manifest.json"
+            echo "DINERO_SNAPSHOT_RECENT_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-153051-v6-full.dat"
+            echo "DINERO_SNAPSHOT_RECENT_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-153051-v6-full.dat.manifest.json"
             echo "DINERO_SNAPSHOT_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat"
             echo "DINERO_SNAPSHOT_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat.manifest.json"
             echo "DINERO_SNAPSHOT_LEGACY_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-99677-v4.dat"
@@ -262,6 +270,7 @@ jobs:
             -DCMAKE_PREFIX_PATH="$QT_PREFIX" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
             -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
+            -DBUILD_TESTING=ON \
             -DDINERO_USE_VENDORED_DEPS=ON \
             -DDINERO_BUILD_QT=ON \
             -DDINERO_BUILD_ORCHARD_BACKEND=ON \
@@ -286,6 +295,11 @@ jobs:
           cmake --build build-desktop -j"$(sysctl -n hw.ncpu)" --target \
             dinerod dinero-cli dinero-swap-tower dinero-qt dinero-miner dinero-stratum-worker \
             dinero-wallet-cli dinero-gpu-miner dinero-solo-miner-cli dinero-seeder
+
+      - name: Verify daemon output cannot block before the Qt event loop
+        run: |
+          cmake --build build-desktop --target test_daemon_output
+          ctest --test-dir build-desktop/qt -R '^DaemonOutputBeforeEventLoop$' --output-on-failure
 
       - name: Assert reachability stack
         run: |

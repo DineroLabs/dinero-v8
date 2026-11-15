@@ -369,6 +369,7 @@ if(TARGET dinero_chainstate)
   target_link_libraries(dinero_orchard_runtime_reader PUBLIC dinero_orchard_chainstate_write)
   add_library(dinero_orchard_index_delivery STATIC
     "${ORCHARD_HOST_ROOT}/src/wallet/runtime_index_delivery.cpp"
+    "${ORCHARD_HOST_ROOT}/src/wallet/recovery_tail_effects.cpp"
     "${ORCHARD_HOST_ROOT}/src/wallet/runtime_wallet_index_delivery.cpp"
     "${ORCHARD_HOST_ROOT}/src/wallet/runtime_wallet_recovery.cpp"
     "${ORCHARD_HOST_ROOT}/src/wallet/orchard_account_delivery.cpp")

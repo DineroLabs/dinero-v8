@@ -148,6 +148,11 @@ public:
         std::lock_guard guard(mutex_);Check(!frozen_&&sqlite3_get_autocommit(db_.get()));
         Exec("PRAGMA query_only=ON");frozen_=true;
     }
+    // Reopens an exclusively owned frozen spool for append-only extension.
+    void Thaw() {
+        std::lock_guard guard(mutex_);Check(frozen_&&sqlite3_get_autocommit(db_.get()));
+        Exec("PRAGMA query_only=OFF");frozen_=false;
+    }
     struct Usage {int pager_bytes=0,schema_bytes=0,statement_bytes=0;};
     Usage UsageNow() const {
         std::lock_guard guard(mutex_);Usage result;int high=0;

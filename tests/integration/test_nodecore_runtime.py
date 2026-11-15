@@ -182,6 +182,12 @@ def status_during_start(node):
     check("start under status polling succeeds", probe["start_result"] == 0, probe)
     check("status reports starting while a start runs", probe["saw_starting"], probe)
     check("status answers at once during start", probe["slowest_status_ms_during_start"] < 200, probe)
+    # Hosts compare the reported Core identity to the one they were built
+    # with; a busy reply without a version was misread as a mismatch.
+    running = probe.get("running_version")
+    check("running status reports a version", isinstance(running, str) and running, probe)
+    check("every busy starting reply reports the running version",
+          probe.get("starting_versions") == [running], probe)
     check("status-during-start stop", node.call("stop") == 0)
 
 
@@ -353,12 +359,19 @@ def storage_readiness(node):
     original_seeds = seeds(linked)
     (linked/"blockchain").rename(linked/"private-blockchain")
     (linked/"blockchain").symlink_to(linked/"private-blockchain", target_is_directory=True)
-    check("preactivation refusal can still report its status", node.start(linked, network="mainnet", sync_profile="ios_utreexo") == 0)
-    report = node.rpc("orchard.getactivationstatus")
-    check("inner-symlink migration guard still refuses", report["storage_upgrade_refused"] is True, report)
+    private_source = linked / "private-blockchain"
+    def source_digests():
+        return {str(path.relative_to(private_source)): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in private_source.rglob("*") if path.is_file()}
+    original_source = source_digests()
+    started = node.start(linked, network="mainnet", sync_profile="ios_utreexo")
+    check("linked blockchain refuses before embedded services start", started != 0, started)
+    report = node.call("status")
+    # The C ABI returns no status JSON when startup refused before services
+    # become queryable; the driver serializes that nullptr as JSON null.
+    check("linked blockchain leaves embedded node stopped", report is None, report)
     check("refusal does not publish separated layout", not layout(linked) and not (linked/"blockchain"/"chaindb.legacy-v1").exists())
-    check("refusal keeps canonical genesis", state(node) == before)
-    check("refused store closes", node.call("stop") == 0)
+    check("refusal keeps canonical source", source_digests() == original_source)
     check("refusal keeps wallet seed", seeds(linked) == original_seeds)
 
 

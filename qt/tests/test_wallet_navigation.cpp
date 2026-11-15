@@ -16,6 +16,94 @@ void killStaleDinerodByPort() { qFatal("Unexpected daemon cleanup in navigation 
 class WalletNavigationTest : public QObject {
     Q_OBJECT
 private Q_SLOTS:
+    void selectedWalletRemainsBoundWhenBalanceIsNotCurrent() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QTcpServer endpoint;
+        QVERIFY(endpoint.listen(QHostAddress::LocalHost));
+        qputenv("DINERO_RPC_URL", QString("http://127.0.0.1:%1/").arg(endpoint.serverPort()).toUtf8());
+        QCoreApplication::setOrganizationName("DineroWalletSwitchTest");
+        QCoreApplication::setApplicationName("IsolatedWalletSwitch");
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        auto* rpc = window.findChild<RpcClient*>();
+        QVERIFY(rpc);
+        rpc->setDatadir(dir.path());
+        rpc->setEndpoint(QUrl(QString("http://127.0.0.1:%1/").arg(endpoint.serverPort())));
+
+        QVERIFY(QMetaObject::invokeMethod(&window, "checkRescanStatus", Qt::DirectConnection));
+        Q_EMIT rpc->rpcResult("wallet.getinfo", QJsonObject{{"wallet_name", "AFA"}, {"locked", false}});
+        Q_EMIT rpc->rpcResult("wallet.listwallets", QJsonArray{QStringLiteral("AFA"), QStringLiteral("India")});
+        auto* selector = window.findChild<QComboBox*>();
+        for (auto* candidate : window.findChildren<QComboBox*>()) {
+            if (candidate->findText("India") >= 0) selector = candidate;
+        }
+        QVERIFY(selector);
+        selector->setCurrentText("India");
+        auto* load = window.findChild<QPushButton*>("walletLoad");
+        auto* balance = window.findChild<QLabel*>("walletTotalBalance");
+        auto* send = window.findChild<QPushButton*>("walletSendButton");
+        auto* lock = window.findChild<QPushButton*>("walletLock");
+        auto* error = window.findChild<QLabel*>("walletGlobalError");
+        QVERIFY(load && balance && send && lock && error);
+        load->click();
+        QCOMPARE(load->text(), QStringLiteral("Switching..."));
+        QCOMPARE(balance->text(), QStringLiteral("Loading..."));
+        Q_EMIT rpc->rpcResult("wallet.getinfo", QJsonObject{
+            {"error", "Previous wallet status unavailable"}});
+        QCOMPARE(load->text(), QStringLiteral("Switching..."));
+
+        // wallet.open is authoritative about the selected name and lock state.
+        // The follow-up wallet.getinfo cannot report a balance while India's
+        // v2 history is behind the selected Orchard tip.
+        Q_EMIT rpc->rpcResult("wallet.open", QJsonObject{{"success", true}, {"wallet_name", "India"}, {"locked", true}});
+        Q_EMIT rpc->rpcResult("wallet.getinfo", QJsonObject{
+            {"error", "Legacy transparent wallet is catching up to the selected chain"},
+            {"error_code", "wallet_balance_not_current"},
+            {"retryable", true}});
+
+        QVERIFY2(load->text() != QStringLiteral("Switching..."), "wallet.getinfo refusal left the wallet switch stuck");
+        QCOMPARE(load->text(), QStringLiteral("Reload Wallet"));
+        QVERIFY(selector->isEnabled());
+        QVERIFY(balance->text().contains("unavailable", Qt::CaseInsensitive));
+        QVERIFY(!send->isEnabled());
+        QVERIFY(lock->text().contains("Locked"));
+        QVERIFY(error->text().contains("Unlock this wallet to finish recovery"));
+        Q_EMIT rpc->rpcError("wallet.getbalance", -32603,
+            "Legacy transparent wallet is catching up to the selected chain");
+        QVERIFY(error->text().contains("Unlock this wallet to finish recovery"));
+
+        // A transport error after a *different* confirmed open must also
+        // finish the switch without inheriting India's financial state.
+        selector->setCurrentText("AFA");
+        load->click();
+        QCOMPARE(load->text(), QStringLiteral("Switching..."));
+        Q_EMIT rpc->rpcResult("wallet.open", QJsonObject{{"success", true}, {"wallet_name", "AFA"}, {"locked", true}});
+        Q_EMIT rpc->rpcError("wallet.getinfo", -1, "Connection interrupted");
+        QCOMPARE(load->text(), QStringLiteral("Reload Wallet"));
+        QVERIFY(balance->text().contains("unavailable", Qt::CaseInsensitive));
+        QVERIFY(!send->isEnabled());
+        QVERIFY(error->text().startsWith("Wallet balance unavailable;"));
+
+        Q_EMIT rpc->rpcError("wallet.getinfo", -32603,
+            "Legacy transparent wallet is catching up to the selected chain");
+        QVERIFY(error->text().startsWith("Wallet balance unavailable;"));
+        Q_EMIT rpc->rpcError("wallet.getinfo", -32603, "Unexpected wallet metadata failure");
+        QVERIFY(error->text().contains("Unexpected wallet metadata failure"));
+
+        // The balance refusal can arrive before the getinfo refusal too.
+        selector->setCurrentText("India");
+        load->click();
+        Q_EMIT rpc->rpcResult("wallet.open", QJsonObject{{"success", true}, {"wallet_name", "India"}, {"locked", true}});
+        Q_EMIT rpc->rpcError("wallet.getbalance", -32603,
+            "Legacy transparent wallet is catching up to the selected chain");
+        Q_EMIT rpc->rpcResult("wallet.getinfo", QJsonObject{
+            {"error", "Legacy transparent wallet is catching up to the selected chain"},
+            {"error_code", "wallet_balance_not_current"},
+            {"retryable", true}});
+        QVERIFY(error->text().contains("Unlock this wallet to finish recovery"));
+    }
     void sharedCovenantComposerMovesWithoutDuplicatingState() {
         QTemporaryDir dir;
         QVERIFY(dir.isValid());

@@ -3,9 +3,12 @@
 #include "daemon/runtime_delivery_worker.h"
 #include "pool/pool_manager.h"
 #include <chrono>
+#include <filesystem>
 #include <thread>
 #include "daemon/services/chainstate_service.h"
 #include "daemon/config.h"
+#include "wallet/utxo_index.h"
+#include "wallet/wallet_index_v3_schema.h"
 #include "consensus/chainparams.h"
 #include "consensus/orchard_profile.h"
 #include "consensus/shielded/pedersen_generators.h"
@@ -32,6 +35,22 @@ struct RuntimeDeliveryStartupTestAccess {
 namespace p2p { uint32_t g_magic = 0; }
 
 int main(int argc, char** argv) try {
+    if(argc==3 && (std::string(argv[1])=="--fixture-create-wallet-index-v2" ||
+                   std::string(argv[1])=="--fixture-upgrade-wallet-index-v3")) {
+        const std::filesystem::path path=argv[2];
+        {
+            dinero::UTXOIndex legacy(path.string());
+            if(!legacy.Initialize())throw std::runtime_error("v3 fixture legacy index initialization failed");
+        }
+        if(std::string(argv[1])=="--fixture-create-wallet-index-v2") {
+            std::cout << "PASS v2 fixture\n";
+            return 0;
+        }
+        const auto prepared=dinero::UpgradeFullArchiveWalletIndexSchemaToV3(path);
+        (void)dinero::RequireFullArchiveWalletIndexV3(path);
+        std::cout << "PASS v3 fixture " << prepared.rollback_backup.string() << "\n";
+        return 0;
+    }
     dinero::SelectParams(dinero::Chain::REGTEST);
     std::vector<char*> production_args;production_args.reserve(argc+1);
     bool scheduled_fixture=false;

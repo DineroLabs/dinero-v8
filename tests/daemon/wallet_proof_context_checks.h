@@ -3,7 +3,8 @@
 din::Json rpc_context_wallet_snapshot(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_wallet_getbalance(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext&, const din::Json&);
-namespace din { Json rpc_getaddressbatch(const ExecutionContext&, const Json&); }
+namespace din { Json rpc_getaddressbatch(const ExecutionContext&, const Json&);
+                Json rpc_getaddresshistory(const ExecutionContext&, const Json&); }
 namespace dinero {
 namespace {
 void ExpectUnavailableProofContext(const din::Json& context) {
@@ -80,6 +81,57 @@ TEST(WalletProofContext, CachedAddressBatchRechecksAvailability) {
     ASSERT_FALSE(retry.isMember("error")) << retry.toStyledString();
     EXPECT_EQ(retry["addresses"], first["addresses"]);
     ASSERT_NO_FATAL_FAILURE(ExpectMatchingProofContext(retry["proof_context"], *current));
+}
+// A full-source history reply must not claim completeness over a canonical
+// height it could not read. This fixture's canonical chain has height hashes
+// but no readable block bodies, and both address history surfaces once
+// skipped every unread height silently and still answered
+// history_complete=true. A missing height hash is skipped the same way.
+void ExpectUnreadCoverage(const din::Json& reply, int tip) {
+    ASSERT_FALSE(reply.isMember("error")) << reply.toStyledString();
+    EXPECT_FALSE(reply["history_complete"].asBool()) << reply.toStyledString();
+    const auto& coverage = reply["history_coverage"];
+    EXPECT_TRUE(coverage.isObject()) << reply.toStyledString();
+    if (!coverage.isObject()) return;
+    EXPECT_EQ(coverage["scan_from_height"].asInt(), tip) << reply.toStyledString();
+    EXPECT_EQ(coverage["lowest_scanned_height"].asInt(), 0) << reply.toStyledString();
+    EXPECT_EQ(coverage["stop_reason"].asString(), "genesis") << reply.toStyledString();
+    EXPECT_EQ(coverage["skipped_heights"].asUInt64(), static_cast<uint64_t>(tip) + 1) << reply.toStyledString();
+    EXPECT_EQ(coverage["unresolved_inputs"].asUInt64(), 0u) << reply.toStyledString();
+    EXPECT_FALSE(coverage["chain_changed"].asBool()) << reply.toStyledString();
+    const auto& listed = coverage["skipped_height_list"];
+    ASSERT_EQ(listed.size(), std::min<::Json::ArrayIndex>(32, tip + 1)) << reply.toStyledString();
+    EXPECT_EQ(listed[0].asInt(), tip) << reply.toStyledString();
+}
+TEST(WalletProofContext, AddressHistoryReportsUnreadCanonicalHeights) {
+    CanonicalRecoveryFixture f; ExecutionContext ctx; ctx.daemon = &f.context;
+    // A full source scans down to genesis; AssumeUTXO would skip the loop.
+    ASSERT_FALSE(f.f.service->IsAssumeUTXOActive());
+    const auto tip = f.f.db.getTip(); ASSERT_TRUE(tip.ok()); ASSERT_GT(tip->height, 2);
+    std::string address;
+    { auto use = WalletService::AcquireWalletUse(f.wallet); address = use->Wallet().getNewAddress(); }
+    const auto history = [&] {
+        auto params = din::arr(); params.append(address); params.append(200);
+        return din::rpc_getaddresshistory(ctx, params);
+    };
+    int batch_count = 0;
+    const auto batch = [&] {
+        // A distinct history_count per call keeps each reply out of the cache.
+        auto params = din::obj(); params["addresses"] = din::arr(); params["addresses"].append(address);
+        params["history_count"] = ++batch_count;
+        const auto reply = din::rpc_getaddressbatch(ctx, params);
+        EXPECT_FALSE(reply["batch_meta"]["cache_hit"].asBool()) << reply.toStyledString();
+        return reply;
+    };
+    ASSERT_NO_FATAL_FAILURE(ExpectUnreadCoverage(history(), tip->height));
+    ASSERT_NO_FATAL_FAILURE(ExpectUnreadCoverage(batch(), tip->height));
+    // A missing canonical height hash is counted, not dropped.
+    const int height = tip->height / 2;
+    const auto hash = f.f.db.getBlockHashByHeight(height); ASSERT_TRUE(hash.ok());
+    ASSERT_EQ(f.f.db.deleteHeightIndex(f.f.token, height), Status::Ok);
+    ASSERT_NO_FATAL_FAILURE(ExpectUnreadCoverage(history(), tip->height));
+    ASSERT_NO_FATAL_FAILURE(ExpectUnreadCoverage(batch(), tip->height));
+    ASSERT_EQ(f.f.db.putHeightIndex(f.f.token, height, *hash), Status::Ok);
 }
 TEST(WalletProofContext, HistoricalCompactAndStoppedOwner) {
     HistoricalPreparationFixture f; ExecutionContext ctx; ctx.daemon = &f.context;

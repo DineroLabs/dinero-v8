@@ -66,6 +66,7 @@ public:
         return value;
     }
     void Freeze(){std::lock_guard guard(mutex_);Check(!frozen_);spool_.Freeze();frozen_=true;}
+    void Thaw(){std::lock_guard guard(mutex_);Check(frozen_);spool_.Thaw();frozen_=false;}
 private:
     friend class dinero::RuntimeAccountReplay;
     // Only the replay's content-addressed index may retain these bytes. Its

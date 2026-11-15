@@ -46,10 +46,10 @@ class FullV6DockerCandidateTest(unittest.TestCase):
         self.assertEqual(tracked.returncode, 0,
                          "publisher key exists locally but is absent from the source checkout")
 
-    def test_entrypoint_passes_all_four_fallbacks_to_daemon(self):
+    def test_entrypoint_passes_all_five_fallbacks_to_daemon(self):
         primary = self.root / "primary.dat"
         primary.touch()
-        fallbacks = [self.root / f"fallback-{i}.dat" for i in range(4)]
+        fallbacks = [self.root / f"fallback-{i}.dat" for i in range(5)]
         for path in fallbacks:
             path.touch()
         stub = self.root / "dinerod"
@@ -91,13 +91,14 @@ class FullV6DockerCandidateTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("fallback", result.stderr)
 
-    def test_recovery_manifest_checker_requires_all_four_exact_payloads(self):
-        names = ["dinero-assumeutxo-148375-v5.dat",
+    def test_recovery_manifest_checker_requires_all_five_exact_payloads(self):
+        names = ["dinero-assumeutxo-153051-v6-full.dat",
+                 "dinero-assumeutxo-148375-v5.dat",
                  "dinero-assumeutxo-99677-v4.dat",
                  "dinero-assumeutxo-73035-v4.dat",
                  "utxo-snapshot-65300.dat"]
-        heights = [148375, 99677, 73035, 65300]
-        versions = [5, 4, 4, 4]
+        heights = [153051, 148375, 99677, 73035, 65300]
+        versions = [6, 5, 4, 4, 4]
         pins = []
         for name, height, version in zip(names, heights, versions):
             block_hash = f"{height:064x}"
@@ -107,27 +108,36 @@ class FullV6DockerCandidateTest(unittest.TestCase):
             header[8:40] = bytes.fromhex(block_hash)[::-1]
             struct.pack_into("<I", header, 40, height)
             payload = self.root / name
-            payload.write_bytes(header)
+            body = bytes(header)
+            if version == 6:
+                section = b"ORCH" + struct.pack("<I", 1) + b"\x01"
+                body += struct.pack("<Q", len(section)) + section
+                body += hashlib.sha256(body).digest()
+            payload.write_bytes(body)
             pin = {"filename": name, "height": height, "format_version": version,
-                   "block_hash": block_hash, "bytes": len(header),
-                   "sha256": hashlib.sha256(header).hexdigest()}
+                   "block_hash": block_hash, "bytes": len(body),
+                   "sha256": hashlib.sha256(body).hexdigest()}
+            if version == 6:
+                pin["snapshot_profile"] = "full"
             pins.append(pin)
             manifest = {
                 "network": "mainnet",
                 "snapshot": {"snapshot_file": name,
                              **{key: pin[key] for key in ("height", "block_hash", "bytes", "sha256")}},
             }
-            if version == 5:
+            if version in (5, 6):
                 manifest["format_version"] = version
+            if version == 6:
+                manifest["snapshot_profile"] = "full"
             (self.root / (name + ".manifest.json")).write_text(json.dumps(manifest))
         catalog = self.root / "catalog.json"
-        catalog.write_text(json.dumps({"fallbacks": [pins[0], pins[1], pins[3]]}))
-        self.assertEqual(verify(self.root, catalog, pins[2]), names)
+        catalog.write_text(json.dumps({"fallbacks": [pins[0], pins[1], pins[2], pins[4]]}))
+        self.assertEqual(verify(self.root, catalog, pins[3]), names)
         # A missing old recovery base fails image preparation, even though the
         # new primary may be present.
-        (self.root / names[3]).unlink()
+        (self.root / names[4]).unlink()
         with self.assertRaises(FileNotFoundError):
-            verify(self.root, catalog, pins[2])
+            verify(self.root, catalog, pins[3])
 
     def test_live_image_uses_reviewed_full_v6_sources(self):
         self.assertEqual((ROOT / "Dockerfile").read_bytes(),
@@ -143,6 +153,19 @@ class FullV6DockerCandidateTest(unittest.TestCase):
         self.assertIn("- name: PR result is contract-only, not image-qualified", workflow)
         self.assertIn("- name: Build and load\n        if: github.event_name != 'pull_request'", workflow)
         self.assertIn("- name: Admit exact full-v6 catalog primary\n        if: github.event_name != 'pull_request'", workflow)
+
+    def test_h153051_candidate_and_release_sources_are_distinct(self):
+        source = (ROOT / "Dockerfile").read_text()
+        conditional = source.split('if [ -n "${PRIMARY_SNAPSHOT_PAYLOAD_URL}${PRIMARY_SNAPSHOT_MANIFEST_URL}${PRIMARY_SNAPSHOT_SIGNATURE_URL}" ]; then', 1)[1]
+        candidate, release = conditional.split('    else \\\n', 1)
+        release = release.split('    fi; \\\n', 1)[0]
+        self.assertIn('h153051-f7-05105aa3-20d87ae6/snapshot.dat', candidate)
+        self.assertNotIn('h153051-f7-05105aa3-20d87ae6/', release)
+        for suffix in ('.dat', '.dat.publisher.manifest.json', '.dat.publisher.manifest.sig'):
+            self.assertIn('${PRIMARY}/dinero-assumeutxo-153051-v6-full' + suffix, release)
+        for variable in ('PAYLOAD', 'MANIFEST', 'SIGNATURE'):
+            self.assertIn('--' + ('payload' if variable == 'PAYLOAD' else 'manifest' if variable == 'MANIFEST' else 'signature') +
+                          '-url "${RECENT_FALLBACK_' + variable + '_URL}"', source)
 
     def test_compiled_daemon_identity_is_checked_separately_from_archive_receipt(self):
         expected_sha = 'a' * 40
@@ -240,7 +263,15 @@ case "$1" in
       *) exit 1 ;;
     esac
     exit 0 ;;
-  exec) exit 0 ;;
+  exec)
+    case "$*" in
+      *getsnapshotbootstrapstatus*)
+        echo '{"snapshot_bootstrap":{"assumeutxo_active":true,"fatal":false,"snapshot_base_height":153578,"snapshot_base_block":"0000000e1a7615f673f03d1a2b4553c1e219cdc3eeac2c7fa89bdb2e4d20888d"}}' ;;
+      *getblockchaininfo*) echo '{"blocks":153579}' ;;
+      *getblockhash*) echo '"0000000e1a7615f673f03d1a2b4553c1e219cdc3eeac2c7fa89bdb2e4d20888d"' ;;
+      *) exit 1 ;;
+    esac
+    exit 0 ;;
   logs)
     if [ "$DOCKER_MISSING_SNAPSHOT_LOG" != 1 ]; then
       echo '[entrypoint] assumeutxo_snapshot=yes assumeutxo_fallbacks=yes assumeutxo_forward_connect=yes'
@@ -261,6 +292,10 @@ exit 1
         self.assertIn('Docker restart daemon reached RPC readiness', result.stdout)
         starts = [line for line in calls.read_text().splitlines() if line.startswith('run -d ')]
         self.assertEqual(len(starts), 2)
+        for rpc in ('getsnapshotbootstrapstatus', 'getblockchaininfo', 'getblockhash 153578'):
+            self.assertGreaterEqual(
+                sum(line.startswith('exec ') and rpc in line for line in calls.read_text().splitlines()),
+                2, f'{rpc} was not checked on both the fresh and restart passes')
         self.assertEqual(starts[0].split('--mount ')[1].split(' ')[0],
                          starts[1].split('--mount ')[1].split(' ')[0])
 
@@ -305,10 +340,14 @@ exit 1
         for path in primary_sidecars:
             path.touch()
         primary_sidecars[-1].write_text('{"publisher_signature_verified": true}\n')
-        fallbacks = [self.root / f'fallback {i}.dat' for i in range(4)]
+        fallbacks = [self.root / f'fallback {i}.dat' for i in range(5)]
         for path in fallbacks:
             path.touch()
             Path(str(path) + '.manifest.json').touch()
+        for suffix in ('.publisher.manifest.json', '.publisher.manifest.sig', '.publisher.receipt.json'):
+            Path(str(fallbacks[0]) + suffix).touch()
+        Path(str(fallbacks[0]) + '.publisher.receipt.json').write_text(
+            '{"publisher_signature_verified": true}\n')
         check_env = os.environ | {'DINERO_SNAPSHOT': str(primary),
                                   'DINERO_SNAPSHOT_FALLBACKS': ';'.join(map(str, fallbacks))}
 
@@ -317,8 +356,10 @@ exit 1
                                   text=True, capture_output=True)
 
         self.assertEqual(run_check().returncode, 0)
-        for path in [*primary_sidecars, *(p for fallback in fallbacks
-                                          for p in (fallback, Path(str(fallback) + '.manifest.json')))]:
+        recent_sidecars = [Path(str(fallbacks[0]) + suffix) for suffix in
+                           ('.publisher.manifest.json', '.publisher.manifest.sig', '.publisher.receipt.json')]
+        for path in [*primary_sidecars, *recent_sidecars, *(p for fallback in fallbacks
+                                                             for p in (fallback, Path(str(fallback) + '.manifest.json')))]:
             with self.subTest(missing=path.name):
                 data = path.read_bytes()
                 path.unlink()
@@ -327,7 +368,7 @@ exit 1
         primary_sidecars[-1].write_text('{"publisher_signature_verified": false}\n')
         self.assertNotEqual(run_check().returncode, 0)
         primary_sidecars[-1].write_text('{"publisher_signature_verified": true}\n')
-        check_env['DINERO_SNAPSHOT_FALLBACKS'] = ';'.join(map(str, fallbacks[:3]))
+        check_env['DINERO_SNAPSHOT_FALLBACKS'] = ';'.join(map(str, fallbacks[:4]))
         self.assertNotEqual(run_check().returncode, 0)
 
 

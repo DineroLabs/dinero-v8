@@ -78,6 +78,12 @@ public:
     virtual ~BlockConnectRollback() = default;
     virtual void Commit() noexcept = 0;
     virtual size_t TouchedCoinCount() const noexcept = 0;
+    // A rollback that never restores may hand ConnectBlock the live forest to
+    // mutate in place, instead of a clone that shares its copy-on-write
+    // partitions and so copies every partition the block writes. The owner's
+    // forest is empty until ConnectBlock replaces it, and a failed block
+    // retires the owner. Default: no transfer (clone path).
+    virtual std::optional<UtreexoForest> TakeForestForInPlaceConnect() { return std::nullopt; }
 };
 
 /**

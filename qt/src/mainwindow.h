@@ -64,6 +64,8 @@ class QQuickWidget;
 
 class MainWindow : public QMainWindow {
   Q_OBJECT
+  friend class OverviewColumnsTest;
+  friend class WalletLayoutTest;
 public:
   explicit MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
                       QWidget* parent = nullptr);
@@ -230,6 +232,7 @@ private:
   class PrivateCovenantWidget* privateCovenantWidget_ = nullptr;
   void bindWalletScopedState(const QString& walletName);
   void clearWalletScopedUiState();
+  void finishConfirmedWalletSwitchWithoutBalance(const QString& reason);
   void refreshWalletMiningAddress();
   void startWalletRescan(const QString& statusText);
   bool isInputUtxoMissingError(const QString& errorText) const;
@@ -242,6 +245,7 @@ private:
   void applyPrimaryAddressesToReceiveTab();
   void updateSendModeUi();
   void updateWalletBalanceDisplay();
+  void showWalletBalanceUnavailable();
   void refreshShieldedBalanceSummary();
   void refreshConfidentialWalletState();
   bool collectSendForm(QString& recipient,
@@ -349,6 +353,7 @@ private:
   class QComboBox* cmbWalletAddressMode_ = nullptr;
   QLabel* lblReceivePathHint_ = nullptr;
   QLabel* lblBalance_;
+  QLabel* lblBalanceScope_ = nullptr;
   // v7 PQ health indicator
   QLabel* lblPqRatio_ = nullptr;
   class QProgressBar* barPqRatio_ = nullptr;
@@ -400,12 +405,20 @@ private:
   ChainTiming chainTiming_;
   void requestMiningRewards(bool force = false);
   void updateMiningRewards(const QJsonArray& rewards);
+  void showMiningRewardsWaiting();
+  void showMiningRewardsUnavailable();
+  QString miningRewardsReplyAlias() const;
   class QLabel* lblRewardsHeadline_ = nullptr;
   class QLabel* lblRewardsPeriod_ = nullptr;
   class QLabel* lblRewardsMaturing_ = nullptr;
   class QLabel* lblRewardsLastFound_ = nullptr;
   int miningRewardsRequestedHeight_ = -1;
   qint64 miningRewardsRequestedAtMs_ = 0;
+  qint64 miningRewardsVerifiedAtMs_ = 0;
+  bool miningRewardsVerifiedAny_ = false;
+  QString miningRewardsVerifiedMaturing_;
+  QString miningRewardsVerifiedLastFound_;
+  quint64 miningRewardsScopeGeneration_ = 0;
   class UpgradeBanner* upgradeBanner_ = nullptr;
   class UpdateChecker* updateChecker_ = nullptr;
   QString latestReleaseTag_;
@@ -705,6 +718,8 @@ private:
   bool walletReorgInfoSupported_ = true;
   bool walletSwitchInFlight_;
   QString pendingWalletOpenName_;
+  QString confirmedWalletOpenName_;
+  bool confirmedWalletOpenUnlocked_ = false;
   bool shuttingDown_;
   QTimer* safeModeRescanRetryTimer_;
   int safeModeRescanRetryAttempts_;
@@ -830,6 +845,13 @@ private:
   QJsonObject cachedNetworkInfo_;
   double cachedBalance_ = 0.0;
   double cachedTransparentBalance_ = 0.0;
+  bool walletBalanceAccepted_ = false;
+  bool walletBalanceUnavailable_ = false;
+  bool walletRecoveryUnlockNeeded_ = false;
+  qint64 walletBalanceVerifiedAtMs_ = 0;
+  bool walletSendReady_ = false;
+  bool walletTransparentV3SendReady_ = false;
+  QString walletSendUnavailableReason_ = "Waiting for a current wallet balance";
   double cachedP2mrBalance_ = 0.0;
   double cachedShieldedBalance_ = 0.0;
   bool cachedShieldedRetired_ = false;

@@ -138,6 +138,10 @@ public:
     // Initialization (no write token needed)
     // ═══════════════════════════════════════════════════════════════════════
     Status init(const std::filesystem::path& dir);
+    // Offline wallet-index maintenance only: inspect an existing canonical
+    // full store without creating, repairing or upgrading ChainDB. Refuses
+    // selected/interrupted Orchard handoff controls.
+    Status initReadOnlyForWalletIndexMaintenance(const std::filesystem::path& dir);
     void close();
 
     // Test-only seam (#371): inject a rocksdb::Env (e.g. FaultInjectionTestEnv)

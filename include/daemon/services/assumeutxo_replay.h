@@ -57,7 +57,14 @@ namespace dinero::assumeutxo {
 // (shielded commitment scope: see plan Task 10 accounting).
 class AssumeUtxoReplayEngine {
 public:
-    AssumeUtxoReplayEngine();
+    // RestoreBlock (default): a rejected block leaves the exact prior prefix,
+    // so the caller may continue with another block. RetireOwner: no per-block
+    // restore state; a block that fails in ConnectBlock (validation or an
+    // exception) permanently retires the engine. Identity, header and height
+    // refusals happen before any state change and leave the engine usable.
+    // Use it only when the caller discards the engine on any failure.
+    explicit AssumeUtxoReplayEngine(
+        consensus::ReplayFailurePolicy policy = consensus::ReplayFailurePolicy::RestoreBlock);
     ~AssumeUtxoReplayEngine();
 
     // Seed the genesis block's coinbase outputs into the replay set exactly
@@ -127,6 +134,7 @@ private:
     friend struct ReplayHeaderHistoryTestAccess;
     const std::string network_;
     const uint256 genesis_hash_;
+    const consensus::ReplayFailurePolicy failure_policy_;
     uint256 tip_hash_;
     bool seeded_ = false;
     std::unique_ptr<consensus::ConsensusUTXOSet> set_;

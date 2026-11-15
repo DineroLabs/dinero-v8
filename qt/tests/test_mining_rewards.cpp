@@ -47,6 +47,17 @@ private Q_SLOTS:
         QVERIFY(summarizeMiningRewards(txs, now, /*requested=*/5).truncated);
         QVERIFY(!summarizeMiningRewards(txs, now, /*requested=*/6).truncated);
     }
+    void fullPageOfOldRewardsHasExactDailyZero() {
+        const qint64 now = 1'790'820'000;
+        QJsonArray txs;
+        for (int i = 0; i < 1600; ++i)
+            txs.append(reward(10.0, 200, now - 90'000 - i * 60));
+        const MiningRewardsSummary s = summarizeMiningRewards(txs, now, /*requested=*/1600);
+        QVERIFY(s.any);
+        QCOMPARE(s.blocks24h, 0);
+        QVERIFY(!s.truncated);
+        QCOMPARE(miningRewardsText(s, ChainTiming{}).headline, QString("0 blocks · 0 DIN"));
+    }
     void noRewardsAtAll() {
         const MiningRewardsSummary s = summarizeMiningRewards(QJsonArray{}, 1'790'820'000, 200);
         QVERIFY(!s.any);

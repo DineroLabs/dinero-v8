@@ -116,6 +116,10 @@ public:
     // reset. Called by startup and the existing unlock recovery path.
     CanonicalRecovery RecoverActiveWalletFromCanonicalSource(std::string* error = nullptr, uint64_t expected_session = 0);
 
+    // Deliberate v3 enrollment only. This marks the current, authenticated
+    // legacy wallet Pending; source capture and owner-scoped replay follow.
+    [[nodiscard]] std::string EnrollActiveLegacyTransparentWalletV3(uint64_t expected_session = 0);
+
 
 private:
     std::unique_ptr<WalletUse> BorrowWalletUse() const;
@@ -129,6 +133,7 @@ private:
     std::thread::id reopen_thread_;
     std::thread::id stopping_thread_;
     std::unique_ptr<WalletManager> wallet_mgr_;
+    bool legacy_wallet_notify_started_=false;
     struct OrchardProofOwner;
     // Complete only in wallet_service.cpp; identical public class layout in
     // backend ON/OFF translation units. Destroy before the manager.

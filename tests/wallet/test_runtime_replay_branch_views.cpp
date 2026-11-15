@@ -25,6 +25,24 @@ struct RuntimeAccountReplayTestAccess {
         });
         Require(bool(data)&&seen==events.size());
     }
+    static RuntimeAccountReplay::Source SourceOver(const std::vector<RuntimeOutboxEvent>& events) {
+        Require(!events.empty());
+        return [&events](RuntimeOutboxCursor after,size_t maximum) {
+            Require(after.sequence<=events.size());
+            Require(after.sequence?events[after.sequence-1].cursor==after:after.digest.IsNull());
+            RuntimeOutboxPage page;page.head=events.back().cursor;page.next=after;
+            if(after.sequence) {
+                const auto& event=events[after.sequence-1];
+                const bool connect=event.direction==RuntimeBlockDirection::Connect;
+                page.after_tip=std::pair{connect?event.context.block_hash:event.context.parent_hash,
+                                        event.context.height-(connect?0u:1u)};
+            }
+            const size_t end=std::min(events.size(),size_t(after.sequence)+std::min(maximum,size_t(2)));
+            for(size_t i=after.sequence;i<end;++i)page.events.push_back(events[i]);
+            if(!page.events.empty())page.next=page.events.back().cursor;
+            return page;
+        };
+    }
     static auto Capture(const std::vector<RuntimeOutboxEvent>& events) {
         Require(!events.empty());
         return RuntimeAccountReplay::Capture([&](RuntimeOutboxCursor after,size_t maximum) {
@@ -484,9 +502,91 @@ void BeyondOldHistoryCeilings(const std::string& base){
     LookupReject(Status::Corruption,[&]{RuntimeAccountReplayTestAccess::ReadOnly(missing);});
     std::cout<<"RuntimeReplayBranchViews LongPrefixGapRefuses PASS\n";
 }
+void ExtendTailMatchesFullBuild(const std::string& base) {
+    // Same real shield/spend/reorg trace as BranchMembership: the extension
+    // segment includes a Disconnect and a sibling reconnect.
+    const std::vector<VerifiedOrchardAuthorizations> shield{Authorized(base,false,20000)};
+    const std::vector<VerifiedOrchardAuthorizations> spend{Authorized(base,true,20001)};
+    Trace trace(base);const Branch origin{{},{},{},H(240),20000};
+    const auto funded=trace.Connect(origin,shield,1);
+    const auto first_spend=trace.Connect(funded,spend,2);
+    trace.Disconnect(1);
+    const auto sibling=trace.Connect(funded,{},3);
+    const std::vector<VerifiedOrchardAuthorizations> sibling_auths{Authorized(base,true,sibling.height)};
+    const auto sibling_spend=trace.Connect(sibling,sibling_auths,4);
+    const auto& all=trace.events;
+    const std::vector<RuntimeOutboxEvent> early(all.begin(),all.begin()+2);
+    const auto full=RuntimeAccountReplayTestAccess::Capture(all);
+
+    auto extended=RuntimeAccountReplay::ExtendTail(RuntimeAccountReplayTestAccess::Capture(early),
+        RuntimeAccountReplayTestAccess::SourceOver(all));
+    Require(bool(extended)&&extended->Head()==full->Head());
+    const auto nf=full->State(2)->Nullifiers().front();
+    for(size_t i=0;i<all.size();++i) {
+        const auto a=extended->Point(all[i].cursor),b=full->Point(all[i].cursor);
+        Require(a.checkpoint==b.checkpoint);
+        Require(*a.lookups.spent_nullifier(nf)==*b.lookups.spent_nullifier(nf));
+    }
+    const auto selected_a=extended->SelectedHashes(all.back().cursor),selected_b=full->SelectedHashes(all.back().cursor);
+    Require(*selected_a(sibling_spend.height)==*selected_b(sibling_spend.height)&&*selected_a(funded.height)==funded.hash);
+    Require(extended->ForkHeight(all.back().cursor,first_spend.hash,first_spend.height)==funded.height);
+    std::cout<<"RuntimeReplayBranchViews ExtendTailMatchesFullBuild PASS\n";
+
+    // A view someone else still holds is never mutated: null, and the held
+    // view keeps its original head and content.
+    auto shared=RuntimeAccountReplayTestAccess::Capture(early);const auto holder=shared;
+    Require(!RuntimeAccountReplay::ExtendTail(std::move(shared),RuntimeAccountReplayTestAccess::SourceOver(all)));
+    Require(holder->Head()==early.back().cursor&&holder->Point(early.back().cursor).checkpoint==full->Point(early.back().cursor).checkpoint);
+    std::cout<<"RuntimeReplayBranchViews ExtendTailRefusesSharedView PASS\n";
+
+    // A source whose next event does not continue the digest chain refuses.
+    auto forged=all;forged[2].previous_digest=H(222);
+    bool refused=false;
+    try{(void)RuntimeAccountReplay::ExtendTail(RuntimeAccountReplayTestAccess::Capture(early),
+            RuntimeAccountReplayTestAccess::SourceOver(forged));}catch(const std::exception&){refused=true;}
+    Require(refused);
+    std::cout<<"RuntimeReplayBranchViews ExtendTailRefusesBrokenChain PASS\n";
+
+    // New events are revalidated, not trusted because they chain correctly.
+    auto altered=all;++altered.back().orchard_replay->next.pool_balance;
+    LookupReject(Status::Corruption,[&]{(void)RuntimeAccountReplay::ExtendTail(
+        RuntimeAccountReplayTestAccess::Capture(early),RuntimeAccountReplayTestAccess::SourceOver(altered));});
+    std::cout<<"RuntimeReplayBranchViews ExtendTailRevalidatesNewEvents PASS\n";
+
+    // A source read failure leaves the view with the caller, still extensible.
+    auto kept=RuntimeAccountReplayTestAccess::Capture(early);
+    const RuntimeAccountReplay::Source failing=[](RuntimeOutboxCursor,size_t)->RuntimeOutboxPage{
+        throw consensus::OrchardStateLookupError(Status::Internal);};
+    bool failed=false;
+    try{(void)RuntimeAccountReplay::ExtendTail(std::move(kept),failing);}catch(const consensus::OrchardStateLookupError&){failed=true;}
+    Require(failed&&bool(kept)&&kept->Head()==early.back().cursor);
+    kept=RuntimeAccountReplay::ExtendTail(std::move(kept),RuntimeAccountReplayTestAccess::SourceOver(all));
+    Require(bool(kept)&&kept->Head()==full->Head());
+    std::cout<<"RuntimeReplayBranchViews ExtendTailKeepsViewOnSourceFailure PASS\n";
+
+    // Nothing new: the same content comes back, still usable.
+    auto same=RuntimeAccountReplay::ExtendTail(RuntimeAccountReplayTestAccess::Capture(all),
+        RuntimeAccountReplayTestAccess::SourceOver(all));
+    Require(bool(same)&&same->Head()==full->Head()&&same->Point(full->Head()).checkpoint==full->Point(full->Head()).checkpoint);
+    std::cout<<"RuntimeReplayBranchViews ExtendTailNoNewEvents PASS\n";
+
+    // Repeated one-block extensions over a longer run equal one full build.
+    Trace run(base);Branch parent{{},{},{},H(241),20000};
+    for(uint32_t i=0;i<40;++i)parent=run.Connect(parent,{},500+i);
+    const std::vector<RuntimeOutboxEvent> start(run.events.begin(),run.events.begin()+30);
+    auto rolling=RuntimeAccountReplayTestAccess::Capture(start);
+    std::vector<RuntimeOutboxEvent> growing=start;
+    for(size_t next=30;next<run.events.size();++next) {
+        growing.push_back(run.events[next]);
+        rolling=RuntimeAccountReplay::ExtendTail(std::move(rolling),RuntimeAccountReplayTestAccess::SourceOver(growing));
+        Require(bool(rolling)&&rolling->Head()==growing.back().cursor);
+    }
+    Require(rolling->Point(rolling->Head()).checkpoint==*parent.checkpoint);
+    std::cout<<"RuntimeReplayBranchViews ExtendTailRepeatedSingleBlocks PASS\n";
+}
 }
 int main(int argc,char** argv) {
-    try { Require(argc==2);BranchMembership(argv[1]);RawSpoolCodec();EventEvictionReload(argv[1]);BodyEvictionReload(argv[1]);HistoricalBodyEvictionReload(argv[1]);StateEvictionReload(argv[1]);StateRetentionProvenance(argv[1]);StateRetentionFailures(argv[1]);AuthorizationEvictionReload(argv[1]);AuthorizationRetentionProvenance(argv[1]);AuthorizationRetentionFailures(argv[1]);BeyondOldHistoryCeilings(argv[1]); }
+    try { Require(argc==2);BranchMembership(argv[1]);ExtendTailMatchesFullBuild(argv[1]);RawSpoolCodec();EventEvictionReload(argv[1]);BodyEvictionReload(argv[1]);HistoricalBodyEvictionReload(argv[1]);StateEvictionReload(argv[1]);StateRetentionProvenance(argv[1]);StateRetentionFailures(argv[1]);AuthorizationEvictionReload(argv[1]);AuthorizationRetentionProvenance(argv[1]);AuthorizationRetentionFailures(argv[1]);BeyondOldHistoryCeilings(argv[1]); }
     catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
     return 0;
 }

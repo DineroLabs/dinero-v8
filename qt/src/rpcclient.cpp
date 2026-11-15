@@ -451,6 +451,18 @@ void RpcClient::call(const QString& method, const QJsonArray& params) {
   postJson(body);
 }
 
+void RpcClient::callAs(const QString& method, const QJsonArray& params,
+                       const QString& replyAs) {
+  QJsonObject body{
+    {"jsonrpc", "2.0"},
+    {"id", static_cast<qint64>(nextId_++)},
+    {"method", method},
+    {"params", params},
+    {"__replyAs", replyAs}  // local only: removed in postJson before sending
+  };
+  postJson(body);
+}
+
 void RpcClient::callNamed(const QString& method, const QJsonObject& params) {
   QJsonObject body{
     {"jsonrpc", "2.0"},

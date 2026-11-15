@@ -8,6 +8,7 @@
 #include <QTcpServer>
 #include "mainwindow.h"
 #include "rpcclient.h"
+#include "connection_manager.h"
 #include "inforow.h"
 #include <QMap>
 #include <QLabel>
@@ -21,6 +22,9 @@
 #include <QTabBar>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QNetworkProxy>
+#include <QFile>
+#include <QDir>
 
 // The Overview tab must never start or clean up daemon processes.
 void killStaleDinerodByPort() { qFatal("Unexpected daemon cleanup in overview layout test"); }
@@ -28,6 +32,29 @@ void killStaleDinerodByPort() { qFatal("Unexpected daemon cleanup in overview la
 class OverviewColumnsTest : public QObject {
     Q_OBJECT
 private Q_SLOTS:
+    void cleanup() {
+        QNetworkProxy::setApplicationProxy(QNetworkProxy::NoProxy);
+    }
+    void connectionHealthChecksUseTheSelectedRpcEndpoint() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QTcpServer endpoint, sink;
+        QVERIFY(endpoint.listen(QHostAddress::LocalHost));
+        QVERIFY(sink.listen(QHostAddress::LocalHost));
+        const QUrl isolated(QString("http://127.0.0.1:%1/").arg(endpoint.serverPort()));
+        qputenv("DINERO_RPC_URL", isolated.toString().toUtf8());
+        // The sink is a process-local proxy. Any accidental request to the
+        // default RPC port is trapped here instead of reaching a live node.
+        QNetworkProxy::setApplicationProxy(QNetworkProxy(QNetworkProxy::HttpProxy,
+            QStringLiteral("127.0.0.1"), sink.serverPort()));
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        auto* rpc = window.findChild<RpcClient*>();
+        auto* health = window.findChild<ConnectionManager*>();
+        QVERIFY(rpc && health);
+        QCOMPARE(rpc->currentServer(), isolated.toString());
+        QCOMPARE(QUrl(health->daemonUrl()), isolated);
+    }
     void rightColumnPanelsShareOneEdgeAndWidth() {
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
@@ -109,21 +136,215 @@ private Q_SLOTS:
         auto* rpc = window.findChild<RpcClient*>();
         QVERIFY(rpc);
         auto* headline = window.findChild<QLabel*>("miningRewardsHeadline");
+        auto* period = window.findChild<QLabel*>("miningRewardsPeriod");
         auto* maturing = window.findChild<QLabel*>("miningRewardsMaturing");
-        QVERIFY(headline && maturing);
+        QVERIFY(headline && period && maturing);
 
         const double now = double(QDateTime::currentSecsSinceEpoch());
         const QJsonArray rewards{
             QJsonObject{{"type", "mined"}, {"category", "immature"}, {"amount", 100.0}, {"confirmations", 5}, {"time", now - 600}},
             QJsonObject{{"type", "mined"}, {"category", "immature"}, {"amount", 100.0}, {"confirmations", 97}, {"time", now - 3600}},
         };
-        Q_EMIT rpc->rpcResult("overview.miningrewards", rewards);
+        const QString priorAlias = window.miningRewardsReplyAlias();
+        Q_EMIT rpc->rpcResult(priorAlias, rewards);
         QCOMPARE(headline->text(), QString("2 blocks · 200 DIN"));
         QVERIFY2(maturing->text().startsWith("Maturing: 200 DIN · next unlock in 3 blocks"), qPrintable(maturing->text()));
 
-        // The Transactions tab must not be touched by this reply.
-        Q_EMIT rpc->rpcError("overview.miningrewards", -1, "No wallet loaded");
+        // A wallet history refusal is a valid RPC result object. It must
+        // replace the prior reward numbers, not leave them looking current.
+        Q_EMIT rpc->rpcResult(priorAlias,
+                             QJsonObject{{"error", "Legacy transparent wallet migration pending"}});
         QCOMPARE(headline->text(), QString("Mining rewards unavailable"));
+        QCOMPARE(period->text(), QString("Wallet history is not ready"));
+        QVERIFY(maturing->text().isEmpty());
+
+        // The Transactions tab must not be touched by this reply.
+        Q_EMIT rpc->rpcError(priorAlias, -1, "No wallet loaded");
+        QCOMPARE(headline->text(), QString("Mining rewards unavailable"));
+
+        Q_EMIT rpc->rpcResult(priorAlias, rewards);
+        QCOMPARE(headline->text(), QString("2 blocks · 200 DIN"));
+        window.miningRewardsRequestedAtMs_ = 1234;
+        window.miningRewardsRequestedHeight_ = 42;
+        window.clearWalletScopedUiState();
+        QCOMPARE(headline->text(), QString("Mining rewards unavailable"));
+        QCOMPARE(window.miningRewardsRequestedAtMs_, qint64(0));
+        QCOMPARE(window.miningRewardsRequestedHeight_, -1);
+        const QString nextAlias = window.miningRewardsReplyAlias();
+        QVERIFY(priorAlias != nextAlias);
+        // An old in-flight response must not repaint the prior wallet after a switch.
+        Q_EMIT rpc->rpcResult(priorAlias, rewards);
+        QCOMPARE(headline->text(), QString("Mining rewards unavailable"));
+        Q_EMIT rpc->rpcError(priorAlias, -1, "old wallet timeout");
+        QCOMPARE(headline->text(), QString("Mining rewards unavailable"));
+        Q_EMIT rpc->rpcResult(nextAlias, rewards);
+        QCOMPARE(headline->text(), QString("2 blocks · 200 DIN"));
+        QVERIFY(maturing->text().startsWith("Maturing: 200 DIN"));
+    }
+    void retryableRewardHistoryRefusalKeepsLastVerifiedWalletSnapshot() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QTcpServer endpoint;
+        QVERIFY(endpoint.listen(QHostAddress::LocalHost));
+        qputenv("DINERO_RPC_URL", QString("http://127.0.0.1:%1/").arg(endpoint.serverPort()).toUtf8());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        auto* rpc = window.findChild<RpcClient*>();
+        auto* headline = window.findChild<QLabel*>("miningRewardsHeadline");
+        auto* period = window.findChild<QLabel*>("miningRewardsPeriod");
+        auto* maturing = window.findChild<QLabel*>("miningRewardsMaturing");
+        QVERIFY(rpc && headline && period && maturing && window.lblRewardsLastFound_);
+        const QString alias = window.miningRewardsReplyAlias();
+        const QString pending = "Legacy transparent wallet is catching up to the selected chain";
+
+        // A fresh window has no verified reward amount to retain.
+        Q_EMIT rpc->rpcError(alias, -32603, pending);
+        QCOMPARE(headline->text(), QString("Mining rewards unavailable"));
+        QCOMPARE(period->text(), QString("Waiting for current wallet history"));
+        QVERIFY(maturing->text().isEmpty());
+
+        const double now = double(QDateTime::currentSecsSinceEpoch());
+        const QJsonArray rewards{
+            QJsonObject{{"type", "mined"}, {"category", "immature"}, {"amount", 100.0},
+                        {"confirmations", 97}, {"time", now - 180}},
+        };
+        Q_EMIT rpc->rpcResult(alias, rewards);
+        const QString verifiedHeadline = headline->text();
+        const QString verifiedMaturing = maturing->text();
+        const QString verifiedLastFound = window.lblRewardsLastFound_->text();
+        QCOMPARE(verifiedHeadline, QString("1 block · 100 DIN"));
+        QVERIFY(!verifiedLastFound.isEmpty());
+
+        // The live HTTP RPC promotes the retryable wallet refusal to an RPC
+        // error. The old amounts remain visible only as an explicitly dated
+        // last verification, including its maturity and last-found estimates.
+        Q_EMIT rpc->rpcError(alias, -32603, pending);
+        QCOMPARE(headline->text(), verifiedHeadline);
+        QVERIFY(period->text().startsWith("Last 24 hours as of "));
+        QVERIFY(period->text().contains("waiting for current wallet history"));
+        QCOMPARE(maturing->text(), verifiedMaturing + " (at last verification)");
+        QCOMPARE(window.lblRewardsLastFound_->text(), verifiedLastFound + " (at last verification)");
+        Q_EMIT rpc->rpcError(alias, -32603, pending);
+        QCOMPARE(maturing->text(), verifiedMaturing + " (at last verification)");
+
+        // A fresh verified reply removes the stale annotation.
+        Q_EMIT rpc->rpcResult(alias, rewards);
+        QCOMPARE(period->text(), QString("found in the last 24 hours"));
+        QCOMPARE(maturing->text(), verifiedMaturing);
+        QCOMPARE(window.lblRewardsLastFound_->text(), verifiedLastFound);
+
+        // A verified empty history is also a snapshot, with its own wording.
+        Q_EMIT rpc->rpcResult(alias, QJsonArray{});
+        QCOMPARE(headline->text(), QString("No mining rewards yet"));
+        Q_EMIT rpc->rpcError(alias, -32603, pending);
+        QCOMPARE(headline->text(), QString("No mining rewards yet"));
+        QVERIFY(period->text().startsWith("Wallet history as of "));
+        QVERIFY(maturing->text().isEmpty());
+
+        // A wallet switch discards the old snapshot and rejects its late reply.
+        window.clearWalletScopedUiState();
+        const QString nextAlias = window.miningRewardsReplyAlias();
+        QVERIFY(nextAlias != alias);
+        Q_EMIT rpc->rpcError(alias, -32603, pending);
+        Q_EMIT rpc->rpcResult(alias, rewards);
+        QCOMPARE(headline->text(), QString("Mining rewards unavailable"));
+        Q_EMIT rpc->rpcError(nextAlias, -32603, pending);
+        QCOMPARE(headline->text(), QString("Mining rewards unavailable"));
+        QCOMPARE(period->text(), QString("Waiting for current wallet history"));
+    }
+    void realDaemonMinedHistoryFeedsRewardsPanel() {
+        if (qEnvironmentVariable("DINERO_QT_REWARDS_REGTEST") != "1")
+            QSKIP("Requires the isolated mining-rewards regtest fixture");
+        const QString datadir = qEnvironmentVariable("DINERO_QT_REWARDS_DATADIR");
+        const QUrl endpoint(qEnvironmentVariable("DINERO_RPC_URL"));
+        QCOMPARE(endpoint.scheme(), QString("http"));
+        QCOMPARE(endpoint.host(), QString("127.0.0.1"));
+        QVERIFY(endpoint.port() >= 32768 && endpoint.port() != 20998);
+        QFile marker(QDir(datadir).filePath("owner.marker"));
+        QVERIFY(marker.open(QIODevice::ReadOnly));
+        QCOMPARE(marker.readAll(), QByteArray("qt-mining-rewards-regtest-v1\n"));
+        QString sourceCookie = QDir(datadir).filePath(".cookie");
+        if (!QFile::exists(sourceCookie)) sourceCookie = QDir(datadir).filePath("regtest/.cookie");
+        QVERIFY(QFile::exists(sourceCookie));
+#if defined(Q_OS_MAC)
+        const QString fakeWalletDir = QDir::home().filePath("Library/Application Support/Dinero");
+#elif defined(Q_OS_WIN)
+        const QString fakeWalletDir = QDir::home().filePath("Dinero");
+#else
+        const QString fakeWalletDir = QDir::home().filePath(".dinero");
+#endif
+        QVERIFY(QDir().mkpath(fakeWalletDir));
+        QVERIFY(QFile::copy(sourceCookie, QDir(fakeWalletDir).filePath(".cookie")));
+
+        QTemporaryDir settings;
+        QVERIFY(settings.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        auto* rpc = window.findChild<RpcClient*>();
+        auto* health = window.findChild<ConnectionManager*>();
+        auto* headline = window.findChild<QLabel*>("miningRewardsHeadline");
+        auto* period = window.findChild<QLabel*>("miningRewardsPeriod");
+        auto* maturing = window.findChild<QLabel*>("miningRewardsMaturing");
+        QVERIFY(rpc && health && headline && period && maturing);
+        QCOMPARE(rpc->currentServer(), endpoint.toString());
+        QCOMPARE(QUrl(health->daemonUrl()), endpoint);
+        QVERIFY(rpc->loadCookie());
+        QTRY_VERIFY_WITH_TIMEOUT(health->isConnected(), 15000);
+        window.checkRescanStatus();
+        QTRY_COMPARE_WITH_TIMEOUT(window.currentWalletName_, QString("reward-first"), 15000);
+
+        const QString firstAlias = window.miningRewardsReplyAlias();
+        QSignalSpy replies(rpc, &RpcClient::rpcResult);
+        window.requestMiningRewards(true);
+        QTRY_VERIFY_WITH_TIMEOUT(headline->text().startsWith("2 blocks · "), 15000);
+        QJsonArray firstRows;
+        for (const auto& args : replies)
+            if (args.at(0).toString() == firstAlias) firstRows = args.at(1).toJsonValue().toArray();
+        QCOMPARE(firstRows.size(), 2);
+        QVERIFY(maturing->text().startsWith("Maturing: "));
+        QCOMPARE(period->text(), QString("found in the last 24 hours"));
+
+        // Switch through the real UI route. The request and response must now
+        // belong to the second named wallet; a late first-wallet reply is stale.
+        auto* selector = window.cmbWalletSelector_;
+        QVERIFY(selector);
+        QTRY_VERIFY_WITH_TIMEOUT(selector->findText("reward-second") >= 0, 15000);
+        selector->setCurrentIndex(selector->findText("reward-second"));
+        window.onLoadSelectedWallet();
+        QTRY_COMPARE_WITH_TIMEOUT(window.currentWalletName_, QString("reward-second"), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(!window.walletSwitchInFlight_, 15000);
+        const QString secondAlias = window.miningRewardsReplyAlias();
+        QVERIFY(firstAlias != secondAlias);
+        Q_EMIT rpc->rpcResult(firstAlias, firstRows);
+        QCOMPARE(headline->text(), QString("Mining rewards unavailable"));
+        replies.clear();
+        window.requestMiningRewards(true);
+        QTRY_VERIFY_WITH_TIMEOUT(headline->text().startsWith("1 block · "), 15000);
+        QJsonArray secondRows;
+        for (const auto& args : replies)
+            if (args.at(0).toString() == secondAlias) secondRows = args.at(1).toJsonValue().toArray();
+        QCOMPARE(secondRows.size(), 1);
+        QVERIFY(firstRows.at(0).toObject().value("txid") !=
+                secondRows.at(0).toObject().value("txid"));
+
+        // The real daemon refuses history without an active wallet. Qt must
+        // show unavailable, not the last successful reward from wallet two.
+        rpc->callNamed("wallet.unload", QJsonObject{{"name", "reward-second"}});
+        QTRY_VERIFY_WITH_TIMEOUT(window.currentWalletName_.isEmpty(), 15000);
+        const QString refusalAlias = window.miningRewardsReplyAlias();
+        QSignalSpy failures(rpc, &RpcClient::rpcError);
+        replies.clear();
+        window.requestMiningRewards(true);
+        const auto refused = [&] {
+            for (const auto& args : replies)
+                if (args.at(0).toString() == refusalAlias && !args.at(1).toJsonValue().isArray()) return true;
+            for (const auto& args : failures)
+                if (args.at(0).toString() == refusalAlias) return true;
+            return false;
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(refused(), 15000);
+        QCOMPARE(headline->text(), QString("Mining rewards unavailable"));
+        QCOMPARE(period->text(), QString("Wallet history is not ready"));
     }
     void poolIconShowsACrowdOfFour() {
         QTemporaryDir dir;
@@ -300,6 +521,38 @@ private Q_SLOTS:
                      qPrintable(QString("%1 column is %2 px").arg(table->horizontalHeaderItem(c)->text())
                                     .arg(table->columnWidth(c))));
         QVERIFY(table->columnWidth(0) > table->columnWidth(1));
+    }
+    void mainNavigationRowIsCentered() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QTcpServer endpoint;
+        QVERIFY(endpoint.listen(QHostAddress::LocalHost));
+        qputenv("DINERO_RPC_URL", QString("http://127.0.0.1:%1/").arg(endpoint.serverPort()).toUtf8());
+        QCoreApplication::setOrganizationName("DineroOverviewColumnsTest");
+        QCoreApplication::setApplicationName("IsolatedOverviewNavigation");
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        QSettings().setValue("updates/check_enabled", false);
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        if (auto* rpc = window.findChild<RpcClient*>()) {
+            rpc->setDatadir(dir.path());
+            rpc->setEndpoint(QUrl(QString("http://127.0.0.1:%1/").arg(endpoint.serverPort())));
+        }
+        auto* tabs = window.findChild<QTabWidget*>("mainNavigationTabs");
+        QVERIFY(tabs);
+        window.resize(1920, 1000);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QCoreApplication::processEvents();
+
+        QTabBar* bar = tabs->tabBar();
+        const int leftSpace = bar->x();
+        const int rightSpace = tabs->width() - (bar->x() + bar->width());
+        QVERIFY2(leftSpace + rightSpace >= 80,
+                 qPrintable(QString("main tabs have no spare width: %1 px").arg(tabs->width())));
+        QVERIFY2(qAbs(leftSpace - rightSpace) <= 6,
+                 qPrintable(QString("main navigation is off-center: left %1 px, right %2 px")
+                                .arg(leftSpace).arg(rightSpace)));
     }
     void windowShrinksPastTheTabNames() {
         QTemporaryDir dir;
@@ -483,5 +736,17 @@ private Q_SLOTS:
         QVERIFY(explorer->isVisible());
     }
 };
-QTEST_MAIN(OverviewColumnsTest)
+int main(int argc, char** argv) {
+    // Keep every Overview test out of the user's real daemon discovery,
+    // cookie and settings paths, even when run on a workstation with a node.
+    QTemporaryDir home;
+    if (!home.isValid()) return 1;
+    qputenv("HOME", home.path().toUtf8());
+    qputenv("USERPROFILE", home.path().toUtf8());
+    qputenv("APPDATA", home.path().toUtf8());
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QApplication app(argc, argv);
+    OverviewColumnsTest test;
+    return QTest::qExec(&test, argc, argv);
+}
 #include "test_overview_columns.moc"

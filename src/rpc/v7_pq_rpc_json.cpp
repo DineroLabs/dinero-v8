@@ -14,6 +14,7 @@
 #include "daemon/services/wallet_service.h"
 #include "dinero/daemon/execution_context.h"
 #include "rpc/rpc_registry.h"
+#include "rpc/legacy_transparent_freshness.h"
 
 // Phase 6 Commit 2: debug.computesighash uses the consensus BIP-341
 // sighash implementation (same one ValidateTaprootSpend/ValidateP2MRSpend
@@ -152,6 +153,8 @@ std::string HexOfArray(const std::array<uint8_t, N>& a) {
 din::Json rpc_wallet_getnewp2mraddress(const ExecutionContext& ctx,
                                        const din::Json&        params) {
     din::Json result;
+    if (ctx.daemon && ctx.daemon->wallet && ctx.daemon->wallet->hasActiveWallet() &&
+        RefuseIfLegacyTransparentAddressMutation(ctx, ctx.daemon->wallet, result)) return result;
     auto owner = AcquireUnlockedWallet(ctx, result);
     if (!owner) return result;
     auto* wm = owner->wallet;
@@ -299,6 +302,8 @@ din::Json rpc_wallet_listp2mraddresses(const ExecutionContext& ctx,
 din::Json rpc_wallet_signp2mr(const ExecutionContext& ctx,
                               const din::Json&        params) {
     din::Json result;
+    if (ctx.daemon && ctx.daemon->wallet && ctx.daemon->wallet->hasActiveWallet() &&
+        RefuseIfLegacyTransparentSpendUnavailable(ctx, ctx.daemon->wallet, result)) return result;
     auto owner = AcquireUnlockedWallet(ctx, result);
     if (!owner) return result;
     auto* wm = owner->wallet;
@@ -459,6 +464,8 @@ din::Json rpc_wallet_exportp2mrseed(const ExecutionContext& ctx,
 din::Json rpc_wallet_importp2mrseed(const ExecutionContext& ctx,
                                     const din::Json&        params) {
     din::Json result;
+    if (ctx.daemon && ctx.daemon->wallet && ctx.daemon->wallet->hasActiveWallet() &&
+        RefuseIfLegacyTransparentAddressMutation(ctx, ctx.daemon->wallet, result)) return result;
     auto owner = AcquireUnlockedWallet(ctx, result);
     if (!owner) return result;
     auto* wm = owner->wallet;

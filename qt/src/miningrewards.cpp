@@ -15,7 +15,12 @@ bool isMiningReward(const QJsonObject& tx) {
 MiningRewardsSummary summarizeMiningRewards(const QJsonArray& transactions, qint64 nowSecs,
                                             int requestedCount, int maturity) {
     MiningRewardsSummary s;
-    s.truncated = requestedCount > 0 && transactions.size() >= requestedCount;
+    // The RPC returns newest transactions first. Even a full page gives an
+    // exact 24-hour total once its oldest row predates that window.
+    const qint64 oldestReturnedTime = transactions.isEmpty()
+        ? 0 : qint64(transactions.last().toObject().value("time").toDouble());
+    s.truncated = requestedCount > 0 && transactions.size() >= requestedCount &&
+                  (oldestReturnedTime <= 0 || nowSecs - oldestReturnedTime <= 86'400);
     int oldestMaturingConfirmations = -1;
     qint64 newestTime = -1;
     for (const QJsonValue& v : transactions) {
@@ -57,7 +62,7 @@ MiningRewardsText miningRewardsText(const MiningRewardsSummary& s, const ChainTi
         t.period = QStringLiteral("in this wallet");
         return t;
     }
-    // A full page means more rewards may exist than were fetched: say "at least".
+    // Mark only a 24-hour window that may continue beyond the fetched page.
     const QString plus = s.truncated ? QStringLiteral("+") : QString();
     QString amount = formatDinAmount(s.una24h);
     amount.insert(amount.size() - 4, plus);  // before " DIN"

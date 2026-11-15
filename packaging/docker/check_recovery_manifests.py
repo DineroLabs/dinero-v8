@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the Docker image's four retained exact-base recovery payloads."""
+"""Check the Docker image's five retained exact-base recovery payloads."""
 
 import argparse
 import hashlib
@@ -20,6 +20,7 @@ EXTRA_DOCKER_BASE = {
     "sha256": "0a98ab1bd544d333afae7c8d2b42b0a910fb5e7fcdefd40642c6d3e0c6aae8a4",
 }
 EXPECTED_RECOVERY_ORDER = [
+    "dinero-assumeutxo-153051-v6-full.dat",
     "dinero-assumeutxo-148375-v5.dat",
     "dinero-assumeutxo-99677-v4.dat",
     "utxo-snapshot-65300.dat",
@@ -30,9 +31,9 @@ def verify(root: Path, catalog_path: Path, extra_docker_base: dict | None = None
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
     catalog_bases = catalog["fallbacks"]
     if [item.get("filename") for item in catalog_bases] != EXPECTED_RECOVERY_ORDER:
-        raise ValueError("desktop recovery catalog is not the H148375/H99677/H65300 set")
-    entries = [catalog_bases[0], catalog_bases[1],
-               extra_docker_base or EXTRA_DOCKER_BASE, catalog_bases[2]]
+        raise ValueError("desktop recovery catalog is not the H153051/H148375/H99677/H65300 set")
+    entries = [catalog_bases[0], catalog_bases[1], catalog_bases[2],
+               extra_docker_base or EXTRA_DOCKER_BASE, catalog_bases[3]]
     verified = []
     for pin in entries:
         filename = pin["filename"]
@@ -44,7 +45,8 @@ def verify(root: Path, catalog_path: Path, extra_docker_base: dict | None = None
         # payload headers still carry v4 and are checked by inspect() below.
         declared_format = data.get("format_version")
         if (data.get("network") != "mainnet" or
-                declared_format not in ((None, 4) if pin["format_version"] == 4 else (5,)) or
+                declared_format not in ((None, 4) if pin["format_version"] == 4 else (pin["format_version"],)) or
+                (pin["format_version"] == 6 and data.get("snapshot_profile") != "full") or
                 identity.get("snapshot_file") != filename):
             raise ValueError(f"{filename}: manifest network or filename differs")
         for field in ("height", "block_hash", "bytes", "sha256"):
