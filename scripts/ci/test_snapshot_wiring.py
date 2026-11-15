@@ -79,9 +79,9 @@ class SnapshotWiring(unittest.TestCase):
             self.assertIn('cmp -s "${GITHUB_WORKSPACE}/tooling/packaging/mac/build-installer.sh" packaging/mac/build-installer.sh', source)
 
         smoke = (ROOT / '.github/workflows/windows-openssl-release-smoke.yml').read_text(encoding='utf-8')
-        self.assertIn("-SnapshotFileName 'dinero-assumeutxo-152700-v6-full.dat'", smoke)
+        self.assertIn("-SnapshotFileName 'dinero-assumeutxo-153051-v6-full.dat'", smoke)
         self.assertIn('fetch_desktop_primary.py', smoke)
-        self.assertIn('--publisher-signature snapshot-inputs/dinero-assumeutxo-152700-v6-full.dat.publisher.manifest.sig', smoke)
+        self.assertIn('--publisher-signature snapshot-inputs/dinero-assumeutxo-153051-v6-full.dat.publisher.manifest.sig', smoke)
         version = re.search(r"-Version '([^']+)'", smoke)[1]
         filename = 'Dinero-Server-' + version + '-windows-x86_64-Setup.exe'
         self.assertEqual(smoke.count(filename), 2, 'Install and artifact paths must match the built version')
