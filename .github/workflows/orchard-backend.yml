@@ -240,6 +240,10 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/ci -p test_check_workflow_gtest_cases.py
           python3 scripts/ci/check_workflow_gtest_cases.py --build-dir build-orchard-root --workflow .github/workflows/orchard-backend.yml
+      - name: Recover legacy spent wallet rows from proved v3 replay
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletV3LegacySpentMetadata$' \
+            --verbose --no-tests=error --output-log wallet-v3-legacy-spent-execution.log
       - name: Exercise real Orchard-enabled SDK runtime
         run: |
           ctest --test-dir build-orchard-root -R '^(NodeCoreRuntimeLifecycle|NodeCoreStorageReadiness|OrchardActivationRuntime|OrchardMigrationDatadirAlias)$' --verbose --no-tests=error --output-log orchard-sdk-runtime-execution.log
