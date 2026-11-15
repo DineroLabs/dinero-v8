@@ -128,8 +128,10 @@ cp "${PROJECT_ROOT}/LICENSE" "${STAGE}/usr/share/doc/dinero-qt-desktop/copyright
 
 # DEBIAN/control. Section: x11 (desktop GUI), depends on Qt6 system libs.
 # The exact Qt6 .so names on Ubuntu 22.04 are libqt6widgets6, libqt6gui6,
-# libqt6network6 etc. — dpkg-shlibdeps would compute these automatically
-# if we used dpkg-buildpackage, but since we're hand-building we list
+# libqt6network6 etc. The GUI also links libcurl.so.4, provided by libcurl4
+# on Ubuntu 22.04 and libcurl4t64 on Ubuntu 24.04. dpkg-shlibdeps would
+# compute these automatically if we used dpkg-buildpackage, but since we're
+# hand-building we list
 # them explicitly. xdg-utils is for xdg-open (RPC URL handling) and is
 # a tiny standard dep.
 INSTALLED_SIZE=$(du -sk "${STAGE}/opt" "${STAGE}/usr" | awk '{s+=$1} END {print s}')
@@ -142,7 +144,7 @@ Architecture: amd64
 Installed-Size: ${INSTALLED_SIZE}
 Maintainer: Trucker2827 <trucker2827@gmail.com>
 Homepage: https://github.com/DineroLabs/dinero-v8
-Depends: libqt6widgets6 (>= 6.2), libqt6gui6 (>= 6.2), libqt6network6 (>= 6.2), libqt6core6 (>= 6.2), libqt6dbus6 (>= 6.2), libc6 (>= 2.34), libudev1, libusb-1.0-0, libhidapi-hidraw0 | libhidapi-libusb0, ocl-icd-libopencl1, xdg-utils
+Depends: libqt6widgets6 (>= 6.2), libqt6gui6 (>= 6.2), libqt6network6 (>= 6.2), libqt6core6 (>= 6.2), libqt6dbus6 (>= 6.2), libc6 (>= 2.34), libcurl4t64 | libcurl4, libudev1, libusb-1.0-0, libhidapi-hidraw0 | libhidapi-libusb0, ocl-icd-libopencl1, xdg-utils
 Description: Dinero (DIN) Qt desktop wallet
  dinero-qt-desktop ships dinero-qt, the Qt6 GUI wallet for the Dinero
  blockchain, together with its full bundled daemon, CLI, seeder, CPU/GPU,
