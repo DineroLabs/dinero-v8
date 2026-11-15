@@ -7370,6 +7370,11 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
             if(expected_session && session!=expected_session)return Status::Invalid;
             state=lease->LegacyTransparentState();
         }
+        // Startup and explicit callers bypass the runtime worker's cheap
+        // preflight. An absent/pending v3 wallet cannot reconcile coverage
+        // without its encrypted seed, so refuse before any origin replay.
+        if(state!=WalletManager::LegacyTransparentState::Complete &&
+           wallet.isWalletLocked())return Status::Invalid;
         // A v3 record can only be enrolled against a full archival selected
         // source. A compact or imported source must keep its existing refusal.
         {

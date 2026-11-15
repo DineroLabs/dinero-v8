@@ -495,7 +495,7 @@ TEST(WalletV3RecoveryWorker, UnlockStartsOwnerScopedRecoveryWithoutLegacyWriter)
         *f.f.service,std::move(metadata))};
 
     RuntimeDeliveryWorker worker(f.f.service,f.wallet,
-        RuntimeDeliveryWorker::Limits{1,std::chrono::minutes(1)});
+        RuntimeDeliveryWorker::Limits{1,std::chrono::milliseconds(20)});
     const auto wait=[&](const auto& predicate) {
         const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(30);
         for(;;) {
@@ -510,6 +510,8 @@ TEST(WalletV3RecoveryWorker, UnlockStartsOwnerScopedRecoveryWithoutLegacyWriter)
     const auto locked=wait([](const auto& report){return report.slices>0;});
     worker.Stop();
     EXPECT_EQ(locked.wallet,RuntimeDeliveryWorker::WalletOutcome::Deferred);
+    EXPECT_EQ(locked.wallet_recovery_attempts,0u)
+        << "a locked wallet must not start an expensive v3 origin replay";
     {
         auto use=WalletService::AcquireWalletUse(f.wallet);
         EXPECT_EQ(use->Wallet().getBlockchainHeight(),101u);
@@ -546,6 +548,81 @@ TEST(WalletV3RecoveryWorker, UnlockStartsOwnerScopedRecoveryWithoutLegacyWriter)
     EXPECT_EQ(use->Wallet().getBlockchainHeight(),102u);
     EXPECT_NEAR(use->Wallet().getBalance().total,
         historical_total+double(mined_amount)/100000000.0,0.00000001);
+}
+
+TEST(WalletV3RecoveryWorker, LockedPendingDoesNotReplayUntilUnlock) {
+    CanonicalRecoveryFixture f(true,true);
+    (void)f.PrepareFundedHistoricalWallet();
+    f.DowngradeToPreIdentityTransparentWallet();
+    (void)f.MineToWallet();
+    ASSERT_EQ(f.f.service->GetActiveTip()->height,102u);
+
+    const auto index_path=f.f.path/"v3-worker-locked-pending-index";
+    { UTXOIndex v2(index_path.string());ASSERT_TRUE(v2.Initialize()); }
+    (void)UpgradeFullArchiveWalletIndexSchemaToV3(index_path);
+    auto metadata=std::make_unique<UTXOIndex>(index_path.string());
+    ASSERT_TRUE(metadata->InitializeFullArchiveV3MetadataOnly());
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        use->Wallet().setUTXOIndex(nullptr);
+    }
+    struct RestoreIndex {
+        ChainstateService& source;
+        std::unique_ptr<UTXOIndex> original;
+        ~RestoreIndex() {
+            auto replacement=ShieldedStateStartupTestAccess::SwapWalletIndexForRpc(
+                source,std::move(original));
+            (void)replacement;
+        }
+    } restore{*f.f.service,ShieldedStateStartupTestAccess::SwapWalletIndexForRpc(
+        *f.f.service,std::move(metadata))};
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+        auto lease=use->Wallet().AcquireDatabaseLease();
+        ASSERT_FALSE(lease->BeginLegacyTransparentMigrationV3(index->Index(),lease->Session()).empty());
+    }
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        use->Wallet().lockWallet();
+        EXPECT_EQ(use->Wallet().AcquireDatabaseLease()->LegacyTransparentState(),
+            WalletManager::LegacyTransparentState::Pending);
+        auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+        const auto session=use->Wallet().AcquireDatabaseLease()->Session();
+        const auto direct=f.f.service->resumeRuntimeWalletRecoveryV3IfNeeded(
+            use->Wallet(),index->Index(),session);
+        EXPECT_EQ(direct.status(),Status::Invalid)
+            << "direct startup recovery must defer before origin replay while locked";
+    }
+
+    RuntimeDeliveryWorker worker(f.f.service,f.wallet,
+        RuntimeDeliveryWorker::Limits{1,std::chrono::milliseconds(20)});
+    worker.Start();
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(30);
+    while(worker.Snapshot().slices<3 && std::chrono::steady_clock::now()<deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    worker.Stop();
+    const auto locked=worker.Snapshot();
+    ASSERT_GE(locked.slices,3u);
+    EXPECT_EQ(locked.wallet,RuntimeDeliveryWorker::WalletOutcome::Deferred);
+    EXPECT_EQ(locked.wallet_recovery_attempts,0u)
+        << "a locked pending wallet must not repeat full v3 origin replay";
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        EXPECT_EQ(use->Wallet().AcquireDatabaseLease()->LegacyTransparentState(),
+            WalletManager::LegacyTransparentState::Pending);
+        use->Wallet().unlockWallet("canonical-fixture-pass",0);
+    }
+    worker.Start();
+    const auto ready_deadline=std::chrono::steady_clock::now()+std::chrono::seconds(30);
+    while(worker.Snapshot().wallet!=RuntimeDeliveryWorker::WalletOutcome::AppliedPrefix &&
+          std::chrono::steady_clock::now()<ready_deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    worker.Stop();
+    EXPECT_EQ(worker.Snapshot().wallet,RuntimeDeliveryWorker::WalletOutcome::AppliedPrefix);
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    EXPECT_EQ(use->Wallet().AcquireDatabaseLease()->LegacyTransparentState(),
+        WalletManager::LegacyTransparentState::Complete);
 }
 
 TEST(WalletV3ColdRestart, NamedWalletReceiptsSurviveFreshServiceAndIndexHandles) {

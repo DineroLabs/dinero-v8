@@ -115,6 +115,20 @@ void RuntimeDeliveryWorker::RecoverWallet(Report& report,
         resource_blocked_session.reset();
         auto index=ChainstateService::AcquireWalletIndexUse(source_);
         const bool full_archive_v3=index->Index().IsFullArchiveV3MetadataOnly();
+        if(full_archive_v3) {
+            WalletManager::LegacyTransparentState state;
+            {
+                auto lease=use->Wallet().AcquireDatabaseLease();
+                if(lease->Session()!=session)return;
+                state=lease->LegacyTransparentState();
+            }
+            // Absent/pending v3 recovery needs the encrypted seed. Defer before
+            // origin capture so periodic wakes cannot replay the full chain
+            // while a selected wallet is locked. Complete wallets can keep
+            // receiving incremental delivery without an unlock.
+            if(state!=WalletManager::LegacyTransparentState::Complete &&
+               use->Wallet().isWalletLocked())return;
+        }
         const auto refuse_resource_limit=[&](Status status){
             if(status!=Status::ResourceLimit)return;
             resource_blocked_session=session;report.wallet=WalletOutcome::ResourceLimited;
