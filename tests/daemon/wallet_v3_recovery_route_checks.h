@@ -1049,6 +1049,13 @@ TEST(WalletV3NativeRoute, GeneratedWalletEnrollsNativeAndReceivesOnPool) {
     const auto balance=rpc_context_wallet_getbalance(request,din::obj());
     ASSERT_FALSE(balance.isMember("error")) << balance.toStyledString();
     EXPECT_FALSE(balance.isMember("wallet_scope")) << balance.toStyledString();
+    // The balance is current but never advertised as sendable (#939 phase 1).
+    EXPECT_FALSE(balance["send_ready"].asBool()) << balance.toStyledString();
+    EXPECT_EQ(balance["send_unavailable_code"].asString(),"wallet_native_send_unavailable_on_v3");
+    EXPECT_TRUE(balance["spendable"].isNull()) << balance.toStyledString();
+    const auto native_info=rpc_context_wallet_getwalletinfo(request,din::obj());
+    EXPECT_FALSE(native_info["send_ready"].asBool()) << native_info.toStyledString();
+    EXPECT_EQ(native_info["send_unavailable_code"].asString(),"wallet_native_send_unavailable_on_v3");
     EXPECT_NEAR(balance["total"].asDouble(),double(first)/1e8,1e-8);
     // No native send route yet: refuse before any change derivation.
     din::Json send;send["address"]=pooled;send["amount"]=0.1;

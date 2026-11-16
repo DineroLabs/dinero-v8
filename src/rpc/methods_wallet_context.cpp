@@ -900,6 +900,27 @@ static dinero::WalletManager::LegacyTransparentState ReadLegacyTransparentScope(
     return state;
 }
 
+// #939 phase 1: a native wallet enrolled on a v3 node has a current balance
+// but no send route yet. Never advertise a spendable amount it cannot send.
+static bool NativeV3SendUnavailable(const ExecutionContext& ctx,
+                                    const std::shared_ptr<dinero::WalletService>& service,
+                                    const std::string& expected_name) {
+    const auto source = ctx.daemon && ctx.daemon->chainstate
+        ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)
+        : nullptr;
+    if (!source || !source->HasFullArchiveWalletIndexV3()) return false;
+    auto use = dinero::WalletService::AcquireWalletUse(service);
+    auto lease = use->Wallet().AcquireDatabaseLease();
+    if (lease->WalletName() != expected_name) return false;
+    return lease->NativeV3TransparentState() != dinero::WalletManager::NativeV3State::Absent;
+}
+
+static void MarkNativeV3SendUnavailable(din::Json& result) {
+    result["send_ready"] = false;
+    result["send_unavailable_reason"] = dinero::WalletManager::kNativeWalletSendUnavailableOnV3;
+    result["send_unavailable_code"] = "wallet_native_send_unavailable_on_v3";
+}
+
 static void MarkLegacyTransparentLimitedScope(din::Json& result) {
     result["wallet_scope"] = "legacy_transparent_only";
     result["balance_scope"] = "transparent_current_tip";
@@ -1089,6 +1110,7 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
             : nullptr;
         const bool transparent_send = transparent_only && v3_source &&
             v3_source->RecoveredV3TransparentSendSourceReady();
+        const bool native_no_send = NativeV3SendUnavailable(ctx, wallet_service, summary.wallet_name);
         result["walletname"] = summary.wallet_name;
         if (transparent_only) MarkLegacyTransparentLimitedScope(result);
         if (transparent_send) {
@@ -1096,6 +1118,7 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
             result["send_scope"] = "transparent_recovered_v3";
             result.removeMember("send_unavailable_reason");
         }
+        if (native_no_send) MarkNativeV3SendUnavailable(result);
         result["reservation_status"] = ReservationStatusName(summary.reservations);
 
         // Phase 35: Enhanced balance breakdown
@@ -1104,7 +1127,7 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
         result["immature"] = balance.immature;
         result["locked"] = ReservationAmount(summary.locked);
         result["total"] = balance.total;
-        result["spendable"] = transparent_only && !transparent_send
+        result["spendable"] = (transparent_only && !transparent_send) || native_no_send
             ? din::Json(Json::nullValue) : ReservationAmount(summary.available_confirmed);
         result["utxo_count"] = balance.utxo_count;
 
@@ -1268,6 +1291,7 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
             : nullptr;
         const bool transparent_send = transparent_only && v3_source &&
             v3_source->RecoveredV3TransparentSendSourceReady();
+        const bool native_no_send = NativeV3SendUnavailable(ctx, wallet_service, summary.wallet_name);
         result["walletname"] = summary.wallet_name;
         if (transparent_only) MarkLegacyTransparentLimitedScope(result);
         if (transparent_send) {
@@ -1275,6 +1299,7 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
             result["send_scope"] = "transparent_recovered_v3";
             result.removeMember("send_unavailable_reason");
         }
+        if (native_no_send) MarkNativeV3SendUnavailable(result);
         result["reservation_status"] = ReservationStatusName(summary.reservations);
         result["balance"] = balance.total;
         result["transparent_balance"] = balance.total;
