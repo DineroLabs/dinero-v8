@@ -1317,7 +1317,7 @@ std::optional<RuntimeIndexProgress> RuntimeIndexDelivery::ReadForWalletV3(
 }
 std::optional<RuntimeIndexProgress> RuntimeIndexDelivery::ReadForWalletV3(
         UTXOIndex& index,WalletManager::DatabaseLease& lease) {
-    if(!lease.Database() || lease.LegacyTransparentState()==WalletManager::LegacyTransparentState::Absent)
+    if(!lease.Database() || lease.TypedTransparentState()==WalletManager::LegacyTransparentState::Absent)
         Fail("Coverage v3 wallet owner changed");
     OrdinaryTransaction wallet_read(lease.Database());
     const auto identity=ExistingIdentity(lease.Database());
@@ -1365,7 +1365,7 @@ RuntimeIndexProgress RuntimeIndexDelivery::ReconcileCoverageV3(WalletManager& wa
     RuntimeOrdinaryDelivery::CheckOriginDomain(wallet,origin,nullptr);
     const auto lease=wallet.AcquireDatabaseLease();
     if(!wallet.SoleDatabaseLeaseHeld() || lease->Session()!=origin.session_ || !lease->Database() ||
-       lease->LegacyTransparentState()!=WalletManager::LegacyTransparentState::Pending)
+       lease->TypedTransparentState()!=WalletManager::LegacyTransparentState::Pending)
         Fail("Coverage v3 pending wallet owner changed");
     OrdinaryTransaction wallet_read(lease->Database());
     const auto identity=ExistingIdentity(lease->Database());
@@ -1455,7 +1455,7 @@ RuntimeIndexProgress RuntimeIndexDelivery::ApplyForWalletV3(WalletManager& walle
     const auto effects=Effects(event);
     const auto lease=wallet.AcquireDatabaseLease();
     if(!wallet.SoleDatabaseLeaseHeld() || lease->Session()!=expected_session || !lease->Database() ||
-       lease->LegacyTransparentState()!=WalletManager::LegacyTransparentState::Complete)
+       lease->TypedTransparentState()!=WalletManager::LegacyTransparentState::Complete)
         Fail("V3 delivery selected wallet unavailable");
     OrdinaryTransaction wallet_read(lease->Database());
     const auto identity=ExistingIdentity(lease->Database());
@@ -2048,13 +2048,168 @@ void RuntimeOrdinaryDelivery::ReconcileLegacyTransparentCoverageV3(WalletManager
     });
 }
 
+namespace {
+// #939: the Orchard ownership facts a native v3 reconcile must not let drift
+// between its capture and its ordinary commit. A known inventory is read with
+// every current/reached/retained row authenticated. An unknown catalog (a
+// restored wallet whose account 0 was never recovered) must still be the
+// empty initial catalog with no Orchard rows, so it owns no reservations.
+struct NativeOrchardCapture {
+    ::dinero::wallet::OrchardAccountCatalog::Snapshot catalog{};
+    std::vector<std::tuple<uint32_t,orchard::Hash,orchard::Hash,uint32_t,uint64_t,std::vector<uint8_t>>> inputs;
+    std::vector<std::pair<uint32_t,uint64_t>> accounts;
+    size_t current_rows=0,retained_rows=0;
+    bool operator==(const NativeOrchardCapture&) const = default;
+};
+NativeOrchardCapture CaptureNativeOrchard(sqlite3* db,std::span<const uint8_t> seed) {
+    NativeOrchardCapture result;
+    const auto catalog=::dinero::wallet::OrchardAccountCatalog::Read(db,seed);
+    if(!catalog)Fail("Native coverage v3 Orchard catalog unavailable");
+    result.catalog=*catalog;
+    if(!catalog->KnownInventory()) {
+        (void)::dinero::wallet::OrchardAccountCatalog::RequireUnknownEmpty(db,seed);
+        return result;
+    }
+    const auto inventory=::dinero::wallet::OrchardOwnershipInventory::Read(db,seed);
+    result.current_rows=inventory.current_rows;result.retained_rows=inventory.retained_rows;
+    for(const auto& account:inventory.accounts)
+        result.accounts.emplace_back(account.entry.account,account.current.revision);
+    for(const auto& entry:inventory.current_inputs)
+        result.inputs.emplace_back(entry.account,entry.operation,entry.input.txid_wire,
+            entry.input.output_index,entry.input.amount_una,entry.input.script_pub_key);
+    return result;
+}
+} // namespace
+
+void RuntimeOrdinaryDelivery::ReconcileNativeTransparentCoverageV3(WalletManager& wallet,UTXOIndex& index,
+        const RuntimeWalletCoverageProjection& source,
+        const RuntimeIndexDelivery::V3SourceCommit& source_commit) {
+    const auto& origin=source.Origin();
+    if(!source_commit || origin.imported_cohort_ || origin.index_scripts_ || !source.replay_ ||
+       source.Head()!=source.replay_->Head())
+        Fail("Native coverage v3 requires complete full-archive transparent source");
+    const auto native_pending=[&](WalletManager::DatabaseLease& lease) {
+        return wallet.SoleDatabaseLeaseHeld() && lease.Session()==origin.session_ && lease.Database() &&
+            wallet.current_wallet_id_>=0 &&
+            lease.LegacyTransparentState()==WalletManager::LegacyTransparentState::Absent &&
+            lease.NativeV3TransparentState()==WalletManager::NativeV3State::Pending;
+    };
+    // Capture the Orchard ownership facts before either durable commit; the
+    // ordinary commit below re-authenticates them in its own SQL snapshot.
+    NativeOrchardCapture expected;
+    {
+        auto lease=wallet.AcquireDatabaseLease();
+        if(!native_pending(*lease))Fail("Native coverage v3 pending wallet owner changed");
+        auto* db=lease->Database();CoverageDurability(db);OrdinaryTransaction read(db);
+        if(ExistingIdentity(db)!=origin.identity_)Fail("Native coverage v3 identity changed");
+        auto pin=lease->CopyRecoverySeed(origin.session_);
+        expected=CaptureNativeOrchard(db,pin->Bytes());
+        pin.reset();
+        read.Commit();
+    }
+    // First durable commit: only this wallet's index rows and receipt. Native
+    // Pending remains in the wallet if the second phase is interrupted.
+    (void)RuntimeIndexDelivery::ReconcileCoverageV3(wallet,index,source,source_commit);
+
+    auto lease=wallet.AcquireDatabaseLease();
+    if(!native_pending(*lease))Fail("Native coverage v3 ordinary pending wallet owner changed");
+    auto* db=lease->Database();CoverageDurability(db);OrdinaryTransaction transaction(db);
+    if(ExistingIdentity(db)!=origin.identity_)Fail("Native coverage v3 ordinary identity changed");
+    const auto scripts=OrdinaryScripts(*lease);
+    if(scripts.digest!=origin.scripts_digest_ || scripts.addresses!=origin.scripts_ ||
+       scripts.historical!=origin.historical_scripts_)
+        Fail("Native coverage v3 ordinary script domain changed");
+    const auto paths=V3RecordedPaths(*lease);
+    for(const auto& [script,address]:scripts.addresses)
+        if(!paths.contains(script) && !scripts.historical.contains(script))
+            Fail("Native coverage v3 ordinary address lacks an index owner");
+    for(const auto& [script,path]:paths)
+        if(!scripts.addresses.contains(script))
+            Fail("Native coverage v3 ordinary watched script lacks a proved wallet address");
+    const auto index_scripts=IndexScripts(paths,scripts.historical);
+    {
+        auto pin=lease->CopyRecoverySeed(origin.session_);
+        lease->ValidateRecoveryInventoryInTransaction(*pin);
+        // Catalog-capture recheck: the same authenticated Orchard ownership
+        // as captured before the index commit, in this exact SQL snapshot.
+        if(CaptureNativeOrchard(db,pin->Bytes())!=expected)
+            Fail("Native coverage v3 Orchard ownership changed");
+        // Reservation check (v2 ReconcileCoverage rules). Orchard reservations
+        // never refuse enrollment; they must be unique, inside the proved
+        // history, and never overlap an ordinary pending payment.
+        std::set<std::pair<std::string,uint32_t>> reserved;
+        for(const auto& [account,operation,txid,vout,amount,script]:expected.inputs) {
+            (void)account;(void)operation;
+            uint256 hash;std::copy(txid.begin(),txid.end(),hash.begin());
+            if(!reserved.emplace(hash.GetHex(),vout).second)Fail("Native coverage v3 Orchard reservations overlap");
+            const auto coin=source.ObservedCoins().find(TxOutPoint{TxId(hash),vout});
+            if(coin==source.ObservedCoins().end() ||
+               !std::any_of(coin->second.begin(),coin->second.end(),[&](const auto& version){
+                   return version.output.value.GetUna()==amount&&version.output.scriptPubKey==script;}))
+                Fail("Native coverage v3 retained Orchard input is outside proved history");
+        }
+        for(const auto& payment:lease->ReadPendingPaymentsInTransaction(*pin))for(const auto& input:payment.inputs) {
+            if(!reserved.emplace(input.txid,input.vout).second)
+                Fail("Native coverage v3 ordinary and Orchard reservations overlap");
+            const auto point=TxOutPoint{TxId(uint256::FromHexUnsafe(input.txid)),input.vout};
+            const auto coin=source.ObservedCoins().find(point);
+            if(coin==source.ObservedCoins().end() || point.txid.AsUint256().GetHex()!=input.txid ||
+               !std::any_of(coin->second.begin(),coin->second.end(),[&](const auto& version){
+                   return version.output.value.GetUna()==input.amount_una&&version.output.scriptPubKey==input.script;}))
+                Fail("Native coverage v3 retained payment input is outside proved history");
+        }
+    }
+    // Same recovery flags as the legacy V3 writer: a restored native wallet
+    // has no local history for its proved on-chain spends.
+    const auto plan=CoverageOrdinaryRows(db,wallet.current_wallet_id_,scripts,source,true,true,true);
+    if(OrdinaryColumns(db)) {
+        Statement q(db,"SELECT runtime_ordinary_receipt,runtime_ordinary_invalid FROM wallet_meta WHERE id=1");
+        if(sqlite3_step(q.value)!=SQLITE_ROW)Fail("Native coverage v3 ordinary metadata missing");
+        const auto invalid=CoverageInt(q.value,1);
+        if(invalid!=0&&invalid!=1)Fail("Native coverage v3 ordinary invalidation malformed");
+        if(sqlite3_column_type(q.value,0)!=SQLITE_NULL) {
+            const auto* bytes=static_cast<const char*>(sqlite3_column_blob(q.value,0));
+            const int n=sqlite3_column_bytes(q.value,0);
+            if(sqlite3_column_type(q.value,0)!=SQLITE_BLOB||!bytes||n<=0||n>2048)
+                Fail("Native coverage v3 ordinary receipt malformed");
+            CheckCoverageReceipt(std::string(bytes,n),"DNOW01",origin.identity_,source);
+        }
+        if(sqlite3_step(q.value)!=SQLITE_DONE)Fail("Native coverage v3 ordinary metadata incomplete");
+        OrdinaryGuards(db,false);
+    } else {
+        Exec(db,"ALTER TABLE wallet_meta ADD COLUMN runtime_ordinary_receipt BLOB");
+        Exec(db,"ALTER TABLE wallet_meta ADD COLUMN runtime_ordinary_invalid INTEGER NOT NULL DEFAULT 0");
+        OrdinaryGuards(db,true);
+    }
+    RuntimeIndexDelivery::WithCurrentV3Receipt(*lease,index,source,index_scripts,[&] {
+        bool wallet_committed=false;
+        source_commit([&] {
+            if(wallet_committed)Fail("Native coverage v3 ordinary source commit already used");
+            WriteCoverageOrdinary(db,wallet.current_wallet_id_,scripts,source,plan,true,true);
+            // The sync_meta trigger revokes older receipts. Seal only after
+            // the scan height and all ordinary rows are in this transaction.
+            Statement scan(db,"UPDATE sync_meta SET last_scanned_height=?,scan_complete=1 WHERE id=1");
+            scan.Int(1,source.TipHeight());scan.Done();
+            if(sqlite3_changes(db)!=1)Fail("Native coverage v3 ordinary scan watermark unavailable");
+            Receipt next{{source.Head(),origin.OriginHash(),source.TipHash(),origin.OriginHeight(),source.TipHeight()},
+                Profile(origin.first_.context)};
+            Statement seal(db,"UPDATE wallet_meta SET runtime_ordinary_receipt=?,runtime_ordinary_invalid=0,"
+                "runtime_native_v3_state_v1='complete' WHERE id=1 AND runtime_native_v3_state_v1='pending'");
+            seal.Blob(1,Encode(next,origin.identity_,scripts.digest,"DNOW01"));seal.Done();
+            if(sqlite3_changes(db)!=1)Fail("Native coverage v3 ordinary completion marker unavailable");
+            transaction.Commit();wallet_committed=true;
+        });
+        if(!wallet_committed)Fail("Native coverage v3 ordinary source lock did not commit");
+    });
+}
+
 RuntimeIndexProgress RuntimeOrdinaryDelivery::ApplyForWallet(WalletManager& wallet,uint64_t session,const RuntimeOutboxEvent& event) {
     return Apply(wallet,session,event,nullptr);
 }
 RuntimeIndexProgress RuntimeOrdinaryDelivery::Apply(WalletManager& wallet,uint64_t session,const RuntimeOutboxEvent& event,const RuntimeWalletOriginProjection* origin) {
     (void)Effects(event); // Keep original typed refusal before wallet ownership.
     const auto lease=wallet.AcquireDatabaseLease();if(lease->Session()!=session)Fail("Wallet delivery selection changed");
-    if(lease->LegacyTransparentState()==WalletManager::LegacyTransparentState::Pending)
+    if(lease->TypedTransparentState()==WalletManager::LegacyTransparentState::Pending)
         Fail("Legacy transparent coverage required before incremental delivery");
     const auto identity=lease->EnsureDeliveryIdentity();auto* db=lease->Database();
     if(wallet.current_wallet_id_<0)Fail("Ordinary delivery wallet unavailable");
@@ -2155,7 +2310,7 @@ RuntimeIndexProgress RuntimeOrdinaryDelivery::ApplyInTransaction(WalletManager& 
     Exec(db,"UPDATE utxos SET is_mature=CASE WHEN is_coinbase=0 OR confirmations>=100 THEN 1 ELSE 0 END");
     OrdinaryInt(db,"UPDATE transactions SET confirmations=CASE WHEN height>0 THEN MAX(0,?-height+1) ELSE 0 END",after.second);
     OrdinaryInt(db,"INSERT INTO tip(rowid,height) VALUES(1,?) ON CONFLICT(rowid) DO UPDATE SET height=excluded.height",after.second);
-    if(lease->LegacyTransparentState()==WalletManager::LegacyTransparentState::Complete) {
+    if(lease->TypedTransparentState()==WalletManager::LegacyTransparentState::Complete) {
         Statement scan(db,"UPDATE sync_meta SET last_scanned_height=?,scan_complete=1 WHERE id=1");
         scan.Int(1,after.second);scan.Done();
         if(sqlite3_changes(db)!=1)Fail("Legacy transparent incremental scan watermark unavailable");
