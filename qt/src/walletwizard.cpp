@@ -1620,14 +1620,16 @@ CompletionPage::CompletionPage(RpcClient* rpc, QWidget* parent)
   lblFirstAddress_->setTextInteractionFlags(Qt::TextSelectableByMouse);
   grid->addWidget(lblFirstAddress_, 2, 1);
 
-  grid->addWidget(new QLabel("Quantum-Safe (P2MR) Address:"), 3, 0);
+  lblP2mrCaption_ = new QLabel("Quantum-Safe (P2MR) Address:");
+  grid->addWidget(lblP2mrCaption_, 3, 0);
   lblP2mrAddress_ = new QLabel("-");
   lblP2mrAddress_->setObjectName("wizardP2mrAddress");
   lblP2mrAddress_->setStyleSheet("QLabel { font-family: monospace; }");
   lblP2mrAddress_->setTextInteractionFlags(Qt::TextSelectableByMouse);
   grid->addWidget(lblP2mrAddress_, 3, 1);
 
-  grid->addWidget(new QLabel("Private (Orchard) Address:"), 4, 0);
+  lblOrchardCaption_ = new QLabel("Private (Orchard) Address:");
+  grid->addWidget(lblOrchardCaption_, 4, 0);
   lblOrchardAddress_ = new QLabel("-");
   lblOrchardAddress_->setObjectName("wizardOrchardAddress");
   lblOrchardAddress_->setStyleSheet("QLabel { font-family: monospace; }");
@@ -1719,8 +1721,13 @@ void CompletionPage::initializePage() {
   if (!isRestore) {
     const QString p2mr = createPage->property("firstP2mrAddress").toString();
     const QString orchard = createPage->property("firstOrchardAddress").toString();
-    lblP2mrAddress_->setText(p2mr.isEmpty() ? QStringLiteral("Created after setup") : p2mr);
-    lblOrchardAddress_->setText(orchard.isEmpty() ? QStringLiteral("Created after setup") : orchard);
+    // Show only addresses the node actually created; never promise one.
+    lblP2mrAddress_->setText(p2mr);
+    lblOrchardAddress_->setText(orchard);
+    lblP2mrAddress_->setVisible(!p2mr.isEmpty());
+    lblOrchardAddress_->setVisible(!orchard.isEmpty());
+    if (lblP2mrCaption_) lblP2mrCaption_->setVisible(!p2mr.isEmpty());
+    if (lblOrchardCaption_) lblOrchardCaption_->setVisible(!orchard.isEmpty());
   }
   setProperty("fingerprint", fingerprint);
   setProperty("walletName", walletName);
