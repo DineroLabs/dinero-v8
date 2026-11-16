@@ -120,9 +120,11 @@ namespace {
 struct CanonicalRecoveryFixture : OrchardCycleFixture {
     std::shared_ptr<WalletService> wallet=std::make_shared<WalletService>();
     std::string receive_address;
-    explicit CanonicalRecoveryFixture(bool encrypted=false,bool funded_historical=false)
+    explicit CanonicalRecoveryFixture(bool encrypted=false,bool funded_historical=false,
+        bool spend_funded_before_origin=false)
         :OrchardCycleFixture(false,funded_historical
-            ?OrchardAdmissionFixture::HistoricalSpend::NamedWallet
+            ?(spend_funded_before_origin ? OrchardAdmissionFixture::HistoricalSpend::NamedWalletSpent
+                : OrchardAdmissionFixture::HistoricalSpend::NamedWallet)
             :OrchardAdmissionFixture::HistoricalSpend::None) {
         // Stop the old adapter before Init replaces its coin owner. Retain the
         // stopped service for base-fixture cleanup if initialization throws.
@@ -270,7 +272,7 @@ struct CanonicalRecoveryFixture : OrchardCycleFixture {
         std::string error;
         const auto scanned=f.service->RescanWalletFromSelectedHistory(use->Wallet(),0,0,&error);
         OrchardAdmissionFixture::Require(scanned && *scanned==101);
-        const auto coin=f.db.getCoin(f.blocks[101].vtx.at(1).GetTxid().AsUint256(),0);
+        const auto coin=f.db.getCoin(f.blocks[101].vtx.back().GetTxid().AsUint256(),0);
         OrchardAdmissionFixture::Require(coin.ok()&&!coin->coinbase&&coin->height==101);
         const auto balance=use->Wallet().getBalance();
         OrchardAdmissionFixture::Require(balance.confirmed>0);

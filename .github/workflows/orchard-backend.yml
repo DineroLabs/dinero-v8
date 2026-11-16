@@ -244,6 +244,10 @@ jobs:
         run: |
           ctest --test-dir build-orchard-root -R '^WalletV3LegacySpentMetadata$' \
             --verbose --no-tests=error --output-log wallet-v3-legacy-spent-execution.log
+      - name: Recover proved pre-origin wallet spend without inventing local intent
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletV3ProvedHistoricalSpend$' \
+            --verbose --no-tests=error --output-log wallet-v3-proved-historical-spend-execution.log
       - name: Exercise real Orchard-enabled SDK runtime
         run: |
           ctest --test-dir build-orchard-root -R '^(NodeCoreRuntimeLifecycle|NodeCoreStorageReadiness|OrchardActivationRuntime|OrchardMigrationDatadirAlias)$' --verbose --no-tests=error --output-log orchard-sdk-runtime-execution.log
