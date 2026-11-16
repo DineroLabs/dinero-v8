@@ -244,6 +244,19 @@ std::array<uint8_t, 32> DeriveBip39RecoveryKey(const std::vector<uint8_t>& seed)
 }
 
 constexpr char kInitialOwnerSetting[] = "wallet_initial_owner_v1";
+constexpr char kFreshBirthSetting[] = "wallet_fresh_birth_v1";
+std::string FreshBirthKey(const std::vector<uint8_t>& seed) {
+    if (seed.size() != 64) throw std::runtime_error("Fresh birth seed unavailable");
+    const std::string domain = "Dinero WalletManager fresh birth v1";
+    std::vector<uint8_t> material(domain.begin(), domain.end());
+    material.insert(material.end(), seed.begin(), seed.end());
+    std::array<uint8_t, 32> key{};
+    ::sha256(material.data(), material.size(), key.data());
+    secureClearBytes(material);
+    std::string result(reinterpret_cast<const char*>(key.data()), key.size());
+    OPENSSL_cleanse(key.data(), key.size());
+    return result;
+}
 std::string InitialOwnerKey(const std::vector<uint8_t>& seed) {
     if (seed.size() != 64) throw std::runtime_error("Initialization seed unavailable");
     const std::string domain = "Dinero WalletManager initial PQ owner v1";
@@ -1739,7 +1752,8 @@ WalletManager::GeneratedBip39Identity WalletManager::GenerateBip39Identity(
 }
 
 void WalletManager::createFromGeneratedBip39(const std::string& name,
-    GeneratedBip39Identity&& identity, const std::string& passphrase) {
+    GeneratedBip39Identity&& identity, const std::string& passphrase,
+    std::optional<uint32_t> fresh_birth_height) {
     // Consume the generated identity. A moved-from or reused ticket cannot
     // authorize a second initialization, and recovery has no ticket constructor.
     GeneratedBip39Identity owned(std::move(identity));
@@ -1750,7 +1764,8 @@ void WalletManager::createFromGeneratedBip39(const std::string& name,
                          ConstantTimeEqual(check, owned.seed_) && check.size() == 64;
     secureClearBytes(check);
     if (!matches) throw std::runtime_error("Generated BIP39 identity unavailable or mismatched");
-    createWithInitialSeed(name, owned.seed_, &owned.mnemonic_, passphrase, InitialSeedKind::Generated);
+    createWithInitialSeed(name, owned.seed_, &owned.mnemonic_, passphrase, InitialSeedKind::Generated,
+                          fresh_birth_height);
 }
 
 void WalletManager::create(const std::string& name) {
@@ -1792,12 +1807,15 @@ void WalletManager::createWithInitialSeed(
     const std::string& name,
     const std::vector<uint8_t>& initial_master_seed,
     const std::string* authoritative_mnemonic,
-    const std::string& bip39_passphrase, InitialSeedKind kind) {
+    const std::string& bip39_passphrase, InitialSeedKind kind,
+    std::optional<uint32_t> fresh_birth_height) {
     std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
     // Interim (#939): v3 cannot deliver to a wallet with an Orchard owner,
     // which every new or restored wallet gets. Refuse before any file exists.
     if (full_archive_v3_legacy_rescans_disabled_)
         throw std::runtime_error(kWalletCreationUnsupportedOnV3);
+    if (fresh_birth_height && kind != InitialSeedKind::Generated)
+        throw std::logic_error("Only a generated identity can seal a fresh birth height");
     if (database_leases_ != 0) throw std::logic_error("Cannot create a wallet during database delivery");
     if (initial_master_seed.size() != 64) {
         throw std::invalid_argument("Initial wallet seed must be exactly 64 bytes");
@@ -1985,6 +2003,24 @@ void WalletManager::createWithInitialSeed(
             const auto owner = util::hex(std::vector<uint8_t>(sealed.begin(), sealed.end()));
             if (!storeMasterSeedOwned(initial_master_seed, "", false, &owner, kind)) {
                 throw std::runtime_error("Failed to persist initial HD wallet seed");
+            }
+            if (fresh_birth_height) {
+                char height[9];
+                std::snprintf(height, sizeof(height), "%08x", *fresh_birth_height);
+                struct Key { std::string value; ~Key() { secureClearString(value); } }
+                    birth_key{FreshBirthKey(initial_master_seed)};
+                const auto sealed_birth = encryptData("DNFB01" + identity.substr(7) + height,
+                                                      birth_key.value);
+                sqlite3_stmt* stmt = nullptr;
+                if (sqlite3_prepare_v2(db_, "INSERT INTO settings (key, value, updated_at) "
+                        "VALUES (?, ?, strftime('%s','now'))", -1, &stmt, nullptr) != SQLITE_OK)
+                    throw std::runtime_error("Failed to prepare fresh birth record");
+                const auto hex = util::hex(std::vector<uint8_t>(sealed_birth.begin(), sealed_birth.end()));
+                sqlite3_bind_text(stmt, 1, kFreshBirthSetting, -1, SQLITE_STATIC);
+                sqlite3_bind_text(stmt, 2, hex.c_str(), -1, SQLITE_TRANSIENT);
+                const int rc = sqlite3_step(stmt);
+                sqlite3_finalize(stmt);
+                if (rc != SQLITE_DONE) throw std::runtime_error("Failed to persist fresh birth record");
             }
             if (authoritative_mnemonic) {
                 std::string recovery_error;
@@ -3546,6 +3582,51 @@ bool WalletManager::DatabaseLease::HasOrchardOwnerState() const {
         "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
         "('orchard_wallet_schema','orchard_wallet_snapshots','orchard_wallet_retained','shielded_state_v1')");
     return sqlite3_step(tables.stmt) == SQLITE_ROW;
+}
+
+std::optional<uint32_t>
+WalletManager::DatabaseLease::SealedFreshBirthHeight(uint64_t expected_session) const {
+    if (thread_ != std::this_thread::get_id() || !db_ || name_.empty() || owner_.db_ != db_ ||
+        expected_session != session_ || owner_.database_session_ != session_)
+        throw std::runtime_error("Fresh birth ownership unavailable");
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, "SELECT value FROM settings WHERE key=?", -1, &stmt, nullptr) != SQLITE_OK)
+        throw std::runtime_error("Fresh birth record unreadable");
+    sqlite3_bind_text(stmt, 1, kFreshBirthSetting, -1, SQLITE_STATIC);
+    int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_DONE) { sqlite3_finalize(stmt); return std::nullopt; }
+    if (rc != SQLITE_ROW || sqlite3_column_type(stmt, 0) != SQLITE_TEXT) {
+        sqlite3_finalize(stmt);
+        throw std::runtime_error("Fresh birth record malformed");
+    }
+    const std::string hex(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)),
+                          sqlite3_column_bytes(stmt, 0));
+    sqlite3_finalize(stmt);
+    std::vector<uint8_t> bytes;
+    if (!util::unhex(hex, bytes)) throw std::runtime_error("Fresh birth record encoding invalid");
+    owner_.checkUnlockTimeout();
+    if (owner_.wallet_locked_ || owner_.master_seed_.size() != 64)
+        throw std::runtime_error("Fresh birth record requires the unlocked seed");
+    struct Secret { std::string value; ~Secret() { secureClearString(value); } }
+        key{FreshBirthKey(owner_.master_seed_)}, plain;
+    plain.value = owner_.decryptData(std::string(bytes.begin(), bytes.end()), key.value);
+    if (plain.value.size() != 6 + 64 + 8 || plain.value.substr(0, 6) != "DNFB01")
+        throw std::runtime_error("Fresh birth payload invalid");
+    sqlite3_stmt* id = nullptr;
+    if (sqlite3_prepare_v2(db_, "SELECT runtime_delivery_id FROM wallet_meta WHERE id=1", -1, &id, nullptr) != SQLITE_OK)
+        throw std::runtime_error("Fresh birth identity unreadable");
+    rc = sqlite3_step(id);
+    const bool identity_ok = rc == SQLITE_ROW && sqlite3_column_type(id, 0) == SQLITE_BLOB &&
+        sqlite3_column_bytes(id, 0) == 32 &&
+        plain.value.substr(6, 64) == util::hex(std::vector<uint8_t>(
+            static_cast<const uint8_t*>(sqlite3_column_blob(id, 0)),
+            static_cast<const uint8_t*>(sqlite3_column_blob(id, 0)) + 32));
+    sqlite3_finalize(id);
+    if (!identity_ok) throw std::runtime_error("Fresh birth identity mismatch");
+    const auto height_hex = plain.value.substr(70, 8);
+    if (height_hex.find_first_not_of("0123456789abcdef") != std::string::npos)
+        throw std::runtime_error("Fresh birth height invalid");
+    return static_cast<uint32_t>(std::stoul(height_hex, nullptr, 16));
 }
 
 std::optional<uint32_t>

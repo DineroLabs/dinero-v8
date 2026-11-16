@@ -774,6 +774,112 @@ TEST(WalletV3NativeInterim, NativeWalletReportsUnsupportedAndCreationRefuses) {
     EXPECT_FALSE(created.isMember("mnemonic"));
 }
 
+// Issue #939: a freshly GENERATED wallet carries a sealed birth height; a
+// restored one never does, and a tampered record fails closed.
+TEST(WalletFreshBirth, SealedOnlyForGeneratedIdentityAndAuthenticated) {
+    CanonicalRecoveryFixture f(false,false);
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    auto& wallet=use->Wallet();
+    wallet.createFromGeneratedBip39("fresh-birth",WalletManager::GenerateBip39Identity(12,""),"",155669u);
+    {
+        auto lease=wallet.AcquireDatabaseLease();
+        EXPECT_EQ(lease->SealedFreshBirthHeight(lease->Session()),std::optional<uint32_t>(155669u));
+    }
+    // Tamper: any change to the sealed value must refuse, never pass as fresh.
+    auto* db=wallet.getCurrentDatabase();
+    ASSERT_EQ(sqlite3_exec(db,"UPDATE settings SET value=substr(value,1,length(value)-2)||'00' "
+        "WHERE key='wallet_fresh_birth_v1'",nullptr,nullptr,nullptr),SQLITE_OK);
+    {
+        auto lease=wallet.AcquireDatabaseLease();
+        EXPECT_THROW((void)lease->SealedFreshBirthHeight(lease->Session()),std::exception);
+    }
+    // Locked: the record cannot be read without the seed.
+    wallet.createFromGeneratedBip39("fresh-birth-locked",WalletManager::GenerateBip39Identity(12,""),"",155669u);
+    wallet.encryptWallet("fresh-birth-pass");
+    if(!wallet.isWalletLocked())wallet.lockWallet();
+    {
+        auto lease=wallet.AcquireDatabaseLease();
+        EXPECT_THROW((void)lease->SealedFreshBirthHeight(lease->Session()),std::exception);
+    }
+    wallet.unlockWallet("fresh-birth-pass",0);
+    {
+        auto lease=wallet.AcquireDatabaseLease();
+        EXPECT_EQ(lease->SealedFreshBirthHeight(lease->Session()),std::optional<uint32_t>(155669u));
+    }
+    // A restore never carries the record.
+    wallet.createFromBip39("restored-birth",
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about","");
+    {
+        auto lease=wallet.AcquireDatabaseLease();
+        EXPECT_EQ(lease->SealedFreshBirthHeight(lease->Session()),std::nullopt);
+    }
+}
+
+namespace {
+// Enroll the active wallet on a full-archive v3 metadata index after block
+// 50's body was deleted. Any genesis replay must read it and defer.
+WalletService::CanonicalRecovery RecoverActiveOnV3WithoutPreactivationBody(
+        CanonicalRecoveryFixture& f,const char* index_name,std::string& error) {
+    const auto index_path=f.f.path/index_name;
+    { UTXOIndex v2(index_path.string());if(!v2.Initialize())throw std::runtime_error("v2 index"); }
+    (void)UpgradeFullArchiveWalletIndexSchemaToV3(index_path);
+    auto metadata=std::make_unique<UTXOIndex>(index_path.string());
+    if(!metadata->InitializeFullArchiveV3MetadataOnly())throw std::runtime_error("v3 index");
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        use->Wallet().setUTXOIndex(nullptr);
+        use->Wallet().DisableLegacyRescansForFullArchiveV3();
+    }
+    struct RestoreIndex {
+        ChainstateService& source;
+        std::unique_ptr<UTXOIndex> original;
+        ~RestoreIndex() {
+            auto replacement=ShieldedStateStartupTestAccess::SwapWalletIndexForRpc(source,std::move(original));
+            (void)replacement;
+        }
+    } restore{*f.f.service,ShieldedStateStartupTestAccess::SwapWalletIndexForRpc(
+        *f.f.service,std::move(metadata))};
+    return f.wallet->RecoverActiveWalletFromCanonicalSource(&error);
+}
+} // namespace
+
+// Issue #939: a fresh wallet born at/after activation enrolls on a full-archive
+// v3 node without the genesis replay (proved by a missing pre-activation body
+// that any replay must read); restored and pre-activation-born wallets still
+// replay and therefore defer.
+TEST(WalletFreshBirth, FreshWalletEnrollsWithoutGenesisReplay) {
+    for(const int mode:{0,1,2}) {
+        SCOPED_TRACE(mode==0?"fresh at activation":mode==1?"restored":"fresh below activation");
+        CanonicalRecoveryFixture f(false,false);
+        (void)f.MineToWallet();
+        ASSERT_GE(f.f.service->GetActiveTip()->height,Params().orchard_activation_height);
+        ASSERT_EQ(f.f.db.deleteBlock(f.f.token,f.f.blocks[50].GetHash()),Status::Ok);
+        {
+            auto use=WalletService::AcquireWalletUse(f.wallet);
+            const auto activation=Params().orchard_activation_height;
+            if(mode==0)use->Wallet().createFromGeneratedBip39("fresh-v3",
+                WalletManager::GenerateBip39Identity(12,""),"",activation);
+            else if(mode==1)use->Wallet().createFromBip39("fresh-v3",
+                "legal winner thank year wave sausage worth useful legal winner thank yellow","");
+            else use->Wallet().createFromGeneratedBip39("fresh-v3",
+                WalletManager::GenerateBip39Identity(12,""),"",activation-1);
+            ASSERT_FALSE(use->Wallet().getNewAddress().empty());
+        }
+        std::string error;
+        const auto outcome=RecoverActiveOnV3WithoutPreactivationBody(f,"fresh-v3-index",error);
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        const auto state=use->Wallet().AcquireDatabaseLease()->LegacyTransparentState();
+        if(mode==0) {
+            EXPECT_EQ(outcome,WalletService::CanonicalRecovery::AppliedPrefix) << error;
+            EXPECT_EQ(state,WalletManager::LegacyTransparentState::Complete);
+        } else {
+            EXPECT_EQ(outcome,WalletService::CanonicalRecovery::Deferred)
+                << "a wallet without fresh proof must still replay from genesis";
+            EXPECT_NE(state,WalletManager::LegacyTransparentState::Complete);
+        }
+    }
+}
+
 TEST(WalletV3ColdRestart, NamedWalletReceiptsSurviveFreshServiceAndIndexHandles) {
     CanonicalRecoveryFixture f(true,true);
     const auto [historical_amount,historical_total]=f.PrepareFundedHistoricalWallet();

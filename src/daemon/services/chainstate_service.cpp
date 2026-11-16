@@ -8036,8 +8036,11 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
 StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService::captureRuntimeWalletOrigin(
         WalletManager& wallet,uint64_t session,UTXOIndex* index,bool existing_identity_only,bool public_history,
         bool& body_data_pending,bool retained_history,size_t material_limit_bytes,
-        const std::optional<RuntimeOutboxCursor>& captured_head) const {
+        const std::optional<RuntimeOutboxCursor>& captured_head,bool fresh_empty_prefix) const {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    // The empty-prefix origin is only for a wallet whose sealed fresh birth
+    // proves it had no keys below activation; it never acquires history.
+    if(fresh_empty_prefix && (public_history || retained_history))return Status::Invalid;
     try {
         auto result=RuntimeOrdinaryDelivery::CaptureOriginDomain(wallet,session,index,existing_identity_only,
             material_limit_bytes);
@@ -8114,7 +8117,11 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
         // engine or projection is used. It needs no per-block restore state,
         // whose forest clone made this replay superlinear in chain length.
         assumeutxo::AssumeUtxoReplayEngine replay(consensus::ReplayFailurePolicy::RetireOwner);
-        for(uint32_t height=0;height<ancestry.size();++height) {
+        // A freshly generated wallet born at/after activation owned no script
+        // below it: its origin is provably empty, so the genesis replay that
+        // would only confirm that is skipped (#939). Ancestry, the first event
+        // and every prefix/domain check above and below still run.
+        for(uint32_t height=0;!fresh_empty_prefix && height<ancestry.size();++height) {
             const auto owned=read_body(height);if(!owned){body_data_pending=true;return Status::NotFound;}
             std::string error;
             if(height==0 ? !replay.SeedGenesis(*owned,error) :
@@ -8168,11 +8175,15 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
                utxo_index_.get()!=&metadata_index || !metadata_index.IsFullArchiveV3MetadataOnly())
                 return Status::Invalid;
         }
+        bool fresh_empty_prefix=false;
         {
             const auto lease=wallet.AcquireDatabaseLease();
             if(!wallet.SoleDatabaseLeaseHeld() || !wallet.hasActiveWallet() || !lease->Database() ||
                lease->Session()!=session || wallet.getUTXOIndex()!=nullptr ||
                !sqlite3_get_autocommit(lease->Database()))return Status::Invalid;
+            // A present-but-unverifiable record fails closed (throws below).
+            const auto birth=lease->SealedFreshBirthHeight(session);
+            fresh_empty_prefix=birth && *birth>=Params().orchard_activation_height;
         }
         {
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
@@ -8196,7 +8207,7 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
             return Status::Invalid;
         bool body_data_pending=false;
         const auto origin=captureRuntimeWalletOrigin(wallet,session,nullptr,true,false,
-            body_data_pending,false,material_limit_bytes,(*replay)->Head());
+            body_data_pending,false,material_limit_bytes,(*replay)->Head(),fresh_empty_prefix);
         if(!origin.ok())return origin.status();
         if(body_data_pending)return Status::NotFound;
         const auto result=RuntimeWalletCoverageProjection::Build(*origin,*replay,{},material_limit_bytes);

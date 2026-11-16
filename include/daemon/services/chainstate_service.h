@@ -1816,7 +1816,8 @@ private:
     StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> captureRuntimeWalletOrigin(
         WalletManager&,uint64_t,UTXOIndex*,bool existing_identity_only,bool public_history,bool& body_data_pending,
         bool retained_history = false,size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes,
-        const std::optional<RuntimeOutboxCursor>& captured_head = std::nullopt) const;
+        const std::optional<RuntimeOutboxCursor>& captured_head = std::nullopt,
+        bool fresh_empty_prefix = false) const;
     StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> captureRuntimeWalletCoverage(
         WalletManager&,uint64_t,UTXOIndex&,bool public_history,bool& body_data_pending,
         bool retained_history = false,size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes) const;

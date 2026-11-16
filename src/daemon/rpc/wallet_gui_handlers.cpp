@@ -364,8 +364,13 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
 
         // The creation owner also refuses existing unregistered files. The
         // first seed and recovery record precede registry publication.
+        // A freshly generated identity cannot have received anything before
+        // this height. Seal it so a full-archive node can enroll the wallet
+        // without replaying the chain below it (#939). A restore never gets
+        // here and never carries the record.
         wallet_manager->createFromGeneratedBip39(
-            wallet_name, std::move(generated_identity), bip39_passphrase);
+            wallet_name, std::move(generated_identity), bip39_passphrase,
+            birth_height ? std::optional<uint32_t>(birth_height) : std::nullopt);
         wallet_created = true;
 
         // Persist wallet_policy atomically on the active wallet DB.

@@ -7761,6 +7761,53 @@ din::Json rpc_context_wallet_generateqrcode(const ExecutionContext& ctx, const d
     return result;
 }
 
+// A new wallet receives on all three address kinds from the start (#939):
+// Taproot index 0 (derived by RpcCreateHDWallet), P2MR index 0 and Orchard
+// account 0. Both run while the fresh wallet is still unenrolled and
+// unlocked, the only state in which a v3 node lets it issue addresses. A
+// failure here never undoes creation; it is reported for the client.
+static void AddCreationReceiveAddresses(const ExecutionContext& ctx, din::Json& result) {
+    if (result.isMember("encrypted") && result["encrypted"].asBool()) {
+        result["p2mr_error"] = "wallet encrypted at creation; derive after unlock";
+        result["orchard_error"] = "wallet encrypted at creation; create after unlock";
+        return;
+    }
+    try {
+        if (auto* p2mr = g_rpcRegistry.lookup("wallet.getnewp2mraddress")) {
+            din::Json p2mr_params;
+            p2mr_params["account"] = 0;
+            p2mr_params["change"] = 0;
+            p2mr_params["address_index"] = 0;
+            p2mr_params["leaf_index"] = 0;
+            p2mr_params["label"] = "";
+            const auto issued = (*p2mr)(ctx, p2mr_params);
+            if (issued.isMember("address") && issued["address"].isString())
+                result["first_p2mr_address"] = issued["address"];
+            else
+                result["p2mr_error"] = issued.isMember("error") ? issued["error"] : din::Json("unavailable");
+        } else {
+            result["p2mr_error"] = "wallet.getnewp2mraddress handler not registered";
+        }
+    } catch (const std::exception& e) {
+        result["p2mr_error"] = e.what();
+    }
+#if DINERO_WALLET_RAW_ORCHARD
+    try {
+        din::Json orchard_params;
+        orchard_params["account"] = 0;
+        const auto orchard = rpc_context_wallet_orchard_createaccount(ctx, orchard_params);
+        if (orchard.isMember("address") && orchard["address"].isString())
+            result["first_orchard_address"] = orchard["address"];
+        else
+            result["orchard_error"] = orchard.isMember("error") ? orchard["error"] : din::Json("unavailable");
+    } catch (const std::exception& e) {
+        result["orchard_error"] = e.what();
+    }
+#else
+    result["orchard_error"] = "Orchard wallet backend unavailable";
+#endif
+}
+
 din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
 
@@ -7779,6 +7826,7 @@ din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Js
     result = dinero::rpc::RpcCreateHDWallet(params, &wallet_service->get(), birth_height);
     if (!result.isMember("error")) {
         wallet_service->EnsureRuntimeWalletBindings();
+        AddCreationReceiveAddresses(ctx, result);
     }
     return result;
 }

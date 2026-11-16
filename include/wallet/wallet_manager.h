@@ -124,8 +124,11 @@ public:
     };
     static GeneratedBip39Identity GenerateBip39Identity(int word_count,
                                                        const std::string& passphrase);
+    // fresh_birth_height, when given, is sealed under a seed-derived key as
+    // proof that this freshly generated identity has no history below it.
     void createFromGeneratedBip39(const std::string& name, GeneratedBip39Identity&& identity,
-                                 const std::string& passphrase);
+                                 const std::string& passphrase,
+                                 std::optional<uint32_t> fresh_birth_height = std::nullopt);
     void create(const std::string& name);
     // Creates a new database with the supplied recovery seed as its first
     // identity. Explicit checksum bypass never stores authoritative mnemonic
@@ -359,6 +362,11 @@ public:
         // tables: the exact condition that excludes it from v3 legacy
         // enrollment (BeginLegacyTransparentMigrationV3).
         [[nodiscard]] bool HasOrchardOwnerState() const;
+        // Birth height sealed at creation of a freshly GENERATED identity
+        // (never a restore/import), authenticated with a key derived from the
+        // unlocked seed and bound to this wallet's delivery identity. nullopt
+        // when no record exists; throws when locked, mismatched or malformed.
+        [[nodiscard]] std::optional<uint32_t> SealedFreshBirthHeight(uint64_t expected_session) const;
         // Enroll a never-enrolled legacy wallet atomically. The identity and
         // pending marker become visible together, or neither does.
         [[nodiscard]] std::string BeginLegacyTransparentMigration();
@@ -1226,7 +1234,8 @@ private:
     void createWithInitialSeed(const std::string& name,
                                const std::vector<uint8_t>& initial_master_seed,
                                const std::string* authoritative_mnemonic,
-                               const std::string& bip39_passphrase, InitialSeedKind kind);
+                               const std::string& bip39_passphrase, InitialSeedKind kind,
+                               std::optional<uint32_t> fresh_birth_height = std::nullopt);
 
 #ifdef FFI_WALLET_ONLY
     std::string dataDir_;

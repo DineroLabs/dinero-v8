@@ -926,6 +926,9 @@ void CreateSeedPage::onGenerateSeed() {
         if (payload.contains("first_address")) {
           setProperty("firstAddress", payload["first_address"].toString());
         }
+        // #939: a new wallet receives on all three address kinds from the start.
+        setProperty("firstP2mrAddress", payload.value("first_p2mr_address").toString());
+        setProperty("firstOrchardAddress", payload.value("first_orchard_address").toString());
         if (payload.contains("wallet_name")) {
           setProperty("walletName", payload["wallet_name"].toString());
         } else {
@@ -1611,11 +1614,26 @@ CompletionPage::CompletionPage(RpcClient* rpc, QWidget* parent)
   lblFingerprint_->setStyleSheet("QLabel { font-family: monospace; font-weight: bold; }");
   grid->addWidget(lblFingerprint_, 1, 1);
   
-  grid->addWidget(new QLabel("First Address:"), 2, 0);
+  grid->addWidget(new QLabel("Taproot Address:"), 2, 0);
   lblFirstAddress_ = new QLabel("-");
   lblFirstAddress_->setStyleSheet("QLabel { font-family: monospace; }");
   lblFirstAddress_->setTextInteractionFlags(Qt::TextSelectableByMouse);
   grid->addWidget(lblFirstAddress_, 2, 1);
+
+  grid->addWidget(new QLabel("Quantum-Safe (P2MR) Address:"), 3, 0);
+  lblP2mrAddress_ = new QLabel("-");
+  lblP2mrAddress_->setObjectName("wizardP2mrAddress");
+  lblP2mrAddress_->setStyleSheet("QLabel { font-family: monospace; }");
+  lblP2mrAddress_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  grid->addWidget(lblP2mrAddress_, 3, 1);
+
+  grid->addWidget(new QLabel("Private (Orchard) Address:"), 4, 0);
+  lblOrchardAddress_ = new QLabel("-");
+  lblOrchardAddress_->setObjectName("wizardOrchardAddress");
+  lblOrchardAddress_->setStyleSheet("QLabel { font-family: monospace; }");
+  lblOrchardAddress_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  lblOrchardAddress_->setWordWrap(true);
+  grid->addWidget(lblOrchardAddress_, 4, 1);
   
   layout->addLayout(grid);
   
@@ -1698,6 +1716,12 @@ void CompletionPage::initializePage() {
   lblWalletName_->setText(walletName.isEmpty() ? QStringLiteral("-") : walletName);
   lblFingerprint_->setText(fingerprint);
   lblFirstAddress_->setText(firstAddress);
+  if (!isRestore) {
+    const QString p2mr = createPage->property("firstP2mrAddress").toString();
+    const QString orchard = createPage->property("firstOrchardAddress").toString();
+    lblP2mrAddress_->setText(p2mr.isEmpty() ? QStringLiteral("Created after setup") : p2mr);
+    lblOrchardAddress_->setText(orchard.isEmpty() ? QStringLiteral("Created after setup") : orchard);
+  }
   setProperty("fingerprint", fingerprint);
   setProperty("walletName", walletName);
   const QString walletAction = isRestore ? "restored" : "created";
