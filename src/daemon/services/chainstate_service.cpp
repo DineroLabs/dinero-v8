@@ -15,6 +15,7 @@
 #endif
 #include "wallet/wallet_transaction_signer.h"
 #include "address/addr_codec.h"
+#include "wallet/p2mr_address.h"
 #include "mining/orchard_mining_template.h"
 #include "wallet/selected_history.h"
 #include <sqlite3.h>
@@ -7821,6 +7822,35 @@ SignResult ChainstateService::signAndStageWalletPayment(WalletManager& wallet,
                    wallet.getUTXOIndex()!=nullptr)
                     throw std::runtime_error("Recovered payment wallet owner changed");
                 lease->RequireLegacyTransparentFinancialReady();
+                if(lease->NativeV3TransparentState()!=WalletManager::NativeV3State::Absent) {
+                    // #939: a native send pays exactly one recipient; every
+                    // other output must pay a script already sealed in both
+                    // receipts (the watched domain). No caller can route
+                    // change to a script no replay has covered.
+                    if(intent.request||!intent.additional_recipients.empty())
+                        throw std::runtime_error("Native v3 payment supports one recipient");
+                    std::vector<uint8_t> recipient;
+                    const auto witness=DecodeWitnessAddress(intent.address,HrpForActiveNetworkRef());
+                    if(witness.is_valid)recipient=witness.script_pubkey;
+                    else if(const auto p2mr=wallet::DecodeP2MRAddress(intent.address))
+                        recipient=wallet::BuildP2MRScriptPubKey(p2mr->merkle_root);
+                    if(recipient.empty())throw std::runtime_error("Native v3 payment recipient invalid");
+                    bool paid=false;
+                    for(const auto& output:input.tx.vout) {
+                        if(!paid&&!output.is_confidential&&output.scriptPubKey==recipient&&
+                           output.GetValue()==intent.amount_una){paid=true;continue;}
+                        sqlite3_stmt* raw=nullptr;
+                        if(sqlite3_prepare_v2(lease->Database(),"SELECT 1 FROM watch_scripts WHERE script_pubkey=?",
+                                -1,&raw,nullptr)!=SQLITE_OK)
+                            throw std::runtime_error("Native v3 payment domain unavailable");
+                        const std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> watched(raw,sqlite3_finalize);
+                        if(output.is_confidential||output.scriptPubKey.empty()||
+                           sqlite3_bind_blob(raw,1,output.scriptPubKey.data(),int(output.scriptPubKey.size()),
+                               SQLITE_TRANSIENT)!=SQLITE_OK||sqlite3_step(raw)!=SQLITE_ROW)
+                            throw std::runtime_error("Native v3 change output is outside the sealed script domain");
+                    }
+                    if(!paid)throw std::runtime_error("Native v3 payment recipient output missing");
+                }
                 const auto ordinary=RuntimeOrdinaryDelivery::ReadForWallet(wallet,identity.session);
                 const auto metadata=RuntimeIndexDelivery::ReadForWalletV3(*index,*lease);
                 if(!ordinary||!metadata||ordinary->cursor!=metadata->cursor||
