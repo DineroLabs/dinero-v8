@@ -6663,6 +6663,18 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
   // Guard: if RPC client has been destroyed (app shutting down), bail out
   if (!rpc_) return;
 
+  // Any reply proving the active wallet is encrypted retires the Encrypt
+  // action, including the setup wizard's own wallet.encrypt (issue #939).
+  if (btnEncryptWallet_ && result.isObject()) {
+    const auto obj = result.toObject();
+    if (method == "wallet.encrypt" && !obj.contains("error") && obj.value("success").toBool(false))
+      btnEncryptWallet_->setVisible(false);
+    else if ((method == "wallet.getinfo" || method == "getwalletinfo" ||
+              method == "wallet.open" || method == "wallet.load") &&
+             !obj.contains("error") && obj.value("encrypted").isBool())
+      btnEncryptWallet_->setVisible(!obj.value("encrypted").toBool());
+  }
+
   if (method.startsWith(QLatin1String("overview.miningrewards:"))) {
     if (walletSwitchInFlight_ || method != miningRewardsReplyAlias()) return;
     if (result.isArray()) updateMiningRewards(result.toArray());
@@ -8728,6 +8740,9 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
   if (method == "wallet.sendtoaddress" || method == "sendtoaddress" || method == "wallet.covenant.ctvfund")
     sendSubmissionPending_ = false;
   if (!rpc_) return;  // Guard: shutting down
+  if (method == "wallet.encrypt" && btnEncryptWallet_ &&
+      message.contains("already encrypted", Qt::CaseInsensitive))
+    btnEncryptWallet_->setVisible(false);
 
   // PoolPanel owns these per-call routes and shows their errors in its own
   // earnings card. An explorer request for the same address has a different
@@ -15034,8 +15049,13 @@ void MainWindow::updateWalletSwitcherState() {
     btnLoadWallet_->setText("Open Wallet");
     btnLoadWallet_->setToolTip("Select a wallet to load");
   } else if (!currentWalletName_.isEmpty() && selectedWallet == currentWalletName_) {
-    btnLoadWallet_->setText("Reload Wallet");
-    btnLoadWallet_->setToolTip(QString("Reload wallet '%1'").arg(selectedWallet));
+    // Re-opening the active wallet makes the daemon close it and open a new,
+    // LOCKED session, discarding the user's unlock (and restarting any v3
+    // enrollment that waits for it). Offer unlock/refresh instead.
+    btnLoadWallet_->setText(walletUnlocked_ ? "Refresh Wallet" : "Unlock Wallet");
+    btnLoadWallet_->setToolTip(walletUnlocked_
+      ? QString("Refresh wallet '%1'").arg(selectedWallet)
+      : QString("Unlock wallet '%1'").arg(selectedWallet));
   } else if (currentWalletName_.isEmpty()) {
     btnLoadWallet_->setText("Open Wallet");
     btnLoadWallet_->setToolTip(QString("Open wallet '%1'").arg(selectedWallet));
@@ -15206,6 +15226,21 @@ void MainWindow::onLoadSelectedWallet() {
   const QString walletName = cmbWalletSelector_->currentText().trimmed();
   if (walletName.isEmpty()) {
     QMessageBox::warning(this, "Wallet Selection", "Select a wallet to load first.");
+    return;
+  }
+
+  // Never wallet.open the wallet that is already active: the daemon closes
+  // it and reopens it locked in a new session (issue #939).
+  if (!currentWalletName_.isEmpty() && walletName == currentWalletName_) {
+    if (!walletUnlocked_) {
+      onUnlockWallet();
+      return;
+    }
+    checkRescanStatus();
+    rpc_->getBalance();
+    rpc_->callNamed("wallet.listaddresses", QJsonObject{{"count", 200}});
+    rpc_->call("wallet.listunspent", QJsonArray());
+    loadTransactionHistory();
     return;
   }
 

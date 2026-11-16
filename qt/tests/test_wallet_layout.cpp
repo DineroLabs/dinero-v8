@@ -520,6 +520,53 @@ private Q_SLOTS:
         QVERIFY(window->lblErrorMessage_->text().contains("cannot track it yet"));
         QVERIFY(!window->lblErrorMessage_->text().contains("Unlock this wallet"));
     }
+
+    // Issue #939: the setup wizard encrypts the new wallet itself. The main
+    // window must retire its Encrypt action from that reply (and from an
+    // "already encrypted" refusal), not leave it offered.
+    void encryptActionRetiredOnceWalletIsEncrypted() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        auto* rpc = window->findChild<RpcClient*>();
+        QVERIFY(rpc);
+        QVERIFY(bindTestWallet(*window, "Sierra"));
+        window->btnEncryptWallet_->setVisible(true);
+        Q_EMIT rpc->rpcResult("wallet.encrypt", QJsonObject{{"success", true}});
+        QCoreApplication::processEvents();
+        QVERIFY(window->btnEncryptWallet_->isHidden());
+
+        window->btnEncryptWallet_->setVisible(true);
+        Q_EMIT rpc->rpcError("wallet.encrypt", -15, "Wallet is already encrypted");
+        QCoreApplication::processEvents();
+        QVERIFY(window->btnEncryptWallet_->isHidden());
+
+        // An unencrypted wallet keeps the action.
+        Q_EMIT rpc->rpcResult("wallet.getinfo", QJsonObject{
+            {"hd_enabled", true}, {"wallet_name", "Sierra"}, {"encrypted", false}, {"unlocked", true}});
+        QCoreApplication::processEvents();
+        QVERIFY(!window->btnEncryptWallet_->isHidden());
+    }
+
+    // Issue #939: "Reload" of the active wallet made the daemon close and
+    // reopen it LOCKED, discarding the unlock that v3 enrollment waits for.
+    void activeWalletIsNeverReopened() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        QVERIFY(bindTestWallet(*window, "Sierra"));
+        QVERIFY(window->cmbWalletSelector_);
+        window->cmbWalletSelector_->setCurrentText("Sierra");
+        window->walletUnlocked_ = true;
+        window->updateWalletSwitcherState();
+        QCOMPARE(window->btnLoadWallet_->text(), QString("Refresh Wallet"));
+        window->onLoadSelectedWallet();
+        QCoreApplication::processEvents();
+        QVERIFY(!window->walletSwitchInFlight_);
+        QVERIFY(window->pendingWalletOpenName_.isEmpty());
+
+        window->walletUnlocked_ = false;
+        window->updateWalletSwitcherState();
+        QCOMPARE(window->btnLoadWallet_->text(), QString("Unlock Wallet"));
+    }
 };
 QTEST_MAIN(WalletLayoutTest)
 #include "test_wallet_layout.moc"
