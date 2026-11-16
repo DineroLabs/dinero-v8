@@ -1,5 +1,5 @@
-#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 #include "daemon/prebase_marker_refusal.h"
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 #include "daemon/orchard_reindex.h"
 #include "daemon/orchard_snapshot_store.h"
 #endif
