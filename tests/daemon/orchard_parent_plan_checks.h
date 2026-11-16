@@ -73,6 +73,95 @@ TEST(OrchardParentPlan, FullForwardBacklogUsesSelectedExtensionsWithoutHistorica
     ASSERT_EQ(f.f.db.putBlock(f.f.token,genesis.GetHash(),genesis),Status::Ok);
     EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*f.f.service));
 }
+TEST(OrchardParentPlan, FirstBoundaryBacklogConnectsExactActivationBeforeSuccessors) {
+    CanonicalPoolFixture f(true);
+    auto notices=std::make_shared<ForwardBacklogNotices>();
+    f.f.service->setRuntimeBlockNotifications(notices);
+    const auto connect=[&](const OrchardMiningTemplate& body) {
+        auto header=body.Header();arith_uint256 compact;compact.SetCompact(header.difficulty);
+        const auto target=uint256::FromHexUnsafe(compact.GetHex());
+        for(header.nonce=0;header.nonce<100000 && target<header.GetHash();++header.nonce){}
+        EXPECT_FALSE(target<header.GetHash());
+        auto wire=body.WireBytes();const auto prefix=header.SerializeForHash();
+        std::copy(prefix.begin(),prefix.end(),wire.begin());
+        return f.Submit(wire);
+    };
+    auto first=f.Build();ASSERT_TRUE(first);
+    ASSERT_TRUE(connect(*first).connected);
+    auto* activation=f.f.service->GetActiveTip();
+    ASSERT_EQ(activation->height,102u);
+    BlockAssembler assembler(&f.f.db);WireOrchardAssembler(assembler,f.f);
+    auto second=assembler.CreateOrchardBlock(OrchardMiningPayout);ASSERT_TRUE(second);
+    ASSERT_TRUE(connect(*second).connected);
+    auto* successor=f.f.service->GetActiveTip();
+    ASSERT_EQ(successor->height,103u);
+    std::string error;
+    ASSERT_TRUE(f.f.service->InvalidateBlock(activation->hash,error))<<error;
+    ASSERT_EQ(f.f.service->GetActiveTip(),f.parent);
+    ASSERT_TRUE(f.f.service->ReconsiderBlock(activation->hash,error))<<error;
+    ASSERT_EQ(f.f.service->GetActiveTip(),f.parent);
+    // The queued successor is still a data-bearing candidate, but its body
+    // location becomes temporarily unreadable while the scheduler catches up.
+    // The available activation body must not be held behind that descendant.
+    const auto saved=f.f.db.getHeaderMetadata(successor->hash);ASSERT_TRUE(saved.ok());
+    auto unavailable=*saved;unavailable.file_number=999999;
+    ASSERT_EQ(f.f.db.putHeaderMetadata(f.f.token,successor->hash,unavailable),Status::Ok);
+    successor->file_number=unavailable.file_number;
+    f.f.service->ActivateBestChain();
+    EXPECT_EQ(f.f.service->GetActiveTip(),activation);
+    EXPECT_EQ(activation->status&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD),0u);
+    EXPECT_EQ(successor->status&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD),0u);
+    ASSERT_EQ(f.f.db.putHeaderMetadata(f.f.token,successor->hash,*saved),Status::Ok);
+    successor->file_number=saved->file_number;
+    f.f.service->ActivateBestChain();
+    EXPECT_EQ(f.f.service->GetActiveTip(),successor);
+    EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*f.f.service));
+}
+TEST(OrchardParentPlan, ArrivingSuccessorDoesNotMoveCapturedBoundaryPlan) {
+    CanonicalPoolFixture f(true);
+    auto notices=std::make_shared<ForwardBacklogNotices>();
+    f.f.service->setRuntimeBlockNotifications(notices);
+    const auto connect=[&](const OrchardMiningTemplate& body) {
+        auto header=body.Header();arith_uint256 compact;compact.SetCompact(header.difficulty);
+        const auto target=uint256::FromHexUnsafe(compact.GetHex());
+        for(header.nonce=0;header.nonce<100000 && target<header.GetHash();++header.nonce){}
+        OrchardAdmissionFixture::Require(!(target<header.GetHash()));
+        auto wire=body.WireBytes();const auto prefix=header.SerializeForHash();
+        std::copy(prefix.begin(),prefix.end(),wire.begin());
+        OrchardAdmissionFixture::Require(f.Submit(wire).connected);
+        return f.f.service->GetActiveTip();
+    };
+    const auto first=f.Build();ASSERT_TRUE(first);
+    auto* activation=connect(*first);ASSERT_EQ(activation->height,102u);
+    BlockAssembler assembler(&f.f.db);WireOrchardAssembler(assembler,f.f);
+    const auto second=assembler.CreateOrchardBlock(OrchardMiningPayout);ASSERT_TRUE(second);
+    auto* successor=connect(*second);ASSERT_EQ(successor->height,103u);
+    std::string error;
+    ASSERT_TRUE(f.f.service->InvalidateBlock(activation->hash,error))<<error;
+    ASSERT_TRUE(f.f.service->ReconsiderBlock(activation->hash,error))<<error;
+    ASSERT_EQ(f.f.service->GetActiveTip(),f.parent);
+
+    // Model the scheduler publishing the retained successor's HAVE_DATA bit
+    // while the selected H101 parent proof is prepared outside the lock.
+    // Body arrival does not change the operator-decision generation.
+    const auto ready=f.f.db.getHeaderMetadata(successor->hash);ASSERT_TRUE(ready.ok());
+    auto pending=*ready;pending.status_flags &= ~BLOCK_HAVE_DATA;
+    pending.data_size=0;
+    ASSERT_EQ(f.f.db.putHeaderMetadata(f.f.token,successor->hash,pending),Status::Ok);
+    successor->status=pending.status_flags;
+    successor->data_size=0;
+    auto plan=ShieldedStateStartupTestAccess::CaptureActivationPlan(*f.f.service);
+    ASSERT_EQ(f.f.service->GetActiveTip(),f.parent);
+    ASSERT_EQ(f.f.db.putHeaderMetadata(f.f.token,successor->hash,*ready),Status::Ok);
+    successor->status=ready->status_flags;
+    successor->data_size=ready->data_size;
+    ASSERT_TRUE(ShieldedStateStartupTestAccess::CompleteActivationPlan(*f.f.service,plan));
+    ShieldedStateStartupTestAccess::ApplyActivationPlan(*f.f.service,plan);
+    EXPECT_EQ(f.f.service->GetActiveTip(),activation);
+    EXPECT_EQ(activation->status&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD),0u);
+    EXPECT_EQ(successor->status&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD),0u);
+    EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*f.f.service));
+}
 TEST(OrchardParentPlan, ForwardPrefixStillRefusesAStaleOperatorGeneration) {
     CanonicalPoolFixture f(true);const auto [nodes,notices]=PrepareFullForwardBacklog(f);
     auto plan=ShieldedStateStartupTestAccess::CaptureActivationPlan(*f.f.service);
