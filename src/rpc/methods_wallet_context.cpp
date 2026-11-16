@@ -7795,6 +7795,10 @@ din::Json rpc_context_wallet_generateqrcode(const ExecutionContext& ctx, const d
 // account 0. Both run while the fresh wallet is still unenrolled and
 // unlocked, the only state in which a v3 node lets it issue addresses. A
 // failure here never undoes creation; it is reported for the client.
+// Known limitation (kept deliberately): P2MR keys need a loaded PQ master,
+// which an unencrypted new wallet does not have, and an encrypted one is
+// skipped below; so today this reports p2mr_error and Qt shows "Created
+// after setup". On a v3 node the Orchard receiver is skipped as well.
 static void AddCreationReceiveAddresses(const ExecutionContext& ctx, din::Json& result) {
     if (result.isMember("encrypted") && result["encrypted"].asBool()) {
         result["p2mr_error"] = "wallet encrypted at creation; derive after unlock";
