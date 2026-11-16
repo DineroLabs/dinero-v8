@@ -21,6 +21,7 @@
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/csn_replay_data.h"
 #include "daemon/services/chainstate_service.h"
+#include "daemon/runtime_replay_cancellation.h"
 #include "consensus/candidate_ancestry.h"
 #include "daemon/runtime_reorg_readmission.h"
 #include "daemon/utreexo_tx_reader.h"
@@ -8040,6 +8041,7 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
             // Retains hashes only; full bodies are read/validated one at a time.
             if(first.context.height>1000000)return Status::Invalid;
             for(uint32_t remaining=first.context.height;remaining;--remaining) {
+                RuntimeReplayCancellationScope::ThrowIfCancelled();
                 const auto header=chain_db_->getHeader(expected);
                 const auto height=chain_db_->getBlockHeight(expected);
                 if(!header.ok() || !height.ok() || *height<0 || uint32_t(*height)!=remaining-1 ||
@@ -8085,6 +8087,7 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
             // entries still fill the unchanged actor workset. Never catch or
             // relax that capacity guard as an acquisition retry.
             for(uint32_t height=0;height<ancestry.size();++height){
+                RuntimeReplayCancellationScope::ThrowIfCancelled();
                 const auto body=read_body(height);
                 if(!body){if(++missing==1)break;continue;}
                 const auto size=body->Serialize().size();
@@ -8097,6 +8100,7 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
         // whose forest clone made this replay superlinear in chain length.
         assumeutxo::AssumeUtxoReplayEngine replay(consensus::ReplayFailurePolicy::RetireOwner);
         for(uint32_t height=0;height<ancestry.size();++height) {
+                RuntimeReplayCancellationScope::ThrowIfCancelled();
             const auto owned=read_body(height);if(!owned){body_data_pending=true;return Status::NotFound;}
             std::string error;
             if(height==0 ? !replay.SeedGenesis(*owned,error) :

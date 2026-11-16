@@ -1,5 +1,6 @@
 #pragma once
 #include "daemon/services/assumeutxo_replay.h"
+#include "daemon/runtime_replay_cancellation.h"
 #include "wallet/runtime_origin_projection.h"
 #include "wallet/runtime_index_delivery.h"
 #include "consensus/subsidy.h"
@@ -310,6 +311,18 @@ static void ServiceOriginCaptureChecks(const std::string& fixture_base, bool sig
     CHECK(observe.reads==2 && observe.unlocked);
     const auto capture=service.getRuntimeWalletOrigin(wallet,session);
     CHECK(capture.ok());const auto& projected=**capture;
+    {
+        // Shutdown cancellation: a worker-installed scope stops the origin
+        // replay at an in-loop check (the second one), not merely on entry, and
+        // no projection is returned. Without a scope the capture is unchanged.
+        unsigned checks=0;
+        {
+            const RuntimeReplayCancellationScope cancel([&]{return ++checks>=2;});
+            CHECK(!service.getRuntimeWalletOrigin(wallet,session).ok());
+        }
+        CHECK(checks==2);
+        CHECK(service.getRuntimeWalletOrigin(wallet,session).ok());
+    }
     CHECK(projected.OriginHeight()==3 && projected.OriginHash()==parent.GetHash());
     CHECK(projected.FirstCursor()==(*service.getRuntimeDeliveryPage({},1))->events.front().cursor);
     CHECK(projected.Coins().size()==1 && projected.Transactions().size()==1);
