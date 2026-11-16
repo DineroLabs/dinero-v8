@@ -210,6 +210,7 @@ din::Json rpc_context_wallet_getstatus(const ExecutionContext& ctx, const din::J
         try {
             if (!RefuseStaleLegacyWalletBalance(ctx, wallet_service, result)) {
                 bool transparent_only = false;
+                bool native_v3 = false;
                 {
                     auto lease = wallet.AcquireDatabaseLease();
                     if (lease->WalletName() != selected_status_wallet ||
@@ -217,8 +218,12 @@ din::Json rpc_context_wallet_getstatus(const ExecutionContext& ctx, const din::J
                         return RefuseChangedStatusWallet();
                     transparent_only = lease->LegacyTransparentState() ==
                         dinero::WalletManager::LegacyTransparentState::Complete;
+                    // #939: a native-complete v3 wallet's spend capability is
+                    // certified by the same getbalance read (own send scope).
+                    native_v3 = lease->NativeV3TransparentState() ==
+                        dinero::WalletManager::NativeV3State::Complete;
                 }
-                if (transparent_only) {
+                if (transparent_only || native_v3) {
                     transparent_status = true;
                     // The v3 spend capability and reservation-aware amount are
                     // certified by the same selected-tip read as getbalance.
@@ -247,7 +252,8 @@ din::Json rpc_context_wallet_getstatus(const ExecutionContext& ctx, const din::J
                         // explicit send certificate before exposing spendable.
                         const bool send_ready = current.isMember("send_ready") &&
                             current["send_ready"].asBool() &&
-                            current["send_scope"].asString() == "transparent_recovered_v3";
+                            current["send_scope"].asString() ==
+                                (native_v3 ? "transparent_native_v3" : "transparent_recovered_v3");
                         result["spendable_balance"] = send_ready
                             ? current["spendable"] : din::Json(Json::nullValue);
                         result["total_balance"] = current["total"];
@@ -261,12 +267,17 @@ din::Json rpc_context_wallet_getstatus(const ExecutionContext& ctx, const din::J
                         result["confidential_balance"] = din::Json(Json::nullValue);
                         result["total_with_confidential"] = din::Json(Json::nullValue);
                         result["balance_available"] = true;
-                        result["wallet_scope"] = "legacy_transparent_only";
-                        result["whole_wallet_ready"] = false;
+                        if (!native_v3) {
+                            result["wallet_scope"] = "legacy_transparent_only";
+                            result["whole_wallet_ready"] = false;
+                        }
                         result["send_ready"] = send_ready;
                         if (!send_ready)
-                            result["send_unavailable_reason"] =
-                                "Transparent wallet send source is not ready";
+                            result["send_unavailable_reason"] = current.isMember("send_unavailable_reason")
+                                ? current["send_unavailable_reason"]
+                                : din::Json("Transparent wallet send source is not ready");
+                        if (!send_ready && current.isMember("send_unavailable_code"))
+                            result["send_unavailable_code"] = current["send_unavailable_code"];
                         for (const char* key : {"wallet_scope", "balance_scope",
                                                 "whole_wallet_ready"}) {
                             if (current.isMember(key)) result[key] = current[key];

@@ -7779,8 +7779,10 @@ SignResult ChainstateService::signAndStageWalletPayment(WalletManager& wallet,
          if(!wallet.SoleDatabaseLeaseHeld()||!lease->Database()||lease->Session()!=identity.session)
              throw std::runtime_error("Payment wallet source binding changed");
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+         // Either typed v3 class (#939): a native-complete wallet uses the
+         // same receipt-fenced owner; the signer refuses Orchard accounts.
          recovered_v3=index->IsFullArchiveV3MetadataOnly()&&wallet.getUTXOIndex()==nullptr&&
-             lease->LegacyTransparentState()==WalletManager::LegacyTransparentState::Complete;
+             lease->TypedTransparentState()==WalletManager::LegacyTransparentState::Complete;
 #endif
          if(!recovered_v3&&wallet.getUTXOIndex()!=index)
              throw std::runtime_error("Payment wallet source binding changed");}
@@ -7815,7 +7817,7 @@ SignResult ChainstateService::signAndStageWalletPayment(WalletManager& wallet,
                 storage::RequireFullOrchardStorage(*chain_db_);
                 auto lease=wallet.AcquireDatabaseLease();
                 if(lease->Session()!=identity.session||lease->WalletName()!=identity.name||
-                   lease->LegacyTransparentState()!=WalletManager::LegacyTransparentState::Complete||
+                   lease->TypedTransparentState()!=WalletManager::LegacyTransparentState::Complete||
                    wallet.getUTXOIndex()!=nullptr)
                     throw std::runtime_error("Recovered payment wallet owner changed");
                 lease->RequireLegacyTransparentFinancialReady();
