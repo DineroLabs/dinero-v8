@@ -529,7 +529,7 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
     }
     {
         const auto autonomy = dinero::p2p::EvaluateBootstrapAutonomy(
-            connected_community_outbound, 0);
+            connected_community_outbound);
         dinero::p2p::PeerGovernorConfig governor_config;
         governor_config.max_configured_seed_hot = autonomy.max_bootstrap_hot;
         for (auto& candidate : governor_candidates) {
@@ -848,7 +848,7 @@ void P2PService::MaybeRunDynamicP2PActiveChurn(std::chrono::steady_clock::time_p
     }
 
     const auto autonomy = dinero::p2p::EvaluateBootstrapAutonomy(
-        connected_community_outbound, 0);
+        connected_community_outbound);
     dinero::p2p::PeerGovernorConfig governor_config;
     governor_config.max_configured_seed_hot = autonomy.max_bootstrap_hot;
     std::unordered_set<std::string> protected_anchors;
