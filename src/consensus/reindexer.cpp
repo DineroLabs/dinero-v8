@@ -396,14 +396,19 @@ uint32_t Fnv1aChecksum(const uint8_t* data, size_t len) {
 namespace reindex_detail {
 
 bool CheckReindexHeaderWork(const BlockHeader& header, uint64_t height,
-                             bool use_assumevalid) {
+                             bool use_assumevalid, uint32_t expected_bits) {
     if (use_assumevalid && height <= 100000) return true;
-    // Live header admission and block connect validate hash <= the encoded
-    // target but do not impose CheckDifficultyBits' fixed MAX_BITS floor.
-    // Historical ASERT targets legitimately exceed that floor (H100001 is
-    // 0x1e008001). Reindex must use the same work rule or it rejects the
-    // canonical mainnet chain at its first post-assumevalid block.
-    return CheckProofOfWork(header, /*require_standard=*/false);
+    // Retain the original policy for other networks and for mainnet blocks
+    // below the assumevalid boundary when the caller requests full checks.
+    if (dinero::Params().name != "mainnet" || height <= 100000) {
+        return CheckProofOfWork(header, /*require_standard=*/true) &&
+               CheckDifficultyBits(header.difficulty);
+    }
+    // Mainnet's historical ASERT targets exceed CheckDifficultyBits' fixed
+    // MAX_BITS floor (H100001 is 0x1e008001). Compare against the exact
+    // contextual target instead, using the same calculation as live headers.
+    if (!CheckProofOfWork(header, /*require_standard=*/false)) return false;
+    return expected_bits != 0 && header.difficulty == expected_bits;
 }
 
 StatusOr<std::vector<DiskBlockRecord>> ReadDiskBlocks(
@@ -2265,10 +2270,20 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
                 return Status::Invalid;
             }
         }
-    } else if (!reindex_detail::CheckReindexHeaderWork(
-                   block.header, height, config_.use_assumevalid)) {
-        g_logger.error("Block at height " + std::to_string(height) + " failed PoW validation");
-        return Status::Invalid;
+    } else {
+        uint32_t expected_bits = 0;
+        if (Params().name == "mainnet" && height > 100000) {
+            if (height > INT32_MAX) return Status::Invalid;
+            expected_bits = GetNextWorkRequiredWithChainDB(
+                static_cast<int32_t>(height), static_cast<int64_t>(block.header.timestamp),
+                GetConsensusForNetwork(dinero::Params()), chain_db_);
+        }
+        if (!reindex_detail::CheckReindexHeaderWork(
+                block.header, height, config_.use_assumevalid, expected_bits)) {
+            g_logger.error("Block at height " + std::to_string(height) +
+                           " failed PoW or difficulty-bits validation");
+            return Status::Invalid;
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════

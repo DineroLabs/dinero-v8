@@ -29,10 +29,13 @@ namespace reindex_detail {
 
 // The mainnet Step 5 header-work gate used by BlockReindexer::processBlock.
 // `assumevalid` skips historical checks through height 100,000, matching the
-// existing reindex contract. Past that boundary, the block's hash must meet
-// its encoded target under the same rule as live header admission.
+// existing reindex contract. Beyond that boundary, mainnet blocks must meet
+// their encoded target and the context-derived expected bits supplied by the
+// caller (zero means unavailable). Other networks and explicit full-work
+// checks below the boundary keep the original standard-work policy; the
+// isolated regtest PoW profile has its own contextual gate.
 bool CheckReindexHeaderWork(const BlockHeader& header, uint64_t height,
-                             bool use_assumevalid);
+                             bool use_assumevalid, uint32_t expected_bits = 0);
 
 // One checksum-checked frame recovered from blk*.dat. Header linkage is used
 // for chain selection; body bytes remain exact until the selected height
