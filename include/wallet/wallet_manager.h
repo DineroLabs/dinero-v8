@@ -344,7 +344,8 @@ public:
     // full-archive v3 index. A separate column from the legacy class marker,
     // which a native wallet never writes (RequireOrchardWalletReady).
     enum class NativeV3State { Absent, Pending, Complete };
-    // Receive pool pre-derived at native enrollment: Taproot external 0..N-1.
+    // Pools pre-derived at native enrollment: Taproot external (receive) and
+    // internal (change) 0..N-1, both sealed by the enrollment coverage.
     static constexpr int kNativeV3ReceivePool = 20;
     class DatabaseLease {
     public:

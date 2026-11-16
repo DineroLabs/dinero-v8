@@ -4008,21 +4008,22 @@ std::string WalletManager::DatabaseLease::BeginNativeTransparentMigrationV3(
           if (std::all_of(id.begin(), id.end(), [](auto byte) { return byte == 0; }) ||
               sqlite3_step(old_id.stmt) != SQLITE_DONE)
               throw std::runtime_error("V3 native wallet delivery identity malformed"); }
-        // Receive pool: the same issued rows (addresses, derivation path and
-        // watched script) that getNewAddress writes, for Taproot external
-        // 0..N-1. One coverage replay then proves every pooled script.
-        {
+        // Receive and change pools: the same issued rows (addresses,
+        // derivation path and watched script) that issuance writes, for
+        // Taproot external and internal (change) 0..N-1. One coverage replay
+        // then proves every pooled script, so a send never derives change.
+        for (const int chain : {0, 1}) {
             LegacyMigrationStatement next(db_,
-                "SELECT COALESCE(MAX(idx),-1)+1 FROM addresses WHERE account=0 AND change=0");
-            if (sqlite3_step(next.stmt) != SQLITE_ROW ||
+                "SELECT COALESCE(MAX(idx),-1)+1 FROM addresses WHERE account=0 AND change=?");
+            if (sqlite3_bind_int(next.stmt, 1, chain) != SQLITE_OK || sqlite3_step(next.stmt) != SQLITE_ROW ||
                 sqlite3_column_type(next.stmt, 0) != SQLITE_INTEGER)
-                throw std::runtime_error("V3 native wallet receive index unavailable");
+                throw std::runtime_error("V3 native wallet pool index unavailable");
             const auto first = sqlite3_column_int64(next.stmt, 0);
             if (first < 0 || first > INT_MAX || sqlite3_step(next.stmt) != SQLITE_DONE)
-                throw std::runtime_error("V3 native wallet receive index invalid");
+                throw std::runtime_error("V3 native wallet pool index invalid");
             for (int index = int(first); index < WalletManager::kNativeV3ReceivePool; ++index) {
-                const auto row = DeriveBip86Row(owner_.master_seed_, 0, index, owner_.logger_);
-                PersistIssuedAddress(db_, 0, index, row.address, "", "p2tr", row.script_hex,
+                const auto row = DeriveBip86Row(owner_.master_seed_, chain, index, owner_.logger_);
+                PersistIssuedAddress(db_, chain, index, row.address, "", "p2tr", row.script_hex,
                     row.script, row.path, row.key, row.internal, row.output);
             }
         }
