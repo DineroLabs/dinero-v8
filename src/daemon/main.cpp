@@ -5,6 +5,7 @@
 // Dinero Daemon - Clean Service Architecture
 // Week 1 Migration: Using DaemonApp with dependency injection
 
+#include "daemon/prebase_marker_refusal.h"
 #include "daemon/regtest_pow_profile.h"
 #include "daemon/daemon_app.h"
 #include "common/logger.h"  // issue #224: requestLogReopen() for SIGHUP
@@ -182,9 +183,8 @@ int RunOfflineWalletIndexV3Upgrade(const dinero::daemon::DatadirGuard& guard,
         dinero::storage::RequireFullOrchardStorage(chain);
         if (dinero::storage::ReadOrchardSnapshotBase(chain))
             throw std::runtime_error("Wallet index v3 upgrade refuses a snapshot source");
-        const auto prebase = chain.getPreBaseCoinSetBase();
-        if (prebase.status() != dinero::Status::NotFound)
-            throw std::runtime_error("Wallet index v3 upgrade refuses an imported pre-base source");
+        if (const auto refusal = dinero::PreBaseMarkerRefusal(chain.getPreBaseCoinSetBase(), "upgrade"))
+            throw std::runtime_error(*refusal);
         const auto prune_height = chain.getPruneHeight();
         if (!prune_height.ok() || prune_height.value() != 0)
             throw std::runtime_error("Wallet index v3 upgrade requires unpruned block storage");
