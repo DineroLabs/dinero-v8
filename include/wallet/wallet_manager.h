@@ -193,16 +193,26 @@ public:
     [[nodiscard]] bool LegacyRecoveryRequiresFullArchive(uint64_t session) const;
 // A full-archive v3 node has not yet enrolled this wallet, and enrollment
     // needs the wallet's seed: the wallet is locked. Only the user can clear it.
-    // Interim (#939): a wallet with an Orchard owner (created or restored by
-    // 8.2.x) has no v3 delivery route yet. Say so instead of "catching up".
+    // #939: a wallet with an Orchard owner that the native v3 route cannot
+    // serve (DatabaseLease::NativeV3Enrollable). Say so instead of "catching up".
     static constexpr const char* kNativeWalletUnsupportedOnV3 =
         "This wallet was created or restored by Dinero 8.2 and this node's wallet index (v3) "
         "cannot track it yet. Your funds are safe on-chain: use its seed phrase in the phone app "
         "or on another node until the next update.";
     static constexpr const char* kWalletCreationUnsupportedOnV3 =
-        "Creating or restoring a wallet is not supported on this node yet (wallet index v3). "
-        "Existing wallets keep working; create or restore it in the phone app or on another node "
-        "until the next update.";
+        "Restoring a wallet from a seed phrase is not supported on this node yet (wallet index v3). "
+        "Existing and newly created wallets keep working; restore it in the phone app or on another "
+        "node until the next update.";
+    // #939 phase 1: a native wallet on v3 receives on its pre-derived pool;
+    // issuing a new script after enrollment would invalidate its receipts.
+    static constexpr const char* kNativeWalletAddressUnavailableOnV3 =
+        "New addresses for this wallet are not available on this node yet (wallet index v3). "
+        "Use one of the wallet's existing receive addresses.";
+    static constexpr const char* kNativeWalletSendUnavailableOnV3 =
+        "Sending from this wallet is not available on this node yet (wallet index v3). "
+        "Your funds are safe; use the seed phrase in the phone app or on another node to send.";
+    static constexpr const char* kNativeWalletShieldedUnavailableOnV3 =
+        "Shielded (Orchard) wallet state is not available on this node yet (wallet index v3).";
     static constexpr const char* kWalletUnlockRequiredForV3Enrollment =
         "Wallet is locked: unlock it once so this node can finish setting it up. "
         "Addresses and balance appear when setup completes.";
@@ -330,6 +340,12 @@ public:
         std::array<uint8_t, 64> bytes_{};
     };
     enum class LegacyTransparentState { Absent, Pending, Complete };
+    // #939: the durable class of a NATIVE wallet (Orchard owner) enrolled on a
+    // full-archive v3 index. A separate column from the legacy class marker,
+    // which a native wallet never writes (RequireOrchardWalletReady).
+    enum class NativeV3State { Absent, Pending, Complete };
+    // Receive pool pre-derived at native enrollment: Taproot external 0..N-1.
+    static constexpr int kNativeV3ReceivePool = 20;
     class DatabaseLease {
     public:
         ~DatabaseLease() noexcept;
@@ -374,6 +390,26 @@ public:
         // wallet's unlocked seed and complete address/import inventory under
         // one durable transaction. An existing nonzero delivery ID is kept.
         [[nodiscard]] std::string BeginLegacyTransparentMigrationV3(
+            const dinero::UTXOIndex& metadata_index, uint64_t expected_session);
+        // #939 native class column. An absent column is Absent; NULL or an
+        // unknown value in a present column is corruption.
+        [[nodiscard]] WalletManager::NativeV3State NativeV3TransparentState() const;
+        // Enrollment state of whichever typed transparent v3 delivery class
+        // this wallet belongs to (legacy marker, else native column). Throws
+        // if both classes are marked. Use it wherever the question is "does
+        // typed v3 delivery own this wallet", not "is this a legacy wallet".
+        [[nodiscard]] WalletManager::LegacyTransparentState TypedTransparentState() const;
+        // Static eligibility for the native v3 route: no legacy class marker,
+        // an Orchard owner, an Orchard account catalog (the route rechecks its
+        // ownership inventory) and an existing nonzero delivery identity (the
+        // sealed birth and catalog are bound to it). Read-only.
+        [[nodiscard]] bool NativeV3Enrollable() const;
+        // Explicit full-archive v3 enrollment of a NATIVE wallet (Orchard
+        // owner). One durable transaction authenticates the unlocked seed and
+        // inventory, pre-derives the Taproot receive pool as ordinary issued
+        // rows, keeps the existing delivery ID and marks native Pending. It
+        // never writes the legacy class column.
+        [[nodiscard]] std::string BeginNativeTransparentMigrationV3(
             const dinero::UTXOIndex& metadata_index, uint64_t expected_session);
         // Financial reads/sends refuse pending migration, and refuse the
         // brief complete-before-height-publication window.
