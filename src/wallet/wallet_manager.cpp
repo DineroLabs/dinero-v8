@@ -370,6 +370,18 @@ void WalletManager::MarkFullArchiveV2LegacySource() {
     full_archive_v2_legacy_source_ = true;
 }
 
+bool WalletManager::NoteLegacyRecoveryRequiresFullArchive(uint64_t session) {
+    std::lock_guard<std::recursive_mutex> lock(database_lifecycle_mutex_);
+    if (legacy_full_archive_refused_session_ == session) return false;
+    legacy_full_archive_refused_session_ = session;
+    return true;
+}
+
+bool WalletManager::LegacyRecoveryRequiresFullArchive(uint64_t session) const {
+    std::lock_guard<std::recursive_mutex> lock(database_lifecycle_mutex_);
+    return legacy_full_archive_refused_session_ == session;
+}
+
 bool WalletManager::LegacyRescansDisabledForFullArchiveV3() const {
     std::lock_guard<std::recursive_mutex> lock(database_lifecycle_mutex_);
     return full_archive_v3_legacy_rescans_disabled_;
