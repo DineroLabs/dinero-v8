@@ -8,6 +8,9 @@ struct OrchardParentCatalogTestAccess {
     static auto Roots(const PreparedOrchardCatalog& p){return std::pair{p.transactions_,p.legacy_};}
     static auto Create(ChainDB& db,const ChainWriteToken& token,const OrchardParentReplay& replay,
         const OrchardHistoryCapture& history){return PreparedOrchardCatalog::Create(db,token,replay,history);}
+    static auto CreateBatched(ChainDB& db,const ChainWriteToken& token,const OrchardParentReplay& replay,
+        const OrchardHistoryCapture& history,size_t limit){return PreparedOrchardCatalog::Create(db,token,replay,history,limit);}
+    static std::pair<size_t,size_t> Batches(const PreparedOrchardCatalog& p){return {p.unsynced_batches_,p.synced_batches_};}
 };
 namespace {
 void CatalogReplay(OrchardParentReplay& replay,OrchardHistoryCapture& history,const std::vector<Block>& blocks) {
@@ -71,6 +74,23 @@ TEST(OrchardParentCatalog, CompletedServiceOwnerMatchesHistoryLegacyBoundaryAndR
     storage::catalog::Tree tree(storage::catalog::Kind::Transactions,[&](const uint256& id){auto s=f.db.getOrchardCatalogNode(id);if(!s.ok())throw std::runtime_error("missing test node");return *s;});
     for(const auto& block:f.blocks)for(const auto& tx:block.vtx)EXPECT_TRUE(tree.Find(roots.first,storage::catalog::TransactionKey(tx.GetTxid())));
     auto again=f.service.PrepareSelectedOrchardParent();ASSERT_TRUE(again);EXPECT_EQ(OrchardParentCatalogTestAccess::Roots(again->Catalog()),roots);f.CheckUnpublished();
+}
+TEST(OrchardParentCatalog, OnlyTheFinalCatalogBatchSyncsTheWal) {
+    // Many small batches: only the last write syncs the WAL; the result and its
+    // durable reopen are identical to the production one-sync-per-batch roots.
+    OwnedSelectedParentFixture f(300);
+    OrchardParentReplay replay({f.tip.height,f.tip.hash,ChainworkFromHex(f.tip.chainwork)},parent_replay_limits);
+    OrchardHistoryCapture history(f.tip.height,f.tip.hash);CatalogReplay(replay,history,f.blocks);
+    auto small=OrchardParentCatalogTestAccess::CreateBatched(f.db,f.token,replay,history,7);ASSERT_TRUE(small);
+    const auto [unsynced,synced]=OrchardParentCatalogTestAccess::Batches(*small);
+    EXPECT_GT(unsynced,10u);EXPECT_EQ(synced,1u);
+    const auto roots=OrchardParentCatalogTestAccess::Roots(*small);small.reset();
+    auto production=OrchardParentCatalogTestAccess::Create(f.db,f.token,replay,history);ASSERT_TRUE(production);
+    EXPECT_EQ(OrchardParentCatalogTestAccess::Roots(*production),roots);
+    EXPECT_EQ(OrchardParentCatalogTestAccess::Batches(*production).second,1u);production.reset();
+    f.CheckUnpublished();f.db.close();ASSERT_EQ(f.db.init(f.path),Status::Ok);
+    storage::catalog::Tree tree(storage::catalog::Kind::Transactions,[&](const uint256& id){auto s=f.db.getOrchardCatalogNode(id);if(!s.ok())throw std::runtime_error("missing test node");return *s;});
+    for(const auto& block:f.blocks)for(const auto& tx:block.vtx)EXPECT_TRUE(tree.Find(roots.first,storage::catalog::TransactionKey(tx.GetTxid())));
 }
 TEST(OrchardParentCatalog, IncompleteOwnerDeniedHistoryAndUnavailableStorageRefuse) {
     OwnedSelectedParentFixture f;OrchardParentReplay replay({f.tip.height,f.tip.hash,ChainworkFromHex(f.tip.chainwork)},parent_replay_limits);
