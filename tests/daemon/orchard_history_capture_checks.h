@@ -20,6 +20,13 @@ struct OrchardBranchCaptureTestAccess {
     static void Record(OrchardBranchReplay& replay,const TxId& id) {
         replay.RecordTransactions(std::span<const TxId>(&id,1));
     }
+    static void Reinitialize(OrchardBranchReplay& replay,const OrchardHistoryCapture& history,size_t chunk) {
+        replay.catalog_batches_=0;
+        replay.InitializeCatalog([&](const auto& visitor){history.ForEachTransaction(visitor);},chunk);
+    }
+    static size_t CatalogBatches(const OrchardBranchReplay& replay) {return replay.catalog_batches_;}
+    static const storage::catalog::State& Catalog(const OrchardBranchReplay& replay) {return *replay.catalog_;}
+    static storage::catalog::Tree::Read Read(const OrchardBranchReplay& replay) {return replay.CatalogRead();}
 };
 namespace {
 void CaptureHeaders(OrchardHistoryCapture& capture,const std::vector<Block>& blocks) {
@@ -163,6 +170,38 @@ TEST(OrchardHistoryCapture, FullBranchUsesCapturedHistoryAndRejectsHistoricalDup
     // The branch-local path also preserves uniqueness independently of history.
     OrchardBranchCaptureTestAccess::Record(duplicate,f.first->Transactions().front().GetTxid());
     EXPECT_THROW(OrchardBranchCaptureTestAccess::Record(duplicate,f.first->Transactions().front().GetTxid()),std::runtime_error);
+}
+TEST(OrchardHistoryCapture, ChunkedInitialCatalogMatchesPerItemCatalog) {
+    // Enable the catalog before the fixture builds and proves its parent:
+    // a completed parent replay refuses use under a changed profile.
+    struct RestoreParams { ChainParams saved;~RestoreParams(){MutableParams()=saved;} } restore{Params()};
+    MutableParams().orchard_catalog_commitment_activation_height=102;
+    ProofHandoffFixture f;OrchardHistoryCapture capture(f.parent->height,f.parent->hash);
+    CaptureHeaders(capture,f.f.blocks);CaptureBodies(capture,f.f.blocks);
+    const OrchardParentReplay::Target target{103,f.second->Header().GetHash(),*f.f.db.getBlockWork(f.second->Header().GetHash())};
+    // The per-item reference (chunk 1) is the pre-batching behavior.
+    OrchardBranchReplay reference(*f.replay,capture,target),chunked(*f.replay,capture,target),production(*f.replay,capture,target);
+    using Access=OrchardBranchCaptureTestAccess;
+    Access::Reinitialize(reference,capture,1);Access::Reinitialize(chunked,capture,7);
+    const auto& expected=Access::Catalog(reference);
+    const uint64_t coins=f.replay->ProvenState().ProvenUtxos().size();
+    ASSERT_GT(expected.transaction_count,7u);ASSERT_GT(coins,7u);ASSERT_GT(expected.legacy_count,0u);
+    EXPECT_EQ(Access::CatalogBatches(reference),expected.transaction_count+coins);
+    for(const auto* replay:{&chunked,&production})
+        EXPECT_EQ(Access::Catalog(*replay).Encode(),expected.Encode());
+    // A chunk boundary inside each loop: ceil(n/7) transactions per loop.
+    EXPECT_EQ(Access::CatalogBatches(chunked),(expected.transaction_count+6)/7+(coins+6)/7);
+    // The constructor's production chunk commits each loop once for this fixture.
+    EXPECT_EQ(Access::CatalogBatches(production),2u);
+    // Every enumerated id and coin is readable from the chunked spool's nodes.
+    namespace c=storage::catalog;
+    const c::Tree transactions(c::Kind::Transactions,Access::Read(chunked)),legacy(c::Kind::LegacyCoins,Access::Read(chunked));
+    uint64_t found=0;
+    capture.ForEachTransaction([&](const TxId& id){found+=transactions.Find(expected.transactions,c::TransactionKey(id)).has_value();return true;});
+    EXPECT_EQ(found,expected.transaction_count);found=0;
+    for(const auto& [point,coin]:f.replay->ProvenState().ProvenUtxos())
+        if(coin.height<expected.leaf_activation)found+=legacy.Find(expected.legacy,c::LegacyKey(c::OutpointBytes(point))).has_value();
+    EXPECT_EQ(found,expected.legacy_count);
 }
 TEST(OrchardHistoryCapture, CompleteTransactionTraversalMatchesValidatedBodies) {
     OwnedSelectedParentFixture f;OrchardHistoryCapture capture(f.tip.height,f.tip.hash);
