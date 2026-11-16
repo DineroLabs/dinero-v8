@@ -625,6 +625,81 @@ TEST(WalletV3RecoveryWorker, LockedPendingDoesNotReplayUntilUnlock) {
         WalletManager::LegacyTransparentState::Complete);
 }
 
+// Issue #939: a wallet a full-archive v3 node has not enrolled yet, while
+// locked, was reported as a retryable "catching up". It can only proceed after
+// an unlock, so every balance view must say exactly that.
+TEST(WalletV3RecoveryRoute, LockedUnenrolledWalletReportsUnlockRequired) {
+    CanonicalRecoveryFixture f(true,true);
+    (void)f.PrepareFundedHistoricalWallet();
+    f.DowngradeToPreIdentityTransparentWallet();
+    (void)f.MineToWallet();
+    const auto index_path=f.f.path/"v3-unlock-required-index";
+    { UTXOIndex v2(index_path.string());ASSERT_TRUE(v2.Initialize()); }
+    (void)UpgradeFullArchiveWalletIndexSchemaToV3(index_path);
+    auto metadata=std::make_unique<UTXOIndex>(index_path.string());
+    ASSERT_TRUE(metadata->InitializeFullArchiveV3MetadataOnly());
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        use->Wallet().setUTXOIndex(nullptr);
+        use->Wallet().DisableLegacyRescansForFullArchiveV3();
+    }
+    struct RestoreIndex {
+        ChainstateService& source;
+        std::unique_ptr<UTXOIndex> original;
+        ~RestoreIndex() {
+            auto replacement=ShieldedStateStartupTestAccess::SwapWalletIndexForRpc(
+                source,std::move(original));
+            (void)replacement;
+        }
+    } restore{*f.f.service,ShieldedStateStartupTestAccess::SwapWalletIndexForRpc(
+        *f.f.service,std::move(metadata))};
+    ExecutionContext request;
+    request.daemon=&f.context;
+    request.walletName="canonical-recovery";
+    const auto expect_unlock_required=[&](const char* phase) {
+        const auto balance=rpc_context_wallet_getbalance(request,din::obj());
+        EXPECT_EQ(balance["error_code"].asString(),"wallet_unlock_required")
+            << phase << "\n" << balance.toStyledString();
+        EXPECT_EQ(balance["error"].asString(),WalletManager::kWalletUnlockRequiredForV3Enrollment);
+        EXPECT_FALSE(balance["retryable"].asBool()) << phase;
+        const auto info=rpc_context_wallet_getwalletinfo(request,din::obj());
+        EXPECT_EQ(info["error_code"].asString(),"wallet_unlock_required")
+            << phase << "\n" << info.toStyledString();
+        EXPECT_EQ(info["balance_status"].asString(),"unlock_required") << phase;
+    };
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        use->Wallet().lockWallet();
+        ASSERT_TRUE(use->Wallet().isWalletLocked());
+        ASSERT_EQ(use->Wallet().AcquireDatabaseLease()->LegacyTransparentState(),
+            WalletManager::LegacyTransparentState::Absent);
+    }
+    expect_unlock_required("absent");
+    {
+        // Enrollment begins only with the seed; re-lock once it is Pending.
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        use->Wallet().unlockWallet("canonical-fixture-pass",0);
+        auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+        {
+            auto lease=use->Wallet().AcquireDatabaseLease();
+            ASSERT_FALSE(lease->BeginLegacyTransparentMigrationV3(index->Index(),lease->Session()).empty());
+        }
+        use->Wallet().lockWallet();
+        ASSERT_EQ(use->Wallet().AcquireDatabaseLease()->LegacyTransparentState(),
+            WalletManager::LegacyTransparentState::Pending);
+    }
+    expect_unlock_required("pending");
+    // Once unlocked, the remaining wait is real enrollment work: the ordinary
+    // retryable "catching up" state, not an unlock request.
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        use->Wallet().unlockWallet("canonical-fixture-pass",0);
+    }
+    const auto unlocked=rpc_context_wallet_getbalance(request,din::obj());
+    EXPECT_EQ(unlocked["error_code"].asString(),"wallet_balance_not_current") << unlocked.toStyledString();
+    EXPECT_TRUE(unlocked["retryable"].asBool());
+}
+
 TEST(WalletV3ColdRestart, NamedWalletReceiptsSurviveFreshServiceAndIndexHandles) {
     CanonicalRecoveryFixture f(true,true);
     const auto [historical_amount,historical_total]=f.PrepareFundedHistoricalWallet();

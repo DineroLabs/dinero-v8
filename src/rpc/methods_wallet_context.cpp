@@ -695,8 +695,15 @@ public:
     struct RequiresFullArchive {};
     explicit LegacyBalanceNotCurrent(RequiresFullArchive) : std::runtime_error(
         dinero::WalletManager::kLegacyWalletRequiresFullArchive), requires_full_archive(true) {}
+    // Not a catch-up: a full-archive v3 node cannot enroll this wallet until
+    // the user unlocks it (enrollment needs the seed). Retrying alone never
+    // clears it.
+    struct UnlockRequired {};
+    explicit LegacyBalanceNotCurrent(UnlockRequired) : std::runtime_error(
+        dinero::WalletManager::kWalletUnlockRequiredForV3Enrollment), unlock_required(true) {}
     bool upgrade_required = false;
     bool requires_full_archive = false;
+    bool unlock_required = false;
 };
 
 template <typename Read>
@@ -723,6 +730,17 @@ static auto ReadWithCurrentLegacyTransparentTip(
         state = lease->LegacyTransparentState();
         if (state == dinero::WalletManager::LegacyTransparentState::Absent)
             unenrolled_scan_height = lease->UnenrolledLegacyTransparentScanHeight();
+    }
+    if (state == dinero::WalletManager::LegacyTransparentState::Absent ||
+        state == dinero::WalletManager::LegacyTransparentState::Pending) {
+        // A full-archive v3 node enrolls an Absent/Pending wallet only with its
+        // seed. While the wallet is locked that enrollment is deferred, so say
+        // so instead of "catching up" (issue #939).
+        auto v3_source = ctx.daemon && ctx.daemon->chainstate
+            ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)
+            : nullptr;
+        if (v3_source && v3_source->HasFullArchiveWalletIndexV3() && wallet.isWalletLocked())
+            throw LegacyBalanceNotCurrent(LegacyBalanceNotCurrent::UnlockRequired{});
     }
     if (state == dinero::WalletManager::LegacyTransparentState::Pending)
         throw LegacyBalanceNotCurrent();
@@ -824,8 +842,10 @@ static void MarkLegacyBalanceNotCurrent(din::Json& result,
     result["error"] = error.what();
     result["error_code"] = error.upgrade_required ? "wallet_index_upgrade_required"
                          : error.requires_full_archive ? "wallet_requires_full_archive"
-                                                       : "wallet_balance_not_current";
-    result["retryable"] = !error.upgrade_required && !error.requires_full_archive;
+                         : error.unlock_required ? "wallet_unlock_required"
+                                                 : "wallet_balance_not_current";
+    result["retryable"] = !error.upgrade_required && !error.requires_full_archive &&
+                          !error.unlock_required;
 }
 
 bool RefuseIfLegacyTransparentTipNotCurrent(
@@ -1290,7 +1310,8 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
         if (RefuseAfterLegacyTransparentRead(ctx, wallet_service, result)) return result;
 
     } catch (const LegacyBalanceNotCurrent& e) {
-        result["balance_status"] = e.requires_full_archive ? "requires_full_archive" : "reconciliation_required";
+        result["balance_status"] = e.requires_full_archive ? "requires_full_archive"
+                                 : e.unlock_required ? "unlock_required" : "reconciliation_required";
         MarkLegacyBalanceNotCurrent(result, e);
     } catch (const std::exception& e) {
         result["error"] = std::string("Wallet info query error: ") + e.what();

@@ -188,7 +188,12 @@ public:
     // when another database session (wallet switch or reopen) is active.
     bool NoteLegacyRecoveryRequiresFullArchive(uint64_t session);
     [[nodiscard]] bool LegacyRecoveryRequiresFullArchive(uint64_t session) const;
-    static constexpr const char* kLegacyWalletRequiresFullArchive =
+// A full-archive v3 node has not yet enrolled this wallet, and enrollment
+    // needs the wallet's seed: the wallet is locked. Only the user can clear it.
+    static constexpr const char* kWalletUnlockRequiredForV3Enrollment =
+        "Wallet is locked: unlock it once so this node can finish setting it up. "
+        "Addresses and balance appear when setup completes.";
+        static constexpr const char* kLegacyWalletRequiresFullArchive =
         "This wallet's history predates this node's snapshot base, so it cannot be "
         "recovered on this node. Recover it on a full-archive node (full sync from "
         "genesis without a snapshot); balances shown here may be stale.";

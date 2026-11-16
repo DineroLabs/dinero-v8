@@ -745,6 +745,22 @@ bool rpcMinerRequiresInsecureAck(const QString& helpText) {
   return helpText.contains("--i-know-this-is-insecure", Qt::CaseInsensitive);
 }
 
+// The HTTP dispatcher forwards wallet balance refusals as a bare -32603
+// message, so these exact texts are the client-visible contract (#939).
+const QLatin1String kWalletCatchingUpRefusal(
+    "Legacy transparent wallet is catching up to the selected chain");
+const QLatin1String kWalletUnlockRequiredRefusalPrefix(
+    "Wallet is locked: unlock it once so this node can finish setting it up");
+
+bool isWalletUnlockRequiredRefusal(const QString& message) {
+  return message.startsWith(kWalletUnlockRequiredRefusalPrefix);
+}
+
+// A wallet whose balance will become current (after time, or after an unlock).
+bool isWalletBalancePendingRefusal(const QString& message) {
+  return message == kWalletCatchingUpRefusal || isWalletUnlockRequiredRefusal(message);
+}
+
 bool walletUnlockedFromRpc(const QJsonObject& obj) {
   // Prefer the explicit "unlocked" field when present (canonical source).
   if (obj.contains("unlocked")) {
@@ -6643,8 +6659,10 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
     if (walletSwitchInFlight_ || method != miningRewardsReplyAlias()) return;
     if (result.isArray()) updateMiningRewards(result.toArray());
     else if (result.isObject() &&
-             result.toObject().value("error_code").toString() == QLatin1String("wallet_balance_not_current") &&
-             result.toObject().value("retryable").toBool()) showMiningRewardsWaiting();
+             ((result.toObject().value("error_code").toString() == QLatin1String("wallet_balance_not_current") &&
+               result.toObject().value("retryable").toBool()) ||
+              result.toObject().value("error_code").toString() == QLatin1String("wallet_unlock_required")))
+      showMiningRewardsWaiting();
     else showMiningRewardsUnavailable();
     return;
   }
@@ -8712,8 +8730,7 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
     if (!walletSwitchInFlight_ && method == miningRewardsReplyAlias()) {
       // The HTTP dispatcher normalizes a wallet_balance_not_current result to
       // this JSON-RPC error without forwarding the handler's retryable fields.
-      if (code == -32603 &&
-          message == QLatin1String("Legacy transparent wallet is catching up to the selected chain"))
+      if (code == -32603 && isWalletBalancePendingRefusal(message))
         showMiningRewardsWaiting();
       else showMiningRewardsUnavailable();
     }
@@ -8789,10 +8806,22 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
     return;
   }
 
-  if (method == "wallet.getinfo" && code == -32603 &&
-      message == QLatin1String("Legacy transparent wallet is catching up to the selected chain")) {
+  if (method == "wallet.getinfo" && code == -32603 && isWalletBalancePendingRefusal(message)) {
     // The selected wallet is known, but its balance is not current. The
     // financial-state banner is more useful than a raw RPC exception here.
+    if (isWalletUnlockRequiredRefusal(message)) {
+      // The daemon says the wallet is locked. Never keep showing a stale
+      // "Unlocked" state from an earlier wallet or session (#939).
+      walletUnlocked_ = false;
+      walletRecoveryUnlockNeeded_ = true;
+      if (btnWalletLock_) btnWalletLock_->setText("Locked | Unlock");
+      if (lblConnectionStatus_) {
+        lblConnectionStatus_->setText("Unlock wallet to finish setup");
+        lblConnectionStatus_->setStyleSheet(headerPillStyle());
+        lblConnectionStatus_->setToolTip(message);
+      }
+      updateWalletSwitcherState();
+    }
     showWalletBalanceUnavailable();
     return;
   }
@@ -15190,9 +15219,10 @@ void MainWindow::finishConfirmedWalletSwitchWithoutBalance(const QString& reason
       confirmedWalletOpenName_ != pendingWalletOpenName_) return;
 
   const QString walletName = confirmedWalletOpenName_;
-  const bool unlocked = confirmedWalletOpenUnlocked_;
-  const bool unlockForRecovery = !unlocked &&
-      reason.contains("Legacy transparent wallet is catching up", Qt::CaseInsensitive);
+  // The daemon's unlock-required refusal is authoritative over the open reply.
+  const bool unlocked = confirmedWalletOpenUnlocked_ && !isWalletUnlockRequiredRefusal(reason);
+  const bool unlockForRecovery = isWalletUnlockRequiredRefusal(reason) || (!unlocked &&
+      reason.contains("Legacy transparent wallet is catching up", Qt::CaseInsensitive));
   walletSwitchInFlight_ = false;
   pendingWalletOpenName_.clear();
   confirmedWalletOpenName_.clear();

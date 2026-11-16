@@ -476,6 +476,30 @@ private Q_SLOTS:
                                     .arg(box->sizeHint().height())));
         }
     }
+
+    // Issue #939: a locked, not-yet-enrolled wallet on a full-archive v3 node
+    // is reported with its own text. The window must show it as locked, ask
+    // for an unlock, and never keep a stale "Unlocked" state.
+    void unlockRequiredRefusalShowsLockedWallet() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        auto* rpc = window->findChild<RpcClient*>();
+        QVERIFY(rpc);
+        QVERIFY(bindTestWallet(*window, "Sierra"));
+        window->walletUnlocked_ = true;
+        window->btnWalletLock_->setText("Unlocked | Lock");
+        window->lblErrorMessage_->setVisible(false);
+        Q_EMIT rpc->rpcError("wallet.getinfo", -32603,
+            "Wallet is locked: unlock it once so this node can finish setting it up. "
+            "Addresses and balance appear when setup completes.");
+        QCoreApplication::processEvents();
+        QVERIFY(!window->walletUnlocked_);
+        QVERIFY(window->walletRecoveryUnlockNeeded_);
+        QCOMPARE(window->btnWalletLock_->text(), QString("Locked | Unlock"));
+        // The user sees the unlock request, not a raw RPC failure.
+        QVERIFY(window->lblErrorMessage_->text().contains("Unlock this wallet"));
+        QVERIFY(!window->lblErrorMessage_->text().contains("code: -32603"));
+    }
 };
 QTEST_MAIN(WalletLayoutTest)
 #include "test_wallet_layout.moc"
