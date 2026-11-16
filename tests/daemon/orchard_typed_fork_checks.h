@@ -78,6 +78,10 @@ TEST(OrchardTypedFork, RetainedSuccessorsShareSelectedBoundaryProofBeforeFullBra
     // and height for every old block alone exceeds this bound. The detached
     // canonical audit and all final live/durable checks remain required.
     EXPECT_LT(gets,3*f.f.blocks.size());
+    // The first boundary is committed alone so a queued descendant cannot
+    // change its selected-parent preparation. Its normal extension follows.
+    EXPECT_EQ(f.f.service->GetActiveTip(),a102);
+    f.f.service->ActivateBestChain();
     EXPECT_EQ(f.f.service->GetActiveTip(),a103);
     EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*f.f.service));
     const auto first_stored=ReadRuntimeBlockUnderLock(f.f.db,f.files.get(),a102->hash,102);

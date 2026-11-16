@@ -13106,17 +13106,18 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
     }
 
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
-    // An already validated full selected owner can verify its next Orchard
-    // extension directly. Do not turn a straight backlog into a replacement
-    // branch and replay the pre-activation history for every batch. Binding
-    // one exact child also keeps that proof stable when later bodies arrive;
-    // the full queued candidate remains available for subsequent root passes.
-    // First activation, compact owners and actual replacements retain their
-    // existing independent whole-branch preparation.
+    // A full selected owner can bind its next Orchard block as one exact
+    // extension. This includes the first activation block: a later queued
+    // body must not force whole-branch preparation and hold that valid
+    // boundary behind an unreadable or still-arriving descendant. Once the
+    // boundary commits, subsequent root passes use its selected Orchard state.
+    // Compact owners and actual replacements keep independent whole-branch
+    // preparation.
     if (disconnect_path.empty() && connect_path.size()>1 && active_tip_ &&
         fork_point==active_tip_ && consensus_utxo_set_ && !compact_startup_ &&
         !GetConfig().utreexo_stateless &&
-        consensus::OrchardActiveForHeight(Params(),active_tip_->height)) {
+        (consensus::OrchardActiveForHeight(Params(),active_tip_->height) ||
+         uint64_t(active_tip_->height)+1==Params().orchard_activation_height)) {
         connect_path.resize(1);
         best_candidate=connect_path.front();
     }
