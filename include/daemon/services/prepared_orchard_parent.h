@@ -30,6 +30,8 @@ private:
     friend class ChainstateService;
     struct State;
     explicit PreparedOrchardParent(std::unique_ptr<State> state);
-    const std::unique_ptr<State> state_;
+    // Replaced only by ChainstateService while completing an unexposed
+    // preparation, to adopt already-completed activation-parent material.
+    std::unique_ptr<State> state_;
 };
 }

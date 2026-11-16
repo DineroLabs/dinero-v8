@@ -203,6 +203,43 @@ TEST(OrchardHistoryCapture, ChunkedInitialCatalogMatchesPerItemCatalog) {
         if(coin.height<expected.leaf_activation)found+=legacy.Find(expected.legacy,c::LegacyKey(c::OutpointBytes(point))).has_value();
     EXPECT_EQ(found,expected.legacy_count);
 }
+TEST(OrchardHistoryCapture, LaterBranchAdoptsSharedInitialCatalogWithoutRebuild) {
+    struct RestoreParams { ChainParams saved;~RestoreParams(){MutableParams()=saved;} } restore{Params()};
+    MutableParams().orchard_catalog_commitment_activation_height=102;
+    ProofHandoffFixture f;OrchardHistoryCapture capture(f.parent->height,f.parent->hash);
+    CaptureHeaders(capture,f.f.blocks);CaptureBodies(capture,f.f.blocks);
+    const OrchardParentReplay::Target target{103,f.second->Header().GetHash(),*f.f.db.getBlockWork(f.second->Header().GetHash())};
+    using Access=OrchardBranchCaptureTestAccess;
+    OrchardBranchReplay first(*f.replay,capture,target);
+    const auto initial=first.InitialCatalog();ASSERT_TRUE(initial);
+    EXPECT_GT(Access::CatalogBatches(first),0u);
+    EXPECT_EQ(initial->parent,f.replay.get());EXPECT_EQ(initial->history,&capture);
+    // The later branch binds the shared base: no initial-catalog transaction at all.
+    OrchardBranchReplay second(*f.replay,capture,target,initial);
+    EXPECT_EQ(Access::CatalogBatches(second),0u);EXPECT_EQ(second.InitialCatalog(),initial);
+    EXPECT_EQ(Access::Catalog(second).Encode(),Access::Catalog(first).Encode());
+    // Both branches append the same blocks through their private overlays and
+    // finish with the same proven state and catalog as an unshared reference.
+    for(auto* branch:{&first,&second}) {
+        f.Append(*branch,OrchardBlockCandidate::DecodeExact(f.first->WireBytes()),102);
+        f.Append(*branch,*f.body,103);branch->Finish();
+    }
+    OrchardBranchReplay reference(*f.replay,capture,target);
+    f.Append(reference,OrchardBlockCandidate::DecodeExact(f.first->WireBytes()),102);
+    f.Append(reference,*f.body,103);reference.Finish();
+    for(const auto* branch:{&first,&second}) {
+        EXPECT_EQ(branch->ProvenState(),reference.ProvenState());
+        EXPECT_EQ(branch->ProvenCatalog().Encode(),reference.ProvenCatalog().Encode());
+    }
+    // The shared base is unchanged by either branch's appends.
+    EXPECT_EQ(initial->state.Encode(),Access::Catalog(OrchardBranchReplay(*f.replay,capture,target)).Encode());
+    // A base bound to other owners is never trusted: rebuild instead.
+    OrchardHistoryCapture other(f.parent->height,f.parent->hash);
+    CaptureHeaders(other,f.f.blocks);CaptureBodies(other,f.f.blocks);
+    OrchardBranchReplay foreign(*f.replay,other,target,initial);
+    EXPECT_GT(Access::CatalogBatches(foreign),0u);EXPECT_NE(foreign.InitialCatalog(),initial);
+    EXPECT_EQ(Access::Catalog(foreign).Encode(),initial->state.Encode());
+}
 TEST(OrchardHistoryCapture, CompleteTransactionTraversalMatchesValidatedBodies) {
     OwnedSelectedParentFixture f;OrchardHistoryCapture capture(f.tip.height,f.tip.hash);
     CaptureHeaders(capture,f.blocks);
