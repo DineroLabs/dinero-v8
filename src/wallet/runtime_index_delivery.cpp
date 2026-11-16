@@ -1034,9 +1034,11 @@ struct CoverageOrdinaryPlan {
     std::set<TxOutPoint> existing_coins;
     std::set<std::string> existing_history;
     std::set<std::string> unconfirm_history;
+    std::set<std::string> approved_pre_origin_spends;
 };
 CoverageOrdinaryPlan CoverageOrdinaryRows(sqlite3* db,int wallet_id,const OrdinaryOwnership& scripts,
-        const RuntimeWalletCoverageProjection& source,bool recover_missing_originated=false) {
+        const RuntimeWalletCoverageProjection& source,bool recover_missing_originated=false,
+        bool allow_legacy_spenderless_spent=false,bool allow_proved_pre_origin_spend=false) {
     CoverageOrdinaryPlan plan;int rc;
     Statement coins(db,"SELECT wallet_id,txid,vout,amount,script_pubkey,height,is_coinbase,is_spent,spent_txid,spent_height FROM utxos");
     while((rc=sqlite3_step(coins.value))==SQLITE_ROW) {
@@ -1046,16 +1048,43 @@ CoverageOrdinaryPlan CoverageOrdinaryRows(sqlite3* db,int wallet_id,const Ordina
         const auto script=Unhex(CoverageText(q,4));const auto spent=CoverageInt(q,7);
         const auto amount=CoverageInt(q,3),height=CoverageInt(q,5),coinbase=CoverageInt(q,6);
         if(!scripts.addresses.contains(script)||(spent!=0&&spent!=1))Fail("Coverage ordinary owner or spend flag invalid");
+        const bool missing_spender=sqlite3_column_type(q,8)==SQLITE_NULL;
+        const bool missing_spend_height=sqlite3_column_type(q,9)==SQLITE_NULL;
+        const bool legacy_spenderless=spent&&missing_spender&&missing_spend_height;
+        if(spent&&(missing_spender!=missing_spend_height ||
+                   (legacy_spenderless&&!allow_legacy_spenderless_spent)))
+            Fail("Coverage ordinary spent row has incomplete spender metadata");
         std::string spender;int64_t spend_height=0;
-        if(spent){spender=CoverageText(q,8);spend_height=CoverageInt(q,9);}
+        if(spent&&!legacy_spenderless){spender=CoverageText(q,8);spend_height=CoverageInt(q,9);}
         else if(sqlite3_column_type(q,8)!=SQLITE_NULL||sqlite3_column_type(q,9)!=SQLITE_NULL)
             Fail("Coverage ordinary unspent row has spender metadata");
-        const bool proved=std::any_of(found->second.begin(),found->second.end(),[&](const auto& coin) {
+        const auto matches_creation=[&](const auto& coin) {
             return script==coin.output.scriptPubKey&&amount==int64_t(coin.output.value.GetUna())&&
-                height==coin.height&&coinbase==coin.coinbase&&
-                (spent?(coin.spent&&spender==coin.spent->txid.AsUint256().GetHex()&&spend_height==coin.spent->height):!coin.spent);
-        });
-        if(!proved)Fail("Coverage ordinary row lacks a proved version");
+                height==coin.height&&coinbase==coin.coinbase;
+        };
+        if(legacy_spenderless) {
+            // The old spendUTXO writer only set is_spent. Accept that exact
+            // NULL/NULL form on the full-archive v3 recovery path when the
+            // checked replay proves one unambiguous spending version. The
+            // ordinary writer below then fills both fields from the source.
+            std::optional<std::pair<std::string,int64_t>> proved_spender;
+            for(const auto& coin:found->second) {
+                if(!matches_creation(coin)||!coin.spent)continue;
+                const auto candidate=std::make_pair(coin.spent->txid.AsUint256().GetHex(),
+                    int64_t(coin.spent->height));
+                if(proved_spender&&*proved_spender!=candidate)
+                    Fail("Coverage ordinary legacy spend has ambiguous proved versions");
+                proved_spender=candidate;
+            }
+            if(!proved_spender)Fail("Coverage ordinary legacy spend lacks a proved version");
+        } else {
+            const bool proved=std::any_of(found->second.begin(),found->second.end(),[&](const auto& coin) {
+                return matches_creation(coin)&&
+                    (spent?(coin.spent&&spender==coin.spent->txid.AsUint256().GetHex()&&
+                        spend_height==coin.spent->height):!coin.spent);
+            });
+            if(!proved)Fail("Coverage ordinary row lacks a proved version");
+        }
     }
     if(rc!=SQLITE_DONE)Fail("Coverage ordinary inventory incomplete");
     Statement history(db,"SELECT wallet_id,txid,height,is_coinbase,confirmations FROM transactions");
@@ -1084,15 +1113,31 @@ CoverageOrdinaryPlan CoverageOrdinaryRows(sqlite3* db,int wallet_id,const Ordina
             if(coin!=source.ObservedCoins().end())for(const auto& version:coin->second)
                 spends|=scripts.addresses.contains(version.output.scriptPubKey);
         }
-        if(spends&&!plan.existing_history.contains(id.AsUint256().GetHex())&&
-           !(recover_missing_originated&&activity.height>source.Origin().OriginHeight()))
+        const auto selected=source.Transactions().find(id);
+        const bool selected_spends=selected!=source.Transactions().end() &&
+            std::any_of(activity.inputs.begin(),activity.inputs.end(),[&](const auto& input) {
+                const auto coin=source.Coins().find(input);
+                return coin!=source.Coins().end() &&
+                    scripts.addresses.contains(coin->second.output.scriptPubKey) &&
+                    coin->second.spent && coin->second.spent->txid==id &&
+                    coin->second.spent->height==activity.height;
+            });
+        const bool proved_pre_origin=allow_proved_pre_origin_spend &&
+            activity.height<=source.Origin().OriginHeight() &&
+            selected_spends && selected->second.height==activity.height;
+        const auto recorded_id=id.AsUint256().GetHex();
+        const bool missing=spends&&!plan.existing_history.contains(recorded_id);
+        if(missing&&proved_pre_origin)plan.approved_pre_origin_spends.insert(recorded_id);
+        if(missing&&
+           !(recover_missing_originated&&activity.height>source.Origin().OriginHeight())&&
+           !proved_pre_origin)
             Fail("Coverage originated history unavailable");
     }
     return plan;
 }
 void WriteCoverageOrdinary(sqlite3* db,int wallet_id,const OrdinaryOwnership& scripts,
         const RuntimeWalletCoverageProjection& source,const CoverageOrdinaryPlan& plan,
-        bool recover_missing_originated=false) {
+        bool recover_missing_originated=false,bool allow_proved_pre_origin_spend=false) {
     for(const auto& point:plan.existing_coins)if(!source.Coins().contains(point)) {
         // Only a matched, proved former creation can be removed.
         Statement remove(db,"DELETE FROM utxos WHERE wallet_id=? AND txid=? AND vout=?");
@@ -1139,7 +1184,11 @@ void WriteCoverageOrdinary(sqlite3* db,int wallet_id,const OrdinaryOwnership& sc
                 debit+=value;
                 if(address.empty())address=scripts.addresses.at(found->second.output.scriptPubKey);
             }
-            if(debit && (!recover_missing_originated || activity.height<=source.Origin().OriginHeight()))
+            const bool proved_pre_origin_spend=allow_proved_pre_origin_spend && debit &&
+                activity.height<=source.Origin().OriginHeight() &&
+                plan.approved_pre_origin_spends.contains(id);
+            if(debit && (!recover_missing_originated ||
+                (activity.height<=source.Origin().OriginHeight() && !proved_pre_origin_spend)))
                 Fail("Coverage originated history unavailable");
             for(const auto& output:activity.outputs) {
                 const auto owned=scripts.addresses.find(output.scriptPubKey);if(owned==scripts.addresses.end())continue;
@@ -1148,11 +1197,14 @@ void WriteCoverageOrdinary(sqlite3* db,int wallet_id,const OrdinaryOwnership& sc
             }
             if(!debit&&!credit)continue;
             const auto net=int64_t(credit)-int64_t(debit);
-            Statement add(db,"INSERT INTO transactions(wallet_id,txid,address,amount,confirmations,category,label,time,is_coinbase,height) VALUES(?,?,?,?,0,?,'',?,?,?)");
+            Statement add(db,"INSERT INTO transactions(wallet_id,txid,address,amount,confirmations,category,label,time,is_coinbase,height) VALUES(?,?,?,?,0,?,?,?,?,?)");
             add.Int(1,wallet_id);add.Text(2,id);add.Text(3,address);
             if(sqlite3_bind_double(add.value,4,double(net)/100000000.0)!=SQLITE_OK)Fail("Coverage history bind failed");
+            // `send` is the existing directional category for an owned input;
+            // a recovered row says nothing about recipient, fee or local intent.
             add.Text(5,activity.coinbase?"generate":debit?"send":"receive");
-            add.Int(6,activity.time);add.Int(7,activity.coinbase);add.Int(8,activity.height);add.Done();
+            add.Text(6,proved_pre_origin_spend?"Recovered on-chain spend":"");
+            add.Int(7,activity.time);add.Int(8,activity.coinbase);add.Int(9,activity.height);add.Done();
             if(sqlite3_changes(db)!=1)Fail("Coverage history insertion failed");
         }
     }
@@ -1954,7 +2006,7 @@ void RuntimeOrdinaryDelivery::ReconcileLegacyTransparentCoverageV3(WalletManager
         if(sqlite3_step(pending.value)!=SQLITE_DONE)
             Fail("Coverage v3 ordinary has unresolved local history");
     }
-    const auto plan=CoverageOrdinaryRows(db,wallet.current_wallet_id_,scripts,source,true);
+    const auto plan=CoverageOrdinaryRows(db,wallet.current_wallet_id_,scripts,source,true,true,true);
     if(OrdinaryColumns(db)) {
         Statement q(db,"SELECT runtime_ordinary_receipt,runtime_ordinary_invalid FROM wallet_meta WHERE id=1");
         if(sqlite3_step(q.value)!=SQLITE_ROW)Fail("Coverage v3 ordinary metadata missing");
@@ -1978,7 +2030,7 @@ void RuntimeOrdinaryDelivery::ReconcileLegacyTransparentCoverageV3(WalletManager
         bool wallet_committed=false;
         source_commit([&] {
             if(wallet_committed)Fail("Coverage v3 ordinary source commit already used");
-            WriteCoverageOrdinary(db,wallet.current_wallet_id_,scripts,source,plan,true);
+            WriteCoverageOrdinary(db,wallet.current_wallet_id_,scripts,source,plan,true,true);
             // The sync_meta trigger revokes older receipts. Seal only after
             // the scan height and all ordinary rows are in this transaction.
             Statement scan(db,"UPDATE sync_meta SET last_scanned_height=?,scan_complete=1 WHERE id=1");

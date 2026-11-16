@@ -6210,6 +6210,12 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     add_test(NAME WalletV3RecoveryRoute COMMAND test_assumeutxo_replay
       --gtest_filter=WalletV3RecoveryRoute.LegacyNamedWalletRecoversTypedCoinbaseWithoutV2IndexBinding)
     set_tests_properties(WalletV3RecoveryRoute PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
+    add_test(NAME WalletV3LegacySpentMetadata COMMAND test_assumeutxo_replay
+      --gtest_filter=WalletV3RecoveryRoute.LegacySpentCoinWithoutSpenderRecoversOnlyFromProvedReplay)
+    set_tests_properties(WalletV3LegacySpentMetadata PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
+    add_test(NAME WalletV3ProvedHistoricalSpend COMMAND test_assumeutxo_replay
+      --gtest_filter=WalletV3RecoveryRoute.MissingProvedHistoricalSpendRecoversWithoutInventingLocalIntent)
+    set_tests_properties(WalletV3ProvedHistoricalSpend PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
     add_test(NAME WalletV3RecoveryWorker COMMAND test_assumeutxo_replay
       --gtest_filter=WalletV3RecoveryWorker.*)
     set_tests_properties(WalletV3RecoveryWorker PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")

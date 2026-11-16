@@ -1087,4 +1087,276 @@ TEST(WalletV3RecoveryRoute, LegacyNamedWalletRecoversTypedCoinbaseWithoutV2Index
     ASSERT_EQ(sqlite3_close(raw),SQLITE_OK);
 }
 
+// Older wallet writers marked spent coins without recording the spender. A
+// full-archive v3 recovery can fill that pair only after its checked replay
+// proves the creation and a single spending version. Explicit but incorrect
+// metadata must still refuse rather than be silently replaced.
+TEST(WalletV3RecoveryRoute, LegacySpentCoinWithoutSpenderRecoversOnlyFromProvedReplay) {
+    CanonicalRecoveryFixture f(false,true);
+    const auto [historical_amount,historical_total]=f.PrepareFundedHistoricalWallet();
+    (void)historical_amount;
+    f.DowngradeToPreIdentityTransparentWallet();
+    const auto receiver=orchard::WalletKeys::FromSeed(std::array<uint8_t,64>{53},0);
+    const auto shield=f.ShieldHistoricalWalletCoin(receiver);
+    const auto spender=shield.GetTxid().AsUint256().GetHex();
+    (void)f.Mine(shield);
+    const auto mined_amount=f.MineToWallet();
+    ASSERT_EQ(f.f.service->GetActiveTip()->height,103u);
+    const auto spent_txid=f.f.blocks.at(101).vtx.at(1).GetTxid().AsUint256().GetHex();
+
+    // Reproduce the historical WalletManager::spendUTXO writer, which set
+    // is_spent but left both later-added spender columns NULL.
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        auto lease=use->Wallet().AcquireDatabaseLease();
+        sqlite3_stmt* reset=nullptr;
+        ASSERT_EQ(sqlite3_prepare_v2(lease->Database(),
+            "UPDATE utxos SET is_spent=0,spent_txid=NULL,spent_height=NULL WHERE txid=? AND vout=0",
+            -1,&reset,nullptr),SQLITE_OK);
+        ASSERT_EQ(sqlite3_bind_text(reset,1,spent_txid.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+        ASSERT_EQ(sqlite3_step(reset),SQLITE_DONE);
+        EXPECT_EQ(sqlite3_changes(lease->Database()),1);
+        sqlite3_finalize(reset);
+        ASSERT_TRUE(use->Wallet().spendUTXO(spent_txid,0));
+        sqlite3_stmt* old_row=nullptr;
+        ASSERT_EQ(sqlite3_prepare_v2(lease->Database(),
+            "SELECT is_spent,spent_txid,spent_height FROM utxos WHERE txid=? AND vout=0",
+            -1,&old_row,nullptr),SQLITE_OK);
+        ASSERT_EQ(sqlite3_bind_text(old_row,1,spent_txid.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+        ASSERT_EQ(sqlite3_step(old_row),SQLITE_ROW);
+        EXPECT_EQ(sqlite3_column_int(old_row,0),1);
+        EXPECT_EQ(sqlite3_column_type(old_row,1),SQLITE_NULL);
+        EXPECT_EQ(sqlite3_column_type(old_row,2),SQLITE_NULL);
+        sqlite3_finalize(old_row);
+    }
+
+    const auto index_path=f.f.path/"v3-legacy-spenderless-index";
+    {UTXOIndex v2(index_path.string());ASSERT_TRUE(v2.Initialize());}
+    (void)UpgradeFullArchiveWalletIndexSchemaToV3(index_path);
+    auto metadata=std::make_unique<UTXOIndex>(index_path.string());
+    ASSERT_TRUE(metadata->InitializeFullArchiveV3MetadataOnly());
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        use->Wallet().setUTXOIndex(nullptr);
+        use->Wallet().DisableLegacyRescansForFullArchiveV3();
+    }
+    struct RestoreIndex {
+        ChainstateService& source;
+        std::unique_ptr<UTXOIndex> original;
+        ~RestoreIndex() {
+            auto replacement=ShieldedStateStartupTestAccess::SwapWalletIndexForRpc(
+                source,std::move(original));
+            (void)replacement;
+        }
+    } restore{*f.f.service,ShieldedStateStartupTestAccess::SwapWalletIndexForRpc(
+        *f.f.service,std::move(metadata))};
+
+    const auto set_spender=[&](const char* sql) {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        auto lease=use->Wallet().AcquireDatabaseLease();
+        sqlite3_stmt* change=nullptr;
+        ASSERT_EQ(sqlite3_prepare_v2(lease->Database(),sql,-1,&change,nullptr),SQLITE_OK);
+        ASSERT_EQ(sqlite3_bind_text(change,1,spent_txid.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+        ASSERT_EQ(sqlite3_step(change),SQLITE_DONE);
+        EXPECT_EQ(sqlite3_changes(lease->Database()),1);
+        sqlite3_finalize(change);
+    };
+    const auto refuse=[&] {
+        std::string error;
+        EXPECT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+            WalletService::CanonicalRecovery::Deferred);
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        EXPECT_EQ(use->Wallet().AcquireDatabaseLease()->LegacyTransparentState(),
+            WalletManager::LegacyTransparentState::Pending);
+        EXPECT_FALSE(RuntimeOrdinaryDelivery::ReadForWallet(use->Wallet(),
+            use->Wallet().AcquireDatabaseLease()->Session()));
+    };
+
+    set_spender("UPDATE utxos SET spent_txid='eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',"
+        "spent_height=102 WHERE txid=? AND vout=0");
+    refuse(); // A populated but forged spender pair cannot be repaired.
+    set_spender("UPDATE utxos SET spent_txid=NULL,spent_height=102 WHERE txid=? AND vout=0");
+    refuse(); // One missing member is not the historical NULL/NULL form.
+    set_spender("UPDATE utxos SET spent_txid=NULL,spent_height=NULL WHERE txid=? AND vout=0");
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    auto lease=use->Wallet().AcquireDatabaseLease();
+    EXPECT_EQ(lease->LegacyTransparentState(),WalletManager::LegacyTransparentState::Complete);
+    const auto session=lease->Session();
+    lease.reset();
+    auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+    EXPECT_TRUE(RuntimeIndexDelivery::ReadForWalletV3(use->Wallet(),index->Index(),session));
+    EXPECT_TRUE(RuntimeOrdinaryDelivery::ReadForWallet(use->Wallet(),session));
+    lease=use->Wallet().AcquireDatabaseLease();
+    sqlite3_stmt* restored=nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(lease->Database(),
+        "SELECT is_spent,spent_txid,spent_height FROM utxos WHERE txid=? AND vout=0",
+        -1,&restored,nullptr),SQLITE_OK);
+    ASSERT_EQ(sqlite3_bind_text(restored,1,spent_txid.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(restored),SQLITE_ROW);
+    EXPECT_EQ(sqlite3_column_int(restored,0),1);
+    EXPECT_EQ(reinterpret_cast<const char*>(sqlite3_column_text(restored,1)),spender);
+    EXPECT_EQ(sqlite3_column_int(restored,2),102);
+    sqlite3_finalize(restored);
+    lease.reset();
+    EXPECT_NEAR(use->Wallet().getBalance().total,
+        historical_total-0.006+double(mined_amount)/100000000.0,0.00000001);
+    index.reset();use.reset();
+    error.clear();
+    EXPECT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    use=WalletService::AcquireWalletUse(f.wallet);
+    EXPECT_NEAR(use->Wallet().getBalance().total,
+        historical_total-0.006+double(mined_amount)/100000000.0,0.00000001);
+}
+
+// Older wallets can retain a proved spent coin while lacking its historical
+// transaction row. The full-archive v3 source has the signed block body and
+// all of its owned inputs; restore the on-chain net effect without claiming a
+// recipient, fee or original local payment intent. A forged coin still fails.
+TEST(WalletV3RecoveryRoute, MissingProvedHistoricalSpendRecoversWithoutInventingLocalIntent) {
+    CanonicalRecoveryFixture f(false,true,true);
+    const auto [historical_amount,historical_total]=f.PrepareFundedHistoricalWallet();
+    ASSERT_EQ(f.f.blocks.at(101).vtx.size(),3u);
+    const auto retained_id=f.f.blocks.at(101).vtx.at(1).GetTxid().AsUint256().GetHex();
+    const auto spend_id=f.f.blocks.at(101).vtx.at(2).GetTxid().AsUint256().GetHex();
+    double original_net=0;
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        auto lease=use->Wallet().AcquireDatabaseLease();
+        sqlite3_stmt* original=nullptr;
+        ASSERT_EQ(sqlite3_prepare_v2(lease->Database(),
+            "SELECT amount,category FROM transactions WHERE txid=?",-1,&original,nullptr),SQLITE_OK);
+        ASSERT_EQ(sqlite3_bind_text(original,1,spend_id.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+        ASSERT_EQ(sqlite3_step(original),SQLITE_ROW);
+        original_net=sqlite3_column_double(original,0);
+        EXPECT_LT(original_net,0.0);
+        EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(original,1)),"send");
+        sqlite3_finalize(original);
+        sqlite3_stmt* keep=nullptr;
+        ASSERT_EQ(sqlite3_prepare_v2(lease->Database(),
+            "UPDATE transactions SET label='legacy-kept' WHERE txid=?",-1,&keep,nullptr),SQLITE_OK);
+        ASSERT_EQ(sqlite3_bind_text(keep,1,retained_id.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+        ASSERT_EQ(sqlite3_step(keep),SQLITE_DONE);
+        EXPECT_EQ(sqlite3_changes(lease->Database()),1);
+        sqlite3_finalize(keep);
+        sqlite3_stmt* remove=nullptr;
+        ASSERT_EQ(sqlite3_prepare_v2(lease->Database(),
+            "DELETE FROM transactions WHERE txid=?",-1,&remove,nullptr),SQLITE_OK);
+        ASSERT_EQ(sqlite3_bind_text(remove,1,spend_id.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+        ASSERT_EQ(sqlite3_step(remove),SQLITE_DONE);
+        EXPECT_EQ(sqlite3_changes(lease->Database()),1);
+        sqlite3_finalize(remove);
+    }
+    f.DowngradeToPreIdentityTransparentWallet();
+    const auto mined_amount=f.MineToWallet();
+    ASSERT_EQ(f.f.service->GetActiveTip()->height,102u);
+
+    const auto index_path=f.f.path/"v3-missing-historical-spend-index";
+    {UTXOIndex v2(index_path.string());ASSERT_TRUE(v2.Initialize());}
+    (void)UpgradeFullArchiveWalletIndexSchemaToV3(index_path);
+    auto metadata=std::make_unique<UTXOIndex>(index_path.string());
+    ASSERT_TRUE(metadata->InitializeFullArchiveV3MetadataOnly());
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        use->Wallet().setUTXOIndex(nullptr);
+        use->Wallet().DisableLegacyRescansForFullArchiveV3();
+    }
+    struct RestoreIndex {
+        ChainstateService& source;
+        std::unique_ptr<UTXOIndex> original;
+        ~RestoreIndex() {
+            auto replacement=ShieldedStateStartupTestAccess::SwapWalletIndexForRpc(
+                source,std::move(original));
+            (void)replacement;
+        }
+    } restore{*f.f.service,ShieldedStateStartupTestAccess::SwapWalletIndexForRpc(
+        *f.f.service,std::move(metadata))};
+
+    // This is a signed same-block child of an owned H101 output, not the
+    // post-origin H102 shield spend already handled by the old recovery path.
+    // Require the selected checked source to contain that input and the v3
+    // origin to be H101 before asserting the old path's RED refusal.
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+        uint64_t session=0;
+        {
+            auto lease=use->Wallet().AcquireDatabaseLease();
+            session=lease->Session();
+            ASSERT_FALSE(lease->BeginLegacyTransparentMigrationV3(index->Index(),session).empty());
+        }
+        const auto captured=f.f.service->getRuntimeWalletCoverageV3(
+            use->Wallet(),session,index->Index());
+        ASSERT_TRUE(captured.ok()) << static_cast<int>(captured.status());
+        EXPECT_EQ((*captured)->Origin().OriginHeight(),101u);
+        const auto id=TxId(uint256::FromHexUnsafe(spend_id));
+        const auto selected=(*captured)->Transactions().find(id);
+        ASSERT_NE(selected,(*captured)->Transactions().end());
+        EXPECT_EQ(selected->second.height,101u);
+        const auto parent=TxOutPoint{f.f.blocks.at(101).vtx.at(1).GetTxid(),0};
+        EXPECT_TRUE(std::find(selected->second.inputs.begin(),selected->second.inputs.end(),parent)
+            != selected->second.inputs.end());
+        EXPECT_TRUE((*captured)->ObservedCoins().contains(parent));
+    }
+
+    // A row whose amount disagrees with the authenticated historical body is
+    // still refused, even though the missing transaction could be rebuilt.
+    const auto change_id=spend_id;
+    const auto set_change_amount=[&](int64_t amount) {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        auto lease=use->Wallet().AcquireDatabaseLease();
+        sqlite3_stmt* row=nullptr;
+        ASSERT_EQ(sqlite3_prepare_v2(lease->Database(),
+            "UPDATE utxos SET amount=? WHERE txid=? AND vout=0",-1,&row,nullptr),SQLITE_OK);
+        ASSERT_EQ(sqlite3_bind_int64(row,1,amount),SQLITE_OK);
+        ASSERT_EQ(sqlite3_bind_text(row,2,change_id.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+        ASSERT_EQ(sqlite3_step(row),SQLITE_DONE);
+        EXPECT_EQ(sqlite3_changes(lease->Database()),1);
+        sqlite3_finalize(row);
+    };
+    set_change_amount(int64_t(historical_amount)+1);
+    std::string error;
+    EXPECT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::Deferred);
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        EXPECT_EQ(use->Wallet().AcquireDatabaseLease()->LegacyTransparentState(),
+            WalletManager::LegacyTransparentState::Pending);
+    }
+    set_change_amount(int64_t(historical_amount));
+    error.clear();
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    auto lease=use->Wallet().AcquireDatabaseLease();
+    EXPECT_EQ(lease->LegacyTransparentState(),WalletManager::LegacyTransparentState::Complete);
+    sqlite3_stmt* spend=nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(lease->Database(),
+        "SELECT category,label,amount,height,is_coinbase FROM transactions WHERE txid=?",
+        -1,&spend,nullptr),SQLITE_OK);
+    ASSERT_EQ(sqlite3_bind_text(spend,1,spend_id.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(spend),SQLITE_ROW);
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(spend,0)),"send");
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(spend,1)),"Recovered on-chain spend");
+    EXPECT_NEAR(sqlite3_column_double(spend,2),original_net,0.00000001);
+    EXPECT_EQ(sqlite3_column_int(spend,3),101);
+    EXPECT_EQ(sqlite3_column_int(spend,4),0);
+    EXPECT_EQ(sqlite3_step(spend),SQLITE_DONE);
+    sqlite3_finalize(spend);
+    sqlite3_stmt* retained=nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(lease->Database(),
+        "SELECT label FROM transactions WHERE txid=?",-1,&retained,nullptr),SQLITE_OK);
+    ASSERT_EQ(sqlite3_bind_text(retained,1,retained_id.c_str(),-1,SQLITE_TRANSIENT),SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(retained),SQLITE_ROW);
+    EXPECT_STREQ(reinterpret_cast<const char*>(sqlite3_column_text(retained,0)),"legacy-kept");
+    sqlite3_finalize(retained);
+    lease.reset();
+    EXPECT_NEAR(use->Wallet().getBalance().total,
+        historical_total+double(mined_amount)/100000000.0,0.00000001);
+}
+
 } // namespace dinero

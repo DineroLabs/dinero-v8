@@ -4,7 +4,7 @@
 namespace {
 class OrchardAdmissionFixture {
 public:
-    enum class HistoricalSpend { None, MatureCoin, SameBlockChild, NamedWallet };
+    enum class HistoricalSpend { None, MatureCoin, SameBlockChild, NamedWallet, NamedWalletSpent };
     HistoricalSpend historical_spend=HistoricalSpend::None;
     ChainParams previous_params = Params();
     bool previous_stateless = GetConfig().utreexo_stateless;
@@ -189,7 +189,9 @@ public:
         script={0x51,32};script.resize(34);
         Require(secp256k1_xonly_pubkey_serialize(ctx.get(),script.data()+2,&key));
         std::vector<uint8_t> funding_script;
-        if(historical_spend==HistoricalSpend::NamedWallet){
+        std::array<uint8_t,32> funding_secret{};
+        if(historical_spend==HistoricalSpend::NamedWallet ||
+           historical_spend==HistoricalSpend::NamedWalletSpent){
             auto temp=(std::filesystem::temp_directory_path()/"funded-phrase-derivation-XXXXXX").string();
             Require(::mkdtemp(temp.data())!=nullptr);funding_derivation_root=std::filesystem::canonical(temp);
             WalletManager phrase(funding_derivation_root);
@@ -206,6 +208,14 @@ public:
                 const auto change=DecodeWitnessAddress(phrase.getNewChangeAddress("","taproot"),"rdin");
                 Require(change.is_valid&&change.witness_version==1&&change.witness_program.size()==32);
                 funding_change_script=change.script_pubkey;
+            }
+            if(historical_spend==HistoricalSpend::NamedWalletSpent) {
+                auto lease=phrase.AcquireDatabaseLease();
+                const auto seed=lease->CopyRecoverySeed(lease->Session());
+                const auto signing=lease->ResolveSigningKey(util::hex(funding_script),*seed);
+                Require(signing && signing->policy==SigningKeyPolicy::TaprootCanonical &&
+                    signing->secret.size()==funding_secret.size());
+                std::copy(signing->secret.begin(),signing->secret.end(),funding_secret.begin());
             }
         }
         std::vector<Block> chain;consensus::ConsensusUTXOSet coins;
@@ -236,13 +246,20 @@ public:
                 const auto* original=coins.GetCoin(point);
                 Require(original && original->isCoinbase && original->height==1);
                 auto coin=*original;
+                bool wallet_child=false;
                 const auto append_spend=[&]() {
                     constexpr uint64_t fee=1000;
                     Require(coin.value.GetUna()>fee);
                     Transaction tx;tx.version=2;tx.witness_version=1;
                     TxInput input;input.prevout={point.txid,point.vout};input.sequence=0xfffffffe;
                     tx.vin.push_back(input);
-                    if(historical_spend==HistoricalSpend::NamedWallet){
+                    if(historical_spend==HistoricalSpend::NamedWalletSpent && wallet_child) {
+                        const auto paid=coin.value.GetUna()/2;
+                        Require(coin.value.GetUna()>fee+paid);
+                        tx.vout.emplace_back(AmountUna::Una(coin.value.GetUna()-fee-paid),funding_script);
+                        tx.vout.emplace_back(AmountUna::Una(paid),script);
+                    }else if(historical_spend==HistoricalSpend::NamedWallet ||
+                             historical_spend==HistoricalSpend::NamedWalletSpent){
                         constexpr uint64_t funded=1000000;Require(coin.value.GetUna()>fee+funded);
                         if(std::getenv("DINERO_SDK_COMPACT_NEW_RESERVATION")){
                             tx.vout.emplace_back(AmountUna::Una(funded/2),funding_script);
@@ -253,17 +270,26 @@ public:
                     CanonicalWalletUTXO resolved;resolved.txid=point.txid.AsUint256();resolved.vout=point.vout;
                     resolved.value=coin.value;resolved.spk=coin.scriptPubKey;resolved.height=coin.height;
                     resolved.is_coinbase=coin.isCoinbase;
-                    const auto digest=TaprootTxSigner::ComputeTaprootSighash(tx,0,{resolved},TaprootTxSigner::SIGHASH_DEFAULT);
-                    Require(digest.size()==32);std::array<uint8_t,32> message{};
-                    std::copy(digest.begin(),digest.end(),message.begin());std::array<uint8_t,64> signature{};
-                    Require(TaprootKeys::SignSchnorr(signature,message,secret));
-                    tx.vin.front().witness={std::vector<uint8_t>(signature.begin(),signature.end())};
+                    if(historical_spend==HistoricalSpend::NamedWalletSpent && wallet_child) {
+                        // HD Taproot outputs use the canonical tweaked key.
+                        resolved.path="m/86'/1448'/0'/0/0";
+                        Require(TaprootTxSigner::SignInput(tx,0,{resolved},
+                            std::vector<uint8_t>(funding_secret.begin(),funding_secret.end())));
+                    } else {
+                        const auto digest=TaprootTxSigner::ComputeTaprootSighash(tx,0,{resolved},TaprootTxSigner::SIGHASH_DEFAULT);
+                        Require(digest.size()==32);std::array<uint8_t,32> message{};
+                        std::copy(digest.begin(),digest.end(),message.begin());std::array<uint8_t,64> signature{};
+                        Require(TaprootKeys::SignSchnorr(signature,message,secret));
+                        tx.vin.front().witness={std::vector<uint8_t>(signature.begin(),signature.end())};
+                    }
                     point=OutPoint(tx.GetTxid(),0);
                     coin=consensus::UTXOEntry(tx.vout.front().value,tx.vout.front().scriptPubKey,height,false);
                     block.vtx.push_back(std::move(tx));
+                    wallet_child=true;
                 };
                 append_spend();
-                if(historical_spend==HistoricalSpend::SameBlockChild)append_spend();
+                if(historical_spend==HistoricalSpend::SameBlockChild ||
+                   historical_spend==HistoricalSpend::NamedWalletSpent)append_spend();
                 block.vtx.front().vout.emplace_back(AmountUna::Zero(),
                     consensus::BuildWitnessCommitmentFromRoot(consensus::ComputeWitnessMerkleRoot(block.vtx)));
             }
