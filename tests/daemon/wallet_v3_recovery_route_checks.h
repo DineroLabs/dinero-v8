@@ -6,6 +6,8 @@ din::Json rpc_context_wallet_listaddresses(const ExecutionContext&, const din::J
 din::Json rpc_context_wallet_rescanblockchain(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_wallet_importtaprootdescriptor(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_wallet_setlabel(const ExecutionContext&, const din::Json&);
+din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext&, const din::Json&);
+void registerShieldedWalletMethods();
 #include "rpc/orchard_account_rpc.h"
 
 namespace dinero {
@@ -1048,6 +1050,17 @@ TEST(WalletV3NativeRoute, GeneratedWalletEnrollsNativeAndReceivesOnPool) {
     ASSERT_FALSE(balance.isMember("error")) << balance.toStyledString();
     EXPECT_FALSE(balance.isMember("wallet_scope")) << balance.toStyledString();
     EXPECT_NEAR(balance["total"].asDouble(),double(first)/1e8,1e-8);
+    // No native send route yet: refuse before any change derivation.
+    din::Json send;send["address"]=pooled;send["amount"]=0.1;
+    const auto sent=rpc_context_wallet_sendtoaddress(request,send);
+    EXPECT_EQ(sent["error_code"].asString(),"wallet_native_send_unavailable_on_v3") << sent.toStyledString();
+    // No Orchard delivery on v3 yet: shielded state is refused, not opened.
+    registerShieldedWalletMethods();
+    const auto* shielded_balance=g_rpcRegistry.lookup("wallet.shieldedbalance");
+    ASSERT_NE(shielded_balance,nullptr);
+    const auto shielded=(*shielded_balance)(request,din::obj());
+    EXPECT_EQ(shielded["error_code"].asString(),"wallet_native_shielded_unavailable_on_v3")
+        << shielded.toStyledString();
     const auto address=rpc_context_wallet_getnewaddress(request,din::obj());
     EXPECT_EQ(address["error_code"].asString(),"wallet_native_address_unavailable_on_v3")
         << address.toStyledString();
@@ -1157,6 +1170,61 @@ TEST(WalletV3NativeRoute, NativeCompleteSurvivesRestartAndDeliversWhileLocked) {
     ASSERT_FALSE(delivered.isMember("error")) << delivered.toStyledString();
     EXPECT_NEAR(delivered["total"].asDouble(),double(first+second)/1e8,1e-8);
     f.wallet->Stop();
+}
+
+// #939 phase 1: the runtime worker defers a locked, unenrolled native wallet
+// without starting a replay, but keeps delivering to a LOCKED native-complete
+// wallet (a native wallet's legacy column is Absent even when complete).
+TEST(WalletV3NativeRoute, WorkerDefersLockedUnenrolledAndDeliversLockedComplete) {
+    CanonicalRecoveryFixture f(true,false);
+    const auto first=f.MineToWallet();
+    NativeV3IndexScope v3(f,"v3-native-worker-index");
+    WalletService::AcquireWalletUse(f.wallet)->Wallet().lockWallet();
+    RuntimeDeliveryWorker worker(f.f.service,f.wallet,
+        RuntimeDeliveryWorker::Limits{1,std::chrono::milliseconds(20)});
+    const auto wait=[&](const auto& predicate) {
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(30);
+        for(;;) {
+            const auto report=worker.Snapshot();
+            if(predicate(report))return report;
+            if(std::chrono::steady_clock::now()>=deadline)
+                throw std::runtime_error("native v3 worker did not reach expected state");
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    };
+    worker.Start();
+    const auto locked=wait([](const auto& report){return report.slices>0;});
+    worker.Stop();
+    EXPECT_EQ(locked.wallet,RuntimeDeliveryWorker::WalletOutcome::Deferred);
+    EXPECT_EQ(locked.wallet_recovery_attempts,0u) << "a locked native wallet must not start a replay";
+    std::string pooled;
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        EXPECT_EQ(use->Wallet().AcquireDatabaseLease()->NativeV3TransparentState(),
+            WalletManager::NativeV3State::Absent);
+        use->Wallet().unlockWallet("canonical-fixture-pass",0);
+    }
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        pooled=NativePoolAddress(use->Wallet(),11);
+        use->Wallet().lockWallet();
+    }
+    f.receive_address=pooled;
+    const auto second=f.MineToWallet();
+    ASSERT_EQ(f.f.service->GetActiveTip()->height,103u);
+    worker.Start();
+    const auto delivered=wait([](const auto& report) {
+        return report.wallet==RuntimeDeliveryWorker::WalletOutcome::AppliedPrefix;
+    });
+    worker.Stop();
+    ASSERT_TRUE(delivered.wallet_head);
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    EXPECT_TRUE(use->Wallet().isWalletLocked());
+    EXPECT_EQ(use->Wallet().getBlockchainHeight(),103u);
+    EXPECT_NEAR(use->Wallet().getBalance().total,double(first+second)/1e8,1e-8);
 }
 
 // #939 phase 1: an interrupted native reconcile (index receipt committed,
