@@ -39,6 +39,13 @@ Status: design for v8.2.4. Owner-directed, owned by Claude, reviewed by codex-ch
     existing gap limit.
   - **Commit together:** set `pending` and keep the existing delivery ID in the
     same transaction.
+- **Phase 1 as built: Taproot pool only.** P2MR keys live in the separate
+  `V7P2MRStore` SQLite file, which cannot join Begin's wallet transaction
+  (WAL gives no cross-file atomicity). `ValidateRecoveryInventoryInTransaction`
+  enforces the store ↔ watch-row bijection in both directions, so a crash
+  between the two writes would leave every later validation failing. P2MR pool
+  rows need an idempotent adopt-on-retry step first. A P2MR address issued
+  before enrollment is still inside the covered domain.
 - **Coverage:** `getRuntimeWalletCoverageV3`, unchanged. The domain includes the
   pool, so one replay proves the history of every pool script. The **sealed
   fresh birth** (generated identity, birth ≥ activation) skips the
