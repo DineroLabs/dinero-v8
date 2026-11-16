@@ -1234,6 +1234,9 @@ TEST(WalletCanonicalRecovery, F9AbsentFullArchiveV2LegacyWalletRefusesAutomaticM
     EXPECT_FALSE(HasDeliveryIdentity(f.wallet->get()));
     EXPECT_FALSE(HasLegacyStateColumn(f.wallet->get()));
     EXPECT_TRUE(f.wallet->get().AcquireDatabaseLease()->LegacyV3UpgradeRequired());
+    // A full-archive source is recoverable via the offline upgrade, so it is
+    // never reported as needing a full archive.
+    {auto& mgr=f.wallet->get();EXPECT_FALSE(mgr.LegacyRecoveryRequiresFullArchive(mgr.AcquireDatabaseLease()->Session()));}
 }
 TEST(WalletCanonicalRecovery, F9PendingFullArchiveV2LegacyWalletStaysPendingWithoutCapture) {
     CanonicalRecoveryFixture f(false,true);
@@ -1253,6 +1256,42 @@ TEST(WalletCanonicalRecovery, F9PendingFullArchiveV2LegacyWalletStaysPendingWith
         EXPECT_FALSE(RuntimeOrdinaryDelivery::ReadForWallet(f.wallet->get(),lease->Session()));
     }
     ExpectUpgradeRequiredReads(f,f.f.blocks[101].vtx.at(1).GetTxid().AsUint256().GetHex());
+}
+TEST(WalletCanonicalRecovery, SnapshotOriginLegacyWalletReportsRequiresFullArchive) {
+    // The Windows-box class: a never-enrolled legacy transparent wallet on a
+    // node bootstrapped from a snapshot (a retained pre-base marker). Recovery
+    // is refused as before, but the refusal is now recorded and reported.
+    CanonicalRecoveryFixture f(false,true);
+    (void)f.PrepareFundedHistoricalWallet();
+    f.DowngradeToPreIdentityTransparentWallet();
+    (void)f.MineToWallet();(void)f.MineToWallet();
+    ASSERT_EQ(f.f.db.replacePreBaseCoins(f.f.token,f.f.blocks[50].GetHash(),50,{}),Status::Ok);
+    ASSERT_TRUE(f.wallet->Start());
+    auto& mgr=f.wallet->get();const auto session=mgr.AcquireDatabaseLease()->Session();
+    // Start's own recovery attempt is already refused and recorded; a retry
+    // keeps refusing (control flow unchanged) and stays recorded.
+    EXPECT_TRUE(mgr.LegacyRecoveryRequiresFullArchive(session));
+    std::string error;
+    EXPECT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),Recovery::Deferred);
+    EXPECT_TRUE(mgr.LegacyRecoveryRequiresFullArchive(session));
+    // Not the full-archive upgrade class, and recording is once per session.
+    EXPECT_FALSE(mgr.AcquireDatabaseLease()->LegacyV3UpgradeRequired());
+    EXPECT_FALSE(mgr.NoteLegacyRecoveryRequiresFullArchive(session));
+    EXPECT_FALSE(mgr.LegacyRecoveryRequiresFullArchive(session+1));
+    ExecutionContext request;request.daemon=&f.context;request.walletName="canonical-recovery";
+    // Previously reported as a retryable "catching up"; it can never catch
+    // up on this node, so both balance views name the actual condition.
+    const auto info=rpc_context_wallet_getwalletinfo(request,din::obj());
+    EXPECT_EQ(info["error_code"].asString(),"wallet_requires_full_archive") << info.toStyledString();
+    EXPECT_EQ(info["error"].asString(),WalletManager::kLegacyWalletRequiresFullArchive);
+    EXPECT_FALSE(info["retryable"].asBool());
+    EXPECT_EQ(info["balance_status"].asString(),"requires_full_archive");
+    const auto balance=rpc_context_wallet_getbalance(request,din::obj());
+    EXPECT_EQ(balance["error_code"].asString(),"wallet_requires_full_archive") << balance.toStyledString();
+    EXPECT_FALSE(balance["retryable"].asBool());
+    // Still non-mutating: no enrollment, delivery identity or ordinary receipt.
+    EXPECT_FALSE(HasDeliveryIdentity(mgr));
+    EXPECT_FALSE(HasLegacyStateColumn(mgr));
 }
 TEST(WalletCanonicalRecovery, F9CatalogWalletOnFullArchiveV2IsNotUpgradeRequired) {
     CanonicalRecoveryFixture f(false,true);

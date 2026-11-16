@@ -180,6 +180,18 @@ public:
     // supported path is the offline `dinerod --upgrade-wallet-index-v3`.
     // Set once when chainstate binds the v2 index; one-way per manager.
     void MarkFullArchiveV2LegacySource();
+    // Recorded by chainstate when it refuses this database session's legacy
+    // (or never-enrolled) transparent recovery because the node is not a
+    // full-archive source (snapshot, AssumeUTXO, compact, stateless or
+    // imported pre-base). Recovery itself is unchanged. Returns true only the
+    // first time for a session, so callers can log once. Cleared implicitly
+    // when another database session (wallet switch or reopen) is active.
+    bool NoteLegacyRecoveryRequiresFullArchive(uint64_t session);
+    [[nodiscard]] bool LegacyRecoveryRequiresFullArchive(uint64_t session) const;
+    static constexpr const char* kLegacyWalletRequiresFullArchive =
+        "This wallet's history predates this node's snapshot base, so it cannot be "
+        "recovered on this node. Recover it on a full-archive node (full sync from "
+        "genesis without a snapshot); balances shown here may be stale.";
     static constexpr const char* kLegacyWalletV3UpgradeRequired =
         "Wallet index upgrade required: stop dinerod and run "
         "`dinerod --upgrade-wallet-index-v3 --datadir=<dir>`, then restart. "
@@ -1226,6 +1238,7 @@ private:
     mutable std::recursive_mutex database_lifecycle_mutex_;
     bool full_archive_v3_legacy_rescans_disabled_ = false; // same lock; one-way per manager
     bool full_archive_v2_legacy_source_ = false; // same lock; one-way per manager
+    std::optional<uint64_t> legacy_full_archive_refused_session_; // same lock
     size_t database_leases_ = 0; // protected by database_lifecycle_mutex_
     size_t recovery_seeds_ = 0; // same lock; recovery seed must die before last lease
     const std::shared_ptr<const uint8_t> instance_token_ = std::make_shared<const uint8_t>(0);

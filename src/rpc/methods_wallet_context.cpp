@@ -689,7 +689,14 @@ public:
     struct UpgradeRequired {};
     explicit LegacyBalanceNotCurrent(UpgradeRequired) : std::runtime_error(
         dinero::WalletManager::kLegacyWalletV3UpgradeRequired), upgrade_required(true) {}
+    // Not a catch-up either: chainstate refused this wallet's legacy recovery
+    // because the node is not a full-archive source, so it can never catch
+    // up here. Callers must not retry it.
+    struct RequiresFullArchive {};
+    explicit LegacyBalanceNotCurrent(RequiresFullArchive) : std::runtime_error(
+        dinero::WalletManager::kLegacyWalletRequiresFullArchive), requires_full_archive(true) {}
     bool upgrade_required = false;
+    bool requires_full_archive = false;
 };
 
 template <typename Read>
@@ -711,6 +718,8 @@ static auto ReadWithCurrentLegacyTransparentTip(
         session = lease->Session();
         if (lease->LegacyV3UpgradeRequired())
             throw LegacyBalanceNotCurrent(LegacyBalanceNotCurrent::UpgradeRequired{});
+        if (wallet.LegacyRecoveryRequiresFullArchive(session))
+            throw LegacyBalanceNotCurrent(LegacyBalanceNotCurrent::RequiresFullArchive{});
         state = lease->LegacyTransparentState();
         if (state == dinero::WalletManager::LegacyTransparentState::Absent)
             unenrolled_scan_height = lease->UnenrolledLegacyTransparentScanHeight();
@@ -814,8 +823,9 @@ static void MarkLegacyBalanceNotCurrent(din::Json& result,
                                         const LegacyBalanceNotCurrent& error) {
     result["error"] = error.what();
     result["error_code"] = error.upgrade_required ? "wallet_index_upgrade_required"
-                                                  : "wallet_balance_not_current";
-    result["retryable"] = !error.upgrade_required;
+                         : error.requires_full_archive ? "wallet_requires_full_archive"
+                                                       : "wallet_balance_not_current";
+    result["retryable"] = !error.upgrade_required && !error.requires_full_archive;
 }
 
 bool RefuseIfLegacyTransparentTipNotCurrent(
@@ -1280,7 +1290,7 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
         if (RefuseAfterLegacyTransparentRead(ctx, wallet_service, result)) return result;
 
     } catch (const LegacyBalanceNotCurrent& e) {
-        result["balance_status"] = "reconciliation_required";
+        result["balance_status"] = e.requires_full_archive ? "requires_full_archive" : "reconciliation_required";
         MarkLegacyBalanceNotCurrent(result, e);
     } catch (const std::exception& e) {
         result["error"] = std::string("Wallet info query error: ") + e.what();
