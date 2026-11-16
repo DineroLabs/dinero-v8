@@ -120,7 +120,9 @@ void RuntimeDeliveryWorker::RecoverWallet(Report& report,
             {
                 auto lease=use->Wallet().AcquireDatabaseLease();
                 if(lease->Session()!=session)return;
-                state=lease->LegacyTransparentState();
+                // Either typed class (#939): a native wallet is Absent in the
+                // legacy column even after it completes.
+                state=lease->TypedTransparentState();
             }
             // Absent/pending v3 recovery needs the encrypted seed. Defer before
             // origin capture so periodic wakes cannot replay the full chain

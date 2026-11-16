@@ -7395,7 +7395,10 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 return Status::Invalid;
         }
         uint64_t session=0;
+        // `state` is the enrollment state of whichever typed class owns this
+        // wallet: the legacy marker, else the native (#939) column.
         WalletManager::LegacyTransparentState state;
+        bool native=false;
         {
             auto lease=wallet.AcquireDatabaseLease();
             if(!wallet.SoleDatabaseLeaseHeld() || !wallet.hasActiveWallet() || !lease->Database() ||
@@ -7403,7 +7406,9 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 return Status::Invalid;
             session=lease->Session();
             if(expected_session && session!=expected_session)return Status::Invalid;
-            state=lease->LegacyTransparentState();
+            state=lease->TypedTransparentState();
+            native=lease->NativeV3TransparentState()!=WalletManager::NativeV3State::Absent ||
+                (state==WalletManager::LegacyTransparentState::Absent && lease->HasOrchardOwnerState());
         }
         // Startup and explicit callers bypass the runtime worker's cheap
         // preflight. An absent/pending v3 wallet cannot reconcile coverage
@@ -7427,7 +7432,10 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
             auto lease=wallet.AcquireDatabaseLease();
             if(!wallet.SoleDatabaseLeaseHeld() || lease->Session()!=session ||
                wallet.getUTXOIndex()!=nullptr)return Status::Invalid;
-            (void)lease->BeginLegacyTransparentMigrationV3(metadata_index,session);
+            // An Orchard-owner wallet takes its own class (#939); writing the
+            // legacy marker would lock its Orchard side out permanently.
+            if(native)(void)lease->BeginNativeTransparentMigrationV3(metadata_index,session);
+            else (void)lease->BeginLegacyTransparentMigrationV3(metadata_index,session);
             state=WalletManager::LegacyTransparentState::Pending;
         }
         if(state==WalletManager::LegacyTransparentState::Pending) {
@@ -7452,10 +7460,13 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                         throw std::runtime_error("V3 selected chain no longer extends recovery prefix");
                 };
                 check_source();
-                RuntimeOrdinaryDelivery::ReconcileLegacyTransparentCoverageV3(
-                    wallet,metadata_index,source,[&](const std::function<void()>& commit) {
-                        check_source();commit();
-                    });
+                const RuntimeIndexDelivery::V3SourceCommit fenced=[&](const std::function<void()>& commit) {
+                    check_source();commit();
+                };
+                if(native)RuntimeOrdinaryDelivery::ReconcileNativeTransparentCoverageV3(
+                    wallet,metadata_index,source,fenced);
+                else RuntimeOrdinaryDelivery::ReconcileLegacyTransparentCoverageV3(
+                    wallet,metadata_index,source,fenced);
             }
             const RuntimeIndexProgress applied{source.Head(),source.Origin().OriginHash(),
                 source.TipHash(),source.Origin().OriginHeight(),source.TipHeight()};
