@@ -395,6 +395,17 @@ uint32_t Fnv1aChecksum(const uint8_t* data, size_t len) {
 // Testable: declared in consensus/reindexer_detail.h. See #708.
 namespace reindex_detail {
 
+bool CheckReindexHeaderWork(const BlockHeader& header, uint64_t height,
+                             bool use_assumevalid) {
+    if (use_assumevalid && height <= 100000) return true;
+    // Live header admission and block connect validate hash <= the encoded
+    // target but do not impose CheckDifficultyBits' fixed MAX_BITS floor.
+    // Historical ASERT targets legitimately exceed that floor (H100001 is
+    // 0x1e008001). Reindex must use the same work rule or it rejects the
+    // canonical mainnet chain at its first post-assumevalid block.
+    return CheckProofOfWork(header, /*require_standard=*/false);
+}
+
 StatusOr<std::vector<DiskBlockRecord>> ReadDiskBlocks(
     const std::vector<std::filesystem::path>& block_files,
     BlockReindexer::Stats* stats
@@ -2254,16 +2265,9 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
                 return Status::Invalid;
             }
         }
-    } else if (!config_.use_assumevalid || height > 100000) {  // Always validate recent blocks
-        if (!CheckProofOfWork(block.header, true)) {
-            g_logger.error("Block at height " + std::to_string(height) + " failed PoW validation");
-            return Status::Invalid;
-        }
-    }
-
-    if (!Params().regtest_enforce_pow && (!config_.use_assumevalid || height > 100000) &&
-        !CheckDifficultyBits(block.header.difficulty)) {
-        g_logger.error("Block at height " + std::to_string(height) + " has invalid difficulty bits");
+    } else if (!reindex_detail::CheckReindexHeaderWork(
+                   block.header, height, config_.use_assumevalid)) {
+        g_logger.error("Block at height " + std::to_string(height) + " failed PoW validation");
         return Status::Invalid;
     }
 

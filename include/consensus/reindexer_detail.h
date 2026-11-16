@@ -27,6 +27,13 @@ namespace dinero {
 namespace consensus {
 namespace reindex_detail {
 
+// The mainnet Step 5 header-work gate used by BlockReindexer::processBlock.
+// `assumevalid` skips historical checks through height 100,000, matching the
+// existing reindex contract. Past that boundary, the block's hash must meet
+// its encoded target under the same rule as live header admission.
+bool CheckReindexHeaderWork(const BlockHeader& header, uint64_t height,
+                             bool use_assumevalid);
+
 // One checksum-checked frame recovered from blk*.dat. Header linkage is used
 // for chain selection; body bytes remain exact until the selected height
 // determines their decoder. A frame is NOT a validated block. In particular,
