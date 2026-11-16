@@ -752,6 +752,14 @@ const QLatin1String kWalletCatchingUpRefusal(
 const QLatin1String kWalletUnlockRequiredRefusalPrefix(
     "Wallet is locked: unlock it once so this node can finish setting it up");
 
+const QLatin1String kNativeWalletUnsupportedRefusalPrefix(
+    "This wallet was created or restored by Dinero 8.2 and this node's wallet index (v3)");
+
+// #939 interim: no v3 route for this wallet yet; unlocking or waiting never helps.
+bool isNativeWalletUnsupportedRefusal(const QString& message) {
+  return message.startsWith(kNativeWalletUnsupportedRefusalPrefix);
+}
+
 bool isWalletUnlockRequiredRefusal(const QString& message) {
   return message.startsWith(kWalletUnlockRequiredRefusalPrefix);
 }
@@ -8803,6 +8811,19 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
   if (shouldIgnoreWalletScopedResult(method)) {
     qDebug() << "Ignoring wallet-scoped RPC error during wallet switch:" << method
              << "pending=" << pendingWalletOpenName_;
+    return;
+  }
+
+  if (method == "wallet.getinfo" && code == -32603 && isNativeWalletUnsupportedRefusal(message)) {
+    walletRecoveryUnlockNeeded_ = false;
+    if (lblConnectionStatus_) {
+      lblConnectionStatus_->setText("Wallet not supported on this node yet");
+      lblConnectionStatus_->setStyleSheet(headerPillStyle());
+      lblConnectionStatus_->setToolTip(message);
+    }
+    showWalletBalanceUnavailable();
+    lblErrorMessage_->setText(QString("⚠️ %1").arg(message));
+    lblErrorMessage_->setVisible(true);
     return;
   }
 

@@ -500,6 +500,26 @@ private Q_SLOTS:
         QVERIFY(window->lblErrorMessage_->text().contains("Unlock this wallet"));
         QVERIFY(!window->lblErrorMessage_->text().contains("code: -32603"));
     }
+
+    // Issue #939 interim: a wallet this v3 node cannot track yet must never
+    // trigger the unlock prompt (unlocking cannot help) and must explain why.
+    void nativeUnsupportedRefusalNeverAsksForUnlock() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        auto* rpc = window->findChild<RpcClient*>();
+        QVERIFY(rpc);
+        QVERIFY(bindTestWallet(*window, "Sierra"));
+        window->walletUnlocked_ = false;
+        Q_EMIT rpc->rpcError("wallet.getinfo", -32603,
+            "This wallet was created or restored by Dinero 8.2 and this node's wallet index (v3) "
+            "cannot track it yet. Your funds are safe on-chain: use its seed phrase in the phone app "
+            "or on another node until the next update.");
+        QCoreApplication::processEvents();
+        QVERIFY(!window->walletRecoveryUnlockNeeded_);
+        QCOMPARE(window->lblConnectionStatus_->text(), QString("Wallet not supported on this node yet"));
+        QVERIFY(window->lblErrorMessage_->text().contains("cannot track it yet"));
+        QVERIFY(!window->lblErrorMessage_->text().contains("Unlock this wallet"));
+    }
 };
 QTEST_MAIN(WalletLayoutTest)
 #include "test_wallet_layout.moc"

@@ -1794,6 +1794,10 @@ void WalletManager::createWithInitialSeed(
     const std::string* authoritative_mnemonic,
     const std::string& bip39_passphrase, InitialSeedKind kind) {
     std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
+    // Interim (#939): v3 cannot deliver to a wallet with an Orchard owner,
+    // which every new or restored wallet gets. Refuse before any file exists.
+    if (full_archive_v3_legacy_rescans_disabled_)
+        throw std::runtime_error(kWalletCreationUnsupportedOnV3);
     if (database_leases_ != 0) throw std::logic_error("Cannot create a wallet during database delivery");
     if (initial_master_seed.size() != 64) {
         throw std::invalid_argument("Initial wallet seed must be exactly 64 bytes");
@@ -3526,6 +3530,22 @@ WalletManager::DatabaseLease::LegacyTransparentState() const {
     if (value == "pending") return WalletManager::LegacyTransparentState::Pending;
     if (value == "complete") return WalletManager::LegacyTransparentState::Complete;
     throw std::runtime_error("Legacy wallet migration state malformed");
+}
+
+bool WalletManager::DatabaseLease::HasOrchardOwnerState() const {
+    if (thread_ != std::this_thread::get_id())
+        throw std::logic_error("Orchard owner check used on another thread");
+    if (!db_ || name_.empty() || owner_.db_ != db_ || owner_.database_session_ != session_)
+        throw std::runtime_error("Orchard owner check ownership unavailable");
+    {
+        LegacyMigrationStatement settings(db_,
+            "SELECT key FROM settings WHERE key IN ('orchard_account_catalog_v1','wallet_initial_owner_v1')");
+        if (sqlite3_step(settings.stmt) == SQLITE_ROW) return true;
+    }
+    LegacyMigrationStatement tables(db_,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+        "('orchard_wallet_schema','orchard_wallet_snapshots','orchard_wallet_retained','shielded_state_v1')");
+    return sqlite3_step(tables.stmt) == SQLITE_ROW;
 }
 
 std::optional<uint32_t>

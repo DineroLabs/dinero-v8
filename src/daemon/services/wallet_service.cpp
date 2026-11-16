@@ -244,7 +244,11 @@ bool WalletService::Start() {
 
         // Check for existing wallets
         auto wallets = wallet_mgr_->listWallets();
-        if (wallets.empty()) {
+        if (wallets.empty() && full_archive_v3) {
+            // #939: a new wallet could never be delivered on a v3 node yet.
+            logger_interface_->info(std::string("[WalletService] No wallets found; not creating one: ") +
+                                    WalletManager::kWalletCreationUnsupportedOnV3);
+        } else if (wallets.empty()) {
             logger_interface_->info("[WalletService] No wallets found - creating default HD wallet");
             try {
                 // User-facing wallets must begin from BIP39 recovery material.

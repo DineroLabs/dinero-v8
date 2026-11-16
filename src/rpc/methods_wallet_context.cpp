@@ -698,12 +698,18 @@ public:
     // Not a catch-up: a full-archive v3 node cannot enroll this wallet until
     // the user unlocks it (enrollment needs the seed). Retrying alone never
     // clears it.
+    // Interim (#939): an Orchard-owner wallet has no v3 delivery route yet.
+    // Unlocking cannot help and a retry never clears it.
+    struct NativeUnsupported {};
+    explicit LegacyBalanceNotCurrent(NativeUnsupported) : std::runtime_error(
+        dinero::WalletManager::kNativeWalletUnsupportedOnV3), native_unsupported(true) {}
     struct UnlockRequired {};
     explicit LegacyBalanceNotCurrent(UnlockRequired) : std::runtime_error(
         dinero::WalletManager::kWalletUnlockRequiredForV3Enrollment), unlock_required(true) {}
     bool upgrade_required = false;
     bool requires_full_archive = false;
     bool unlock_required = false;
+    bool native_unsupported = false;
 };
 
 template <typename Read>
@@ -716,6 +722,7 @@ static auto ReadWithCurrentLegacyTransparentTip(
     std::optional<uint32_t> unenrolled_scan_height;
     std::string selected_name;
     uint64_t session = 0;
+    bool native_owner = false;
     {
         auto lease = wallet.AcquireDatabaseLease();
         if (lease->WalletName().empty() ||
@@ -728,8 +735,10 @@ static auto ReadWithCurrentLegacyTransparentTip(
         if (wallet.LegacyRecoveryRequiresFullArchive(session))
             throw LegacyBalanceNotCurrent(LegacyBalanceNotCurrent::RequiresFullArchive{});
         state = lease->LegacyTransparentState();
-        if (state == dinero::WalletManager::LegacyTransparentState::Absent)
+        if (state == dinero::WalletManager::LegacyTransparentState::Absent) {
             unenrolled_scan_height = lease->UnenrolledLegacyTransparentScanHeight();
+            native_owner = lease->HasOrchardOwnerState();
+        }
     }
     if (state == dinero::WalletManager::LegacyTransparentState::Absent ||
         state == dinero::WalletManager::LegacyTransparentState::Pending) {
@@ -739,6 +748,8 @@ static auto ReadWithCurrentLegacyTransparentTip(
         auto v3_source = ctx.daemon && ctx.daemon->chainstate
             ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)
             : nullptr;
+        if (v3_source && v3_source->HasFullArchiveWalletIndexV3() && native_owner)
+            throw LegacyBalanceNotCurrent(LegacyBalanceNotCurrent::NativeUnsupported{});
         if (v3_source && v3_source->HasFullArchiveWalletIndexV3() && wallet.isWalletLocked())
             throw LegacyBalanceNotCurrent(LegacyBalanceNotCurrent::UnlockRequired{});
     }
@@ -843,9 +854,10 @@ static void MarkLegacyBalanceNotCurrent(din::Json& result,
     result["error_code"] = error.upgrade_required ? "wallet_index_upgrade_required"
                          : error.requires_full_archive ? "wallet_requires_full_archive"
                          : error.unlock_required ? "wallet_unlock_required"
-                                                 : "wallet_balance_not_current";
+                         : error.native_unsupported ? "wallet_native_unsupported_on_v3"
+                                                    : "wallet_balance_not_current";
     result["retryable"] = !error.upgrade_required && !error.requires_full_archive &&
-                          !error.unlock_required;
+                          !error.unlock_required && !error.native_unsupported;
 }
 
 bool RefuseIfLegacyTransparentTipNotCurrent(
@@ -947,7 +959,20 @@ bool RefuseIfLegacyTransparentAddressMutation(
             (!ctx.walletName.empty() && lease->WalletName() != ctx.walletName))
             return RefuseLegacyTransparentWalletOwnership(result, "wallet_selection_changed");
         if (lease->LegacyTransparentState() ==
-            dinero::WalletManager::LegacyTransparentState::Absent) return false;
+            dinero::WalletManager::LegacyTransparentState::Absent) {
+            // #939: on a v3 node an Orchard-owner wallet cannot be tracked yet;
+            // a new address would receive funds this node can never show.
+            const auto source = ctx.daemon && ctx.daemon->chainstate
+                ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)
+                : nullptr;
+            if (source && source->HasFullArchiveWalletIndexV3() && lease->HasOrchardOwnerState()) {
+                result["error"] = dinero::WalletManager::kNativeWalletUnsupportedOnV3;
+                result["error_code"] = "wallet_native_unsupported_on_v3";
+                result["retryable"] = false;
+                return true;
+            }
+            return false;
+        }
         result["error"] = "Recovered transparent-only wallet cannot issue new addresses during migration";
         result["error_code"] = "wallet_transparent_only_address_unavailable";
         return true;
@@ -1311,7 +1336,9 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
 
     } catch (const LegacyBalanceNotCurrent& e) {
         result["balance_status"] = e.requires_full_archive ? "requires_full_archive"
-                                 : e.unlock_required ? "unlock_required" : "reconciliation_required";
+                                 : e.unlock_required ? "unlock_required"
+                                 : e.native_unsupported ? "native_unsupported_on_v3"
+                                                        : "reconciliation_required";
         MarkLegacyBalanceNotCurrent(result, e);
     } catch (const std::exception& e) {
         result["error"] = std::string("Wallet info query error: ") + e.what();

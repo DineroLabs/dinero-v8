@@ -700,6 +700,80 @@ TEST(WalletV3RecoveryRoute, LockedUnenrolledWalletReportsUnlockRequired) {
     EXPECT_TRUE(unlocked["retryable"].asBool());
 }
 
+// Issue #939 (interim): a wallet created or restored by 8.2.x carries an
+// Orchard owner, which v3 legacy enrollment refuses, so a v3 node can never
+// deliver to it. Every surface must say so honestly (never "catching up" or
+// "unlock required", which unlocking cannot clear), refuse new addresses that
+// would receive invisible funds, and refuse to create more such wallets.
+TEST(WalletV3NativeInterim, NativeWalletReportsUnsupportedAndCreationRefuses) {
+    CanonicalRecoveryFixture f(true,false);   // create(): native, Orchard owner
+    (void)f.MineToWallet();
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        auto lease=use->Wallet().AcquireDatabaseLease();
+        ASSERT_TRUE(lease->HasOrchardOwnerState());
+        ASSERT_EQ(lease->LegacyTransparentState(),WalletManager::LegacyTransparentState::Absent);
+    }
+    const auto index_path=f.f.path/"v3-native-interim-index";
+    { UTXOIndex v2(index_path.string());ASSERT_TRUE(v2.Initialize()); }
+    (void)UpgradeFullArchiveWalletIndexSchemaToV3(index_path);
+    auto metadata=std::make_unique<UTXOIndex>(index_path.string());
+    ASSERT_TRUE(metadata->InitializeFullArchiveV3MetadataOnly());
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        use->Wallet().setUTXOIndex(nullptr);
+        use->Wallet().DisableLegacyRescansForFullArchiveV3();
+    }
+    struct RestoreIndex {
+        ChainstateService& source;
+        std::unique_ptr<UTXOIndex> original;
+        ~RestoreIndex() {
+            auto replacement=ShieldedStateStartupTestAccess::SwapWalletIndexForRpc(source,std::move(original));
+            (void)replacement;
+        }
+    } restore{*f.f.service,ShieldedStateStartupTestAccess::SwapWalletIndexForRpc(
+        *f.f.service,std::move(metadata))};
+    ExecutionContext request;
+    request.daemon=&f.context;
+    request.walletName="canonical-recovery";
+    const auto expect_unsupported=[&](const char* phase) {
+        const auto balance=rpc_context_wallet_getbalance(request,din::obj());
+        EXPECT_EQ(balance["error_code"].asString(),"wallet_native_unsupported_on_v3")
+            << phase << "\n" << balance.toStyledString();
+        EXPECT_EQ(balance["error"].asString(),WalletManager::kNativeWalletUnsupportedOnV3);
+        EXPECT_FALSE(balance["retryable"].asBool()) << phase;
+        const auto info=rpc_context_wallet_getwalletinfo(request,din::obj());
+        EXPECT_EQ(info["balance_status"].asString(),"native_unsupported_on_v3") << phase;
+        const auto address=rpc_context_wallet_getnewaddress(request,din::obj());
+        EXPECT_EQ(address["error_code"].asString(),"wallet_native_unsupported_on_v3")
+            << phase << "\n" << address.toStyledString();
+        EXPECT_FALSE(address.isMember("address")) << phase;
+    };
+    expect_unsupported("unlocked");
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        use->Wallet().lockWallet();
+    }
+    expect_unsupported("locked");   // never "unlock required": unlocking cannot help
+
+    // No new wallet can be created or restored on this node.
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        EXPECT_THROW(use->Wallet().createFromGeneratedBip39("native-new",
+            WalletManager::GenerateBip39Identity(12,""),""),std::runtime_error);
+        EXPECT_THROW(use->Wallet().createFromBip39("native-restored",
+            "legal winner thank year wave sausage worth useful legal winner thank yellow",""),
+            std::runtime_error);
+        EXPECT_FALSE(use->Wallet().exists("native-new"));
+        EXPECT_FALSE(use->Wallet().exists("native-restored"));
+    }
+    din::Json create(Json::arrayValue);create.append("native-rpc");
+    const auto created=rpc_context_wallet_createhd(request,create);
+    EXPECT_NE(created["error"].asString().find(WalletManager::kWalletCreationUnsupportedOnV3),
+        std::string::npos) << created.toStyledString();
+    EXPECT_FALSE(created.isMember("mnemonic"));
+}
+
 TEST(WalletV3ColdRestart, NamedWalletReceiptsSurviveFreshServiceAndIndexHandles) {
     CanonicalRecoveryFixture f(true,true);
     const auto [historical_amount,historical_total]=f.PrepareFundedHistoricalWallet();

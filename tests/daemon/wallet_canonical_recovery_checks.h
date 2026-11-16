@@ -6,6 +6,8 @@
 #include "crypto/sha256.h"
 #include "rpc/orchard_account_rpc.h"
 din::Json rpc_context_wallet_getbalance(const ExecutionContext&, const din::Json&);
+din::Json rpc_context_wallet_getnewaddress(const ExecutionContext&, const din::Json&);
+din::Json rpc_context_wallet_createhd(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_wallet_snapshot(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_wallet_listtransactions(const ExecutionContext&, const din::Json&);
