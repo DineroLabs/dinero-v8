@@ -7,6 +7,7 @@ din::Json rpc_context_wallet_rescanblockchain(const ExecutionContext&, const din
 din::Json rpc_context_wallet_importtaprootdescriptor(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_wallet_setlabel(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext&, const din::Json&);
+din::Json rpc_context_wallet_sendmany(const ExecutionContext&, const din::Json&);
 void registerShieldedWalletMethods();
 #include "rpc/orchard_account_rpc.h"
 
@@ -2196,6 +2197,38 @@ TEST(WalletV3NativeSpend, NativeWalletSendsWithPooledChangeAndKeepsReceipts) {
     ASSERT_TRUE(f.wallet->Init(f.context));
     ASSERT_TRUE(f.wallet->Start());
     check_after("restarted");
+    // A second send spends the confirmed change coin (a change-chain key
+    // signs), the retained confirmed payment does not block it, and its
+    // change rotates to the next unused pooled change script.
+    WalletService::AcquireWalletUse(f.wallet)->Wallet().unlockWallet("canonical-fixture-pass",0);
+    const auto again=rpc_context_wallet_sendtoaddress(request,payment);
+    ASSERT_EQ(again["status"].asString(),"signed_and_submitted") << again.toStyledString();
+    ASSERT_TRUE(again["accepted"].asBool()) << again.toStyledString();
+    const auto change2=again["change_address"].asString();
+    EXPECT_NE(change2,change);
+    EXPECT_EQ(NativeTestCount(WalletService::AcquireWalletUse(f.wallet)->Wallet(),
+        "SELECT count(*) FROM addresses WHERE account=0 AND change=1 AND idx=1 AND address='"+change2+"'"),1)
+        << change2;
+    const auto entry2=f.f.ingress->mempool().getMempoolEntry(uint256::FromHexUnsafe(again["txid"].asString()));
+    ASSERT_TRUE(entry2);
+    (void)f.Mine(entry2->tx);
+    ASSERT_EQ(f.f.service->GetActiveTip()->height,104u);
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+        const auto session=use->Wallet().AcquireDatabaseLease()->Session();
+        const auto indexed=RuntimeIndexDelivery::ReadForWalletV3(use->Wallet(),index->Index(),session);
+        const auto ordinary=RuntimeOrdinaryDelivery::ReadForWallet(use->Wallet(),session);
+        ASSERT_TRUE(indexed);ASSERT_TRUE(ordinary);
+        EXPECT_EQ(indexed->cursor,ordinary->cursor);
+        EXPECT_EQ(indexed->tip_height,104u);
+    }
+    const auto final_balance=rpc_context_wallet_getbalance(request,din::obj());
+    ASSERT_FALSE(final_balance.isMember("error")) << final_balance.toStyledString();
+    EXPECT_NEAR(final_balance["total"].asDouble(),
+        before_total-double(200000+fee_una+again["fee_paid_una"].asInt64())/1e8,1e-8);
     f.wallet->Stop();
 }
 
@@ -2222,9 +2255,42 @@ TEST(WalletV3NativeSpend, NativeSendRefusesPendingLockedAndStaleReceipt) {
     std::string error;
     ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
         WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    // Only sendtoaddress is enabled: every other spend RPC (sendmany and the
+    // bound pool/swap dispatch built on it) keeps the native refusal.
+    din::Json many(Json::arrayValue);din::Json recipients=din::obj();
+    recipients[OrchardMiningPayout]=0.001;many.append(recipients);
+    const auto sent_many=rpc_context_wallet_sendmany(request,many);
+    EXPECT_EQ(sent_many["error_code"].asString(),"wallet_native_send_unavailable_on_v3") << sent_many.toStyledString();
+    EXPECT_TRUE(f.wallet->get().getPendingPayments().empty());
+    // The payment owner itself refuses a native transaction whose change pays
+    // a script outside the sealed domain, whoever built it.
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+        std::vector<CanonicalWalletUTXO> coins;
+        for(const auto& utxo:use->Wallet().listUnspentUTXOs(1,9999999)) {
+            if(!utxo.is_mature||utxo.is_coinbase)continue;
+            CanonicalWalletUTXO coin;coin.txid=uint256::FromHexUnsafe(utxo.txid);coin.vout=utxo.vout;
+            coin.value=AmountUna::Una(utxo.amount_una);coin.path=utxo.derivation_path;coin.height=utxo.height;
+            coin.is_coinbase=utxo.is_coinbase;ASSERT_TRUE(util::unhex(utxo.script_pubkey,coin.spk));
+            coins.push_back(coin);
+        }
+        ASSERT_FALSE(coins.empty());
+        BuildOptions options;options.fee_rate=1;
+        options.change_address=bech32::Encode("rdin",1,std::vector<uint8_t>(32,0x11),bech32::Encoding::BECH32M);
+        ASSERT_FALSE(options.change_address.empty());
+        const auto built=UnsignedTxBuilder::Build(coins,{TxOutputRequest(OrchardMiningPayout,100000)},options);
+        ASSERT_TRUE(built.success) << built.error;
+        const auto identity=CaptureWalletSigningIdentity(use->Wallet(),"canonical-recovery");
+        const auto signed_payment=f.f.service->signAndStageWalletPayment(use->Wallet(),identity,built.unsigned_tx,
+            PendingPaymentIntent{OrchardMiningPayout,100000,""});
+        EXPECT_FALSE(signed_payment.success);
+        EXPECT_NE(signed_payment.error.find("sealed script domain"),std::string::npos) << signed_payment.error;
+        EXPECT_TRUE(use->Wallet().getPendingPayments().empty());
+    }
     WalletService::AcquireWalletUse(f.wallet)->Wallet().lockWallet();
     const auto locked=rpc_context_wallet_sendtoaddress(request,payment);
-    EXPECT_TRUE(locked.isMember("error")) << locked.toStyledString();
+    EXPECT_EQ(locked["error"].asString(),"Wallet is locked. Use wallet.unlock first.") << locked.toStyledString();
     EXPECT_FALSE(locked.isMember("txid"));
     EXPECT_TRUE(f.wallet->get().getPendingPayments().empty());
     WalletService::AcquireWalletUse(f.wallet)->Wallet().unlockWallet("canonical-fixture-pass",0);
