@@ -1006,6 +1006,10 @@ struct PreparedOrchardParent::State {
         // Accessed only under the originating service's selected lock. This
         // memoizes the historical index audit, never the live coin/root checks.
         std::optional<std::pair<uint64_t,uint64_t>> canonical_revision;
+        // The branch-catalog base built once from this exact completed parent
+        // and history; immutable and shared by every later branch from it.
+        std::mutex initial_catalog_mutex;
+        std::shared_ptr<const OrchardInitialCatalog> initial_catalog;
         explicit BoundaryMaterial(const OrchardParentReplay::Target& target)
             : replay(target, SelectedParentReplayWorkLimits()) {}
     };
@@ -1047,9 +1051,23 @@ struct ChainstateService::BoundaryParentCache {
     std::shared_ptr<PreparedOrchardParent::State::BoundaryMaterial> material;
     std::shared_ptr<PreparedOrchardCatalog> catalog;
 };
+// Keyed on the exact activation-parent identity, profile and owners. The proof
+// is hash-linked from that parent back to genesis and freezes on completion,
+// so no selected-revision key is needed; the live coin/root checks still run at
+// every use. Never holds a selected-read token, an incomplete or a poisoned
+// result.
+struct ChainstateService::ActivationParentCache {
+    std::weak_ptr<ChainDB> db;
+    std::weak_ptr<BlockStorage> blocks;
+    OrchardParentReplay::Target target;
+    std::string profile;
+    std::shared_ptr<PreparedOrchardParent::State::BoundaryMaterial> material;
+    std::shared_ptr<PreparedOrchardCatalog> catalog;
+};
 #else
 struct PreparedOrchardParent::State {};
 struct ChainstateService::BoundaryParentCache {};
+struct ChainstateService::ActivationParentCache {};
 #endif
 PreparedOrchardParent::PreparedOrchardParent(std::unique_ptr<State> state):state_(std::move(state)) {}
 PreparedOrchardParent::~PreparedOrchardParent()=default;
@@ -1165,11 +1183,19 @@ struct ChainstateService::OrchardSnapshotStartupState {
 #endif
 };
 
+bool ChainstateService::HasActivationParentCache() {
+    std::lock_guard lock(activation_parent_cache_mutex_);return bool(activation_parent_cache_);
+}
+void ChainstateService::ResetActivationParentCache() {
+    std::unique_ptr<ActivationParentCache> released;
+    {std::lock_guard lock(activation_parent_cache_mutex_);released=std::move(activation_parent_cache_);}
+}
 void ChainstateService::setChainDB(ChainDB* db) {
     if (activation_mutex_.HeldByCurrentThread())
         throw std::logic_error("Database handoff requires an unheld selected lock");
     std::unique_lock cache_lock(boundary_parent_cache_mutex_);
     boundary_parent_cache_.reset();
+    {std::lock_guard activation_lock(activation_parent_cache_mutex_);activation_parent_cache_.reset();}
     std::shared_ptr<ChainDB> previous;
     {
         std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
@@ -1187,6 +1213,7 @@ void ChainstateService::setOwnedChainDB(std::shared_ptr<ChainDB> db) {
         throw std::logic_error("Database handoff requires an unheld selected lock");
     std::unique_lock cache_lock(boundary_parent_cache_mutex_);
     boundary_parent_cache_.reset();
+    {std::lock_guard activation_lock(activation_parent_cache_mutex_);activation_parent_cache_.reset();}
     std::shared_ptr<ChainDB> previous;
     {
         std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
@@ -20721,6 +20748,49 @@ bool ChainstateService::CompletePreparedOrchardParent(PreparedOrchardParent& pre
             }
             replay->Finish();p.branch_replay_=std::move(replay);return true;
         }
+        // A post-activation branch from an already-proved activation parent
+        // reuses that completed parent material instead of replaying genesis
+        // again. Historical-prefix and snapshot owners keep their own replay.
+        const auto profile=consensus::ValidatedOrchardBlock::CaptureProfile();
+        if(prepared.state_->branch_target_ && !prepared.state_->historical_target_ &&
+            uint64_t(target.height)+1==Params().orchard_activation_height) {
+            std::shared_ptr<PreparedOrchardParent::State::BoundaryMaterial> cached;
+            std::shared_ptr<PreparedOrchardCatalog> cached_catalog;
+            {
+                std::lock_guard lock(activation_parent_cache_mutex_);
+                const auto& c=activation_parent_cache_;
+                if(c && c->db.lock()==prepared.state_->db_ && c->blocks.lock()==prepared.state_->blocks_ &&
+                    c->profile==profile && c->target.height==target.height && c->target.hash==target.hash &&
+                    c->target.chainwork==target.chainwork && (!prepare_catalog || c->catalog)) {
+                    cached=c->material;cached_catalog=c->catalog;
+                }
+            }
+            if(cached) {
+                auto& old=*prepared.state_;
+                auto next=std::make_unique<PreparedOrchardParent::State>(
+                    std::make_unique<SelectedReadUse>(weak_from_this().lock()),this,old.db_,old.blocks_,target,cached);
+                next->branch_target_=old.branch_target_;
+                if(prepare_catalog)next->catalog_=std::move(cached_catalog);
+                prepared.state_=std::move(next);
+                activation_parent_cache_hits_.fetch_add(1,std::memory_order_relaxed);
+                if(logger_) logger_->info("[OrchardParent] Reusing completed activation-parent proof at height "+
+                    std::to_string(target.height)+"; no genesis replay");
+                if(CompletePreparedOrchardBranch(prepared,prepared.state_->boundary_->serialized_bytes))return true;
+                // Never let a retained entry turn one failure into repeated
+                // ones: drop it, so the next attempt replays from genesis as
+                // it did before reuse existed.
+                std::lock_guard lock(activation_parent_cache_mutex_);
+                if(activation_parent_cache_ && activation_parent_cache_->material==cached)activation_parent_cache_.reset();
+                if(logger_) logger_->warning("[OrchardParent] Branch preparation from a reused activation-parent proof failed; "
+                    "dropped the retained proof, next attempt replays from genesis");
+                return false;
+            }
+        }
+        if(uint64_t(target.height)+1==Params().orchard_activation_height) {
+            activation_parent_replays_.fetch_add(1,std::memory_order_relaxed);
+            if(logger_) logger_->info("[OrchardParent] Replaying activation parent from genesis at height "+
+                std::to_string(target.height));
+        }
         // Opening/configuring the disposable on-disk capture belongs to this
         // detached phase too, never the selected-lock capture/plan phase.
         prepared.state_->history_=std::make_unique<OrchardHistoryCapture>(target.height,target.hash);
@@ -20800,6 +20870,30 @@ bool ChainstateService::CompletePreparedOrchardParent(PreparedOrchardParent& pre
                     return *body;
                 });
         prepared.state_->boundary_->serialized_bytes=material;
+        // The completed parent proof is independent of any branch above it.
+        // Retaining it keeps the parent coin set resident for the process
+        // lifetime, so only full (non-compact, non-stateless) nodes cache it.
+        bool retain=uint64_t(target.height)+1==Params().orchard_activation_height &&
+            consensus::ValidatedOrchardBlock::CaptureProfile()==profile && !GetConfig().utreexo_stateless;
+        if(retain) {
+            std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+            retain=!compact_startup_;
+        }
+        if(retain) {
+            std::lock_guard lock(activation_parent_cache_mutex_);
+            // Never replace an entry that carries the prepared catalog with one
+            // that does not; otherwise the newest completed proof wins.
+            const auto& c=activation_parent_cache_;
+            const bool keep=c && !prepared.state_->catalog_ && c->catalog && c->target.hash==target.hash &&
+                c->db.lock()==prepared.state_->db_ && c->blocks.lock()==prepared.state_->blocks_ && c->profile==profile;
+            if(!keep) {
+                activation_parent_cache_=std::make_unique<ActivationParentCache>(ActivationParentCache{
+                    prepared.state_->db_,prepared.state_->blocks_,target,profile,
+                    prepared.state_->boundary_,prepared.state_->catalog_});
+                if(logger_) logger_->info("[OrchardParent] Retained completed activation-parent proof at height "+
+                    std::to_string(target.height)+" for later branch preparations");
+            }
+        }
         return CompletePreparedOrchardBranch(prepared,material);
     } catch (...) { return false; }
 #else
@@ -20835,7 +20929,14 @@ bool ChainstateService::CompletePreparedOrchardBranch(PreparedOrchardParent& pre
                 captured[remaining-1]={hash,*header,*work};hash=header->prev_block_hash;
             }
             if(hash!=target.hash) return false;
-            auto replay=std::make_unique<OrchardBranchReplay>(prepared.state_->replay_,*prepared.state_->history_,branch_target);
+            auto& parent_material=*prepared.state_->boundary_;
+            std::shared_ptr<const OrchardInitialCatalog> initial;
+            {std::lock_guard lock(parent_material.initial_catalog_mutex);initial=parent_material.initial_catalog;}
+            auto replay=std::make_unique<OrchardBranchReplay>(prepared.state_->replay_,*prepared.state_->history_,branch_target,initial);
+            if(!initial) {
+                std::lock_guard lock(parent_material.initial_catalog_mutex);
+                if(!parent_material.initial_catalog)parent_material.initial_catalog=replay->InitialCatalog();
+            }
             const auto now=std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
             for(size_t i=0;i<captured.size();++i) {
