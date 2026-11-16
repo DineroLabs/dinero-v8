@@ -84,6 +84,13 @@ bool OrchardBindingShape(const din::Json& value) {
 #if DINERO_WALLET_RAW_ORCHARD
 std::string OrchardBindingValue(dinero::WalletManager::DatabaseLease& lease) {
     lease.RequireOrchardWalletReady();
+    // #939 phase 1: a native wallet enrolled on a full-archive v3 index keeps
+    // its Orchard catalog, but v3 has no Orchard delivery yet. Every public
+    // Orchard request needs this binding, so refusing it here keeps Orchard
+    // effects (and their guarded ordinary writes) away from v3 receipts.
+    if(lease.NativeV3TransparentState()!=dinero::WalletManager::NativeV3State::Absent)
+        throw OrchardBindingError("wallet_native_shielded_unavailable_on_v3",
+            dinero::WalletManager::kNativeWalletShieldedUnavailableOnV3);
     const auto bytes=lease.RpcBinding();
     return util::hex(std::vector<unsigned char>(bytes.begin(),bytes.end()));
 }

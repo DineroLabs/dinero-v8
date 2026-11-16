@@ -293,7 +293,13 @@ din::Json rpc_context_wallet_getstatus(const ExecutionContext& ctx, const din::J
                         result["balance_available"] = true;
                         if (ctx.daemon->chainstate) {
                             auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
-                            if (chainstate && chainstate->utxoIndex()) {
+                            // #939: a native-complete wallet on a v3 metadata
+                            // index has no v2 confidential coin source.
+                            if (chainstate && chainstate->utxoIndex() &&
+                                chainstate->utxoIndex()->IsFullArchiveV3MetadataOnly()) {
+                                result["confidential_balance"] = din::Json(Json::nullValue);
+                                result["total_with_confidential"] = din::Json(Json::nullValue);
+                            } else if (chainstate && chainstate->utxoIndex()) {
                                 const int64_t conf_balance_una = chainstate->utxoIndex()->GetConfidentialBalance().GetInt64();
                                 const double conf_balance_din = static_cast<double>(conf_balance_una) / 1e8;
                                 result["confidential_balance"] = conf_balance_din;

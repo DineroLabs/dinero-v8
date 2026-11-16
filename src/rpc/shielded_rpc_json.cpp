@@ -167,6 +167,15 @@ WalletManager* AcquireWallet(const ExecutionContext& ctx, Json& err, bool requir
             err["wallet_scope"]="legacy_transparent_only";
             return nullptr;
         }
+        // #939 phase 1: a native v3 wallet keeps its Orchard catalog, but v3
+        // has no Orchard delivery yet. Never open/initialize Orchard runtime
+        // state (or the legacy sidecar) for it on this source.
+        if (lease->NativeV3TransparentState()!=WalletManager::NativeV3State::Absent) {
+            err["error"]=WalletManager::kNativeWalletShieldedUnavailableOnV3;
+            err["error_code"]="wallet_native_shielded_unavailable_on_v3";
+            err["retryable"]=false;
+            return nullptr;
+        }
     }
     auto& wm = ws->get();
     if (require_unlocked && wm.isWalletLocked()) {
