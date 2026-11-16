@@ -23,6 +23,8 @@
 // Pure decision, factored out so it is unit-testable without a daemon,
 // sockets, or a live anchor list — same rationale as stale_tip_recovery.h.
 
+#include <algorithm>
+#include <cstdint>
 #include <string>
 
 namespace dinero::daemon {
@@ -34,6 +36,17 @@ namespace dinero::daemon {
 // discovery `-connect=` promises to disable.
 inline bool shouldRunAnchorAutoReconnect(const std::string& connect_config) {
     return connect_config.empty();
+}
+
+template <typename PeerRange>
+bool hasConnectedOutboundAnchor(const PeerRange& peers, const std::string& address,
+                                uint16_t port) {
+    // An inbound connection from an anchor uses its ephemeral source port and
+    // does not fill a durable outbound slot to that anchor's listening port.
+    return std::any_of(peers.begin(), peers.end(), [&](const auto& peer) {
+        return peer.is_connected && peer.is_outbound &&
+               peer.address == address && peer.port == port;
+    });
 }
 
 }  // namespace dinero::daemon
