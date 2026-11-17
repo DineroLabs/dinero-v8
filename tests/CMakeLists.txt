@@ -6248,6 +6248,14 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     add_test(NAME WalletV3ImportGuard COMMAND test_assumeutxo_replay
       --gtest_filter=WalletV3ImportGuard.MandatoryDescriptorRescanRefusesBeforeAnyWalletWrite)
     set_tests_properties(WalletV3ImportGuard PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
+    # #939: locked, not-yet-enrolled legacy wallet reports unlock_required.
+    add_test(NAME WalletV3UnlockRequired COMMAND test_assumeutxo_replay
+      --gtest_filter=WalletV3RecoveryRoute.LockedUnenrolledWalletReportsUnlockRequired)
+    set_tests_properties(WalletV3UnlockRequired PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
+    # #939 interim: native (Orchard-owner) wallets on v3 report honestly.
+    add_test(NAME WalletV3NativeInterim COMMAND test_assumeutxo_replay
+      --gtest_filter=WalletV3NativeInterim.*)
+    set_tests_properties(WalletV3NativeInterim PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
   endif()
   add_test(NAME VaultCanonicalObservation COMMAND test_assumeutxo_replay --gtest_filter=VaultCanonicalObservation.*)
   set_tests_properties(VaultCanonicalObservation PROPERTIES TIMEOUT 120 LABELS "daemon;vault;mandatory")
