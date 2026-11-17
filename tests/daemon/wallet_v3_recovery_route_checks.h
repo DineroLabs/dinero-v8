@@ -2350,6 +2350,9 @@ TEST(WalletV3NativeSpend, NativeWalletSendsWithPooledChangeAndKeepsReceipts) {
         // inventory yet, so it cannot claim send readiness until unlock.
         EXPECT_EQ(after["send_ready"].asBool(),inventory_authenticatable)
             << after.toStyledString();
+        if (!inventory_authenticatable)
+            EXPECT_EQ(after["send_unavailable_code"].asString(),"wallet_locked")
+                << after.toStyledString();
     };
     check_after("delivered",true);
     f.wallet->Stop();

@@ -991,8 +991,13 @@ static void MarkNativeV3SendReady(din::Json& result) {
     result.removeMember("send_unavailable_code");
 }
 
-static void MarkNativeV3SendUnavailable(din::Json& result) {
+static void MarkNativeV3SendUnavailable(din::Json& result,bool locked) {
     result["send_ready"] = false;
+    if (locked) {
+        result["send_unavailable_reason"] = "Unlock this wallet to authenticate its Orchard ownership inventory";
+        result["send_unavailable_code"] = "wallet_locked";
+        return;
+    }
     result["send_unavailable_reason"] = dinero::WalletManager::kNativeWalletSendUnavailableOnV3;
     result["send_unavailable_code"] = "wallet_native_send_unavailable_on_v3";
 }
@@ -1196,7 +1201,7 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
             result["send_scope"] = "transparent_recovered_v3";
             result.removeMember("send_unavailable_reason");
         }
-        if (native_no_send) MarkNativeV3SendUnavailable(result);
+        if (native_no_send) MarkNativeV3SendUnavailable(result,wallet_service->get().isWalletLocked());
         if (native_send) MarkNativeV3SendReady(result);
         result["reservation_status"] = ReservationStatusName(summary.reservations);
 
@@ -1380,7 +1385,7 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
             result["send_scope"] = "transparent_recovered_v3";
             result.removeMember("send_unavailable_reason");
         }
-        if (native_no_send) MarkNativeV3SendUnavailable(result);
+        if (native_no_send) MarkNativeV3SendUnavailable(result,wallet_service->get().isWalletLocked());
         if (native_send) MarkNativeV3SendReady(result);
         result["reservation_status"] = ReservationStatusName(summary.reservations);
         result["balance"] = balance.total;
