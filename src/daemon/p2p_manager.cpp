@@ -6281,7 +6281,7 @@ void P2PManager::connection_manager_loop() {
                     }
                 }
                 const auto autonomy = dinero::p2p::EvaluateBootstrapAutonomy(
-                    connected_community, community_candidates.size());
+                    connected_community);
 
                 for (const auto& candidate : community_candidates) {
                     consider_candidate(candidate.ip, candidate.port);
