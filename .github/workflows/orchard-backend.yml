@@ -572,7 +572,7 @@ jobs:
           from pathlib import Path
           import re
           log=Path('orchard-rpc-request-framing-execution.log').read_text()
-          expected=['SegmentedHeadersAndBodyReachHandlerExactlyOnce','CapturedRateRefusalConsumesOneFrameWithoutDispatch','AuthenticationStillGatesCompleteRequests','UnifiedHandlerRetainsWalletAndAlias','ReturnedAndThrownFailuresReleaseWallet','ClosedWalletRefusesBeforeUnifiedHandler','VaultAttachmentRequiresAdminAccess','VaultCreationRequiresAdminAccess']
+          expected=['SegmentedHeadersAndBodyReachHandlerExactlyOnce','RuntimeRecoveryWaitsForInitialAddressIssuance','CapturedRateRefusalConsumesOneFrameWithoutDispatch','AuthenticationStillGatesCompleteRequests','ExportAliasWaitsForEncryptedCreationOwner','UnifiedHandlerRetainsWalletAndAlias','ReturnedAndThrownFailuresReleaseWallet','ClosedWalletRefusesBeforeUnifiedHandler','VaultAttachmentRequiresAdminAccess','VaultCreationRequiresAdminAccess']
           assert sorted(re.findall(r'\[       OK \] RpcRequestFraming\.(\w+)',log))==sorted(expected)
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYFRAME
