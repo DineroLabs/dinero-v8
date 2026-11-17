@@ -921,9 +921,23 @@ TEST(WalletFreshBirth, SealedOnlyForGeneratedIdentityAndAuthenticated) {
         EXPECT_EQ(lease->SealedFreshBirthHeight(lease->Session()),std::optional<uint32_t>(155669u));
     }
     // Tamper: any change to the sealed value must refuse, never pass as fresh.
+    // Always CHANGE the last byte (a fixed '00' would be a no-op ~1/256 times,
+    // leaving a valid record that is correctly accepted).
     auto* db=wallet.getCurrentDatabase();
-    ASSERT_EQ(sqlite3_exec(db,"UPDATE settings SET value=substr(value,1,length(value)-2)||'00' "
+    const auto sealed_value=[&] {
+        sqlite3_stmt* q=nullptr;std::string v;
+        if(sqlite3_prepare_v2(db,"SELECT value FROM settings WHERE key='wallet_fresh_birth_v1'",-1,&q,nullptr)==SQLITE_OK &&
+           sqlite3_step(q)==SQLITE_ROW)
+            v.assign(reinterpret_cast<const char*>(sqlite3_column_text(q,0)),sqlite3_column_bytes(q,0));
+        sqlite3_finalize(q);return v;
+    };
+    const auto before_tamper=sealed_value();
+    ASSERT_FALSE(before_tamper.empty());
+    ASSERT_EQ(sqlite3_exec(db,"UPDATE settings SET value=substr(value,1,length(value)-2)||"
+        "CASE WHEN substr(value,-2)='00' THEN '01' ELSE '00' END "
         "WHERE key='wallet_fresh_birth_v1'",nullptr,nullptr,nullptr),SQLITE_OK);
+    ASSERT_EQ(sqlite3_changes(db),1);
+    ASSERT_NE(sealed_value(),before_tamper) << "tamper must change the sealed record";
     {
         auto lease=wallet.AcquireDatabaseLease();
         EXPECT_THROW((void)lease->SealedFreshBirthHeight(lease->Session()),std::exception);
