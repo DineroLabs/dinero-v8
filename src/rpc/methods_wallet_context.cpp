@@ -8002,8 +8002,22 @@ static void AddCreationReceiveAddresses(const ExecutionContext& ctx, din::Json& 
         result["p2mr_error"] = e.what();
     }
 #if DINERO_WALLET_RAW_ORCHARD
-    // On a full-archive v3 node the native route enrolls this account with
-    // the wallet and the v3 Orchard step delivers it from activation (#939).
+    // On a full-archive v3 node the native route could deliver this account,
+    // but a native wallet that has Orchard account rows cannot yet send
+    // transparent funds there (the recovered-v3 signer refuses catalogs with
+    // accounts). Keep new v3 wallets able to send: create account 0 later,
+    // on demand, until Orchard-account sends exist (#939). v2 nodes are
+    // unchanged.
+    {
+        const auto v3_source = ctx.daemon && ctx.daemon->chainstate
+            ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)
+            : nullptr;
+        if (v3_source && v3_source->HasFullArchiveWalletIndexV3()) {
+            result["orchard_error"] = "Orchard account is created on demand on this node so the wallet can send transparent funds";
+            result["orchard_deferred"] = true;
+            return;
+        }
+    }
     try {
         din::Json orchard_params;
         orchard_params["account"] = 0;

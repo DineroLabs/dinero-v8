@@ -867,10 +867,23 @@ TEST(WalletV3NativeInterim, V3CreatesGeneratedWalletsAndRefusesRestores) {
     const auto created=rpc_context_wallet_createhd(request,create);
     ASSERT_FALSE(created.isMember("error")) << created.toStyledString();
     EXPECT_TRUE(created.isMember("mnemonic"));
-    // Phase 3: v3 delivers Orchard accounts, so creation issues account 0.
-    EXPECT_TRUE(created.isMember("first_orchard_address")) << created.toStyledString();
-    EXPECT_FALSE(created.isMember("orchard_error")) << created.toStyledString();
+    // On v3 the creation-time Orchard account is deferred so the new wallet
+    // keeps transparent sends (an Orchard-account wallet cannot send there yet).
+    EXPECT_FALSE(created.isMember("first_orchard_address")) << created.toStyledString();
+    EXPECT_TRUE(created["orchard_deferred"].asBool()) << created.toStyledString();
     std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    {
+        request.walletName="native-rpc";
+        const auto ready=rpc_context_wallet_getbalance(request,din::obj());
+        EXPECT_EQ(ready["send_scope"].asString(),"transparent_native_v3") << ready.toStyledString();
+        EXPECT_TRUE(ready["send_ready"].asBool()) << ready.toStyledString();
+    }
+    // On demand, account 0 is still created and delivered on v3.
+    din::Json account_params;account_params["account"]=0;
+    const auto orchard=rpc_context_wallet_orchard_createaccount(request,account_params);
+    ASSERT_TRUE(orchard.isMember("address")) << orchard.toStyledString();
     ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
         WalletService::CanonicalRecovery::AppliedPrefix) << error;
     auto use=WalletService::AcquireWalletUse(f.wallet);
@@ -881,8 +894,8 @@ TEST(WalletV3NativeInterim, V3CreatesGeneratedWalletsAndRefusesRestores) {
         EXPECT_TRUE(lease->SealedFreshBirthHeight(lease->Session()).has_value());
     }
     {
-        // The creation-time Orchard account 0 was enrolled and delivered to
-        // the authenticated head by the v3 Orchard step.
+        // The on-demand Orchard account 0 was delivered to the authenticated
+        // head by the v3 Orchard step.
         const auto view=f.f.service->getRuntimeAccountReplay();
         ASSERT_TRUE(view.ok());
         const auto session=use->Wallet().AcquireDatabaseLease()->Session();

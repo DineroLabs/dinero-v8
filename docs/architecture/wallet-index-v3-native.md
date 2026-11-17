@@ -202,3 +202,15 @@ Status: design for v8.2.4. Owner-directed, owned by Claude, reviewed by codex-ch
    issuance continues.
 6. **Orchard:** a native-complete wallet keeps Orchard readiness. In phase 3,
    Orchard account delivery advances on v3.
+
+## Interim: creation-time Orchard account on v3
+
+On a v3 node, `createhd` defers Orchard account 0 (`orchard_deferred: true`).
+- **Why:** a native wallet with Orchard account rows cannot yet send transparent
+  funds there. The recovered-v3 signer refuses catalogs with accounts.
+- **Effect:** new wallets keep transparent sends.
+- **Recovering it:** account 0 can still be created on demand through
+  `wallet.orchard.createaccount`. Phase 3 delivers it on v3.
+- **Other nodes:** v2 nodes still create it at wallet creation.
+- **End of interim:** once Orchard-account transparent sends exist, the
+  creation-time account returns on v3.
