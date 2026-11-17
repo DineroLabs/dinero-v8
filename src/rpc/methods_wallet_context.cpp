@@ -3302,6 +3302,15 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
         result["error"] = "Wallet is locked. Use wallet.unlock first.";
         return result;
     }
+#if DINERO_WALLET_RAW_ORCHARD
+    if (native_v3_send && !rpc_context_native_v3_ordinary_inventory_ready(
+            ctx,wallet_service->get().getCurrentWalletName())) {
+        result["error"] = dinero::WalletManager::kNativeWalletSendUnavailableOnV3;
+        result["error_code"] = "wallet_native_send_unavailable_on_v3";
+        result["retryable"] = false;
+        return result;
+    }
+#endif
     // Check chainstate for UTXOs
     if (!ctx.daemon->chainstate) {
         result["error"] = "Chainstate service not available";
