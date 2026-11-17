@@ -2081,6 +2081,82 @@ NativeOrchardCapture CaptureNativeOrchard(sqlite3* db,std::span<const uint8_t> s
 }
 } // namespace
 
+// #939 phase 2: a native pool extension grows the sealed script domain by
+// exactly its newest pool generation, in the same wallet transaction that
+// returned the wallet to native Pending. The index receipt (DNUI03) still
+// names the pre-extension domain, and coverage decoding refuses a receipt
+// over any other domain. Retire exactly that receipt here: only when the
+// wallet is durably extending, and only if the receipt's recorded domain is
+// the current domain minus the newest generation. The coverage reconcile that
+// follows then re-proves every index row over the grown domain, as it does
+// after any trigger invalidation. A receipt over the current domain (an
+// interrupted earlier reconcile) is kept; any other domain fails closed.
+// Lock order: the caller holds selected; here wallet, then index.
+void RuntimeIndexDelivery::RetireReceiptForNativePoolExtensionV3(WalletManager& wallet,UTXOIndex& index,
+        const RuntimeWalletOriginProjection& origin) {
+    auto lease=wallet.AcquireDatabaseLease();
+    if(!wallet.SoleDatabaseLeaseHeld() || lease->Session()!=origin.session_ || !lease->Database() ||
+       lease->LegacyTransparentState()!=WalletManager::LegacyTransparentState::Absent ||
+       lease->NativeV3TransparentState()!=WalletManager::NativeV3State::Pending)
+        Fail("Native pool extension wallet owner changed");
+    auto* db=lease->Database();OrdinaryTransaction wallet_read(db);
+    if(ExistingIdentity(db)!=origin.identity_)Fail("Native pool extension identity changed");
+    { Statement table(db,"SELECT 1 FROM sqlite_master WHERE type='table' AND name='native_v3_address_pool'");
+      const int rc=sqlite3_step(table.value);
+      if(rc==SQLITE_DONE){wallet_read.Commit();return;} // first enrollment
+      if(rc!=SQLITE_ROW)Fail("Native pool extension schema unavailable"); }
+    int64_t newest=0;
+    { Statement q(db,"SELECT COALESCE(MAX(generation),0) FROM native_v3_address_pool");
+      if(sqlite3_step(q.value)!=SQLITE_ROW)Fail("Native pool extension generation unavailable");
+      newest=CoverageInt(q.value,0); }
+    if(newest<=0){wallet_read.Commit();return;} // first enrollment: no prior receipt to retire
+    std::set<std::vector<uint8_t>> grown;
+    { Statement q(db,"SELECT script_pubkey FROM native_v3_address_pool WHERE generation=?");q.Int(1,newest);int rc;
+      while((rc=sqlite3_step(q.value))==SQLITE_ROW)grown.insert(Unhex(CoverageText(q.value,0)));
+      if(rc!=SQLITE_DONE || grown.empty())Fail("Native pool extension generation incomplete"); }
+    const auto domain=OrdinaryScripts(*lease);
+    const auto paths=V3RecordedPaths(*lease);
+    auto before=paths;
+    for(const auto& script:grown)if(!before.erase(script))Fail("Native pool extension script is not watched");
+    const auto current=IndexScripts(paths,domain.historical),previous=IndexScripts(before,domain.historical);
+    const auto owner=WalletIndexV3OwnerToken::Capture(*lease);
+    std::lock_guard<std::recursive_mutex> index_lock(index.db_mutex_);
+    if(index.open_mode_!=UTXOIndex::OpenMode::FullArchiveV3MetadataOnly || !index.db_ ||
+       index.atomic_write_active_ || !sqlite3_get_autocommit(index.db_))
+        Fail("Native pool extension metadata index unavailable");
+    V3IndexConnection stored(std::filesystem::u8path(index.db_path_),true);
+    Exec(stored.db,"BEGIN IMMEDIATE");
+    try {
+        RequireFullArchiveWalletIndexV3(stored.db,std::filesystem::u8path(index.db_path_));
+        std::optional<std::string> bytes;
+        { Statement q(stored.db,"SELECT receipt,invalidated FROM wallet_index_receipts_v3 WHERE wallet_identity=?");
+          owner.BindCurrentIdentity(q.value,1,*lease);
+          const int rc=sqlite3_step(q.value);
+          if(rc==SQLITE_ROW && sqlite3_column_type(q.value,0)!=SQLITE_NULL) {
+              const auto* p=static_cast<const char*>(sqlite3_column_blob(q.value,0));const int n=sqlite3_column_bytes(q.value,0);
+              if(sqlite3_column_type(q.value,0)!=SQLITE_BLOB || !p || n<=0 || n>2048 || CoverageInt(q.value,1)!=0)
+                  Fail("Native pool extension index receipt malformed");
+              bytes=std::string(p,n);
+          } else if(rc!=SQLITE_ROW && rc!=SQLITE_DONE)Fail("Native pool extension index receipt unavailable"); }
+        if(bytes) {
+            const auto recorded=RecordedScripts(*bytes,"DNUI03",origin.identity_);
+            if(recorded==previous) {
+                (void)Decode(*bytes,origin.identity_,previous,"DNUI03"); // full framing/checksum
+                Statement retire(stored.db,"UPDATE wallet_index_receipts_v3 SET receipt=NULL,invalidated=1 "
+                    "WHERE wallet_identity=? AND receipt IS NOT NULL");
+                owner.BindCurrentIdentity(retire.value,1,*lease);retire.Done();
+                if(sqlite3_changes(stored.db)!=1)Fail("Native pool extension index receipt retirement failed");
+            } else if(recorded!=current)Fail("Native pool extension index receipt names an unknown domain");
+        }
+        owner.RequireCurrent(*lease);
+        Exec(stored.db,"COMMIT");
+    } catch(...) {
+        if(!sqlite3_get_autocommit(stored.db))sqlite3_exec(stored.db,"ROLLBACK",nullptr,nullptr,nullptr);
+        throw;
+    }
+    wallet_read.Commit();
+}
+
 void RuntimeOrdinaryDelivery::ReconcileNativeTransparentCoverageV3(WalletManager& wallet,UTXOIndex& index,
         const RuntimeWalletCoverageProjection& source,
         const RuntimeIndexDelivery::V3SourceCommit& source_commit) {
@@ -2107,6 +2183,9 @@ void RuntimeOrdinaryDelivery::ReconcileNativeTransparentCoverageV3(WalletManager
         pin.reset();
         read.Commit();
     }
+    // #939 phase 2: an in-flight pool extension first retires the index
+    // receipt over the pre-extension domain (idempotent; no-op otherwise).
+    RuntimeIndexDelivery::RetireReceiptForNativePoolExtensionV3(wallet,index,origin);
     // First durable commit: only this wallet's index rows and receipt. Native
     // Pending remains in the wallet if the second phase is interrupted.
     (void)RuntimeIndexDelivery::ReconcileCoverageV3(wallet,index,source,source_commit);

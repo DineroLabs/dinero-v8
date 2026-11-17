@@ -56,6 +56,10 @@ private:
     friend class RuntimeOrdinaryDelivery;
     static void WithCurrentV3Receipt(WalletManager::DatabaseLease&,UTXOIndex& metadata_index,
         const RuntimeWalletCoverageProjection&,const uint256& index_scripts,const std::function<void()>& publish);
+    // #939 phase 2: retire exactly the pre-extension index receipt of a native
+    // wallet whose pool extension is in flight (see the definition).
+    static void RetireReceiptForNativePoolExtensionV3(WalletManager&,UTXOIndex& metadata_index,
+        const RuntimeWalletOriginProjection&);
     using HistoricalScripts = std::map<std::vector<uint8_t>,std::string>;
     static bool CoverageRequired(UTXOIndex&,const std::string&,const HistoricalScripts* = nullptr);
     static void ReconcileCoverage(UTXOIndex&,const RuntimeWalletCoverageProjection&,
