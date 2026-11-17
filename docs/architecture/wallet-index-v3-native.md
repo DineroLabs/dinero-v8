@@ -84,6 +84,68 @@ Status: design for v8.2.4. Owner-directed, owned by Claude, reviewed by codex-ch
 - **Invariant:** a script is never handed out unless a sealed receipt's replay
   covered it.
 
+#### Phase 2 as built
+
+- **Pool table:** `native_v3_address_pool(script_pubkey PK, address, chain,
+  idx, generation, issued, label, issued_at)`. It is unguarded. Change rows
+  (`chain=1`) can never be issued (a CHECK constraint).
+- **Seeding:** native Begin creates the table in its own transaction as
+  generation 0. Receive rows that predate enrollment (index 0, anything
+  already shown) are `issued=1` and keep their label.
+- **Durable state:** native `pending` is reused, plus the pool generation. No
+  new state value is added.
+  - `complete`: the present ordinary receipt sealed the whole domain. Any
+    unissued receive row may be issued.
+  - `pending` with `MAX(generation)=0`: first enrollment. Nothing is issuable.
+  - `pending` with `MAX(generation)=g>0`: an extension is in flight. Rows with
+    generation `< g` were sealed by the receipt the extension required, so
+    they stay issuable. Generation `g` is not issuable until the reconcile
+    returns the wallet to `complete`.
+- **Extension (`BeginNativePoolExtensionV3`):** one FULL transaction that
+  needs the unlocked seed.
+  - It requires native `complete` with a present ordinary receipt.
+  - It derives the next 20 scripts of each low chain as ordinary issued rows
+    and inserts them as generation `g`.
+  - It authenticates the inventory and flips the state to `pending`. The
+    guarded writes null the ordinary receipt in that same transaction.
+  - It never touches `pending_payment_owner`.
+- **Low water:** a chain is low when it has fewer than 5 unissued receive rows,
+  or fewer than 5 change rows with no coin. A native-complete wallet without
+  the table (enrolled before phase 2) adopts every row as issued, then extends.
+- **Driver:** `resumeRuntimeWalletRecoveryV3IfNeeded`, called by the runtime
+  worker, only when the wallet is unlocked.
+  - A refused extension rolls back whole and Complete delivery continues.
+  - A locked wallet keeps per-block delivery and extends after its next unlock.
+- **Index receipt:** the DNUI03 receipt still names the pre-extension domain,
+  and coverage decoding refuses it. Before its index commit, the native
+  reconcile retires exactly that receipt.
+  - It acts only if the wallet is `pending`, `g>0`, and the recorded domain is
+    the current domain minus generation `g`.
+  - It keeps a receipt over the current domain (an earlier interrupted
+    reconcile).
+  - It fails closed on any other domain.
+  - The coverage reconcile then re-proves every index row.
+- **Pending payments:** the native reconcile already applies the v2
+  reservation rules (inputs unique, inside proved history, no Orchard
+  overlap) and leaves the `send` row alone unless it confirmed.
+- **Refusals (`getnewaddress`):**
+  - `wallet_native_address_pool_extending`: retryable; every sealed row is
+    issued and an extension is due or running.
+  - `wallet_native_address_pool_unlock_required`: not retryable; the wallet
+    is locked, so it cannot extend.
+  - `wallet_native_p2mr_unavailable_on_v3`: for P2MR.
+- **P2MR stays out of the pool.** `V7P2MRStore` is a separate SQLite file that
+  cannot join the extension's wallet transaction, and
+  `ValidateRecoveryInventoryInTransaction` enforces the store ↔ `watch_scripts`
+  bijection both ways.
+  - A crash between the two writes would leave every later validation
+    failing, so the wallet could never reseal.
+  - A crash-safe design would need a write-ahead intent in the wallet, plus
+    idempotent adopt/discard of orphan store rows inside the validator.
+  - P2MR derivation also needs a loaded PQ master, which these wallets often
+    lack.
+  - Until that exists, P2MR is refused honestly.
+
 ### Phase 3: Orchard delivery on v3
 
 - **Relax the binding:** `getRuntimeAccountReplayForWallet` currently requires
