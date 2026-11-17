@@ -7906,8 +7906,7 @@ din::Json rpc_context_wallet_generateqrcode(const ExecutionContext& ctx, const d
 // failure here never undoes creation; it is reported for the client.
 // Known limitation (kept deliberately): P2MR keys need a loaded PQ master,
 // which an unencrypted new wallet does not have, and an encrypted one is
-// skipped below; so today this reports p2mr_error and Qt shows "Created
-// after setup". On a v3 node the Orchard receiver is skipped as well.
+// skipped below; so today this reports p2mr_error and the wizard hides it.
 static void AddCreationReceiveAddresses(const ExecutionContext& ctx, din::Json& result) {
     if (result.isMember("encrypted") && result["encrypted"].asBool()) {
         result["p2mr_error"] = "wallet encrypted at creation; derive after unlock";
@@ -7934,15 +7933,8 @@ static void AddCreationReceiveAddresses(const ExecutionContext& ctx, din::Json& 
         result["p2mr_error"] = e.what();
     }
 #if DINERO_WALLET_RAW_ORCHARD
-    // A full-archive v3 node delivers no Orchard notes yet (#939 phase 3):
-    // an Orchard receiver issued here would receive funds it cannot show.
-    const auto v3_source = ctx.daemon && ctx.daemon->chainstate
-        ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)
-        : nullptr;
-    if (v3_source && v3_source->HasFullArchiveWalletIndexV3()) {
-        result["orchard_error"] = dinero::WalletManager::kNativeWalletShieldedUnavailableOnV3;
-        return;
-    }
+    // On a full-archive v3 node the native route enrolls this account with
+    // the wallet and the v3 Orchard step delivers it from activation (#939).
     try {
         din::Json orchard_params;
         orchard_params["account"] = 0;
