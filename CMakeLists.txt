@@ -1008,10 +1008,6 @@ set(DINERO_CORE_IPC_ORACLE_SOURCES
   src/ipc/oracles/transaction_oracle_client.cpp
 )
 
-set(DINERO_CORE_STORAGE_GLUE_SOURCES
-  src/storage/chainstate_metadata.cpp
-)
-
 set(DINERO_CORE_METRICS_SOURCES
   src/metrics/metrics_registry.cpp
 )
@@ -1171,6 +1167,7 @@ add_library(dinero_core STATIC
   src/consensus/validation_queue.cpp
   src/consensus/block_validation.cpp
   src/consensus/block_index.cpp
+  src/consensus/block_index_record.cpp
   src/consensus/block_lifecycle.cpp
   src/consensus/orphan_manager.cpp
   src/consensus/genesis_canonical.cpp  # Phase 3: Genesis hash self-test
@@ -1247,8 +1244,6 @@ add_library(dinero_core STATIC
   # IPC oracle clients (Phase 9.2: Lightning event forwarding)
   ${DINERO_CORE_IPC_ORACLE_SOURCES}
 
-  # Chainstate restart metadata persistence
-  ${DINERO_CORE_STORAGE_GLUE_SOURCES}
 )
 
 target_include_directories(dinero_core BEFORE PUBLIC

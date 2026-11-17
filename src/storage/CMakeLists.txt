@@ -6,6 +6,7 @@
 
 add_library(dinero_chainstate STATIC
   ${CMAKE_SOURCE_DIR}/src/storage/chain_db.cpp             # ChainDB (RocksDB backend)
+  ${CMAKE_SOURCE_DIR}/src/storage/chainstate_metadata.cpp  # Header-sync restart metadata
   ${CMAKE_SOURCE_DIR}/src/storage/chain_db_wallet_view.cpp # Wallet chain view over ChainDB (Task 5.2)
   ${CMAKE_SOURCE_DIR}/src/consensus/coins_db.cpp           # CoinsDB (UTXO database backend; moved from consensus, Task 2.1)
   ${CMAKE_SOURCE_DIR}/src/consensus/coins_view_cache.cpp   # CoinsViewCache (L1 UTXO cache; moved from consensus, Task 2.1)
