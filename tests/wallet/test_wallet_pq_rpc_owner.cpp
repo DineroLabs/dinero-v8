@@ -7,6 +7,7 @@
 #include "rpc/rpc_registry.h"
 #include "wallet/utxo_index.h"
 #include "wallet/v7_p2mr_store.h"
+#include "wallet/p2mr_address.h"
 #include "consensus/pq/ml_dsa_65.h"
 #include "util/hex.h"
 #include <sqlite3.h>
@@ -121,6 +122,20 @@ TEST_F(PqRpcOwner, BorrowedTransactionAndMissingStoreRefuse) {
     if(std::filesystem::exists(path))std::filesystem::remove(path);
     std::filesystem::rename(held,path);EXPECT_TRUE(ok(call("wallet.signp2mr",p)));
 }
+TEST_F(PqRpcOwner, InvalidHrpCannotStrandAnIssuanceIntent) {
+    din::Json invalid;
+    invalid["hrp"]="";
+    invalid["address_index"]=7;
+    const auto refused=call("wallet.getnewp2mraddress",invalid);
+    EXPECT_EQ(refused["error"].asString(),"invalid_params")
+        << refused.toStyledString();
+    din::Json next;
+    next["address_index"]=8;
+    next["hrp"]="rdin";
+    const auto created=call("wallet.getnewp2mraddress",next);
+    ASSERT_TRUE(ok(created)) << created.toStyledString();
+    EXPECT_TRUE(created["address"].asString().starts_with("rdin1r"));
+}
 TEST_F(PqRpcOwner, InterruptedIssuanceIsHiddenThenRepairedOnUnlock) {
     auto& wallet=service->get();
     auto* db=wallet.getCurrentDatabase();
@@ -137,6 +152,18 @@ TEST_F(PqRpcOwner, InterruptedIssuanceIsHiddenThenRepairedOnUnlock) {
     EXPECT_EQ(hidden["error"].asString(),"p2mr_inventory_incomplete")
         << hidden.toStyledString();
     ASSERT_EQ(sqlite3_exec(db,"DROP TRIGGER block_p2mr_watch",nullptr,nullptr,nullptr),SQLITE_OK);
+    // The address list may be the first repair entry point. Its returned
+    // address must already be watched by the live index, without a reload.
+    const auto repaired_live=call("wallet.listp2mraddresses");
+    ASSERT_TRUE(ok(repaired_live)) << repaired_live.toStyledString();
+    ASSERT_EQ(repaired_live["addresses"].size(),1u);
+    const auto decoded=dinero::wallet::DecodeP2MRAddress(
+        repaired_live["addresses"][0]["address"].asString());
+    ASSERT_TRUE(decoded.has_value());
+    const auto script=dinero::wallet::BuildP2MRScriptPubKey(decoded->merkle_root);
+    const auto live=index->IsOurScript(script);
+    ASSERT_TRUE(live.has_value());
+    EXPECT_EQ(*live,repaired_live["addresses"][0]["derivation_path"].asString());
     wallet.lockWallet();
     wallet.open("other");
     wallet.open("owner");

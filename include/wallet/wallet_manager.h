@@ -521,7 +521,9 @@ public:
         // permitted repair is completion of an authenticated, exact P2MR
         // issuance intent already committed before the separate key-store
         // write. Other missing recognition owners still refuse.
-        void ValidateRecoveryInventoryInTransaction(const RecoverySeed&);
+        void ValidateRecoveryInventoryInTransaction(
+            const RecoverySeed&,
+            std::map<std::vector<uint8_t>,std::string>* authenticated_pq_scripts=nullptr);
         // Durable cross-store P2MR issuance. The first commit records a single
         // exact derivation path; the separate key store is written next; the
         // second call authenticates that row, adopts its watch script under

@@ -6,6 +6,7 @@
 
 #include "rpc/v7_pq_handlers.h"
 #include "wallet/v7_p2mr_store.h"
+#include "wallet/p2mr_address.h"
 #include "wallet/wallet_manager.h"
 #include "wallet/retired_coin_type_guard.h"
 #include "address/addr_codec.h"
@@ -200,6 +201,14 @@ din::Json rpc_wallet_getnewp2mraddress(const ExecutionContext& ctx,
     if (p.account < 0 || p.change < 0 || p.change > 1 || p.address_index < 0 ||
         (params.isMember("leaf_index") && get_int("leaf_index",0) < 0)) {
         result["error"] = "invalid_p2mr_derivation";
+        return result;
+    }
+    // Reject malformed HRPs before committing the cross-store issuance
+    // intent. Otherwise a parameter typo would strand an intent with no key
+    // row to authenticate during recovery.
+    if (wlt::EncodeP2MRAddress(p.hrp,std::array<uint8_t,32>{}).empty()) {
+        result["error"] = "invalid_params";
+        result["error_message"] = "invalid hrp; address encoding failed";
         return result;
     }
 

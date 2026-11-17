@@ -4987,7 +4987,8 @@ void WalletManager::DatabaseLease::CompleteP2MRIssuance(
        script.size()!=34 || script[0]!=0x53 || script[1]!=0x20)
         throw std::runtime_error("P2MR issuance completion owner unavailable");
     IssuedAddressTransaction transaction(db_);
-    ValidateRecoveryInventoryInTransaction(pin);
+    std::map<std::vector<uint8_t>,std::string> authenticated_pq_scripts;
+    ValidateRecoveryInventoryInTransaction(pin,&authenticated_pq_scripts);
     IssuedStatement intent(db_,"SELECT 1 FROM p2mr_issuance_intent_v1 WHERE id=1");
     IssuanceCheck(db_,sqlite3_step(intent.value.get()),SQLITE_DONE);
     IssuedStatement watched(db_,"SELECT path,is_change FROM watch_scripts WHERE script_pubkey=?");
@@ -5010,16 +5011,25 @@ void WalletManager::DatabaseLease::CompleteP2MRIssuance(
     if(!recorded || recorded->derivation_path!=path || recorded->leaf_index!=leaf)
         throw std::runtime_error("P2MR issuance key identity differs from request");
     transaction.Commit();
-    if(owner_.utxo_index_)owner_.utxo_index_->RegisterAddress(script,path);
+    if(owner_.utxo_index_&&!authenticated_pq_scripts.empty())
+        owner_.utxo_index_->MergeRegisteredAddresses(authenticated_pq_scripts);
 }
 
 void WalletManager::DatabaseLease::AuthenticateP2MRInventory(const RecoverySeed& pin) {
     IssuedAddressTransaction transaction(db_);
-    ValidateRecoveryInventoryInTransaction(pin);
+    std::map<std::vector<uint8_t>,std::string> authenticated_pq_scripts;
+    ValidateRecoveryInventoryInTransaction(pin,&authenticated_pq_scripts);
     transaction.Commit();
+    // A repaired watch row is not usable until the live index knows it. The
+    // full authenticated set is replayed, so a failed index publication can
+    // be retried even after the wallet transaction cleared the intent.
+    if(owner_.utxo_index_&&!authenticated_pq_scripts.empty())
+        owner_.utxo_index_->MergeRegisteredAddresses(authenticated_pq_scripts);
 }
 
-void WalletManager::DatabaseLease::ValidateRecoveryInventoryInTransaction(const RecoverySeed& pin) {
+void WalletManager::DatabaseLease::ValidateRecoveryInventoryInTransaction(
+    const RecoverySeed& pin,
+    std::map<std::vector<uint8_t>,std::string>* authenticated_pq_scripts) {
     // This also checks this lease, session, seed pin and active transaction.
     (void)ReadPendingPaymentsInTransaction(pin);
     AuthenticateHdInventory(db_,owner_.master_seed_);
@@ -5116,7 +5126,8 @@ void WalletManager::DatabaseLease::ValidateRecoveryInventoryInTransaction(const 
             if(pair.pubkey()!=row.pubkey||root!=row.merkle_root||!decoded||decoded->merkle_root!=root||
                !pq_scripts.emplace(wallet::BuildP2MRScriptPubKey(root),row.derivation_path).second)
                 throw std::runtime_error("Recovery PQ key binding invalid");
-            (void)AdoptP2MRIssuanceIntent(db_,row,wallet::BuildP2MRScriptPubKey(root));
+            if(authenticated_pq_scripts)
+                (void)AdoptP2MRIssuanceIntent(db_,row,wallet::BuildP2MRScriptPubKey(root));
         }
     }
     IssuedStatement watched(db_,"SELECT script_pubkey,path,is_change FROM watch_scripts ORDER BY script_pubkey");
@@ -5139,6 +5150,7 @@ void WalletManager::DatabaseLease::ValidateRecoveryInventoryInTransaction(const 
     }
     IssuanceCheck(db_,rc,SQLITE_DONE);
     if(matched_pq.size()!=pq_scripts.size())throw std::runtime_error("Recovery PQ recognition owner missing");
+    if(authenticated_pq_scripts)*authenticated_pq_scripts=std::move(pq_scripts);
 }
 
 std::vector<PendingPaymentInput> WalletManager::DatabaseLease::ReadShieldCandidatesInTransaction(
@@ -6475,6 +6487,7 @@ void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSecon
     // The separate PQ store contributes one immutable statement snapshot.
     // Keep the actual main-wallet lifecycle owner and staged master throughout
     // authentication. This does not make the two databases one atomic owner.
+    std::map<std::vector<uint8_t>,std::string> authenticated_pq_scripts;
     {
         const auto path=GetV7P2MRStorePath();
         if(path.empty())throw std::runtime_error("PQ inventory path unavailable");
@@ -6522,6 +6535,8 @@ void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSecon
                    sqlite3_column_type(q,1)!=SQLITE_INTEGER || sqlite3_column_int64(q,1)!=0)
                     throw std::runtime_error("PQ inventory recognition binding mismatch");
                 watched.Done();
+                if(!authenticated_pq_scripts.emplace(script,row.derivation_path).second)
+                    throw std::runtime_error("PQ inventory script owner ambiguous");
             }
         }
         // Missing storage is not a complete inventory or permission to create
@@ -6557,6 +6572,8 @@ void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSecon
     if (legacy) WLOG_WARN("Wallet uses legacy HMAC-SHA512 KDF; change password to upgrade");
     (void)ReadPendingPaymentsOwned(seed.value);
     transaction.Commit();
+    if(utxo_index_&&!authenticated_pq_scripts.empty())
+        utxo_index_->MergeRegisteredAddresses(authenticated_pq_scripts);
     // All fallible validation and persistence precede publication. Swaps leave
     // prior plaintext in scoped buffers for cleansing without changing identity.
     encryption_key_.swap(key.value);
