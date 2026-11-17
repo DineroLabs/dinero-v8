@@ -1,0 +1,54 @@
+{
+  "cmake_sources": {
+    "CMakeLists.txt": {
+      "src/consensus/block_index.cpp": 1,
+      "src/consensus/block_lifecycle.cpp": 1
+    },
+    "src/consensus/CMakeLists.txt": {
+      "src/consensus/block_index.cpp": 1
+    },
+    "tests/CMakeLists.txt": {
+      "src/consensus/block_index.cpp": 7,
+      "src/consensus/block_lifecycle.cpp": 6
+    }
+  },
+  "raw_globals": {
+    "include/consensus/block_index.h": {
+      "g_block_index": 1,
+      "g_block_index_mutex": 1,
+      "g_candidates": 1,
+      "g_orphan_pool": 1
+    },
+    "include/consensus/block_lifecycle.h": {
+      "g_inflight_blocks": 1,
+      "g_invalid_blocks": 1,
+      "g_invalid_descendants": 1
+    },
+    "include/dinero/core/consensus/block_index.h": {
+      "g_block_index": 1,
+      "g_candidates": 1,
+      "g_orphan_pool": 1
+    },
+    "src/core/consensus/block_index.cpp": {
+      "g_block_index": 4,
+      "g_candidates": 6,
+      "g_orphan_pool": 6
+    },
+    "src/daemon/block_acceptor.cpp": {
+      "g_block_index_mutex": 1
+    },
+    "src/daemon/orchard_reindex.cpp": {
+      "g_block_index": 8,
+      "g_block_index_mutex": 1,
+      "g_candidates": 2,
+      "g_orphan_pool": 3
+    },
+    "src/daemon/services/chainstate_service.cpp": {
+      "g_block_index": 2,
+      "g_block_index_mutex": 23
+    },
+    "src/rpc/methods_vault.cpp": {
+      "g_block_index_mutex": 1
+    }
+  }
+}
