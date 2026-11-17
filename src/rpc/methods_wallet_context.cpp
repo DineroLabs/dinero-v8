@@ -8007,6 +8007,7 @@ din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Js
         return result;
     }
 
+    auto creation_owner = wallet_service->AcquireCreationOwner();
     const uint32_t birth_height = ctx.daemon->chainstate ? ctx.daemon->chainstate->getBlockHeight() : 0;
     result = dinero::rpc::RpcCreateHDWallet(params, &wallet_service->get(), birth_height);
     if (!result.isMember("error")) {

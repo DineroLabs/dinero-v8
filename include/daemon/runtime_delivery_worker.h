@@ -84,6 +84,7 @@ public:
     void RequestReplay() noexcept;
     [[nodiscard]] Report Snapshot() const;
 private:
+    friend struct RuntimeDeliveryWorkerCreationTestAccess;
     void Run() noexcept;
     bool Stopping() const;
     struct VaultObservationCache {

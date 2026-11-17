@@ -85,12 +85,6 @@ private:
     // Legacy method registry (deprecated - kept for backwards compatibility)
     std::unordered_map<std::string, RpcHandler> methods_;
 
-    // wallet.createhd temporarily unlocks an encrypted wallet while binding
-    // its recovery material and issuing initial addresses. Hold this gate
-    // exclusively for the whole creation request so another RPC handler cannot
-    // export that material before the wallet is relocked.
-    std::shared_mutex wallet_creation_rpc_mutex_;
-
     // Server thread
     std::unique_ptr<std::thread> server_thread_;
     std::mutex lifecycle_mutex_;

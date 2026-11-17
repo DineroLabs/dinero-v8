@@ -1793,6 +1793,19 @@ char* nodecore_rpc_call(const char* method, const char* params_json) {
     try {
         auto& daemon_ctx = s.app->GetContext();
 
+        // NodeCore dispatches handlers directly, bypassing HttpRpcServer. Use
+        // the same wallet owner so an embedded RPC cannot observe the short
+        // encrypted-wallet unlock performed by wallet.createhd.
+        const std::string source = g_rpcRegistry.handlerSource(method_name);
+        const bool creating_wallet = method_name == "wallet.createhd" ||
+            method_name == "createhd" || source == "wallet.createhd";
+        std::shared_ptr<dinero::WalletService> wallet_service;
+        std::shared_lock<std::shared_mutex> creation_reader;
+        if (!creating_wallet && daemon_ctx.wallet) {
+            wallet_service = std::dynamic_pointer_cast<dinero::WalletService>(daemon_ctx.wallet);
+            if (wallet_service) creation_reader = wallet_service->AcquireCreationReader();
+        }
+
         Json::Value params(Json::arrayValue);
         if (params_json && params_json[0] != '\0') {
             Json::CharReaderBuilder reader;
