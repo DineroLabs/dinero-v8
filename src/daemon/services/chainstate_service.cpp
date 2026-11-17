@@ -7382,6 +7382,76 @@ ChainstateService::resumeRuntimeWalletRecoveryIfNeeded(WalletManager& wallet, UT
       catch (...) { return Status::Internal; }
 }
 
+Status ChainstateService::resumeRuntimeOrchardDeliveryV3(WalletManager& wallet,UTXOIndex& metadata_index,
+        uint64_t session) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    // #939 phase 3: deliver a native-complete wallet's Orchard accounts on a
+    // full-archive v3 source. Orchard account state only: no transparent,
+    // ordinary-guarded or index write. Each account commit runs under the
+    // selected lock (selected -> wallet) behind a fence proving the captured
+    // replay is still a prefix of the selected chain; the account revision
+    // and complete catalog are rechecked inside every commit transaction.
+    if(activation_mutex_.HeldByCurrentThread())return Status::Invalid;
+    {
+        auto lease=wallet.AcquireDatabaseLease();
+        if(!wallet.SoleDatabaseLeaseHeld()||lease->Session()!=session||!lease->Database()||
+           wallet.getUTXOIndex()!=nullptr||
+           lease->NativeV3TransparentState()!=WalletManager::NativeV3State::Complete)return Status::Invalid;
+        sqlite3_stmt* raw=nullptr;
+        if(sqlite3_prepare_v2(lease->Database(),
+               "SELECT 1 FROM sqlite_master WHERE type='table' AND name='orchard_wallet_snapshots'",-1,&raw,nullptr)!=SQLITE_OK)
+            return Status::Invalid;
+        std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> table(raw,sqlite3_finalize);
+        int rc=sqlite3_step(raw);
+        if(rc==SQLITE_DONE)return Status::Ok; // No Orchard account: nothing to deliver.
+        if(rc!=SQLITE_ROW)return Status::Invalid;
+        raw=nullptr;
+        if(sqlite3_prepare_v2(lease->Database(),"SELECT 1 FROM orchard_wallet_snapshots LIMIT 1",-1,&raw,nullptr)!=SQLITE_OK)
+            return Status::Invalid;
+        std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> rows(raw,sqlite3_finalize);
+        rc=sqlite3_step(raw);
+        if(rc==SQLITE_DONE)return Status::Ok;
+        if(rc!=SQLITE_ROW)return Status::Invalid;
+    }
+    // Orchard catalog/account restoration needs the seed. A locked wallet
+    // keeps its transparent delivery; its Orchard accounts catch up on unlock.
+    if(wallet.isWalletLocked())return Status::Ok;
+    try {
+        const auto captured=getRuntimeAccountReplayForWallet(wallet,session);
+        if(!captured.ok())return captured.status();
+        const auto& replay=**captured;
+        const auto head=replay.Head();
+        if(!head.sequence)return Status::Ok;
+        const auto point=replay.Point(head).checkpoint;
+        const RuntimeWalletRecovery::OrchardSourceOwner bind=[&](const auto& write){
+            std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+            const std::function<void()> fence=[&]{
+                if(safe_mode_active_||utxo_index_.get()!=&metadata_index||
+                   !metadata_index.IsFullArchiveV3MetadataOnly()||wallet.getUTXOIndex()!=nullptr)
+                    throw std::runtime_error("V3 Orchard delivery source changed");
+                const auto page=getRuntimeDeliveryPageAtPrefix(head,head,1,16*1024*1024);
+                if(!page.ok()||(*page)->head!=head||(*page)->next!=head||!(*page)->events.empty()||
+                   !(*page)->after_tip||(*page)->after_tip->first!=point.block_hash||
+                   (*page)->after_tip->second!=point.height)
+                    throw std::runtime_error("V3 Orchard delivery source prefix changed");
+                auto* ancestor=active_tip_;
+                while(ancestor&&ancestor->height>point.height)ancestor=ancestor->pprev;
+                if(!ancestor||ancestor->height!=point.height||ancestor->hash!=point.block_hash)
+                    throw std::runtime_error("V3 selected chain no longer extends Orchard delivery prefix");
+            };
+            fence();write(fence);
+        };
+        const ChainstateRuntimeRecoverySource recovery_source(*this);
+        (void)RuntimeWalletRecovery::ResumePreparedOrchardCatalogStores(replay,recovery_source,wallet,session,bind);
+        return Status::Ok;
+    } catch(const consensus::OrchardStateLookupError& e) { return e.SourceStatus(); }
+      catch(...) { return Status::Internal; }
+#else
+    (void)wallet;(void)metadata_index;(void)session;
+    return Status::Internal;
+#endif
+}
+
 StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
 ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,UTXOIndex& metadata_index,
         uint64_t expected_session,size_t material_limit_bytes) {
@@ -7492,6 +7562,10 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
             const RuntimeIndexProgress applied{source.Head(),source.Origin().OriginHash(),
                 source.TipHash(),source.Origin().OriginHeight(),source.TipHeight()};
             wallet.PublishRecoveredBlockchainHeight(wallet.getBlockchainHeight(),applied.tip_height,session);
+            if(native) {
+                const auto orchard=resumeRuntimeOrchardDeliveryV3(wallet,metadata_index,session);
+                if(orchard!=Status::Ok)return orchard;
+            }
             return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
                 RuntimeEnrolledWalletRecoveryResult{applied,{},source.Head(),std::nullopt});
         }
@@ -7546,6 +7620,10 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 return Status::Invalid;
         }
         wallet.PublishRecoveredBlockchainHeight(wallet.getBlockchainHeight(),applied.tip_height,session);
+        if(native) {
+            const auto orchard=resumeRuntimeOrchardDeliveryV3(wallet,metadata_index,session);
+            if(orchard!=Status::Ok)return orchard;
+        }
         return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
             RuntimeEnrolledWalletRecoveryResult{applied,{},(*page)->head,std::nullopt});
     } catch(const RuntimeWalletCoverageMaterialLimit&) { return Status::ResourceLimit; }
@@ -7762,8 +7840,11 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
         }
         {
             const auto lease=wallet.AcquireDatabaseLease();
+            // A full-archive v3 metadata source detaches every wallet from the
+            // index; its account replay is index-free (#939 phase 3).
+            const bool detached_v3=wallet.getUTXOIndex()==nullptr&&expected_index->IsFullArchiveV3MetadataOnly();
             if(!wallet.SoleDatabaseLeaseHeld()||!lease->Database()||lease->Session()!=expected_session||
-               wallet.getUTXOIndex()!=expected_index)return Status::Invalid;
+               (wallet.getUTXOIndex()!=expected_index&&!detached_v3))return Status::Invalid;
         }
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
         {

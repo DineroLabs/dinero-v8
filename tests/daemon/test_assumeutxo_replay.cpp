@@ -1158,6 +1158,7 @@ int main(int argc, char** argv) {
 #include "runtime_legacy_consumer_absence_checks.h"
 
 #include "orchard_account_creation_checks.h"
+#include "wallet_v3_native_orchard_checks.h"
 #include "orchard_detached_read_checks.h"
 
 #include "orchard_catalog_issuance_checks.h"

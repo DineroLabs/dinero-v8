@@ -1818,6 +1818,9 @@ private:
         bool retained_history = false,size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes,
         const std::optional<RuntimeOutboxCursor>& captured_head = std::nullopt,
         bool fresh_empty_prefix = false) const;
+    // #939 phase 3: Orchard account delivery for a native-complete wallet on a
+    // full-archive v3 source. Writes Orchard account state only.
+    Status resumeRuntimeOrchardDeliveryV3(WalletManager&,UTXOIndex& metadata_index,uint64_t session);
     StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> captureRuntimeWalletCoverage(
         WalletManager&,uint64_t,UTXOIndex&,bool public_history,bool& body_data_pending,
         bool retained_history = false,size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes) const;
