@@ -138,6 +138,23 @@ V7P2MRStore::OpenResult V7P2MRStore::Open(const std::string& path) {
         Close();
         return OpenResult::SchemaError;
     }
+    // The wallet's durable issuance intent is committed before this store's
+    // key row. A reported success must survive a process or power loss before
+    // the wallet watch-script commit can adopt that exact row.
+    if (sqlite3_exec(db_, "PRAGMA synchronous=FULL", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        Close();
+        return OpenResult::IoError;
+    }
+    bool full_sync = false;
+    {
+        Stmt durability(db_, "PRAGMA synchronous");
+        full_sync = durability.ok() && sqlite3_step(durability.raw()) == SQLITE_ROW &&
+            sqlite3_column_int(durability.raw(), 0) == 2;
+    }
+    if (!full_sync) {
+        Close();
+        return OpenResult::IoError;
+    }
     return OpenResult::Ok;
 }
 

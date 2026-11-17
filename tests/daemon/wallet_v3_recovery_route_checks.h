@@ -10,6 +10,7 @@ din::Json rpc_context_wallet_getlabel(const ExecutionContext&, const din::Json&)
 din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_wallet_sendmany(const ExecutionContext&, const din::Json&);
 void registerShieldedWalletMethods();
+void registerV7PqWalletMethods();
 #include "rpc/orchard_account_rpc.h"
 
 namespace dinero {
@@ -863,14 +864,17 @@ TEST(WalletV3NativeInterim, V3CreatesGeneratedWalletsAndRefusesRestores) {
     }
     ExecutionContext request;
     request.daemon=&f.context;
+    registerV7PqWalletMethods();
     din::Json create(Json::arrayValue);create.append("native-rpc");
     const auto created=rpc_context_wallet_createhd(request,create);
     ASSERT_FALSE(created.isMember("error")) << created.toStyledString();
     EXPECT_TRUE(created.isMember("mnemonic"));
-    // On v3 the creation-time Orchard account is deferred so the new wallet
-    // keeps transparent sends (an Orchard-account wallet cannot send there yet).
-    EXPECT_FALSE(created.isMember("first_orchard_address")) << created.toStyledString();
-    EXPECT_TRUE(created["orchard_deferred"].asBool()) << created.toStyledString();
+    ASSERT_TRUE(created.isMember("first_address")) << created.toStyledString();
+    ASSERT_TRUE(created.isMember("first_p2mr_address")) << created.toStyledString();
+    EXPECT_TRUE(created["first_p2mr_address"].asString().starts_with("rdin1r"));
+    ASSERT_TRUE(created.isMember("first_orchard_address")) << created.toStyledString();
+    EXPECT_TRUE(created["addresses_ready"].asBool()) << created.toStyledString();
+    EXPECT_FALSE(created.isMember("orchard_deferred")) << created.toStyledString();
     std::string error;
     ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
         WalletService::CanonicalRecovery::AppliedPrefix) << error;
@@ -880,12 +884,7 @@ TEST(WalletV3NativeInterim, V3CreatesGeneratedWalletsAndRefusesRestores) {
         EXPECT_EQ(ready["send_scope"].asString(),"transparent_native_v3") << ready.toStyledString();
         EXPECT_TRUE(ready["send_ready"].asBool()) << ready.toStyledString();
     }
-    // On demand, account 0 is still created and delivered on v3.
-    din::Json account_params;account_params["account"]=0;
-    const auto orchard=rpc_context_wallet_orchard_createaccount(request,account_params);
-    ASSERT_TRUE(orchard.isMember("address")) << orchard.toStyledString();
-    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
-        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    // The account created with the wallet is delivered by the v3 worker.
     auto use=WalletService::AcquireWalletUse(f.wallet);
     EXPECT_EQ(use->Wallet().getCurrentWalletName(),"native-rpc");
     {
@@ -894,7 +893,7 @@ TEST(WalletV3NativeInterim, V3CreatesGeneratedWalletsAndRefusesRestores) {
         EXPECT_TRUE(lease->SealedFreshBirthHeight(lease->Session()).has_value());
     }
     {
-        // The on-demand Orchard account 0 was delivered to the authenticated
+        // The creation-time Orchard account 0 was delivered to the authenticated
         // head by the v3 Orchard step.
         const auto view=f.f.service->getRuntimeAccountReplay();
         ASSERT_TRUE(view.ok());
@@ -907,6 +906,107 @@ TEST(WalletV3NativeInterim, V3CreatesGeneratedWalletsAndRefusesRestores) {
     // The creation-time Taproot receiver (index 0) and the pool are enrolled.
     EXPECT_EQ(NativeTestCount(use->Wallet(),"SELECT count(*) FROM addresses WHERE account=0 AND change=0"),
         WalletManager::kNativeV3ReceivePool);
+}
+
+TEST(WalletV3NativeInterim, EncryptedV3CreationIssuesThreeAddressesAndRelocks) {
+    CanonicalRecoveryFixture f(false,false);
+    (void)f.MineToWallet();
+    NativeV3IndexScope v3(f,"v3-native-encrypted-create-index");
+    registerV7PqWalletMethods();
+    ExecutionContext request;request.daemon=&f.context;
+    din::Json create(Json::arrayValue);
+    create.append("native-encrypted");create.append(12);create.append("");
+    create.append("fixture-create-password");
+    const auto created=rpc_context_wallet_createhd(request,create);
+    ASSERT_FALSE(created.isMember("error")) << created.toStyledString();
+    EXPECT_TRUE(created["encrypted"].asBool());
+    ASSERT_TRUE(created["addresses_ready"].asBool()) << created.toStyledString();
+    EXPECT_TRUE(created.isMember("first_address"));
+    EXPECT_TRUE(created.isMember("first_p2mr_address"));
+    EXPECT_TRUE(created["first_p2mr_address"].asString().starts_with("rdin1r"));
+    EXPECT_TRUE(created.isMember("first_orchard_address"));
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    EXPECT_TRUE(use->Wallet().isWalletLocked());
+    use->Wallet().unlockWallet("fixture-create-password",0);
+    request.walletName="native-encrypted";
+    const auto* list=g_rpcRegistry.lookup("wallet.listp2mraddresses");
+    ASSERT_NE(list,nullptr);
+    const auto addresses=(*list)(request,din::obj());
+    ASSERT_TRUE(addresses["addresses"].isArray()) << addresses.toStyledString();
+    ASSERT_EQ(addresses["addresses"].size(),1u) << addresses.toStyledString();
+    EXPECT_EQ(addresses["addresses"][0]["address"].asString(),
+              created["first_p2mr_address"].asString());
+}
+
+TEST(WalletV3NativeInterim, WizardEncryptionAfterThreeAddressCreationKeepsP2MR) {
+    CanonicalRecoveryFixture f(false,false);
+    (void)f.MineToWallet();
+    NativeV3IndexScope v3(f,"v3-native-wizard-encryption-index");
+    registerV7PqWalletMethods();
+    ExecutionContext request;request.daemon=&f.context;
+    din::Json create(Json::arrayValue);create.append("native-wizard");
+    const auto created=rpc_context_wallet_createhd(request,create);
+    ASSERT_FALSE(created.isMember("error")) << created.toStyledString();
+    ASSERT_TRUE(created["addresses_ready"].asBool()) << created.toStyledString();
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    use->Wallet().encryptWallet("fixture-wizard-password");
+    ASSERT_TRUE(use->Wallet().isWalletLocked());
+    use->Wallet().unlockWallet("fixture-wizard-password",0);
+    request.walletName="native-wizard";
+    const auto* list=g_rpcRegistry.lookup("wallet.listp2mraddresses");
+    ASSERT_NE(list,nullptr);
+    const auto addresses=(*list)(request,din::obj());
+    ASSERT_TRUE(addresses["addresses"].isArray()) << addresses.toStyledString();
+    ASSERT_EQ(addresses["addresses"].size(),1u);
+    EXPECT_EQ(addresses["addresses"][0]["address"].asString(),
+              created["first_p2mr_address"].asString());
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    const auto ready=rpc_context_wallet_getbalance(request,din::obj());
+    EXPECT_TRUE(ready["send_ready"].asBool()) << ready.toStyledString();
+}
+
+TEST(WalletV3NativeInterim, GeneratedThreeLaneWalletCanSendWithOrchardAccount) {
+    CanonicalRecoveryFixture f(false,false);
+    (void)f.MineToWallet();
+    NativeV3IndexScope v3(f,"v3-native-three-lane-send-index");
+    registerV7PqWalletMethods();
+    ExecutionContext request;request.daemon=&f.context;
+    din::Json create(Json::arrayValue);create.append("native-three-lane");
+    const auto created=rpc_context_wallet_createhd(request,create);
+    ASSERT_FALSE(created.isMember("error")) << created.toStyledString();
+    ASSERT_TRUE(created["addresses_ready"].asBool()) << created.toStyledString();
+    request.walletName="native-three-lane";
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    // Fund the new PQ lane itself. A creation-time address must be watched,
+    // recovered and spendable, not merely present in the RPC response.
+    f.receive_address=created["first_p2mr_address"].asString();
+    (void)f.MineToWallet();
+    // Wallet availability deliberately uses the stricter 100-confirmation
+    // policy even on regtest. Advance through that wallet threshold.
+    for(int i=0;i<100;++i)f.MineEmpty();
+    din::Json ready;
+    for(int pass=0;pass<128;++pass) {
+        const auto progress=f.wallet->RecoverActiveWalletFromCanonicalSource(&error);
+        ASSERT_NE(progress,WalletService::CanonicalRecovery::Deferred) << error;
+        ready=rpc_context_wallet_getbalance(request,din::obj());
+        if(!ready.isMember("error"))break;
+        ASSERT_EQ(ready["error_code"].asString(),"wallet_balance_not_current")
+            << ready.toStyledString();
+    }
+    ASSERT_FALSE(ready.isMember("error")) << ready.toStyledString();
+    ASSERT_TRUE(ready["send_ready"].asBool()) << ready.toStyledString();
+    ASSERT_GT(ready["spendable"].asDouble(),0.0);
+    din::Json payment=din::obj();
+    payment["address"]=OrchardMiningPayout;
+    payment["amount_una"]=Json::UInt64(100000);payment["fee_rate"]=1;
+    const auto sent=rpc_context_wallet_sendtoaddress(request,payment);
+    EXPECT_EQ(sent["status"].asString(),"signed_and_submitted") << sent.toStyledString();
+    EXPECT_TRUE(sent["accepted"].asBool()) << sent.toStyledString();
+    EXPECT_EQ(f.wallet->get().getPendingPayments().size(),1u);
 }
 
 // Issue #939: a freshly GENERATED wallet carries a sealed birth height; a
@@ -2229,7 +2329,7 @@ TEST(WalletV3NativeSpend, NativeWalletSendsWithPooledChangeAndKeepsReceipts) {
     ASSERT_EQ(f.f.service->GetActiveTip()->height,103u);
     ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
         WalletService::CanonicalRecovery::AppliedPrefix) << error;
-    const auto check_after=[&](const char* phase) {
+    const auto check_after=[&](const char* phase,bool inventory_authenticatable) {
         SCOPED_TRACE(phase);
         {
             auto use=WalletService::AcquireWalletUse(f.wallet);
@@ -2246,9 +2346,12 @@ TEST(WalletV3NativeSpend, NativeWalletSendsWithPooledChangeAndKeepsReceipts) {
         const auto after=rpc_context_wallet_getbalance(request,din::obj());
         ASSERT_FALSE(after.isMember("error")) << after.toStyledString();
         EXPECT_NEAR(after["total"].asDouble(),before_total-double(100000+fee_una)/1e8,1e-8);
-        EXPECT_TRUE(after["send_ready"].asBool()) << after.toStyledString();
+        // A locked restart cannot authenticate the Orchard ownership
+        // inventory yet, so it cannot claim send readiness until unlock.
+        EXPECT_EQ(after["send_ready"].asBool(),inventory_authenticatable)
+            << after.toStyledString();
     };
-    check_after("delivered");
+    check_after("delivered",true);
     f.wallet->Stop();
     f.context.wallet.reset();
     f.wallet.reset();
@@ -2260,11 +2363,12 @@ TEST(WalletV3NativeSpend, NativeWalletSendsWithPooledChangeAndKeepsReceipts) {
     ASSERT_TRUE(closed);closed.reset();
     ASSERT_TRUE(f.wallet->Init(f.context));
     ASSERT_TRUE(f.wallet->Start());
-    check_after("restarted");
+    check_after("restarted",false);
     // A second send spends the confirmed change coin (a change-chain key
     // signs), the retained confirmed payment does not block it, and its
     // change rotates to the next unused pooled change script.
     WalletService::AcquireWalletUse(f.wallet)->Wallet().unlockWallet("canonical-fixture-pass",0);
+    check_after("unlocked",true);
     const auto again=rpc_context_wallet_sendtoaddress(request,payment);
     ASSERT_EQ(again["status"].asString(),"signed_and_submitted") << again.toStyledString();
     ASSERT_TRUE(again["accepted"].asBool()) << again.toStyledString();
@@ -2298,7 +2402,8 @@ TEST(WalletV3NativeSpend, NativeWalletSendsWithPooledChangeAndKeepsReceipts) {
 
 // #939 native sends refuse when the wallet is not native-complete, when the
 // signing key is locked, and when the receipts no longer match the tip. No
-// refusal stages a payment. A wallet with Orchard accounts keeps refusing.
+// refusal stages a payment. An incomplete legacy Orchard inventory keeps
+// refusing even after native transparent recovery.
 TEST(WalletV3NativeSpend, NativeSendRefusesPendingLockedAndStaleReceipt) {
     CanonicalRecoveryFixture f(true,true);
     (void)f.MineToWallet();
@@ -2366,8 +2471,8 @@ TEST(WalletV3NativeSpend, NativeSendRefusesPendingLockedAndStaleReceipt) {
     EXPECT_TRUE(f.wallet->get().getPendingPayments().empty());
     ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
         WalletService::CanonicalRecovery::AppliedPrefix) << error;
-    // An Orchard account's reservations need the Orchard replay v3 lacks:
-    // such a wallet keeps the honest "not sendable" marker and refusal.
+    // This fixture stages a legacy snapshot without a matching authenticated
+    // catalog. It must not claim send readiness or sign around that owner.
     f.EnrollAccount();
     const auto orchard_balance=rpc_context_wallet_getbalance(request,din::obj());
     ASSERT_FALSE(orchard_balance.isMember("error")) << orchard_balance.toStyledString();

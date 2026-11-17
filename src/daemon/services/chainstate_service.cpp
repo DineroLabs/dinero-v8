@@ -35,6 +35,7 @@
 #include "daemon/runtime_reorg_store.h"
 #include "daemon/runtime_block_outbox.h"
 #include "wallet/runtime_account_replay.h"
+#include "wallet/orchard_account_delivery.h"
 #include "wallet/recovery_tail_effects.h"
 #include "wallet/orchard_account_catalog.h"
 #include "wallet/runtime_wallet_recovery.h"
@@ -7976,7 +7977,9 @@ SignResult ChainstateService::signAndStageWalletPayment(WalletManager& wallet,
                        live->isCoinbase!=selected_coin.is_coinbase)
                         throw std::runtime_error("Recovered payment input no longer matches selected coins");
                 }
-                return SignWalletPaymentBeforeActivation(wallet,identity,input,intent);
+                return lease->NativeV3TransparentState()!=WalletManager::NativeV3State::Absent
+                    ? wallet::OrchardAccountDelivery::SignNativeV3OrdinaryPayment(wallet,identity,input,intent)
+                    : SignWalletPaymentBeforeActivation(wallet,identity,input,intent);
             }
 #endif
             const bool retained=HasRuntimeDeliveryHistory(*chain_db_);

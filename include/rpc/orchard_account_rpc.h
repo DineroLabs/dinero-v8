@@ -1,5 +1,7 @@
 #pragma once
 #include "rpc/rpc_registry.h"
+#include <string>
+bool rpc_context_native_v3_ordinary_inventory_ready(const ExecutionContext&,const std::string& wallet_name);
 din::Json rpc_context_wallet_orchard_getnewaddress(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_orchard_createaccount(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_orchard_enrollpreactivation(const ExecutionContext&,const din::Json&);

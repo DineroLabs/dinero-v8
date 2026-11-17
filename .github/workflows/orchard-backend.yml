@@ -4043,7 +4043,7 @@ jobs:
           ctest --test-dir build-orchard-root -R '^WalletPqRpcOwner$' --verbose --no-tests=error --output-log orchard-pq-rpc-owner-execution.log
           python3 - <<'PYTEST'
           import re
-          expected=['ActualAdaptersRoundTripAndSelection','SessionPinnedAcrossEveryAdapter','BorrowedTransactionAndMissingStoreRefuse']
+          expected=['ActualAdaptersRoundTripAndSelection','SessionPinnedAcrossEveryAdapter','BorrowedTransactionAndMissingStoreRefuse','InterruptedIssuanceIsHiddenThenRepairedOnUnlock']
           actual=re.findall(r'\[       OK \] PqRpcOwner\.(\w+)',open('orchard-pq-rpc-owner-execution.log').read())
           if sorted(actual)!=sorted(expected):
               raise SystemExit('PQ JSON ownership cases missing, duplicated or unexpected')

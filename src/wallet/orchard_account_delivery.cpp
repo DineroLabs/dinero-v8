@@ -1540,6 +1540,88 @@ SignResult OrchardAccountDelivery::CommitOrdinaryPaymentForReplay(WalletManager&
     transaction.Commit();
     return signed_result;
 }
+namespace {
+using NativeV3Outpoint=std::pair<orchard::Hash,uint32_t>;
+struct NativeV3OwnershipFence {
+    bool known=false;
+    orchard::Hash wallet_id{};
+    uint64_t revision=0;
+    size_t current_rows=0,retained_rows=0;
+    std::set<NativeV3Outpoint> reserved;
+    bool operator==(const NativeV3OwnershipFence&) const = default;
+};
+NativeV3OwnershipFence CaptureNativeV3Ownership(sqlite3* db,std::span<const uint8_t> seed) {
+    const auto catalog=OrchardAccountCatalog::Read(db,seed);
+    Check(catalog.has_value());
+    NativeV3OwnershipFence result;
+    result.known=catalog->KnownInventory();
+    result.revision=catalog->revision;
+    if(!result.known) {
+        // A restored, not-yet-enrolled v3 wallet can have an authenticated
+        // unknown-empty catalog. Prove there are no Orchard owner rows rather
+        // than treating absence of a delivered account as an error.
+        (void)OrchardAccountCatalog::RequireUnknownEmpty(db,seed);
+        return result;
+    }
+    const auto inventory=OrchardOwnershipInventory::Read(db,seed);
+    result.wallet_id=inventory.wallet_id;
+    result.current_rows=inventory.current_rows;
+    result.retained_rows=inventory.retained_rows;
+    for(const auto& current:inventory.current_inputs)
+        Check(result.reserved.emplace(current.input.txid_wire,current.input.output_index).second);
+    return result;
+}
+} // namespace
+SignResult OrchardAccountDelivery::SignNativeV3OrdinaryPayment(WalletManager& w,
+        const WalletSigningIdentity& selected,const UnsignedTransaction& input,
+        const PendingPaymentIntent& intent) {
+    SignResult refused;
+    try {
+        auto lease=w.AcquireDatabaseLease();
+        auto* db=lease->Database();
+        Check(db&&selected.session&&!selected.name.empty()&&
+              lease->Session()==selected.session&&lease->WalletName()==selected.name&&
+              lease->NativeV3TransparentState()==WalletManager::NativeV3State::Complete&&
+              sqlite3_get_autocommit(db));
+        lease->RequireLegacyTransparentFinancialReady();
+        RequireShieldFullSync(db);
+        Transaction transaction(db);
+        auto pin=lease->CopyRecoverySeed(selected.session);
+        const auto inventory=CaptureNativeV3Ownership(db,pin->Bytes());
+        for(const auto& txin:input.tx.vin) {
+            orchard::Hash wire{};
+            const auto& hash=txin.prevout.txid.AsUint256();
+            std::copy(hash.begin(),hash.end(),wire.begin());
+            if(inventory.reserved.contains({wire,txin.prevout.vout}))
+                throw std::runtime_error("Native v3 payment overlaps an Orchard reservation");
+        }
+        pin.reset();
+        auto signed_result=WalletTransactionOwner::Sign(w,selected,input,&intent,true,true);
+        if(!signed_result.success)throw std::runtime_error(signed_result.error);
+        {
+            auto after_pin=lease->CopyRecoverySeed(selected.session);
+            Check(CaptureNativeV3Ownership(db,after_pin->Bytes())==inventory);
+        }
+        transaction.Commit();
+        return signed_result;
+    } catch(const std::exception& e) { refused.error=e.what();return refused; }
+}
+bool OrchardAccountDelivery::NativeV3OrdinaryPaymentInventoryReady(
+        WalletManager& w,const std::string& wallet_name) {
+    try {
+        auto lease=w.AcquireDatabaseLease();
+        auto* db=lease->Database();
+        if(!db || wallet_name.empty() || lease->WalletName()!=wallet_name ||
+           lease->NativeV3TransparentState()!=WalletManager::NativeV3State::Complete ||
+           !sqlite3_get_autocommit(db))return false;
+        RequireShieldFullSync(db);
+        Transaction transaction(db);
+        auto pin=lease->CopyRecoverySeed(lease->Session());
+        (void)CaptureNativeV3Ownership(db,pin->Bytes());
+        transaction.Commit();
+        return true;
+    } catch(const std::exception&) { return false; }
+}
 std::unique_ptr<OrchardAccountDelivery::PreparedSpend> OrchardAccountDelivery::ReserveCatalogShieldForReplay(
         WalletManager& w,uint64_t session,const Profile& p,uint64_t expected,const RuntimeAccountReplay& view,
         const orchard::Hash& id,std::span<const orchard::ResolvedInput> inputs,

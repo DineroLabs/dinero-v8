@@ -121,4 +121,32 @@ TEST_F(PqRpcOwner, BorrowedTransactionAndMissingStoreRefuse) {
     if(std::filesystem::exists(path))std::filesystem::remove(path);
     std::filesystem::rename(held,path);EXPECT_TRUE(ok(call("wallet.signp2mr",p)));
 }
+TEST_F(PqRpcOwner, InterruptedIssuanceIsHiddenThenRepairedOnUnlock) {
+    auto& wallet=service->get();
+    auto* db=wallet.getCurrentDatabase();
+    ASSERT_NE(db,nullptr);
+    ASSERT_EQ(sqlite3_exec(db,
+        "CREATE TRIGGER block_p2mr_watch BEFORE INSERT ON watch_scripts "
+        "BEGIN SELECT RAISE(FAIL,'forced issuance interruption'); END;",
+        nullptr,nullptr,nullptr),SQLITE_OK);
+    const auto interrupted=call("wallet.getnewp2mraddress");
+    EXPECT_EQ(interrupted["error"].asString(),"p2mr_issuance_incomplete")
+        << interrupted.toStyledString();
+    EXPECT_FALSE(interrupted.isMember("address"));
+    const auto hidden=call("wallet.listp2mraddresses");
+    EXPECT_EQ(hidden["error"].asString(),"p2mr_inventory_incomplete")
+        << hidden.toStyledString();
+    ASSERT_EQ(sqlite3_exec(db,"DROP TRIGGER block_p2mr_watch",nullptr,nullptr,nullptr),SQLITE_OK);
+    wallet.lockWallet();
+    wallet.unlockWallet("owner-password",0);
+    const auto repaired=call("wallet.listp2mraddresses");
+    ASSERT_TRUE(ok(repaired)) << repaired.toStyledString();
+    ASSERT_EQ(repaired["addresses"].size(),1u);
+    sqlite3_stmt* raw=nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(wallet.getCurrentDatabase(),
+        "SELECT count(*) FROM p2mr_issuance_intent_v1",-1,&raw,nullptr),SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(raw),SQLITE_ROW);
+    EXPECT_EQ(sqlite3_column_int(raw,0),0);
+    sqlite3_finalize(raw);
+}
 }

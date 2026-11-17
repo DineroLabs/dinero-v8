@@ -29,6 +29,22 @@
 #include "wallet/runtime_origin_projection.h"
 #endif
 
+bool rpc_context_native_v3_ordinary_inventory_ready(
+    const ExecutionContext& ctx,const std::string& wallet_name) {
+#if DINERO_WALLET_RAW_ORCHARD
+    if(!ctx.daemon || !ctx.daemon->wallet)return false;
+    const auto wallet=std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
+    if(!wallet)return false;
+    try {
+        auto use=dinero::WalletService::AcquireWalletUse(wallet);
+        return dinero::wallet::OrchardAccountDelivery::NativeV3OrdinaryPaymentInventoryReady(
+            use->Wallet(),wallet_name);
+    } catch(const std::exception&) { return false; }
+#else
+    (void)ctx;(void)wallet_name;return false;
+#endif
+}
+
 namespace {
 constexpr const char* OrchardBindingContextKey="orchard.request_wallet_binding";
 class OrchardBindingError final:public std::runtime_error {

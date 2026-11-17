@@ -463,6 +463,13 @@ private:
 public:
     static SignResult CommitOrdinaryPaymentForReplay(WalletManager&,const WalletSigningIdentity&,
         std::unique_ptr<OrchardCatalogRecoveryPlan>,const UnsignedTransaction&,const PendingPaymentIntent&);
+    // The caller has already fenced a native v3 wallet's selected coins and
+    // both transparent receipts. Authenticate every Orchard owner and exclude
+    // its current input reservations in the same FULL transaction that signs
+    // and stages an ordinary payment. No Orchard reservation is released.
+    static SignResult SignNativeV3OrdinaryPayment(WalletManager&,const WalletSigningIdentity&,
+        const UnsignedTransaction&,const PendingPaymentIntent&);
+    static bool NativeV3OrdinaryPaymentInventoryReady(WalletManager&,const std::string& wallet_name);
     // The producer must keep signed intermediate bytes private until commit;
     // the signing path reauthenticates the catalog against the replay itself.
     static std::unique_ptr<orchard::TransactionEnvelope> SignShieldProofForReplay(

@@ -900,35 +900,8 @@ static dinero::WalletManager::LegacyTransparentState ReadLegacyTransparentScope(
     return state;
 }
 
-// #939: Orchard account rows exist exactly when the catalog has accounts
-// (the ownership inventory requires a row per account). Readable while
-// locked; the payment owner rechecks the authenticated catalog at signing.
-static bool NativeV3OrchardAccountsPresent(dinero::WalletManager::DatabaseLease& lease) {
-    for (const char* table : {"orchard_wallet_snapshots", "orchard_wallet_retained"}) {
-        sqlite3_stmt* raw = nullptr;
-        if (sqlite3_prepare_v2(lease.Database(),
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", -1, &raw, nullptr) != SQLITE_OK)
-            throw std::runtime_error("Orchard account inventory unavailable");
-        std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> exists(raw, sqlite3_finalize);
-        sqlite3_bind_text(raw, 1, table, -1, SQLITE_STATIC);
-        const int rc = sqlite3_step(raw);
-        if (rc == SQLITE_DONE) continue;
-        if (rc != SQLITE_ROW) throw std::runtime_error("Orchard account inventory unavailable");
-        const std::string sql = std::string("SELECT 1 FROM ") + table + " LIMIT 1";
-        sqlite3_stmt* rows = nullptr;
-        if (sqlite3_prepare_v2(lease.Database(), sql.c_str(), -1, &rows, nullptr) != SQLITE_OK)
-            throw std::runtime_error("Orchard account inventory unavailable");
-        std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> any(rows, sqlite3_finalize);
-        const int found = sqlite3_step(rows);
-        if (found == SQLITE_ROW) return true;
-        if (found != SQLITE_DONE) throw std::runtime_error("Orchard account inventory unavailable");
-    }
-    return false;
-}
-
 // #939: send capability of a native v3 wallet. nullopt: not a native v3
-// wallet. true: native-complete, no Orchard accounts (their reservations need
-// the Orchard replay v3 lacks) and the recovered-v3 payment source is ready.
+// wallet. true: native-complete and the recovered-v3 payment source is ready.
 static std::optional<bool> NativeV3SendState(const ExecutionContext& ctx,
                                              const std::shared_ptr<dinero::WalletService>& service,
                                              const std::string& expected_name) {
@@ -942,11 +915,15 @@ static std::optional<bool> NativeV3SendState(const ExecutionContext& ctx,
         if (lease->WalletName() != expected_name) return std::nullopt;
         const auto native = lease->NativeV3TransparentState();
         if (native == dinero::WalletManager::NativeV3State::Absent) return std::nullopt;
-        if (native != dinero::WalletManager::NativeV3State::Complete ||
-            NativeV3OrchardAccountsPresent(*lease)) return false;
+        if (native != dinero::WalletManager::NativeV3State::Complete) return false;
     }
     // Selected-source readiness takes the selected lock: no wallet lease held.
-    return source->RecoveredV3TransparentSendSourceReady();
+    if (!source->RecoveredV3TransparentSendSourceReady()) return false;
+#if DINERO_WALLET_RAW_ORCHARD
+    return rpc_context_native_v3_ordinary_inventory_ready(ctx, expected_name);
+#else
+    return true;
+#endif
 }
 
 // #939 phase 2: the selected wallet is a native v3 wallet (enrollment begun)
@@ -3290,8 +3267,9 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
     // A completed full-archive v3 recovery has an independently verified
     // transparent coin inventory. Only this ordinary send path can use it;
     // other wallet mutation RPCs retain the Orchard-enrollment refusal.
-    // #939: a native-complete wallet (no Orchard accounts) uses the same
-    // receipt-fenced payment owner; its change comes from the pooled chain.
+    // #939: a native-complete wallet uses the same receipt-fenced payment
+    // owner; its change comes from the pooled chain. Orchard owners are
+    // authenticated before claiming send readiness or signing.
     bool recovered_v3_send = false;
     bool native_v3_send = false;
 #if DINERO_WALLET_RAW_ORCHARD
@@ -3304,14 +3282,6 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
                 dinero::WalletManager::LegacyTransparentState::Complete;
             native_v3_send = recovered_v3_send &&
                 lease->NativeV3TransparentState() == dinero::WalletManager::NativeV3State::Complete;
-            if (native_v3_send && NativeV3OrchardAccountsPresent(*lease)) {
-                // Its Orchard reservations need the canonical Orchard replay
-                // that v3 does not have yet; never sign around them.
-                result["error"] = dinero::WalletManager::kNativeWalletSendUnavailableOnV3;
-                result["error_code"] = "wallet_native_send_unavailable_on_v3";
-                result["retryable"] = false;
-                return result;
-            }
         }
     }
 #endif
@@ -3332,7 +3302,6 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
         result["error"] = "Wallet is locked. Use wallet.unlock first.";
         return result;
     }
-
     // Check chainstate for UTXOs
     if (!ctx.daemon->chainstate) {
         result["error"] = "Chainstate service not available";
@@ -7973,15 +7942,7 @@ din::Json rpc_context_wallet_generateqrcode(const ExecutionContext& ctx, const d
 // account 0. Both run while the fresh wallet is still unenrolled and
 // unlocked, the only state in which a v3 node lets it issue addresses. A
 // failure here never undoes creation; it is reported for the client.
-// Known limitation (kept deliberately): P2MR keys need a loaded PQ master,
-// which an unencrypted new wallet does not have, and an encrypted one is
-// skipped below; so today this reports p2mr_error and the wizard hides it.
 static void AddCreationReceiveAddresses(const ExecutionContext& ctx, din::Json& result) {
-    if (result.isMember("encrypted") && result["encrypted"].asBool()) {
-        result["p2mr_error"] = "wallet encrypted at creation; derive after unlock";
-        result["orchard_error"] = "wallet encrypted at creation; create after unlock";
-        return;
-    }
     try {
         if (auto* p2mr = g_rpcRegistry.lookup("wallet.getnewp2mraddress")) {
             din::Json p2mr_params;
@@ -8002,22 +7963,6 @@ static void AddCreationReceiveAddresses(const ExecutionContext& ctx, din::Json& 
         result["p2mr_error"] = e.what();
     }
 #if DINERO_WALLET_RAW_ORCHARD
-    // On a full-archive v3 node the native route could deliver this account,
-    // but a native wallet that has Orchard account rows cannot yet send
-    // transparent funds there (the recovered-v3 signer refuses catalogs with
-    // accounts). Keep new v3 wallets able to send: create account 0 later,
-    // on demand, until Orchard-account sends exist (#939). v2 nodes are
-    // unchanged.
-    {
-        const auto v3_source = ctx.daemon && ctx.daemon->chainstate
-            ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)
-            : nullptr;
-        if (v3_source && v3_source->HasFullArchiveWalletIndexV3()) {
-            result["orchard_error"] = "Orchard account is created on demand on this node so the wallet can send transparent funds";
-            result["orchard_deferred"] = true;
-            return;
-        }
-    }
     try {
         din::Json orchard_params;
         orchard_params["account"] = 0;
@@ -8052,7 +7997,33 @@ din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Js
     result = dinero::rpc::RpcCreateHDWallet(params, &wallet_service->get(), birth_height);
     if (!result.isMember("error")) {
         wallet_service->EnsureRuntimeWalletBindings();
-        AddCreationReceiveAddresses(ctx, result);
+        const bool encrypted = result.isMember("encrypted") && result["encrypted"].asBool();
+        if (encrypted) {
+            std::string password = params.isArray()&&params.size()>3&&params[3].isString()
+                ? params[3].asString()
+                : params.isObject()&&params.isMember("password")&&params["password"].isString()
+                    ? params["password"].asString() : std::string();
+            struct ClearPassword {
+                std::string& value;
+                ~ClearPassword() { if (!value.empty()) OPENSSL_cleanse(value.data(), value.size()); }
+            } clear_password{password};
+            try {
+                if (password.empty()) throw std::runtime_error("Creation password unavailable");
+                wallet_service->get().unlockWallet(password, 0);
+                AddCreationReceiveAddresses(ctx, result);
+                wallet_service->get().lockWallet();
+            } catch (const std::exception& e) {
+                if (!wallet_service->get().isWalletLocked()) {
+                    try { wallet_service->get().lockWallet(); } catch(...) {}
+                }
+                if (!result.isMember("first_p2mr_address")) result["p2mr_error"] = e.what();
+                if (!result.isMember("first_orchard_address")) result["orchard_error"] = e.what();
+            }
+        } else {
+            AddCreationReceiveAddresses(ctx, result);
+        }
+        result["addresses_ready"] = result.isMember("first_address") &&
+            result.isMember("first_p2mr_address") && result.isMember("first_orchard_address");
     }
     return result;
 }

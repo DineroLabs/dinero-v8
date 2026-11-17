@@ -2646,6 +2646,62 @@ public:
     IssuedAddressTransaction(const IssuedAddressTransaction&)=delete;
     IssuedAddressTransaction& operator=(const IssuedAddressTransaction&)=delete;
 };
+
+// A separate P2MR key-store commit can precede its wallet watch-script
+// commit. Only an exact durable intent permits adoption of that key row. The
+// caller has already authenticated its ciphertext, public key and address.
+bool AdoptP2MRIssuanceIntent(sqlite3* db,const wallet::P2MRStoredAddress& row,
+                             const std::vector<uint8_t>& script) {
+    if(!db || sqlite3_get_autocommit(db))
+        throw std::runtime_error("P2MR issuance recovery requires a wallet transaction");
+    IssuedStatement schema(db,"SELECT 1 FROM sqlite_schema WHERE type='table' AND name='p2mr_issuance_intent_v1'");
+    const int present=sqlite3_step(schema.value.get());
+    if(present==SQLITE_DONE)return false;
+    IssuanceCheck(db,present,SQLITE_ROW);schema.Done();
+    IssuedStatement intent(db,"SELECT path,leaf_index FROM p2mr_issuance_intent_v1 WHERE id=1");
+    const int found=sqlite3_step(intent.value.get());
+    if(found==SQLITE_DONE)return false;
+    IssuanceCheck(db,found,SQLITE_ROW);
+    if(sqlite3_column_type(intent.value.get(),0)!=SQLITE_TEXT ||
+       sqlite3_column_type(intent.value.get(),1)!=SQLITE_INTEGER)
+        throw std::runtime_error("P2MR issuance intent malformed");
+    const auto* bytes=static_cast<const char*>(sqlite3_column_blob(intent.value.get(),0));
+    const int size=sqlite3_column_bytes(intent.value.get(),0);
+    const int64_t leaf=sqlite3_column_int64(intent.value.get(),1);
+    if(!bytes||size<=0||size>128||std::memchr(bytes,0,size)||leaf<0||leaf>UINT32_MAX)
+        throw std::runtime_error("P2MR issuance intent malformed");
+    const std::string expected(bytes,size);
+    intent.Done();
+    if(expected!=row.derivation_path || uint32_t(leaf)!=row.leaf_index)return false;
+    IssuedStatement policy(db,"PRAGMA synchronous");
+    IssuanceCheck(db,sqlite3_step(policy.value.get()),SQLITE_ROW);
+    if(sqlite3_column_type(policy.value.get(),0)!=SQLITE_INTEGER ||
+       sqlite3_column_int64(policy.value.get(),0)!=2)
+        throw std::runtime_error("P2MR issuance repair requires FULL durability");
+    policy.Done();
+    IssuedStatement watched(db,"SELECT path,is_change FROM watch_scripts WHERE script_pubkey=?");
+    watched.Blob(1,script.data(),int(script.size()));
+    const int watch=sqlite3_step(watched.value.get());
+    if(watch==SQLITE_DONE) {
+        watched.value.reset();
+        IssuedStatement add(db,"INSERT INTO watch_scripts(script_pubkey,path,is_change,last_seen_height,created_at) "
+            "VALUES(?,?,0,0,strftime('%s','now'))");
+        add.Blob(1,script.data(),int(script.size()));add.Text(2,expected);add.Done(true);
+    } else {
+        IssuanceCheck(db,watch,SQLITE_ROW);
+        const auto* path=static_cast<const char*>(sqlite3_column_blob(watched.value.get(),0));
+        const int n=sqlite3_column_bytes(watched.value.get(),0);
+        if(sqlite3_column_type(watched.value.get(),0)!=SQLITE_TEXT || !path ||
+           n!=size || std::memcmp(path,expected.data(),size)!=0 ||
+           sqlite3_column_type(watched.value.get(),1)!=SQLITE_INTEGER ||
+           sqlite3_column_int64(watched.value.get(),1)!=0)
+            throw std::runtime_error("P2MR issuance watch owner conflicts");
+        watched.Done();
+    }
+    IssuedStatement clear(db,"DELETE FROM p2mr_issuance_intent_v1 WHERE id=1 AND path=? AND leaf_index=?");
+    clear.Text(1,expected);clear.Int(2,leaf);clear.Done(true);
+    return true;
+}
 bool IssuanceWalletColumn(sqlite3* db,const char* table) {
     const std::string sql="PRAGMA table_info("+std::string(table)+")";
     IssuedStatement query(db,sql.c_str());bool found=false;int rc;size_t rows=0;
@@ -4887,6 +4943,82 @@ WalletManager::DatabaseLease::ReadHistoricalImportScriptsInTransaction(const Rec
     return result;
 }
 
+void WalletManager::DatabaseLease::BeginP2MRIssuance(
+    const RecoverySeed& pin,const std::string& path,uint32_t leaf) {
+    if(thread_!=std::this_thread::get_id() || &pin.owner_!=&owner_ ||
+       pin.thread_!=thread_ || session_!=owner_.database_session_ ||
+       owner_.db_!=db_ || owner_.recovery_seeds_!=1 || path.empty() ||
+       path.size()>128 || path.find('\0')!=std::string::npos ||
+       !path.starts_with("m/88'/1448'/") ||
+       TypedTransparentState()!=WalletManager::LegacyTransparentState::Absent)
+        throw std::runtime_error("P2MR issuance owner unavailable");
+    IssuedAddressTransaction transaction(db_);
+    ValidateRecoveryInventoryInTransaction(pin);
+    IssuanceCheck(db_,sqlite3_exec(db_,
+        "CREATE TABLE IF NOT EXISTS p2mr_issuance_intent_v1("
+        "id INTEGER PRIMARY KEY CHECK(id=1),path TEXT NOT NULL,leaf_index INTEGER NOT NULL)",
+        nullptr,nullptr,nullptr),SQLITE_OK);
+    IssuedStatement existing(db_,"SELECT path,leaf_index FROM p2mr_issuance_intent_v1 WHERE id=1");
+    const int found=sqlite3_step(existing.value.get());
+    if(found==SQLITE_ROW) {
+        const auto* bytes=static_cast<const char*>(sqlite3_column_blob(existing.value.get(),0));
+        const int n=sqlite3_column_bytes(existing.value.get(),0);
+        if(sqlite3_column_type(existing.value.get(),0)!=SQLITE_TEXT || !bytes ||
+           n!=int(path.size()) || std::memcmp(bytes,path.data(),n)!=0 ||
+           sqlite3_column_type(existing.value.get(),1)!=SQLITE_INTEGER ||
+           sqlite3_column_int64(existing.value.get(),1)!=leaf)
+            throw std::runtime_error("Another P2MR issuance intent needs recovery");
+        existing.Done();
+    } else {
+        IssuanceCheck(db_,found,SQLITE_DONE);
+        existing.value.reset();
+        IssuedStatement add(db_,"INSERT INTO p2mr_issuance_intent_v1(id,path,leaf_index) VALUES(1,?,?)");
+        add.Text(1,path);add.Int(2,leaf);add.Done(true);
+    }
+    transaction.Commit();
+}
+
+void WalletManager::DatabaseLease::CompleteP2MRIssuance(
+    const RecoverySeed& pin,const std::string& path,uint32_t leaf,
+    const std::vector<uint8_t>& script) {
+    if(thread_!=std::this_thread::get_id() || &pin.owner_!=&owner_ ||
+       pin.thread_!=thread_ || session_!=owner_.database_session_ ||
+       owner_.db_!=db_ || owner_.recovery_seeds_!=1 ||
+       script.size()!=34 || script[0]!=0x53 || script[1]!=0x20)
+        throw std::runtime_error("P2MR issuance completion owner unavailable");
+    IssuedAddressTransaction transaction(db_);
+    ValidateRecoveryInventoryInTransaction(pin);
+    IssuedStatement intent(db_,"SELECT 1 FROM p2mr_issuance_intent_v1 WHERE id=1");
+    IssuanceCheck(db_,sqlite3_step(intent.value.get()),SQLITE_DONE);
+    IssuedStatement watched(db_,"SELECT path,is_change FROM watch_scripts WHERE script_pubkey=?");
+    watched.Blob(1,script.data(),int(script.size()));
+    IssuanceCheck(db_,sqlite3_step(watched.value.get()),SQLITE_ROW);
+    const auto* bytes=static_cast<const char*>(sqlite3_column_blob(watched.value.get(),0));
+    const int n=sqlite3_column_bytes(watched.value.get(),0);
+    if(sqlite3_column_type(watched.value.get(),0)!=SQLITE_TEXT || !bytes ||
+       n!=int(path.size()) || std::memcmp(bytes,path.data(),n)!=0 ||
+       sqlite3_column_type(watched.value.get(),1)!=SQLITE_INTEGER ||
+       sqlite3_column_int64(watched.value.get(),1)!=0)
+        throw std::runtime_error("P2MR issuance completion watch owner mismatch");
+    watched.Done();
+    std::array<uint8_t,32> root{};
+    std::copy_n(script.data()+2,32,root.begin());
+    wallet::V7P2MRStore store;
+    if(store.OpenExistingReadOnly(owner_.GetV7P2MRStorePath())!=wallet::V7P2MRStore::OpenResult::Ok)
+        throw std::runtime_error("P2MR issuance key store unavailable");
+    const auto recorded=store.GetByMerkleRoot(owner_.current_wallet_id_,root);
+    if(!recorded || recorded->derivation_path!=path || recorded->leaf_index!=leaf)
+        throw std::runtime_error("P2MR issuance key identity differs from request");
+    transaction.Commit();
+    if(owner_.utxo_index_)owner_.utxo_index_->RegisterAddress(script,path);
+}
+
+void WalletManager::DatabaseLease::AuthenticateP2MRInventory(const RecoverySeed& pin) {
+    IssuedAddressTransaction transaction(db_);
+    ValidateRecoveryInventoryInTransaction(pin);
+    transaction.Commit();
+}
+
 void WalletManager::DatabaseLease::ValidateRecoveryInventoryInTransaction(const RecoverySeed& pin) {
     // This also checks this lease, session, seed pin and active transaction.
     (void)ReadPendingPaymentsInTransaction(pin);
@@ -4949,12 +5081,14 @@ void WalletManager::DatabaseLease::ValidateRecoveryInventoryInTransaction(const 
         if(store.OpenExistingReadOnly(path)!=wallet::V7P2MRStore::OpenResult::Ok)
             throw std::runtime_error("Recovery PQ storage invalid");
         const auto rows=store.CaptureKeysByWallet(owner_.current_wallet_id_);
-        if(!rows.empty()&&!owner_.pq_master_key_loaded_)throw std::runtime_error("Recovery PQ master unavailable");
         struct Master {wallet::AeadKey value{};~Master(){OPENSSL_cleanse(value.data(),value.size());}} master;
-        if(owner_.pq_master_key_loaded_)master.value=owner_.pq_master_key_;
         auto initial=owner_.loadInitialPqMaster(owner_.master_seed_);
         struct ClearInitial {std::optional<std::array<uint8_t,32>>& value;
             ~ClearInitial(){if(value)OPENSSL_cleanse(value->data(),value->size());}} clear_initial{initial};
+        if(!rows.empty()&&!owner_.pq_master_key_loaded_&&!initial)
+            throw std::runtime_error("Recovery PQ master unavailable");
+        if(owner_.pq_master_key_loaded_)master.value=owner_.pq_master_key_;
+        else if(initial)master.value=*initial;
         bool durable_master=initial.has_value();
         if(initial&&owner_.pq_master_key_loaded_&&CRYPTO_memcmp(initial->data(),master.value.data(),32)!=0)
             throw std::runtime_error("Recovery PQ initial owner mismatch");
@@ -4982,6 +5116,7 @@ void WalletManager::DatabaseLease::ValidateRecoveryInventoryInTransaction(const 
             if(pair.pubkey()!=row.pubkey||root!=row.merkle_root||!decoded||decoded->merkle_root!=root||
                !pq_scripts.emplace(wallet::BuildP2MRScriptPubKey(root),row.derivation_path).second)
                 throw std::runtime_error("Recovery PQ key binding invalid");
+            (void)AdoptP2MRIssuanceIntent(db_,row,wallet::BuildP2MRScriptPubKey(root));
         }
     }
     IssuedStatement watched(db_,"SELECT script_pubkey,path,is_change FROM watch_scripts ORDER BY script_pubkey");
@@ -6069,7 +6204,7 @@ void WalletManager::lockWallet() {
 }
 
 std::optional<std::array<uint8_t, 32>> WalletManager::loadInitialPqMaster(
-    const std::vector<uint8_t>& seed) {
+    const std::vector<uint8_t>& seed) const {
     if (!db_ || sqlite3_get_autocommit(db_) != 0)
         throw std::logic_error("Initial owner requires the unlock transaction");
     IssuedStatement owner(db_, "SELECT value FROM settings WHERE key=?");
@@ -6375,6 +6510,7 @@ void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSecon
                    !decoded || decoded->merkle_root!=root)
                     throw std::runtime_error("PQ inventory key binding mismatch");
                 const auto script=wallet::BuildP2MRScriptPubKey(root);
+                (void)AdoptP2MRIssuanceIntent(db_,row,script);
                 IssuedStatement watched(db_,"SELECT path,is_change FROM watch_scripts WHERE script_pubkey=?");
                 watched.Blob(1,script.data(),int(script.size()));
                 IssuanceCheck(db_,sqlite3_step(watched.value.get()),SQLITE_ROW);
@@ -6442,13 +6578,23 @@ void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSecon
 
 std::optional<std::array<uint8_t, 32>> WalletManager::GetV7PqMasterKey() const {
     std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
-    if (wallet_locked_ || !pq_master_key_loaded_) {
-        return std::nullopt;
+    if (wallet_locked_) return std::nullopt;
+    if (pq_master_key_loaded_) {
+        // Return a copy. Caller is responsible for scrubbing.
+        std::array<uint8_t, 32> out{};
+        std::memcpy(out.data(), pq_master_key_.data(), out.size());
+        return out;
     }
-    // Return a copy. Caller is responsible for scrubbing.
-    std::array<uint8_t, 32> out{};
-    std::memcpy(out.data(), pq_master_key_.data(), out.size());
-    return out;
+    // A generated, unencrypted wallet seals its PQ master to its initial
+    // owner, not to the absent password wrapper. Read that authenticated
+    // owner only while the seed and database are live. Never infer a master
+    // for a restored or locked wallet.
+    if (wallet_encrypted_ || !db_ || master_seed_.size()!=64) return std::nullopt;
+    if (!sqlite3_get_autocommit(db_)) return loadInitialPqMaster(master_seed_);
+    IssuedAddressTransaction transaction(db_);
+    auto initial=loadInitialPqMaster(master_seed_);
+    transaction.Commit();
+    return initial;
 }
 
 std::vector<WalletManager::ShieldedIncomingViewingKey>
