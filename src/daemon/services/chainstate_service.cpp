@@ -7429,6 +7429,26 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                !UtreexoRpcSnapshotUnderLock().ok())return Status::Invalid;
             storage::RequireFullOrchardStorage(*chain_db_);
         }
+        // #939 phase 2: a native-complete wallet whose receive (or change)
+        // pool ran low extends here, in the runtime worker, never inline in
+        // an RPC. The extension needs the seed, so a locked wallet keeps its
+        // per-block delivery and extends after the next unlock. Its durable
+        // Pending then takes the same coverage/reconcile path as enrollment.
+        if(state==WalletManager::LegacyTransparentState::Complete && native && !wallet.isWalletLocked()) {
+            auto lease=wallet.AcquireDatabaseLease();
+            if(!wallet.SoleDatabaseLeaseHeld() || lease->Session()!=session ||
+               wallet.getUTXOIndex()!=nullptr)return Status::Invalid;
+            // A refused extension rolled back whole: the wallet is still
+            // Complete over its sealed domain, so keep delivering to it and
+            // retry on a later pass.
+            try {
+                if(lease->NativeV3PoolNeedsExtension() &&
+                   lease->BeginNativePoolExtensionV3(metadata_index,session))
+                    state=WalletManager::LegacyTransparentState::Pending;
+            } catch(const std::exception& e) {
+                std::cerr << "[ChainstateService] Native v3 address pool extension deferred: " << e.what() << "\n";
+            }
+        }
         if(state==WalletManager::LegacyTransparentState::Absent) {
             auto lease=wallet.AcquireDatabaseLease();
             if(!wallet.SoleDatabaseLeaseHeld() || lease->Session()!=session ||
