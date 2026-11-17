@@ -244,6 +244,19 @@ std::array<uint8_t, 32> DeriveBip39RecoveryKey(const std::vector<uint8_t>& seed)
 }
 
 constexpr char kInitialOwnerSetting[] = "wallet_initial_owner_v1";
+constexpr char kFreshBirthSetting[] = "wallet_fresh_birth_v1";
+std::string FreshBirthKey(const std::vector<uint8_t>& seed) {
+    if (seed.size() != 64) throw std::runtime_error("Fresh birth seed unavailable");
+    const std::string domain = "Dinero WalletManager fresh birth v1";
+    std::vector<uint8_t> material(domain.begin(), domain.end());
+    material.insert(material.end(), seed.begin(), seed.end());
+    std::array<uint8_t, 32> key{};
+    ::sha256(material.data(), material.size(), key.data());
+    secureClearBytes(material);
+    std::string result(reinterpret_cast<const char*>(key.data()), key.size());
+    OPENSSL_cleanse(key.data(), key.size());
+    return result;
+}
 std::string InitialOwnerKey(const std::vector<uint8_t>& seed) {
     if (seed.size() != 64) throw std::runtime_error("Initialization seed unavailable");
     const std::string domain = "Dinero WalletManager initial PQ owner v1";
@@ -1739,7 +1752,8 @@ WalletManager::GeneratedBip39Identity WalletManager::GenerateBip39Identity(
 }
 
 void WalletManager::createFromGeneratedBip39(const std::string& name,
-    GeneratedBip39Identity&& identity, const std::string& passphrase) {
+    GeneratedBip39Identity&& identity, const std::string& passphrase,
+    std::optional<uint32_t> fresh_birth_height) {
     // Consume the generated identity. A moved-from or reused ticket cannot
     // authorize a second initialization, and recovery has no ticket constructor.
     GeneratedBip39Identity owned(std::move(identity));
@@ -1750,7 +1764,8 @@ void WalletManager::createFromGeneratedBip39(const std::string& name,
                          ConstantTimeEqual(check, owned.seed_) && check.size() == 64;
     secureClearBytes(check);
     if (!matches) throw std::runtime_error("Generated BIP39 identity unavailable or mismatched");
-    createWithInitialSeed(name, owned.seed_, &owned.mnemonic_, passphrase, InitialSeedKind::Generated);
+    createWithInitialSeed(name, owned.seed_, &owned.mnemonic_, passphrase, InitialSeedKind::Generated,
+                          fresh_birth_height);
 }
 
 void WalletManager::create(const std::string& name) {
@@ -1792,12 +1807,17 @@ void WalletManager::createWithInitialSeed(
     const std::string& name,
     const std::vector<uint8_t>& initial_master_seed,
     const std::string* authoritative_mnemonic,
-    const std::string& bip39_passphrase, InitialSeedKind kind) {
+    const std::string& bip39_passphrase, InitialSeedKind kind,
+    std::optional<uint32_t> fresh_birth_height) {
     std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
-    // Interim (#939): v3 cannot deliver to a wallet with an Orchard owner,
-    // which every new or restored wallet gets. Refuse before any file exists.
-    if (full_archive_v3_legacy_rescans_disabled_)
+    // #939: a v3 node enrolls a freshly generated identity through the native
+    // route (its sealed birth skips the genesis replay). A restored seed may
+    // own Orchard history that v3 cannot deliver before Orchard delivery
+    // exists there, so a restore is still refused before any file exists.
+    if (full_archive_v3_legacy_rescans_disabled_ && kind != InitialSeedKind::Generated)
         throw std::runtime_error(kWalletCreationUnsupportedOnV3);
+    if (fresh_birth_height && kind != InitialSeedKind::Generated)
+        throw std::logic_error("Only a generated identity can seal a fresh birth height");
     if (database_leases_ != 0) throw std::logic_error("Cannot create a wallet during database delivery");
     if (initial_master_seed.size() != 64) {
         throw std::invalid_argument("Initial wallet seed must be exactly 64 bytes");
@@ -1985,6 +2005,24 @@ void WalletManager::createWithInitialSeed(
             const auto owner = util::hex(std::vector<uint8_t>(sealed.begin(), sealed.end()));
             if (!storeMasterSeedOwned(initial_master_seed, "", false, &owner, kind)) {
                 throw std::runtime_error("Failed to persist initial HD wallet seed");
+            }
+            if (fresh_birth_height) {
+                char height[9];
+                std::snprintf(height, sizeof(height), "%08x", *fresh_birth_height);
+                struct Key { std::string value; ~Key() { secureClearString(value); } }
+                    birth_key{FreshBirthKey(initial_master_seed)};
+                const auto sealed_birth = encryptData("DNFB01" + identity.substr(7) + height,
+                                                      birth_key.value);
+                sqlite3_stmt* stmt = nullptr;
+                if (sqlite3_prepare_v2(db_, "INSERT INTO settings (key, value, updated_at) "
+                        "VALUES (?, ?, strftime('%s','now'))", -1, &stmt, nullptr) != SQLITE_OK)
+                    throw std::runtime_error("Failed to prepare fresh birth record");
+                const auto hex = util::hex(std::vector<uint8_t>(sealed_birth.begin(), sealed_birth.end()));
+                sqlite3_bind_text(stmt, 1, kFreshBirthSetting, -1, SQLITE_STATIC);
+                sqlite3_bind_text(stmt, 2, hex.c_str(), -1, SQLITE_TRANSIENT);
+                const int rc = sqlite3_step(stmt);
+                sqlite3_finalize(stmt);
+                if (rc != SQLITE_DONE) throw std::runtime_error("Failed to persist fresh birth record");
             }
             if (authoritative_mnemonic) {
                 std::string recovery_error;
@@ -2298,9 +2336,154 @@ bool WalletManager::isValidDineroBech32(const std::string& addr) const {
     return validPrefix && addr.size() >= 20 && addr.size() <= 90;
 }
 
+namespace {
+// #939 phase 2: the native v3 address pool. Deliberately NOT one of the
+// OrdinaryGuards tables (utxos, transactions, watch_scripts, addresses, tip,
+// sync_meta): issuing a pooled script and labelling it write only here, so the
+// v3 receipts that bind the wallet's exact script domain stay valid. Every
+// pooled script is an ordinary issued row (addresses + watch_scripts) from the
+// moment it is pooled. Generation 0 is sealed by the enrollment coverage; each
+// extension adds the next generation and returns the wallet to native Pending
+// in the same transaction, so a row of the newest generation is covered by a
+// sealed receipt exactly when the wallet is native Complete again.
+constexpr const char* kNativePoolSchema =
+    "CREATE TABLE IF NOT EXISTS native_v3_address_pool("
+    "script_pubkey TEXT PRIMARY KEY NOT NULL CHECK(typeof(script_pubkey)='text' AND length(script_pubkey)=68),"
+    "address TEXT NOT NULL UNIQUE,"
+    "chain INTEGER NOT NULL CHECK(chain IN (0,1)),"
+    "idx INTEGER NOT NULL CHECK(idx>=0),"
+    "generation INTEGER NOT NULL CHECK(generation>=0),"
+    "issued INTEGER NOT NULL DEFAULT 0 CHECK(issued IN (0,1) AND (chain=0 OR issued=0)),"
+    "label TEXT NOT NULL DEFAULT '',"
+    "issued_at INTEGER,"
+    "UNIQUE(chain,idx))";
+struct PoolStatement {
+    sqlite3* db;
+    sqlite3_stmt* stmt=nullptr;
+    PoolStatement(sqlite3* database,const char* sql):db(database) {
+        if(sqlite3_prepare_v2(db,sql,-1,&stmt,nullptr)!=SQLITE_OK) {
+            sqlite3_finalize(stmt);
+            throw std::runtime_error("Native address pool SQL unavailable: "+std::string(sqlite3_errmsg(db)));
+        }
+    }
+    ~PoolStatement(){sqlite3_finalize(stmt);}
+    PoolStatement(const PoolStatement&)=delete;
+    PoolStatement& operator=(const PoolStatement&)=delete;
+    void Int(int i,int64_t value){if(sqlite3_bind_int64(stmt,i,value)!=SQLITE_OK)throw std::runtime_error("Native address pool bind failed");}
+    void Text(int i,const std::string& value){
+        if(value.size()>INT_MAX || sqlite3_bind_text(stmt,i,value.data(),int(value.size()),SQLITE_TRANSIENT)!=SQLITE_OK)
+            throw std::runtime_error("Native address pool bind failed");
+    }
+    bool Row(){
+        const int rc=sqlite3_step(stmt);
+        if(rc==SQLITE_ROW)return true;
+        if(rc!=SQLITE_DONE)throw std::runtime_error("Native address pool read failed: "+std::string(sqlite3_errmsg(db)));
+        return false;
+    }
+    void Done(int expected_changes=-1){
+        if(sqlite3_step(stmt)!=SQLITE_DONE ||
+           (expected_changes>=0 && sqlite3_changes(db)!=expected_changes))
+            throw std::runtime_error("Native address pool write failed: "+std::string(sqlite3_errmsg(db)));
+    }
+    std::string ColumnText(int c) const {
+        const auto* p=reinterpret_cast<const char*>(sqlite3_column_text(stmt,c));
+        if(sqlite3_column_type(stmt,c)!=SQLITE_TEXT || !p)throw std::runtime_error("Native address pool text malformed");
+        return std::string(p,sqlite3_column_bytes(stmt,c));
+    }
+    int64_t ColumnInt(int c) const {
+        if(sqlite3_column_type(stmt,c)!=SQLITE_INTEGER)throw std::runtime_error("Native address pool integer malformed");
+        return sqlite3_column_int64(stmt,c);
+    }
+};
+bool NativePoolPresent(sqlite3* db) {
+    PoolStatement q(db,"SELECT 1 FROM sqlite_master WHERE type='table' AND name='native_v3_address_pool'");
+    return q.Row();
+}
+int64_t NativePoolCount(sqlite3* db,const char* sql) {
+    PoolStatement q(db,sql);
+    if(!q.Row())throw std::runtime_error("Native address pool count unavailable");
+    return q.ColumnInt(0);
+}
+// Unissued receive scripts, and change scripts no coin has used yet (the
+// same "unused" rule the native send applies when it picks change).
+int64_t NativePoolUnissuedReceive(sqlite3* db) {
+    return NativePoolCount(db,"SELECT count(*) FROM native_v3_address_pool WHERE chain=0 AND issued=0");
+}
+int64_t NativePoolUnusedChange(sqlite3* db) {
+    return NativePoolCount(db,"SELECT count(*) FROM native_v3_address_pool p WHERE p.chain=1 "
+        "AND NOT EXISTS (SELECT 1 FROM utxos u WHERE u.address=p.address)");
+}
+// Records every account-0 Taproot row of both chains that is not pooled yet.
+// Receive rows below `issued_below` were (or may have been) shown to the user
+// before they were pooled, so they count as issued and keep their label.
+void NativePoolAdopt(sqlite3* db,int64_t generation,int64_t issued_below) {
+    PoolStatement rows(db,"SELECT script_pubkey,address,change,idx,COALESCE(label,'') FROM addresses "
+        "WHERE account=0 AND change IN (0,1) AND type='p2tr' AND script_pubkey IS NOT NULL "
+        "AND lower(script_pubkey) NOT IN (SELECT script_pubkey FROM native_v3_address_pool) ORDER BY change,idx");
+    std::vector<std::tuple<std::string,std::string,int64_t,int64_t,std::string>> found;
+    while(rows.Row())found.emplace_back(rows.ColumnText(0),rows.ColumnText(1),rows.ColumnInt(2),rows.ColumnInt(3),rows.ColumnText(4));
+    for(auto& [script,address,chain,idx,label]:found) {
+        std::transform(script.begin(),script.end(),script.begin(),[](unsigned char c){return char(std::tolower(c));});
+        const bool issued=chain==0 && idx<issued_below;
+        PoolStatement insert(db,"INSERT INTO native_v3_address_pool(script_pubkey,address,chain,idx,generation,issued,label) "
+            "VALUES(?,?,?,?,?,?,?)");
+        insert.Text(1,script);insert.Text(2,address);insert.Int(3,chain);insert.Int(4,idx);
+        insert.Int(5,generation);insert.Int(6,issued?1:0);insert.Text(7,issued?label:std::string());
+        insert.Done(1);
+    }
+}
+// The pooled row must still be the exact ordinary issued row (address,
+// derivation index and watched script) it was recorded as.
+void NativePoolRequireIssuedRow(sqlite3* db,const std::string& script_hex,const std::string& address,int chain,int64_t idx) {
+    PoolStatement row(db,"SELECT 1 FROM addresses a JOIN watch_scripts w ON lower(hex(w.script_pubkey))=lower(a.script_pubkey) "
+        "WHERE a.account=0 AND a.change=? AND a.idx=? AND a.address=? AND lower(a.script_pubkey)=? AND w.is_change=?");
+    row.Int(1,chain);row.Int(2,idx);row.Text(3,address);row.Text(4,script_hex);row.Int(5,chain);
+    if(!row.Row())throw std::runtime_error("Native address pool row lost its issued script");
+}
+// The sealed ordinary receipt is present. Its triggers null it on any write to
+// the guarded script domain, so a present receipt proves the domain (and so
+// every pooled row) is exactly the one its coverage replay sealed.
+bool NativeOrdinaryReceiptSealed(sqlite3* db) {
+    PoolStatement q(db,"SELECT count(*) FROM pragma_table_info('wallet_meta') "
+        "WHERE name IN ('runtime_ordinary_receipt','runtime_ordinary_invalid')");
+    if(!q.Row() || q.ColumnInt(0)!=2)return false;
+    PoolStatement receipt(db,"SELECT runtime_ordinary_receipt IS NOT NULL AND runtime_ordinary_invalid=0 FROM wallet_meta WHERE id=1");
+    return receipt.Row() && receipt.ColumnInt(0)==1;
+}
+} // namespace
+
 void WalletManager::setAddressLabel(const std::string& addr, const std::string& label, bool is_system) {
     if (current_wallet_id_ == -1) {
         throw std::runtime_error("No wallet is currently open");
+    }
+    {
+        // #939: a label is an UPDATE of the guarded addresses table. After
+        // native v3 enrollment it would invalidate the wallet's receipts.
+        // Phase 2: an issued pool address keeps its label in the unguarded
+        // pool row instead.
+        auto lease = AcquireDatabaseLease();
+        if (lease->NativeV3TransparentState() != NativeV3State::Absent) {
+            auto* db = lease->Database();
+            if (db && sqlite3_get_autocommit(db) && NativePoolPresent(db)) {
+                std::optional<std::string> existing;
+                {
+                    PoolStatement row(db, "SELECT label FROM native_v3_address_pool WHERE address=? AND chain=0 AND issued=1");
+                    row.Text(1, addr);
+                    if (row.Row()) existing = row.ColumnText(0);
+                }
+                if (existing) {
+                    const bool keep = is_system && !existing->empty();
+                    if (!keep) {
+                        PoolStatement update(db, "UPDATE native_v3_address_pool SET label=? WHERE address=? AND chain=0 AND issued=1");
+                        update.Text(1, label);
+                        update.Text(2, addr);
+                        update.Done(1);
+                    }
+                    return;
+                }
+            }
+            throw std::runtime_error("Address labels for this wallet are not available on this node yet (wallet index v3)");
+        }
     }
 
     // Validate address format
@@ -2505,6 +2688,41 @@ void PersistIssuedAddress(sqlite3* db,int change,int index,const std::string& ad
        sqlite3_column_type(check.value.get(),1)!=SQLITE_INTEGER || sqlite3_column_int64(check.value.get(),1)!=change)
         throw std::runtime_error("Address issuance watch ownership mismatch");
     check.Done();
+}
+// The exact BIP86 derivation that Taproot issuance persists. Shared with the
+// native v3 receive pool so a pooled row is byte-identical to an issued one.
+struct DerivedTaprootRow {
+    std::string address,script_hex,path;
+    std::vector<uint8_t> script;
+    std::optional<wallet::KeyID> key,internal,output;
+};
+DerivedTaprootRow DeriveBip86Row(const std::vector<uint8_t>& seed,int change,int index,ILogger* logger) {
+    if(seed.empty()||change<0||change>1||index<0)throw std::runtime_error("Taproot derivation input invalid");
+    auto master_key=dinero::crypto::HDKeychain::fromSeed(seed);
+    auto purpose_key=master_key.derive(86|0x80000000);
+    auto coin_key=purpose_key.derive(dinero::consensus::DINERO_COIN_TYPE|0x80000000);
+    auto account_key=coin_key.derive(0|0x80000000);
+    auto chain_key=account_key.derive(static_cast<uint32_t>(change));
+    auto derived_key=chain_key.derive(static_cast<uint32_t>(index));
+    const auto pubkey=derived_key.getPublicKey();
+    if(pubkey.size()!=33)throw std::runtime_error("Taproot derived pubkey is not 33 bytes");
+    std::vector<uint8_t> xonly(pubkey.begin()+1,pubkey.end());
+    std::array<uint8_t,32> output_key{};
+    if(!ComputeTaprootOutputKey(xonly,output_key,logger))throw std::runtime_error("Taproot output key unavailable");
+    std::string hrp=dinero::HrpForActiveNetworkRef();
+    if(hrp.empty())hrp="din";
+    DerivedTaprootRow row;
+    row.address=bech32::Encode(hrp,1,std::vector<uint8_t>(output_key.begin(),output_key.end()),bech32::Encoding::BECH32M);
+    if(row.address.empty())throw std::runtime_error("Taproot address encoding failed");
+    row.script={0x51,0x20};row.script.insert(row.script.end(),output_key.begin(),output_key.end());
+    row.script_hex="5120"+bytesToHex(output_key.data(),output_key.size());
+    std::array<uint8_t,32> internal{};std::copy(xonly.begin(),xonly.end(),internal.begin());
+    row.internal=wallet::ComputeKeyIDFromXOnly(internal);
+    row.output=wallet::ComputeKeyIDFromXOnly(output_key);
+    row.key=row.internal;
+    row.path="m/86'/"+std::to_string(dinero::consensus::DINERO_COIN_TYPE)+"'/0'/"+
+        std::to_string(change)+"/"+std::to_string(index);
+    return row;
 }
 // Validate explicit BIP84/BIP86 ownership claims without repairing records or
 // publishing derived secrets. The caller owns the wallet transaction and seed.
@@ -2753,7 +2971,17 @@ std::optional<std::string> WalletManager::getAddressLabel(const std::string& add
     if (current_wallet_id_ == -1) {
         return std::nullopt;
     }
-    
+    // #939 phase 2: a native v3 pool row owns its label (unguarded table).
+    try {
+        if (db_ && NativePoolPresent(db_)) {
+            PoolStatement row(db_, "SELECT label FROM native_v3_address_pool WHERE address=?");
+            row.Text(1, addr);
+            if (row.Row()) return row.ColumnText(0);
+        }
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+
     sqlite3_stmt* stmt;
     const char* sql = "SELECT label FROM addresses WHERE address = ? AND wallet_id = ?";
     
@@ -2865,9 +3093,111 @@ std::vector<AddressRow> WalletManager::listAddresses(bool includeLabels) const {
 
         addresses.push_back(std::move(row));
     }
-    
+
     sqlite3_finalize(stmt);
+    // #939 phase 2: a native v3 pool row owns its label (unguarded table).
+    if (includeLabels) {
+        try {
+            if (NativePoolPresent(db_)) {
+                std::map<std::string, std::string> labels;
+                PoolStatement pool(db_, "SELECT address,label FROM native_v3_address_pool");
+                while (pool.Row()) labels[pool.ColumnText(0)] = pool.ColumnText(1);
+                for (auto& row : addresses) {
+                    const auto found = labels.find(row.address);
+                    if (found != labels.end()) row.label = found->second;
+                }
+            }
+        } catch (const std::exception&) {
+            logCorruptRow("native_v3_address_pool", "label", "pool labels unavailable");
+        }
+    }
     return addresses;
+}
+
+std::set<std::string> WalletManager::nativePoolHiddenAddresses() const {
+    std::set<std::string> hidden;
+    if (current_wallet_id_ == -1 || !db_ || !NativePoolPresent(db_)) return hidden;
+    PoolStatement rows(db_, "SELECT p.address FROM native_v3_address_pool p WHERE (p.chain=1 OR p.issued=0) "
+        "AND NOT EXISTS (SELECT 1 FROM utxos u WHERE u.address=p.address)");
+    while (rows.Row()) hidden.insert(rows.ColumnText(0));
+    return hidden;
+}
+
+WalletManager::NativePoolIssue WalletManager::issueNativePoolAddress(const std::string& label) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
+    NativePoolIssue result;
+    const auto refuse = [&](const char* message, const char* code, bool retryable) {
+        result.address.clear();
+        result.error = message;
+        result.error_code = code;
+        result.retryable = retryable;
+        return result;
+    };
+    if (current_wallet_id_ < 0 || !db_ || !sqlite3_get_autocommit(db_))
+        throw std::runtime_error("Native address pool owner unavailable");
+    auto lease = AcquireDatabaseLease();
+    if (lease->LegacyTransparentState() != LegacyTransparentState::Absent)
+        throw std::runtime_error("Native address pool requires a native v3 wallet");
+    const auto state = lease->NativeV3TransparentState();
+    if (state == NativeV3State::Absent)
+        throw std::runtime_error("Native address pool requires a native v3 wallet");
+    auto* db = lease->Database();
+    checkUnlockTimeout();
+    const bool locked = wallet_locked_;
+    IssuedAddressTransaction transaction(db);
+    const auto exhausted = [&] {
+        return locked
+            ? refuse(kNativeWalletAddressPoolUnlockRequired, "wallet_native_address_pool_unlock_required", false)
+            : refuse(kNativeWalletAddressPoolExtending, "wallet_native_address_pool_extending", true);
+    };
+    // A wallet enrolled before the pool existed has every receive row on show
+    // already; its first extension adopts them as issued.
+    if (!NativePoolPresent(db)) {
+        if (state == NativeV3State::Complete) return exhausted();
+        return refuse(kNativeWalletAddressUnavailableOnV3, "wallet_native_address_unavailable_on_v3", false);
+    }
+    const auto newest = NativePoolCount(db, "SELECT COALESCE(MAX(generation),0) FROM native_v3_address_pool");
+    // Issuable: covered by a SEALED receipt's replay.
+    //  - Complete: the present ordinary receipt sealed the whole current
+    //    domain (every generation). Any guarded write would have nulled it.
+    //  - Pending with newest > 0: an extension is in flight. Every older
+    //    generation was in the domain its predecessor receipt sealed (the
+    //    extension requires that receipt); the newest is not covered yet.
+    //  - Pending with newest == 0: first enrollment; nothing is sealed.
+    int64_t below = 0;
+    if (state == NativeV3State::Complete) {
+        if (!NativeOrdinaryReceiptSealed(db))
+            return refuse(kNativeWalletAddressUnavailableOnV3, "wallet_native_address_unavailable_on_v3", true);
+        below = std::numeric_limits<int64_t>::max();
+    } else if (newest > 0) {
+        below = newest;
+    } else {
+        return refuse(kNativeWalletAddressUnavailableOnV3, "wallet_native_address_unavailable_on_v3", false);
+    }
+    std::string script, address;
+    int64_t idx = 0;
+    {
+        PoolStatement next(db, "SELECT script_pubkey,address,idx FROM native_v3_address_pool "
+            "WHERE chain=0 AND issued=0 AND generation<? ORDER BY idx LIMIT 1");
+        next.Int(1, below);
+        if (!next.Row()) return exhausted();
+        script = next.ColumnText(0);
+        address = next.ColumnText(1);
+        idx = next.ColumnInt(2);
+    }
+    NativePoolRequireIssuedRow(db, script, address, 0, idx);
+    PoolStatement issue(db, "UPDATE native_v3_address_pool SET issued=1,label=?,issued_at=? "
+        "WHERE script_pubkey=? AND chain=0 AND issued=0");
+    issue.Text(1, label);
+    issue.Int(2, static_cast<int64_t>(std::time(nullptr)));
+    issue.Text(3, script);
+    issue.Done(1);
+    // No guard fired: the sealed receipt is still exactly as it was.
+    if (state == NativeV3State::Complete && !NativeOrdinaryReceiptSealed(db))
+        throw std::runtime_error("Native address issuance touched the sealed script domain");
+    transaction.Commit();
+    result.address = std::move(address);
+    return result;
 }
 
 void WalletManager::removeAddress(const std::string& addr) {
@@ -3374,7 +3704,7 @@ std::string WalletManager::DatabaseLease::EnsureDeliveryIdentity() {
         throw std::logic_error("Wallet delivery identity used on another thread");
     if (!db_ || name_.empty() || !sqlite3_get_autocommit(db_))
         throw std::runtime_error("Wallet delivery identity ownership unavailable");
-    if (LegacyTransparentState() != WalletManager::LegacyTransparentState::Absent) {
+    if (TypedTransparentState() != WalletManager::LegacyTransparentState::Absent) {
         // A marked migration may never recover from a missing ID by silently
         // minting a new one. Exact typed delivery must retain the first ID.
         const auto id = ReadDeliveryIdentity();
@@ -3549,6 +3879,51 @@ bool WalletManager::DatabaseLease::HasOrchardOwnerState() const {
 }
 
 std::optional<uint32_t>
+WalletManager::DatabaseLease::SealedFreshBirthHeight(uint64_t expected_session) const {
+    if (thread_ != std::this_thread::get_id() || !db_ || name_.empty() || owner_.db_ != db_ ||
+        expected_session != session_ || owner_.database_session_ != session_)
+        throw std::runtime_error("Fresh birth ownership unavailable");
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, "SELECT value FROM settings WHERE key=?", -1, &stmt, nullptr) != SQLITE_OK)
+        throw std::runtime_error("Fresh birth record unreadable");
+    sqlite3_bind_text(stmt, 1, kFreshBirthSetting, -1, SQLITE_STATIC);
+    int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_DONE) { sqlite3_finalize(stmt); return std::nullopt; }
+    if (rc != SQLITE_ROW || sqlite3_column_type(stmt, 0) != SQLITE_TEXT) {
+        sqlite3_finalize(stmt);
+        throw std::runtime_error("Fresh birth record malformed");
+    }
+    const std::string hex(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)),
+                          sqlite3_column_bytes(stmt, 0));
+    sqlite3_finalize(stmt);
+    std::vector<uint8_t> bytes;
+    if (!util::unhex(hex, bytes)) throw std::runtime_error("Fresh birth record encoding invalid");
+    owner_.checkUnlockTimeout();
+    if (owner_.wallet_locked_ || owner_.master_seed_.size() != 64)
+        throw std::runtime_error("Fresh birth record requires the unlocked seed");
+    struct Secret { std::string value; ~Secret() { secureClearString(value); } }
+        key{FreshBirthKey(owner_.master_seed_)}, plain;
+    plain.value = owner_.decryptData(std::string(bytes.begin(), bytes.end()), key.value);
+    if (plain.value.size() != 6 + 64 + 8 || plain.value.substr(0, 6) != "DNFB01")
+        throw std::runtime_error("Fresh birth payload invalid");
+    sqlite3_stmt* id = nullptr;
+    if (sqlite3_prepare_v2(db_, "SELECT runtime_delivery_id FROM wallet_meta WHERE id=1", -1, &id, nullptr) != SQLITE_OK)
+        throw std::runtime_error("Fresh birth identity unreadable");
+    rc = sqlite3_step(id);
+    const bool identity_ok = rc == SQLITE_ROW && sqlite3_column_type(id, 0) == SQLITE_BLOB &&
+        sqlite3_column_bytes(id, 0) == 32 &&
+        plain.value.substr(6, 64) == util::hex(std::vector<uint8_t>(
+            static_cast<const uint8_t*>(sqlite3_column_blob(id, 0)),
+            static_cast<const uint8_t*>(sqlite3_column_blob(id, 0)) + 32));
+    sqlite3_finalize(id);
+    if (!identity_ok) throw std::runtime_error("Fresh birth identity mismatch");
+    const auto height_hex = plain.value.substr(70, 8);
+    if (height_hex.find_first_not_of("0123456789abcdef") != std::string::npos)
+        throw std::runtime_error("Fresh birth height invalid");
+    return static_cast<uint32_t>(std::stoul(height_hex, nullptr, 16));
+}
+
+std::optional<uint32_t>
 WalletManager::DatabaseLease::UnenrolledLegacyTransparentScanHeight() const {
     if (thread_ != std::this_thread::get_id())
         throw std::logic_error("Legacy wallet enrollment check used on another thread");
@@ -3604,7 +3979,9 @@ bool WalletManager::DatabaseLease::LegacyV3UpgradeRequired() const {
 void WalletManager::DatabaseLease::RequireLegacyTransparentFinancialReady() const {
     if (LegacyV3UpgradeRequired())
         throw std::runtime_error(WalletManager::kLegacyWalletV3UpgradeRequired);
-    const auto state = LegacyTransparentState();
+    // Either typed v3 class: a native-complete wallet gets the same
+    // tip/scan/memory-height publication check as a legacy-complete one.
+    const auto state = TypedTransparentState();
     if (state == WalletManager::LegacyTransparentState::Pending)
         throw std::runtime_error("Legacy transparent wallet migration pending");
     if (state == WalletManager::LegacyTransparentState::Complete) {
@@ -3775,11 +4152,277 @@ std::string WalletManager::DatabaseLease::BeginLegacyTransparentMigrationV3(
     }
 }
 
+WalletManager::NativeV3State
+WalletManager::DatabaseLease::NativeV3TransparentState() const {
+    if (thread_ != std::this_thread::get_id())
+        throw std::logic_error("Native wallet migration state used on another thread");
+    if (!db_ || name_.empty() || owner_.db_ != db_ || owner_.database_session_ != session_)
+        throw std::runtime_error("Native wallet migration state ownership unavailable");
+    if (!LegacyMigrationColumn(db_, "runtime_native_v3_state_v1"))
+        return WalletManager::NativeV3State::Absent;
+    // The column is only ever added in the same transaction that sets it.
+    LegacyMigrationStatement state(db_,
+        "SELECT runtime_native_v3_state_v1 FROM wallet_meta WHERE id=1");
+    if (sqlite3_step(state.stmt) != SQLITE_ROW ||
+        sqlite3_column_type(state.stmt, 0) != SQLITE_TEXT)
+        throw std::runtime_error("Native wallet migration state malformed");
+    const auto* bytes = static_cast<const char*>(sqlite3_column_blob(state.stmt, 0));
+    const int length = sqlite3_column_bytes(state.stmt, 0);
+    if (!bytes || length <= 0) throw std::runtime_error("Native wallet migration state malformed");
+    const std::string value(bytes, length);
+    if (sqlite3_step(state.stmt) != SQLITE_DONE)
+        throw std::runtime_error("Native wallet migration state malformed");
+    if (value == "pending") return WalletManager::NativeV3State::Pending;
+    if (value == "complete") return WalletManager::NativeV3State::Complete;
+    throw std::runtime_error("Native wallet migration state malformed");
+}
+
+WalletManager::LegacyTransparentState
+WalletManager::DatabaseLease::TypedTransparentState() const {
+    const auto legacy = LegacyTransparentState();
+    const auto native = NativeV3TransparentState();
+    if (legacy != WalletManager::LegacyTransparentState::Absent &&
+        native != WalletManager::NativeV3State::Absent)
+        throw std::runtime_error("Wallet carries both legacy and native v3 class markers");
+    if (legacy != WalletManager::LegacyTransparentState::Absent) return legacy;
+    if (native == WalletManager::NativeV3State::Pending) return WalletManager::LegacyTransparentState::Pending;
+    if (native == WalletManager::NativeV3State::Complete) return WalletManager::LegacyTransparentState::Complete;
+    return WalletManager::LegacyTransparentState::Absent;
+}
+
+bool WalletManager::DatabaseLease::NativeV3Enrollable() const {
+    if (thread_ != std::this_thread::get_id())
+        throw std::logic_error("Native wallet eligibility used on another thread");
+    if (!db_ || name_.empty() || owner_.db_ != db_ || owner_.database_session_ != session_)
+        throw std::runtime_error("Native wallet eligibility ownership unavailable");
+    if (LegacyMigrationColumn(db_, "runtime_legacy_transparent_state_v1") || !HasOrchardOwnerState())
+        return false;
+    { LegacyMigrationStatement catalog(db_,
+          "SELECT 1 FROM settings WHERE key='orchard_account_catalog_v1'");
+      const int rc = sqlite3_step(catalog.stmt);
+      if (rc == SQLITE_DONE) return false;
+      if (rc != SQLITE_ROW) throw std::runtime_error("Native wallet catalog metadata unavailable"); }
+    if (!LegacyMigrationColumn(db_, "runtime_delivery_id")) return false;
+    LegacyMigrationStatement identity(db_, "SELECT runtime_delivery_id FROM wallet_meta WHERE id=1");
+    if (sqlite3_step(identity.stmt) != SQLITE_ROW)
+        throw std::runtime_error("Native wallet identity metadata unavailable");
+    if (sqlite3_column_type(identity.stmt, 0) != SQLITE_BLOB ||
+        sqlite3_column_bytes(identity.stmt, 0) != 32) return false;
+    const auto* bytes = static_cast<const uint8_t*>(sqlite3_column_blob(identity.stmt, 0));
+    return bytes && std::any_of(bytes, bytes + 32, [](uint8_t byte) { return byte != 0; });
+}
+
+std::string WalletManager::DatabaseLease::BeginNativeTransparentMigrationV3(
+    const dinero::UTXOIndex& metadata_index, uint64_t expected_session) {
+    if (thread_ != std::this_thread::get_id())
+        throw std::logic_error("V3 native wallet migration used on another thread");
+    if (!metadata_index.IsFullArchiveV3MetadataOnly() || owner_.utxo_index_ != nullptr)
+        throw std::runtime_error("V3 native wallet migration requires detached metadata-only index");
+    if (!db_ || name_.empty() || owner_.db_ != db_ || owner_.database_session_ != session_ ||
+        owner_.database_leases_ != 1 || !sqlite3_get_autocommit(db_) ||
+        !expected_session || expected_session != session_ || owner_.current_wallet_id_ < 0)
+        throw std::runtime_error("V3 native wallet migration ownership unavailable");
+    auto seed = CopyRecoverySeed(expected_session);
+    LegacyMigrationExec(db_, "PRAGMA synchronous=FULL");
+    { LegacyMigrationStatement policy(db_, "PRAGMA synchronous");
+      if (sqlite3_step(policy.stmt) != SQLITE_ROW || sqlite3_column_int(policy.stmt, 0) != 2 ||
+          sqlite3_step(policy.stmt) != SQLITE_DONE)
+          throw std::runtime_error("V3 native wallet migration durability unavailable"); }
+    LegacyMigrationExec(db_, "BEGIN IMMEDIATE");
+    try {
+        { LegacyMigrationStatement selected(db_, "SELECT id FROM wallet_meta WHERE id=1");
+          if (sqlite3_step(selected.stmt) != SQLITE_ROW ||
+              sqlite3_step(selected.stmt) != SQLITE_DONE)
+              throw std::runtime_error("V3 native wallet metadata unavailable"); }
+        // The legacy column is a class marker; a native wallet never takes it.
+        if (LegacyMigrationColumn(db_, "runtime_legacy_transparent_state_v1"))
+            throw std::runtime_error("V3 native wallet already carries the legacy class marker");
+        if (LegacyMigrationColumn(db_, "runtime_native_v3_state_v1"))
+            throw std::runtime_error("V3 native wallet migration already enrolled");
+        if (!HasOrchardOwnerState() || !NativeV3Enrollable())
+            throw std::runtime_error("V3 native wallet migration requires an Orchard owner and catalog");
+        // The sealed birth and Orchard catalog are bound to the existing
+        // delivery identity. Keep it; never mint a replacement here.
+        if (!LegacyMigrationColumn(db_, "runtime_delivery_id"))
+            throw std::runtime_error("V3 native wallet delivery identity unavailable");
+        std::array<unsigned char, 32> id{};
+        { LegacyMigrationStatement old_id(db_,
+              "SELECT runtime_delivery_id FROM wallet_meta WHERE id=1");
+          if (sqlite3_step(old_id.stmt) != SQLITE_ROW ||
+              sqlite3_column_type(old_id.stmt, 0) != SQLITE_BLOB ||
+              sqlite3_column_bytes(old_id.stmt, 0) != int(id.size()))
+              throw std::runtime_error("V3 native wallet delivery identity unavailable");
+          const auto* bytes = sqlite3_column_blob(old_id.stmt, 0);
+          if (!bytes) throw std::runtime_error("V3 native wallet delivery identity unavailable");
+          std::memcpy(id.data(), bytes, id.size());
+          if (std::all_of(id.begin(), id.end(), [](auto byte) { return byte == 0; }) ||
+              sqlite3_step(old_id.stmt) != SQLITE_DONE)
+              throw std::runtime_error("V3 native wallet delivery identity malformed"); }
+        // Receive and change pools: the same issued rows (addresses,
+        // derivation path and watched script) that issuance writes, for
+        // Taproot external and internal (change) 0..N-1. One coverage replay
+        // then proves every pooled script, so a send never derives change.
+        int64_t receive_first = 0;
+        for (const int chain : {0, 1}) {
+            LegacyMigrationStatement next(db_,
+                "SELECT COALESCE(MAX(idx),-1)+1 FROM addresses WHERE account=0 AND change=?");
+            if (sqlite3_bind_int(next.stmt, 1, chain) != SQLITE_OK || sqlite3_step(next.stmt) != SQLITE_ROW ||
+                sqlite3_column_type(next.stmt, 0) != SQLITE_INTEGER)
+                throw std::runtime_error("V3 native wallet pool index unavailable");
+            const auto first = sqlite3_column_int64(next.stmt, 0);
+            if (first < 0 || first > INT_MAX || sqlite3_step(next.stmt) != SQLITE_DONE)
+                throw std::runtime_error("V3 native wallet pool index invalid");
+            if (chain == 0) receive_first = first;
+            for (int index = int(first); index < WalletManager::kNativeV3ReceivePool; ++index) {
+                const auto row = DeriveBip86Row(owner_.master_seed_, chain, index, owner_.logger_);
+                PersistIssuedAddress(db_, chain, index, row.address, "", "p2tr", row.script_hex,
+                    row.script, row.path, row.key, row.internal, row.output);
+            }
+        }
+        // Phase 2 issuance state, in the unguarded pool table: generation 0,
+        // sealed by this enrollment's coverage. Receive rows that predate
+        // enrollment (index 0, anything already shown) count as issued.
+        LegacyMigrationExec(db_, kNativePoolSchema);
+        if (NativePoolCount(db_, "SELECT count(*) FROM native_v3_address_pool") != 0)
+            throw std::runtime_error("V3 native wallet address pool already populated");
+        NativePoolAdopt(db_, 0, receive_first);
+        // Authenticate the seed and the complete inventory, pool included,
+        // before either the pool or the class marker can become durable.
+        ValidateRecoveryInventoryInTransaction(*seed);
+        LegacyMigrationExec(db_,
+            "ALTER TABLE wallet_meta ADD COLUMN runtime_native_v3_state_v1 TEXT");
+        { LegacyMigrationStatement write(db_,
+              "UPDATE wallet_meta SET runtime_native_v3_state_v1='pending' "
+              "WHERE id=1 AND runtime_delivery_id=? AND runtime_native_v3_state_v1 IS NULL");
+          if (sqlite3_bind_blob(write.stmt, 1, id.data(), int(id.size()), SQLITE_TRANSIENT) != SQLITE_OK ||
+              sqlite3_step(write.stmt) != SQLITE_DONE || sqlite3_changes(db_) != 1)
+              throw std::runtime_error("V3 native wallet migration enrollment failed"); }
+        static constexpr char hex[] = "0123456789abcdef";
+        std::string result = "DNWI01:";
+        for (auto byte : id) { result += hex[byte >> 4]; result += hex[byte & 15]; }
+        LegacyMigrationExec(db_, "COMMIT");
+        return result;
+    } catch (...) {
+        if (!sqlite3_get_autocommit(db_) &&
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
+            !sqlite3_get_autocommit(db_)) std::terminate();
+        throw;
+    }
+}
+
+namespace {
+struct NativePoolLowChains { bool receive = false, change = false; };
+NativePoolLowChains NativePoolLow(sqlite3* db) {
+    if (!NativePoolPresent(db)) return {true, false};  // adopt; every shown receive row is issued
+    return {NativePoolUnissuedReceive(db) < WalletManager::kNativeV3PoolLowWater,
+            NativePoolUnusedChange(db) < WalletManager::kNativeV3PoolLowWater};
+}
+} // namespace
+
+bool WalletManager::DatabaseLease::NativeV3PoolNeedsExtension() const {
+    if (thread_ != std::this_thread::get_id())
+        throw std::logic_error("Native address pool used on another thread");
+    if (!db_ || name_.empty() || owner_.db_ != db_ || owner_.database_session_ != session_)
+        throw std::runtime_error("Native address pool ownership unavailable");
+    if (LegacyMigrationColumn(db_, "runtime_legacy_transparent_state_v1") ||
+        NativeV3TransparentState() != WalletManager::NativeV3State::Complete)
+        return false;
+    const auto low = NativePoolLow(db_);
+    return low.receive || low.change;
+}
+
+bool WalletManager::DatabaseLease::BeginNativePoolExtensionV3(
+    const dinero::UTXOIndex& metadata_index, uint64_t expected_session) {
+    if (thread_ != std::this_thread::get_id())
+        throw std::logic_error("V3 native pool extension used on another thread");
+    if (!metadata_index.IsFullArchiveV3MetadataOnly() || owner_.utxo_index_ != nullptr)
+        throw std::runtime_error("V3 native pool extension requires detached metadata-only index");
+    if (!db_ || name_.empty() || owner_.db_ != db_ || owner_.database_session_ != session_ ||
+        owner_.database_leases_ != 1 || !sqlite3_get_autocommit(db_) ||
+        !expected_session || expected_session != session_ || owner_.current_wallet_id_ < 0)
+        throw std::runtime_error("V3 native pool extension ownership unavailable");
+    auto seed = CopyRecoverySeed(expected_session);
+    LegacyMigrationExec(db_, "PRAGMA synchronous=FULL");
+    { LegacyMigrationStatement policy(db_, "PRAGMA synchronous");
+      if (sqlite3_step(policy.stmt) != SQLITE_ROW || sqlite3_column_int(policy.stmt, 0) != 2 ||
+          sqlite3_step(policy.stmt) != SQLITE_DONE)
+          throw std::runtime_error("V3 native pool extension durability unavailable"); }
+    LegacyMigrationExec(db_, "BEGIN IMMEDIATE");
+    try {
+        if (LegacyMigrationColumn(db_, "runtime_legacy_transparent_state_v1"))
+            throw std::runtime_error("V3 native pool extension on a legacy-class wallet");
+        if (NativeV3TransparentState() != WalletManager::NativeV3State::Complete)
+            throw std::runtime_error("V3 native pool extension requires a native-complete wallet");
+        // Every existing pooled script is covered by this sealed receipt's
+        // replay (a guarded write would have nulled it). Issuance during the
+        // extension relies on exactly that for the older generations.
+        if (!NativeOrdinaryReceiptSealed(db_))
+            throw std::runtime_error("V3 native pool extension requires a sealed ordinary receipt");
+        LegacyMigrationExec(db_, kNativePoolSchema);
+        const bool adopted = NativePoolCount(db_, "SELECT count(*) FROM native_v3_address_pool") == 0;
+        // A wallet enrolled before the pool existed showed every pooled receive
+        // row already: record them all as issued (generation 0).
+        if (adopted) NativePoolAdopt(db_, 0, std::numeric_limits<int64_t>::max());
+        // Nothing unpooled may remain: every account-0 Taproot row is either
+        // issued or a pooled script whose coverage the pool records.
+        if (NativePoolCount(db_, "SELECT count(*) FROM addresses WHERE account=0 AND change IN (0,1) "
+                "AND type='p2tr' AND lower(script_pubkey) NOT IN (SELECT script_pubkey FROM native_v3_address_pool)") != 0)
+            throw std::runtime_error("V3 native pool extension found an unpooled Taproot row");
+        const auto low = NativePoolLow(db_);
+        if (!low.receive && !low.change) {
+            LegacyMigrationExec(db_, "ROLLBACK");
+            return false;
+        }
+        const auto generation =
+            NativePoolCount(db_, "SELECT COALESCE(MAX(generation),0) FROM native_v3_address_pool") + 1;
+        for (const int chain : {0, 1}) {
+            if ((chain == 0 && !low.receive) || (chain == 1 && !low.change)) continue;
+            LegacyMigrationStatement next(db_,
+                "SELECT COALESCE(MAX(idx),-1)+1 FROM addresses WHERE account=0 AND change=?");
+            if (sqlite3_bind_int(next.stmt, 1, chain) != SQLITE_OK || sqlite3_step(next.stmt) != SQLITE_ROW ||
+                sqlite3_column_type(next.stmt, 0) != SQLITE_INTEGER)
+                throw std::runtime_error("V3 native pool extension index unavailable");
+            const auto first = sqlite3_column_int64(next.stmt, 0);
+            if (first < 0 || first > INT_MAX - WalletManager::kNativeV3ReceivePool ||
+                sqlite3_step(next.stmt) != SQLITE_DONE)
+                throw std::runtime_error("V3 native pool extension index invalid");
+            for (int index = int(first); index < int(first) + WalletManager::kNativeV3ReceivePool; ++index) {
+                const auto row = DeriveBip86Row(owner_.master_seed_, chain, index, owner_.logger_);
+                // Guarded write: the ordinary receipt is nulled here, in this
+                // transaction, together with the return to Pending below.
+                PersistIssuedAddress(db_, chain, index, row.address, "", "p2tr", row.script_hex,
+                    row.script, row.path, row.key, row.internal, row.output);
+                PoolStatement pooled(db_, "INSERT INTO native_v3_address_pool(script_pubkey,address,chain,idx,generation,issued,label) "
+                    "VALUES(?,?,?,?,?,0,'')");
+                pooled.Text(1, row.script_hex);pooled.Text(2, row.address);pooled.Int(3, chain);
+                pooled.Int(4, index);pooled.Int(5, generation);pooled.Done(1);
+            }
+        }
+        // Authenticate the seed and the complete grown inventory before the
+        // grown domain or the Pending marker can become durable.
+        ValidateRecoveryInventoryInTransaction(*seed);
+        { LegacyMigrationStatement write(db_,
+              "UPDATE wallet_meta SET runtime_native_v3_state_v1='pending' "
+              "WHERE id=1 AND runtime_native_v3_state_v1='complete'");
+          if (sqlite3_step(write.stmt) != SQLITE_DONE || sqlite3_changes(db_) != 1)
+              throw std::runtime_error("V3 native pool extension state change failed"); }
+        if (NativeOrdinaryReceiptSealed(db_))
+            throw std::runtime_error("V3 native pool extension left a receipt over the old domain");
+        LegacyMigrationExec(db_, "COMMIT");
+        return true;
+    } catch (...) {
+        if (!sqlite3_get_autocommit(db_) &&
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
+            !sqlite3_get_autocommit(db_)) std::terminate();
+        throw;
+    }
+}
+
 void WalletManager::PublishRecoveredBlockchainHeight(uint32_t expected_previous,
                                                       uint32_t recovered, uint64_t session) {
     auto lease = AcquireDatabaseLease();
     if (lease->Session() != session ||
-        lease->LegacyTransparentState() != LegacyTransparentState::Complete)
+        lease->TypedTransparentState() != LegacyTransparentState::Complete)
         throw std::runtime_error("Legacy wallet height publication ownership unavailable");
     if (LegacyMigrationHeight(lease->Database(), "SELECT height FROM tip WHERE rowid=1") != recovered ||
         LegacyMigrationHeight(lease->Database(),
@@ -7345,7 +7988,7 @@ std::string WalletManager::getNewAddress(const std::string& label, const std::st
     }
     {
         auto lease=AcquireDatabaseLease();
-        if (lease->LegacyTransparentState()!=LegacyTransparentState::Absent) {
+        if (lease->TypedTransparentState()!=LegacyTransparentState::Absent) {
             WLOG_WARN("Transparent-only wallet cannot issue a new receive address before Orchard enrollment");
             return "";
         }
@@ -7439,70 +8082,15 @@ std::string WalletManager::getNewAddress(const std::string& label, const std::st
         std::optional<wallet::KeyID> output_key_id;    // Taproot: tweaked output key
 
         if (effective_address_type == "taproot") {
-            // ═══ BIP86 Taproot Address Generation ═══
-            // Derive BIP86 key path: m/86'/1448'/0'/0/index
-            WLOG_INFO("[Taproot] Starting Taproot address generation for index " + std::to_string(next_index));
-
-            auto master_key = dinero::crypto::HDKeychain::fromSeed(master_seed_);
-            // Derive BIP86 key: m/86'/1448'/0'/0/index
-            auto account_key = master_key.derive(86 | 0x80000000);  // 86'
-            auto coin_key = account_key.derive(dinero::consensus::DINERO_COIN_TYPE | 0x80000000);  // coin_type'
-            auto account0_key = coin_key.derive(0 | 0x80000000);  // 0'
-            auto external_key = account0_key.derive(0);  // 0 (receive chain)
-            auto derived_key = external_key.derive(static_cast<uint32_t>(next_index));
-
-            // Get 33-byte compressed public key (internal key)
-            auto pubkey = derived_key.getPublicKey();
-            if (pubkey.size() != 33) {
-                WLOG_ERR("[Taproot] Derived pubkey is not 33 bytes");
-                return "";
-            }
-
-            // Create x-only internal pubkey (drop 0x02/0x03 prefix)
-            std::vector<uint8_t> xonly_pubkey(pubkey.begin() + 1, pubkey.end());
-
-            // Compute BIP341 tweaked output key
-            std::array<uint8_t, 32> output_key{};
-            if (!ComputeTaprootOutputKey(xonly_pubkey, output_key, logger_)) {
-                return "";
-            }
-
-            // Create Taproot address (Bech32m encoding with witness version 1)
-            std::string hrp = dinero::HrpForActiveNetworkRef();
-            if (hrp.empty()) {
-                hrp = "din";
-            }
-
-            std::vector<uint8_t> witness_program(output_key.begin(), output_key.end());
-            address = bech32::Encode(hrp, 1, witness_program, bech32::Encoding::BECH32M);
-
-            if (address.empty()) {
-                WLOG_ERR("[Taproot] Failed to encode Taproot address - Bech32m encoding returned empty");
-                return "";
-            }
-
-            // Build P2TR scriptPubKey: OP_1 (0x51) PUSH32 (0x20) <32-byte tweaked key>
-            script_bytes.push_back(0x51);  // OP_1
-            script_bytes.push_back(0x20);  // Push 32 bytes
-            script_bytes.insert(script_bytes.end(), output_key.begin(), output_key.end());
-            script_pubkey = "5120" + bytesToHex(output_key.data(), output_key.size());
-
-            // ═══ Week 1 Day 2: Compute KeyIDs for descriptor wallet ═══
-            // For Taproot, we need THREE KeyIDs:
-            // 1. internal_key_id: from x-only internal key (before TapTweak)
-            // 2. output_key_id: from tweaked output key (scriptPubKey)
-            // 3. key_id: primary identifier (same as internal_key_id)
-
-            std::array<uint8_t, 32> xonly_internal;
-            std::copy(xonly_pubkey.begin(), xonly_pubkey.end(), xonly_internal.begin());
-
-            internal_key_id = wallet::ComputeKeyIDFromXOnly(xonly_internal);
-            output_key_id = wallet::ComputeKeyIDFromXOnly(output_key);
-            key_id = internal_key_id.value();  // Primary ID is internal key
-
-            WLOG_INFO("[Taproot] Computed KeyIDs:");
-            WLOG_INFO("  internal_key_id: " + wallet::KeyIDToHex(internal_key_id.value()));
-            WLOG_INFO("  output_key_id:   " + wallet::KeyIDToHex(output_key_id.value()));
+            // ═══ BIP86 Taproot Address Generation: m/86'/1448'/0'/0/index ═══
+            // The shared derivation keeps native v3 pool rows byte-identical.
+            auto row = DeriveBip86Row(master_seed_, 0, next_index, logger_);
+            address = std::move(row.address);
+            script_bytes = std::move(row.script);
+            script_pubkey = std::move(row.script_hex);
+            internal_key_id = row.internal;
+            output_key_id = row.output;
+            key_id = row.key;
             WLOG_INFO("[Taproot] Successfully generated Taproot address: " + address);
         } else {
             // ═══ BIP84 Legacy (P2WPKH) Address Generation ═══
@@ -7586,7 +8174,7 @@ std::string WalletManager::getNewChangeAddress(const std::string& label, const s
     }
     {
         auto lease=AcquireDatabaseLease();
-        if (lease->LegacyTransparentState()!=LegacyTransparentState::Absent) {
+        if (lease->TypedTransparentState()!=LegacyTransparentState::Absent) {
             WLOG_WARN("Transparent-only wallet cannot issue a new change address before Orchard enrollment");
             return "";
         }
@@ -10574,7 +11162,7 @@ void WalletManager::addWatchScript(const std::vector<uint8_t>& script_pubkey, co
         return;
     }
     auto lease = AcquireDatabaseLease();
-    if (lease->LegacyTransparentState() != LegacyTransparentState::Absent) {
+    if (lease->TypedTransparentState() != LegacyTransparentState::Absent) {
         WLOG_WARN("[addWatchScript] Transparent-only wallet script domain is frozen until Orchard enrollment");
         return;
     }
@@ -10624,7 +11212,7 @@ bool WalletManager::storeCovenantDescriptor(
         return false;
     }
     auto lease = AcquireDatabaseLease();
-    if (lease->LegacyTransparentState() != LegacyTransparentState::Absent) {
+    if (lease->TypedTransparentState() != LegacyTransparentState::Absent) {
         WLOG_WARN("[storeCovenantDescriptor] Transparent-only wallet script domain is frozen until Orchard enrollment");
         return false;
     }
@@ -10899,7 +11487,7 @@ void WalletManager::addAddress(int account, int change, int idx, const std::stri
         return;
     }
     auto lease = AcquireDatabaseLease();
-    if (lease->LegacyTransparentState() != LegacyTransparentState::Absent) {
+    if (lease->TypedTransparentState() != LegacyTransparentState::Absent) {
         WLOG_WARN("[addAddress] Transparent-only wallet address domain is frozen until Orchard enrollment");
         return;
     }
@@ -10948,7 +11536,7 @@ void WalletManager::registerTaprootAddress(const std::vector<uint8_t>& script_pu
         return;
     }
     auto lease = AcquireDatabaseLease();
-    if (lease->LegacyTransparentState() != LegacyTransparentState::Absent) {
+    if (lease->TypedTransparentState() != LegacyTransparentState::Absent) {
         WLOG_WARN("[registerTaprootAddress] Transparent-only wallet script domain is frozen until Orchard enrollment");
         return;
     }
@@ -10993,7 +11581,7 @@ void WalletManager::registerP2MRAddress(const std::vector<uint8_t>& script_pubke
                                         const std::string& derivation_path) {
     if (!db_) return;
     auto lease = AcquireDatabaseLease();
-    if (lease->LegacyTransparentState() != LegacyTransparentState::Absent) {
+    if (lease->TypedTransparentState() != LegacyTransparentState::Absent) {
         WLOG_WARN("[registerP2MRAddress] Transparent-only wallet script domain is frozen until Orchard enrollment");
         return;
     }
@@ -11046,7 +11634,7 @@ bool WalletManager::storeTaprootKey(const std::string& address,
         auto lease = AcquireDatabaseLease();
         if (!db_ || !sqlite3_get_autocommit(db_) || recovery_seeds_ ||
             (expected_session && lease->Session()!=expected_session)) return false;
-        if (lease->LegacyTransparentState() != LegacyTransparentState::Absent) return false;
+        if (lease->TypedTransparentState() != LegacyTransparentState::Absent) return false;
         checkUnlockTimeout();
         IssuedAddressTransaction transaction(db_);
         if (require_empty_legacy_imports) {

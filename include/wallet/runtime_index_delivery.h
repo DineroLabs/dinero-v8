@@ -56,6 +56,10 @@ private:
     friend class RuntimeOrdinaryDelivery;
     static void WithCurrentV3Receipt(WalletManager::DatabaseLease&,UTXOIndex& metadata_index,
         const RuntimeWalletCoverageProjection&,const uint256& index_scripts,const std::function<void()>& publish);
+    // #939 phase 2: retire exactly the pre-extension index receipt of a native
+    // wallet whose pool extension is in flight (see the definition).
+    static void RetireReceiptForNativePoolExtensionV3(WalletManager&,UTXOIndex& metadata_index,
+        const RuntimeWalletOriginProjection&);
     using HistoricalScripts = std::map<std::vector<uint8_t>,std::string>;
     static bool CoverageRequired(UTXOIndex&,const std::string&,const HistoricalScripts* = nullptr);
     static void ReconcileCoverage(UTXOIndex&,const RuntimeWalletCoverageProjection&,
@@ -112,6 +116,14 @@ public:
     // Chainstate owns its activation lock before entering this call; this
     // preserves the established activation -> wallet -> index lock order.
     static void ReconcileLegacyTransparentCoverageV3(WalletManager&,UTXOIndex& metadata_index,
+        const RuntimeWalletCoverageProjection&,const RuntimeIndexDelivery::V3SourceCommit& source_commit);
+    // #939 native variant (Orchard-owner wallets, native class column). Same
+    // two-phase commit as the legacy V3 writer. It also captures the Orchard
+    // ownership inventory before the index commit and re-authenticates it in
+    // the ordinary commit, and checks that Orchard and ordinary reservations
+    // neither overlap nor fall outside proved history. Marks native complete;
+    // never touches the legacy class column.
+    static void ReconcileNativeTransparentCoverageV3(WalletManager&,UTXOIndex& metadata_index,
         const RuntimeWalletCoverageProjection&,const RuntimeIndexDelivery::V3SourceCommit& source_commit);
     // Strict classification: only BOTH genuinely absent is the Orchard-only
     // composition. Invalidated/corrupt/one-store partial coverage throws.

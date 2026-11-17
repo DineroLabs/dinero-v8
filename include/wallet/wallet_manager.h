@@ -124,8 +124,11 @@ public:
     };
     static GeneratedBip39Identity GenerateBip39Identity(int word_count,
                                                        const std::string& passphrase);
+    // fresh_birth_height, when given, is sealed under a seed-derived key as
+    // proof that this freshly generated identity has no history below it.
     void createFromGeneratedBip39(const std::string& name, GeneratedBip39Identity&& identity,
-                                 const std::string& passphrase);
+                                 const std::string& passphrase,
+                                 std::optional<uint32_t> fresh_birth_height = std::nullopt);
     void create(const std::string& name);
     // Creates a new database with the supplied recovery seed as its first
     // identity. Explicit checksum bypass never stores authoritative mnemonic
@@ -161,6 +164,19 @@ public:
     // Address generation (Taproot-only; non-taproot requests are ignored/rejected by callers).
     std::string getNewAddress(const std::string& label = "", const std::string& address_type = "taproot");
     std::string getNewChangeAddress(const std::string& label = "", const std::string& address_type = "taproot");
+    // #939 phase 2: hand out the next unissued Taproot receive script of a
+    // native v3 wallet's sealed pool. Writes only the unguarded pool table
+    // (issued flag and label), never the guarded script domain, so both v3
+    // receipts stay valid. Needs no seed. On refusal `address` is empty and
+    // error/error_code/retryable describe it.
+    struct NativePoolIssue {
+        std::string address, error, error_code;
+        bool retryable = false;
+    };
+    NativePoolIssue issueNativePoolAddress(const std::string& label);
+    // Pool scripts listaddresses must not present as "yours to receive on":
+    // unissued receive and change scripts that have no coin history.
+    std::set<std::string> nativePoolHiddenAddresses() const;
 
     // HD Wallet integration (inject HDWallet pointer for proper address derivation)
     void setHDWallet(HDWallet* hd_wallet) { hd_wallet_ = hd_wallet; }
@@ -190,16 +206,40 @@ public:
     [[nodiscard]] bool LegacyRecoveryRequiresFullArchive(uint64_t session) const;
 // A full-archive v3 node has not yet enrolled this wallet, and enrollment
     // needs the wallet's seed: the wallet is locked. Only the user can clear it.
-    // Interim (#939): a wallet with an Orchard owner (created or restored by
-    // 8.2.x) has no v3 delivery route yet. Say so instead of "catching up".
+    // #939: a wallet with an Orchard owner that the native v3 route cannot
+    // serve (DatabaseLease::NativeV3Enrollable). Say so instead of "catching up".
     static constexpr const char* kNativeWalletUnsupportedOnV3 =
         "This wallet was created or restored by Dinero 8.2 and this node's wallet index (v3) "
         "cannot track it yet. Your funds are safe on-chain: use its seed phrase in the phone app "
         "or on another node until the next update.";
     static constexpr const char* kWalletCreationUnsupportedOnV3 =
-        "Creating or restoring a wallet is not supported on this node yet (wallet index v3). "
-        "Existing wallets keep working; create or restore it in the phone app or on another node "
-        "until the next update.";
+        "Restoring a wallet from a seed phrase is not supported on this node yet (wallet index v3). "
+        "Existing and newly created wallets keep working; restore it in the phone app or on another "
+        "node until the next update.";
+    // #939 phase 1: a native wallet on v3 receives on its pre-derived pool;
+    // issuing a new script after enrollment would invalidate its receipts.
+    static constexpr const char* kNativeWalletAddressUnavailableOnV3 =
+        "New addresses for this wallet are not available on this node yet (wallet index v3). "
+        "Use one of the wallet's existing receive addresses.";
+    static constexpr const char* kNativeWalletSendUnavailableOnV3 =
+        "Sending from this wallet is not available on this node yet (wallet index v3). "
+        "Your funds are safe; use the seed phrase in the phone app or on another node to send.";
+    static constexpr const char* kNativeWalletShieldedUnavailableOnV3 =
+        "Shielded (Orchard) wallet state is not available on this node yet (wallet index v3).";
+    // #939 phase 2: every sealed receive script has been handed out. The
+    // runtime worker is extending the pool (derive, replay, reseal).
+    static constexpr const char* kNativeWalletAddressPoolExtending =
+        "All of this wallet's prepared receive addresses are in use; the node is preparing more. "
+        "Try again shortly, or reuse one of the wallet's existing receive addresses.";
+    // ...and the extension needs the seed, so it waits for an unlock.
+    static constexpr const char* kNativeWalletAddressPoolUnlockRequired =
+        "All of this wallet's prepared receive addresses are in use. Unlock the wallet so this "
+        "node can prepare more, or reuse one of the wallet's existing receive addresses.";
+    // P2MR keys live in a separate store that a v3 enrollment cannot seal
+    // atomically with the wallet's receipts; Taproot comes from the pool.
+    static constexpr const char* kNativeWalletP2MRUnavailableOnV3 =
+        "New post-quantum (P2MR) addresses for this wallet are not available on this node yet "
+        "(wallet index v3). Request a Taproot address instead.";
     static constexpr const char* kWalletUnlockRequiredForV3Enrollment =
         "Wallet is locked: unlock it once so this node can finish setting it up. "
         "Addresses and balance appear when setup completes.";
@@ -327,6 +367,16 @@ public:
         std::array<uint8_t, 64> bytes_{};
     };
     enum class LegacyTransparentState { Absent, Pending, Complete };
+    // #939: the durable class of a NATIVE wallet (Orchard owner) enrolled on a
+    // full-archive v3 index. A separate column from the legacy class marker,
+    // which a native wallet never writes (RequireOrchardWalletReady).
+    enum class NativeV3State { Absent, Pending, Complete };
+    // Pools pre-derived at native enrollment: Taproot external (receive) and
+    // internal (change) 0..N-1, both sealed by the enrollment coverage.
+    static constexpr int kNativeV3ReceivePool = 20;
+    // #939 phase 2: with fewer unissued receive (or unused change) scripts
+    // than this, the runtime worker extends that chain by kNativeV3ReceivePool.
+    static constexpr int kNativeV3PoolLowWater = 5;
     class DatabaseLease {
     public:
         ~DatabaseLease() noexcept;
@@ -359,6 +409,11 @@ public:
         // tables: the exact condition that excludes it from v3 legacy
         // enrollment (BeginLegacyTransparentMigrationV3).
         [[nodiscard]] bool HasOrchardOwnerState() const;
+        // Birth height sealed at creation of a freshly GENERATED identity
+        // (never a restore/import), authenticated with a key derived from the
+        // unlocked seed and bound to this wallet's delivery identity. nullopt
+        // when no record exists; throws when locked, mismatched or malformed.
+        [[nodiscard]] std::optional<uint32_t> SealedFreshBirthHeight(uint64_t expected_session) const;
         // Enroll a never-enrolled legacy wallet atomically. The identity and
         // pending marker become visible together, or neither does.
         [[nodiscard]] std::string BeginLegacyTransparentMigration();
@@ -366,6 +421,40 @@ public:
         // wallet's unlocked seed and complete address/import inventory under
         // one durable transaction. An existing nonzero delivery ID is kept.
         [[nodiscard]] std::string BeginLegacyTransparentMigrationV3(
+            const dinero::UTXOIndex& metadata_index, uint64_t expected_session);
+        // #939 native class column. An absent column is Absent; NULL or an
+        // unknown value in a present column is corruption.
+        [[nodiscard]] WalletManager::NativeV3State NativeV3TransparentState() const;
+        // Enrollment state of whichever typed transparent v3 delivery class
+        // this wallet belongs to (legacy marker, else native column). Throws
+        // if both classes are marked. Use it wherever the question is "does
+        // typed v3 delivery own this wallet", not "is this a legacy wallet".
+        [[nodiscard]] WalletManager::LegacyTransparentState TypedTransparentState() const;
+        // Static eligibility for the native v3 route: no legacy class marker,
+        // an Orchard owner, an Orchard account catalog (the route rechecks its
+        // ownership inventory) and an existing nonzero delivery identity (the
+        // sealed birth and catalog are bound to it). Read-only.
+        [[nodiscard]] bool NativeV3Enrollable() const;
+        // Explicit full-archive v3 enrollment of a NATIVE wallet (Orchard
+        // owner). One durable transaction authenticates the unlocked seed and
+        // inventory, pre-derives the Taproot receive pool as ordinary issued
+        // rows, keeps the existing delivery ID and marks native Pending. It
+        // never writes the legacy class column.
+        [[nodiscard]] std::string BeginNativeTransparentMigrationV3(
+            const dinero::UTXOIndex& metadata_index, uint64_t expected_session);
+        // #939 phase 2. Read-only: a native-complete wallet whose pool has
+        // fewer than kNativeV3PoolLowWater unissued receive or unused change
+        // scripts (or no pool table yet) needs an extension.
+        [[nodiscard]] bool NativeV3PoolNeedsExtension() const;
+        // #939 phase 2 extension, driven by the runtime worker. One durable
+        // transaction (unlocked seed): requires native Complete with a sealed
+        // ordinary receipt, derives the next kNativeV3ReceivePool scripts of
+        // each low chain as ordinary issued rows, records them as the newest
+        // pool generation and returns the wallet to native Pending, so reads
+        // fail closed until a coverage replay over the grown domain reseals
+        // both receipts. Pending payments are not touched. Returns false
+        // (writing nothing) if no chain is low.
+        [[nodiscard]] bool BeginNativePoolExtensionV3(
             const dinero::UTXOIndex& metadata_index, uint64_t expected_session);
         // Financial reads/sends refuse pending migration, and refuse the
         // brief complete-before-height-publication window.
@@ -1226,7 +1315,8 @@ private:
     void createWithInitialSeed(const std::string& name,
                                const std::vector<uint8_t>& initial_master_seed,
                                const std::string* authoritative_mnemonic,
-                               const std::string& bip39_passphrase, InitialSeedKind kind);
+                               const std::string& bip39_passphrase, InitialSeedKind kind,
+                               std::optional<uint32_t> fresh_birth_height = std::nullopt);
 
 #ifdef FFI_WALLET_ONLY
     std::string dataDir_;

@@ -15,6 +15,7 @@
 #endif
 #include "wallet/wallet_transaction_signer.h"
 #include "address/addr_codec.h"
+#include "wallet/p2mr_address.h"
 #include "mining/orchard_mining_template.h"
 #include "wallet/selected_history.h"
 #include <sqlite3.h>
@@ -7381,6 +7382,76 @@ ChainstateService::resumeRuntimeWalletRecoveryIfNeeded(WalletManager& wallet, UT
       catch (...) { return Status::Internal; }
 }
 
+Status ChainstateService::resumeRuntimeOrchardDeliveryV3(WalletManager& wallet,UTXOIndex& metadata_index,
+        uint64_t session) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    // #939 phase 3: deliver a native-complete wallet's Orchard accounts on a
+    // full-archive v3 source. Orchard account state only: no transparent,
+    // ordinary-guarded or index write. Each account commit runs under the
+    // selected lock (selected -> wallet) behind a fence proving the captured
+    // replay is still a prefix of the selected chain; the account revision
+    // and complete catalog are rechecked inside every commit transaction.
+    if(activation_mutex_.HeldByCurrentThread())return Status::Invalid;
+    {
+        auto lease=wallet.AcquireDatabaseLease();
+        if(!wallet.SoleDatabaseLeaseHeld()||lease->Session()!=session||!lease->Database()||
+           wallet.getUTXOIndex()!=nullptr||
+           lease->NativeV3TransparentState()!=WalletManager::NativeV3State::Complete)return Status::Invalid;
+        sqlite3_stmt* raw=nullptr;
+        if(sqlite3_prepare_v2(lease->Database(),
+               "SELECT 1 FROM sqlite_master WHERE type='table' AND name='orchard_wallet_snapshots'",-1,&raw,nullptr)!=SQLITE_OK)
+            return Status::Invalid;
+        std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> table(raw,sqlite3_finalize);
+        int rc=sqlite3_step(raw);
+        if(rc==SQLITE_DONE)return Status::Ok; // No Orchard account: nothing to deliver.
+        if(rc!=SQLITE_ROW)return Status::Invalid;
+        raw=nullptr;
+        if(sqlite3_prepare_v2(lease->Database(),"SELECT 1 FROM orchard_wallet_snapshots LIMIT 1",-1,&raw,nullptr)!=SQLITE_OK)
+            return Status::Invalid;
+        std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> rows(raw,sqlite3_finalize);
+        rc=sqlite3_step(raw);
+        if(rc==SQLITE_DONE)return Status::Ok;
+        if(rc!=SQLITE_ROW)return Status::Invalid;
+    }
+    // Orchard catalog/account restoration needs the seed. A locked wallet
+    // keeps its transparent delivery; its Orchard accounts catch up on unlock.
+    if(wallet.isWalletLocked())return Status::Ok;
+    try {
+        const auto captured=getRuntimeAccountReplayForWallet(wallet,session);
+        if(!captured.ok())return captured.status();
+        const auto& replay=**captured;
+        const auto head=replay.Head();
+        if(!head.sequence)return Status::Ok;
+        const auto point=replay.Point(head).checkpoint;
+        const RuntimeWalletRecovery::OrchardSourceOwner bind=[&](const auto& write){
+            std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+            const std::function<void()> fence=[&]{
+                if(safe_mode_active_||utxo_index_.get()!=&metadata_index||
+                   !metadata_index.IsFullArchiveV3MetadataOnly()||wallet.getUTXOIndex()!=nullptr)
+                    throw std::runtime_error("V3 Orchard delivery source changed");
+                const auto page=getRuntimeDeliveryPageAtPrefix(head,head,1,16*1024*1024);
+                if(!page.ok()||(*page)->head!=head||(*page)->next!=head||!(*page)->events.empty()||
+                   !(*page)->after_tip||(*page)->after_tip->first!=point.block_hash||
+                   (*page)->after_tip->second!=point.height)
+                    throw std::runtime_error("V3 Orchard delivery source prefix changed");
+                auto* ancestor=active_tip_;
+                while(ancestor&&ancestor->height>point.height)ancestor=ancestor->pprev;
+                if(!ancestor||ancestor->height!=point.height||ancestor->hash!=point.block_hash)
+                    throw std::runtime_error("V3 selected chain no longer extends Orchard delivery prefix");
+            };
+            fence();write(fence);
+        };
+        const ChainstateRuntimeRecoverySource recovery_source(*this);
+        (void)RuntimeWalletRecovery::ResumePreparedOrchardCatalogStores(replay,recovery_source,wallet,session,bind);
+        return Status::Ok;
+    } catch(const consensus::OrchardStateLookupError& e) { return e.SourceStatus(); }
+      catch(...) { return Status::Internal; }
+#else
+    (void)wallet;(void)metadata_index;(void)session;
+    return Status::Internal;
+#endif
+}
+
 StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
 ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,UTXOIndex& metadata_index,
         uint64_t expected_session,size_t material_limit_bytes) {
@@ -7395,7 +7466,10 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 return Status::Invalid;
         }
         uint64_t session=0;
+        // `state` is the enrollment state of whichever typed class owns this
+        // wallet: the legacy marker, else the native (#939) column.
         WalletManager::LegacyTransparentState state;
+        bool native=false;
         {
             auto lease=wallet.AcquireDatabaseLease();
             if(!wallet.SoleDatabaseLeaseHeld() || !wallet.hasActiveWallet() || !lease->Database() ||
@@ -7403,7 +7477,9 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 return Status::Invalid;
             session=lease->Session();
             if(expected_session && session!=expected_session)return Status::Invalid;
-            state=lease->LegacyTransparentState();
+            state=lease->TypedTransparentState();
+            native=lease->NativeV3TransparentState()!=WalletManager::NativeV3State::Absent ||
+                (state==WalletManager::LegacyTransparentState::Absent && lease->HasOrchardOwnerState());
         }
         // Startup and explicit callers bypass the runtime worker's cheap
         // preflight. An absent/pending v3 wallet cannot reconcile coverage
@@ -7423,11 +7499,34 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                !UtreexoRpcSnapshotUnderLock().ok())return Status::Invalid;
             storage::RequireFullOrchardStorage(*chain_db_);
         }
+        // #939 phase 2: a native-complete wallet whose receive (or change)
+        // pool ran low extends here, in the runtime worker, never inline in
+        // an RPC. The extension needs the seed, so a locked wallet keeps its
+        // per-block delivery and extends after the next unlock. Its durable
+        // Pending then takes the same coverage/reconcile path as enrollment.
+        if(state==WalletManager::LegacyTransparentState::Complete && native && !wallet.isWalletLocked()) {
+            auto lease=wallet.AcquireDatabaseLease();
+            if(!wallet.SoleDatabaseLeaseHeld() || lease->Session()!=session ||
+               wallet.getUTXOIndex()!=nullptr)return Status::Invalid;
+            // A refused extension rolled back whole: the wallet is still
+            // Complete over its sealed domain, so keep delivering to it and
+            // retry on a later pass.
+            try {
+                if(lease->NativeV3PoolNeedsExtension() &&
+                   lease->BeginNativePoolExtensionV3(metadata_index,session))
+                    state=WalletManager::LegacyTransparentState::Pending;
+            } catch(const std::exception& e) {
+                std::cerr << "[ChainstateService] Native v3 address pool extension deferred: " << e.what() << "\n";
+            }
+        }
         if(state==WalletManager::LegacyTransparentState::Absent) {
             auto lease=wallet.AcquireDatabaseLease();
             if(!wallet.SoleDatabaseLeaseHeld() || lease->Session()!=session ||
                wallet.getUTXOIndex()!=nullptr)return Status::Invalid;
-            (void)lease->BeginLegacyTransparentMigrationV3(metadata_index,session);
+            // An Orchard-owner wallet takes its own class (#939); writing the
+            // legacy marker would lock its Orchard side out permanently.
+            if(native)(void)lease->BeginNativeTransparentMigrationV3(metadata_index,session);
+            else (void)lease->BeginLegacyTransparentMigrationV3(metadata_index,session);
             state=WalletManager::LegacyTransparentState::Pending;
         }
         if(state==WalletManager::LegacyTransparentState::Pending) {
@@ -7452,14 +7551,21 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                         throw std::runtime_error("V3 selected chain no longer extends recovery prefix");
                 };
                 check_source();
-                RuntimeOrdinaryDelivery::ReconcileLegacyTransparentCoverageV3(
-                    wallet,metadata_index,source,[&](const std::function<void()>& commit) {
-                        check_source();commit();
-                    });
+                const RuntimeIndexDelivery::V3SourceCommit fenced=[&](const std::function<void()>& commit) {
+                    check_source();commit();
+                };
+                if(native)RuntimeOrdinaryDelivery::ReconcileNativeTransparentCoverageV3(
+                    wallet,metadata_index,source,fenced);
+                else RuntimeOrdinaryDelivery::ReconcileLegacyTransparentCoverageV3(
+                    wallet,metadata_index,source,fenced);
             }
             const RuntimeIndexProgress applied{source.Head(),source.Origin().OriginHash(),
                 source.TipHash(),source.Origin().OriginHeight(),source.TipHeight()};
             wallet.PublishRecoveredBlockchainHeight(wallet.getBlockchainHeight(),applied.tip_height,session);
+            if(native) {
+                const auto orchard=resumeRuntimeOrchardDeliveryV3(wallet,metadata_index,session);
+                if(orchard!=Status::Ok)return orchard;
+            }
             return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
                 RuntimeEnrolledWalletRecoveryResult{applied,{},source.Head(),std::nullopt});
         }
@@ -7514,6 +7620,10 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 return Status::Invalid;
         }
         wallet.PublishRecoveredBlockchainHeight(wallet.getBlockchainHeight(),applied.tip_height,session);
+        if(native) {
+            const auto orchard=resumeRuntimeOrchardDeliveryV3(wallet,metadata_index,session);
+            if(orchard!=Status::Ok)return orchard;
+        }
         return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
             RuntimeEnrolledWalletRecoveryResult{applied,{},(*page)->head,std::nullopt});
     } catch(const RuntimeWalletCoverageMaterialLimit&) { return Status::ResourceLimit; }
@@ -7730,8 +7840,11 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
         }
         {
             const auto lease=wallet.AcquireDatabaseLease();
+            // A full-archive v3 metadata source detaches every wallet from the
+            // index; its account replay is index-free (#939 phase 3).
+            const bool detached_v3=wallet.getUTXOIndex()==nullptr&&expected_index->IsFullArchiveV3MetadataOnly();
             if(!wallet.SoleDatabaseLeaseHeld()||!lease->Database()||lease->Session()!=expected_session||
-               wallet.getUTXOIndex()!=expected_index)return Status::Invalid;
+               (wallet.getUTXOIndex()!=expected_index&&!detached_v3))return Status::Invalid;
         }
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
         {
@@ -7768,8 +7881,10 @@ SignResult ChainstateService::signAndStageWalletPayment(WalletManager& wallet,
          if(!wallet.SoleDatabaseLeaseHeld()||!lease->Database()||lease->Session()!=identity.session)
              throw std::runtime_error("Payment wallet source binding changed");
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+         // Either typed v3 class (#939): a native-complete wallet uses the
+         // same receipt-fenced owner; the signer refuses Orchard accounts.
          recovered_v3=index->IsFullArchiveV3MetadataOnly()&&wallet.getUTXOIndex()==nullptr&&
-             lease->LegacyTransparentState()==WalletManager::LegacyTransparentState::Complete;
+             lease->TypedTransparentState()==WalletManager::LegacyTransparentState::Complete;
 #endif
          if(!recovered_v3&&wallet.getUTXOIndex()!=index)
              throw std::runtime_error("Payment wallet source binding changed");}
@@ -7804,10 +7919,39 @@ SignResult ChainstateService::signAndStageWalletPayment(WalletManager& wallet,
                 storage::RequireFullOrchardStorage(*chain_db_);
                 auto lease=wallet.AcquireDatabaseLease();
                 if(lease->Session()!=identity.session||lease->WalletName()!=identity.name||
-                   lease->LegacyTransparentState()!=WalletManager::LegacyTransparentState::Complete||
+                   lease->TypedTransparentState()!=WalletManager::LegacyTransparentState::Complete||
                    wallet.getUTXOIndex()!=nullptr)
                     throw std::runtime_error("Recovered payment wallet owner changed");
                 lease->RequireLegacyTransparentFinancialReady();
+                if(lease->NativeV3TransparentState()!=WalletManager::NativeV3State::Absent) {
+                    // #939: a native send pays exactly one recipient; every
+                    // other output must pay a script already sealed in both
+                    // receipts (the watched domain). No caller can route
+                    // change to a script no replay has covered.
+                    if(intent.request||!intent.additional_recipients.empty())
+                        throw std::runtime_error("Native v3 payment supports one recipient");
+                    std::vector<uint8_t> recipient;
+                    const auto witness=DecodeWitnessAddress(intent.address,HrpForActiveNetworkRef());
+                    if(witness.is_valid)recipient=witness.script_pubkey;
+                    else if(const auto p2mr=wallet::DecodeP2MRAddress(intent.address))
+                        recipient=wallet::BuildP2MRScriptPubKey(p2mr->merkle_root);
+                    if(recipient.empty())throw std::runtime_error("Native v3 payment recipient invalid");
+                    bool paid=false;
+                    for(const auto& output:input.tx.vout) {
+                        if(!paid&&!output.is_confidential&&output.scriptPubKey==recipient&&
+                           output.GetValue()==intent.amount_una){paid=true;continue;}
+                        sqlite3_stmt* raw=nullptr;
+                        if(sqlite3_prepare_v2(lease->Database(),"SELECT 1 FROM watch_scripts WHERE script_pubkey=?",
+                                -1,&raw,nullptr)!=SQLITE_OK)
+                            throw std::runtime_error("Native v3 payment domain unavailable");
+                        const std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> watched(raw,sqlite3_finalize);
+                        if(output.is_confidential||output.scriptPubKey.empty()||
+                           sqlite3_bind_blob(raw,1,output.scriptPubKey.data(),int(output.scriptPubKey.size()),
+                               SQLITE_TRANSIENT)!=SQLITE_OK||sqlite3_step(raw)!=SQLITE_ROW)
+                            throw std::runtime_error("Native v3 change output is outside the sealed script domain");
+                    }
+                    if(!paid)throw std::runtime_error("Native v3 payment recipient output missing");
+                }
                 const auto ordinary=RuntimeOrdinaryDelivery::ReadForWallet(wallet,identity.session);
                 const auto metadata=RuntimeIndexDelivery::ReadForWalletV3(*index,*lease);
                 if(!ordinary||!metadata||ordinary->cursor!=metadata->cursor||
@@ -8036,8 +8180,11 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
 StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService::captureRuntimeWalletOrigin(
         WalletManager& wallet,uint64_t session,UTXOIndex* index,bool existing_identity_only,bool public_history,
         bool& body_data_pending,bool retained_history,size_t material_limit_bytes,
-        const std::optional<RuntimeOutboxCursor>& captured_head) const {
+        const std::optional<RuntimeOutboxCursor>& captured_head,bool fresh_empty_prefix) const {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    // The empty-prefix origin is only for a wallet whose sealed fresh birth
+    // proves it had no keys below activation; it never acquires history.
+    if(fresh_empty_prefix && (public_history || retained_history))return Status::Invalid;
     try {
         auto result=RuntimeOrdinaryDelivery::CaptureOriginDomain(wallet,session,index,existing_identity_only,
             material_limit_bytes);
@@ -8114,7 +8261,11 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
         // engine or projection is used. It needs no per-block restore state,
         // whose forest clone made this replay superlinear in chain length.
         assumeutxo::AssumeUtxoReplayEngine replay(consensus::ReplayFailurePolicy::RetireOwner);
-        for(uint32_t height=0;height<ancestry.size();++height) {
+        // A freshly generated wallet born at/after activation owned no script
+        // below it: its origin is provably empty, so the genesis replay that
+        // would only confirm that is skipped (#939). Ancestry, the first event
+        // and every prefix/domain check above and below still run.
+        for(uint32_t height=0;!fresh_empty_prefix && height<ancestry.size();++height) {
             const auto owned=read_body(height);if(!owned){body_data_pending=true;return Status::NotFound;}
             std::string error;
             if(height==0 ? !replay.SeedGenesis(*owned,error) :
@@ -8168,11 +8319,15 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
                utxo_index_.get()!=&metadata_index || !metadata_index.IsFullArchiveV3MetadataOnly())
                 return Status::Invalid;
         }
+        bool fresh_empty_prefix=false;
         {
             const auto lease=wallet.AcquireDatabaseLease();
             if(!wallet.SoleDatabaseLeaseHeld() || !wallet.hasActiveWallet() || !lease->Database() ||
                lease->Session()!=session || wallet.getUTXOIndex()!=nullptr ||
                !sqlite3_get_autocommit(lease->Database()))return Status::Invalid;
+            // A present-but-unverifiable record fails closed (throws below).
+            const auto birth=lease->SealedFreshBirthHeight(session);
+            fresh_empty_prefix=birth && *birth>=Params().orchard_activation_height;
         }
         {
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
@@ -8196,7 +8351,7 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
             return Status::Invalid;
         bool body_data_pending=false;
         const auto origin=captureRuntimeWalletOrigin(wallet,session,nullptr,true,false,
-            body_data_pending,false,material_limit_bytes,(*replay)->Head());
+            body_data_pending,false,material_limit_bytes,(*replay)->Head(),fresh_empty_prefix);
         if(!origin.ok())return origin.status();
         if(body_data_pending)return Status::NotFound;
         const auto result=RuntimeWalletCoverageProjection::Build(*origin,*replay,{},material_limit_bytes);

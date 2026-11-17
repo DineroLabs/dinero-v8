@@ -150,6 +150,10 @@ private:
   QLabel* lblWalletName_;
   QLabel* lblFingerprint_;
   QLabel* lblFirstAddress_;
+  QLabel* lblP2mrAddress_ = nullptr;
+  QLabel* lblOrchardAddress_ = nullptr;
+  QLabel* lblP2mrCaption_ = nullptr;
+  QLabel* lblOrchardCaption_ = nullptr;
   QLabel* lblStatus_;
 };
 

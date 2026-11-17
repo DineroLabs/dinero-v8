@@ -292,7 +292,7 @@ void WalletWorker::ProcessDisconnect(uint32_t height, const Block& block,
     const auto database_lease = wallet_manager_ ? wallet_manager_->AcquireDatabaseLease() : nullptr;
     CheckWalletJobSession(database_lease.get(), session);
     if (database_lease && database_lease->Database() &&
-        database_lease->LegacyTransparentState() != WalletManager::LegacyTransparentState::Absent)
+        database_lease->TypedTransparentState() != WalletManager::LegacyTransparentState::Absent)
         return; // Typed delivery owns this wallet's durable disconnect effects.
     if (database_lease && database_lease->Database() &&
         !sqlite3_get_autocommit(database_lease->Database()))
@@ -333,7 +333,7 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
         auto early_lease = wallet_manager_ ? wallet_manager_->AcquireDatabaseLease() : nullptr;
         CheckWalletJobSession(early_lease.get(), session);
         if (early_lease && early_lease->Database() &&
-            early_lease->LegacyTransparentState() != WalletManager::LegacyTransparentState::Absent)
+            early_lease->TypedTransparentState() != WalletManager::LegacyTransparentState::Absent)
             return; // Typed delivery owns this wallet's durable connect effects.
     }
     auto start = std::chrono::steady_clock::now();
@@ -361,7 +361,7 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
     auto database_lease = wallet_manager_ ? wallet_manager_->AcquireDatabaseLease() : nullptr;
     CheckWalletJobSession(database_lease.get(), session);
     if (database_lease && database_lease->Database() &&
-        database_lease->LegacyTransparentState() != WalletManager::LegacyTransparentState::Absent)
+        database_lease->TypedTransparentState() != WalletManager::LegacyTransparentState::Absent)
         return; // The wallet may have enrolled while an ordinary job was paused.
     if(wallet_manager_&&wallet_manager_->snapshotRecoveryAlreadyApplied(height,hash))return;
     if (wallet_manager_) {
@@ -625,7 +625,7 @@ void WalletWorker::ProcessReorg(const ReorgDiff& diff, std::optional<uint64_t> s
     const auto database_lease = wallet_manager_ ? wallet_manager_->AcquireDatabaseLease() : nullptr;
     CheckWalletJobSession(database_lease.get(), session);
     if (database_lease && database_lease->Database() &&
-        database_lease->LegacyTransparentState() != WalletManager::LegacyTransparentState::Absent)
+        database_lease->TypedTransparentState() != WalletManager::LegacyTransparentState::Absent)
         return; // Typed delivery owns this wallet's durable reorg effects.
     auto start = std::chrono::steady_clock::now();
     std::cerr << "[WalletWorker] Processing reorg: disconnect=" << diff.disconnect.size()

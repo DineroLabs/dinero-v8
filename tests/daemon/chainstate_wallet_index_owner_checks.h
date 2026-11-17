@@ -153,10 +153,8 @@ TEST(ChainstateWalletIndexOwner, V3WalletSwitchAndAddressCreationRemainOffLegacy
     WalletServiceIndexFixture f(true);
     ASSERT_TRUE(f.wallet->Start());
     ASSERT_FALSE(f.wallet->get().getNewAddress("first-v3").empty());
-    // #939 interim: a v3 source cannot deliver to a new (Orchard-owner)
-    // wallet, so creation refuses before any file exists.
-    EXPECT_THROW(f.wallet->get().create("second-owner"),std::runtime_error);
-    EXPECT_FALSE(f.wallet->get().exists("second-owner"));
+    f.wallet->get().create("second-owner");
+    ASSERT_FALSE(f.wallet->get().getNewAddress("second-v3").empty());
     EXPECT_TRUE(f.wallet->EnsureRuntimeWalletBindings());
     f.wallet->get().open("startup-owner");
     EXPECT_TRUE(f.wallet->EnsureRuntimeWalletBindings());

@@ -698,8 +698,8 @@ public:
     // Not a catch-up: a full-archive v3 node cannot enroll this wallet until
     // the user unlocks it (enrollment needs the seed). Retrying alone never
     // clears it.
-    // Interim (#939): an Orchard-owner wallet has no v3 delivery route yet.
-    // Unlocking cannot help and a retry never clears it.
+    // #939: an Orchard-owner wallet that the native v3 route cannot serve
+    // (NativeV3Enrollable() is false). Unlocking or retrying never clears it.
     struct NativeUnsupported {};
     explicit LegacyBalanceNotCurrent(NativeUnsupported) : std::runtime_error(
         dinero::WalletManager::kNativeWalletUnsupportedOnV3), native_unsupported(true) {}
@@ -722,7 +722,7 @@ static auto ReadWithCurrentLegacyTransparentTip(
     std::optional<uint32_t> unenrolled_scan_height;
     std::string selected_name;
     uint64_t session = 0;
-    bool native_owner = false;
+    bool native_unservable = false;
     {
         auto lease = wallet.AcquireDatabaseLease();
         if (lease->WalletName().empty() ||
@@ -734,21 +734,23 @@ static auto ReadWithCurrentLegacyTransparentTip(
             throw LegacyBalanceNotCurrent(LegacyBalanceNotCurrent::UpgradeRequired{});
         if (wallet.LegacyRecoveryRequiresFullArchive(session))
             throw LegacyBalanceNotCurrent(LegacyBalanceNotCurrent::RequiresFullArchive{});
-        state = lease->LegacyTransparentState();
+        // Either typed v3 class (#939): a native wallet keeps the legacy
+        // column Absent even once native-complete.
+        state = lease->TypedTransparentState();
         if (state == dinero::WalletManager::LegacyTransparentState::Absent) {
             unenrolled_scan_height = lease->UnenrolledLegacyTransparentScanHeight();
-            native_owner = lease->HasOrchardOwnerState();
+            native_unservable = lease->HasOrchardOwnerState() && !lease->NativeV3Enrollable();
         }
     }
     if (state == dinero::WalletManager::LegacyTransparentState::Absent ||
         state == dinero::WalletManager::LegacyTransparentState::Pending) {
-        // A full-archive v3 node enrolls an Absent/Pending wallet only with its
-        // seed. While the wallet is locked that enrollment is deferred, so say
-        // so instead of "catching up" (issue #939).
+        // A full-archive v3 node enrolls an Absent/Pending wallet (legacy or
+        // native) only with its seed. While the wallet is locked that
+        // enrollment is deferred, so say so instead of "catching up" (#939).
         auto v3_source = ctx.daemon && ctx.daemon->chainstate
             ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)
             : nullptr;
-        if (v3_source && v3_source->HasFullArchiveWalletIndexV3() && native_owner)
+        if (v3_source && v3_source->HasFullArchiveWalletIndexV3() && native_unservable)
             throw LegacyBalanceNotCurrent(LegacyBalanceNotCurrent::NativeUnsupported{});
         if (v3_source && v3_source->HasFullArchiveWalletIndexV3() && wallet.isWalletLocked())
             throw LegacyBalanceNotCurrent(LegacyBalanceNotCurrent::UnlockRequired{});
@@ -808,7 +810,7 @@ static auto ReadWithCurrentLegacyTransparentTip(
         // selected-chain state.
         auto lease = wallet.AcquireDatabaseLease();
         if (lease->Session() != session || lease->WalletName() != selected_name ||
-            lease->LegacyTransparentState() != dinero::WalletManager::LegacyTransparentState::Complete)
+            lease->TypedTransparentState() != dinero::WalletManager::LegacyTransparentState::Complete)
             throw LegacyBalanceNotCurrent();
         lease->RequireLegacyTransparentFinancialReady();
         const auto ordinary = dinero::ReadRuntimeOrdinaryWalletTip(wallet, session);
@@ -898,6 +900,126 @@ static dinero::WalletManager::LegacyTransparentState ReadLegacyTransparentScope(
     return state;
 }
 
+// #939: Orchard account rows exist exactly when the catalog has accounts
+// (the ownership inventory requires a row per account). Readable while
+// locked; the payment owner rechecks the authenticated catalog at signing.
+static bool NativeV3OrchardAccountsPresent(dinero::WalletManager::DatabaseLease& lease) {
+    for (const char* table : {"orchard_wallet_snapshots", "orchard_wallet_retained"}) {
+        sqlite3_stmt* raw = nullptr;
+        if (sqlite3_prepare_v2(lease.Database(),
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", -1, &raw, nullptr) != SQLITE_OK)
+            throw std::runtime_error("Orchard account inventory unavailable");
+        std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> exists(raw, sqlite3_finalize);
+        sqlite3_bind_text(raw, 1, table, -1, SQLITE_STATIC);
+        const int rc = sqlite3_step(raw);
+        if (rc == SQLITE_DONE) continue;
+        if (rc != SQLITE_ROW) throw std::runtime_error("Orchard account inventory unavailable");
+        const std::string sql = std::string("SELECT 1 FROM ") + table + " LIMIT 1";
+        sqlite3_stmt* rows = nullptr;
+        if (sqlite3_prepare_v2(lease.Database(), sql.c_str(), -1, &rows, nullptr) != SQLITE_OK)
+            throw std::runtime_error("Orchard account inventory unavailable");
+        std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> any(rows, sqlite3_finalize);
+        const int found = sqlite3_step(rows);
+        if (found == SQLITE_ROW) return true;
+        if (found != SQLITE_DONE) throw std::runtime_error("Orchard account inventory unavailable");
+    }
+    return false;
+}
+
+// #939: send capability of a native v3 wallet. nullopt: not a native v3
+// wallet. true: native-complete, no Orchard accounts (their reservations need
+// the Orchard replay v3 lacks) and the recovered-v3 payment source is ready.
+static std::optional<bool> NativeV3SendState(const ExecutionContext& ctx,
+                                             const std::shared_ptr<dinero::WalletService>& service,
+                                             const std::string& expected_name) {
+    const auto source = ctx.daemon && ctx.daemon->chainstate
+        ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)
+        : nullptr;
+    if (!source || !source->HasFullArchiveWalletIndexV3()) return std::nullopt;
+    {
+        auto use = dinero::WalletService::AcquireWalletUse(service);
+        auto lease = use->Wallet().AcquireDatabaseLease();
+        if (lease->WalletName() != expected_name) return std::nullopt;
+        const auto native = lease->NativeV3TransparentState();
+        if (native == dinero::WalletManager::NativeV3State::Absent) return std::nullopt;
+        if (native != dinero::WalletManager::NativeV3State::Complete ||
+            NativeV3OrchardAccountsPresent(*lease)) return false;
+    }
+    // Selected-source readiness takes the selected lock: no wallet lease held.
+    return source->RecoveredV3TransparentSendSourceReady();
+}
+
+// #939 phase 2: the selected wallet is a native v3 wallet (enrollment begun)
+// on a full-archive v3 node, so its receive addresses come from the pool.
+static bool NativeV3PoolWallet(const ExecutionContext& ctx,
+                               const std::shared_ptr<dinero::WalletService>& service) {
+    const auto source = ctx.daemon && ctx.daemon->chainstate
+        ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)
+        : nullptr;
+    if (!source || !source->HasFullArchiveWalletIndexV3()) return false;
+    auto use = dinero::WalletService::AcquireWalletUse(service);
+    auto lease = use->Wallet().AcquireDatabaseLease();
+    if (lease->WalletName().empty() ||
+        (!ctx.walletName.empty() && lease->WalletName() != ctx.walletName)) return false;
+    return lease->LegacyTransparentState() == dinero::WalletManager::LegacyTransparentState::Absent &&
+        lease->NativeV3TransparentState() != dinero::WalletManager::NativeV3State::Absent;
+}
+
+// #939 phase 2: wallet.getnewaddress for a native v3 wallet. Taproot comes
+// from the sealed pool (writes only the unguarded pool row); P2MR is not
+// pooled on v3 and is refused honestly. Nothing here derives a script.
+static din::Json NativeV3PoolGetNewAddress(const ExecutionContext& ctx,
+                                           const std::shared_ptr<dinero::WalletService>& service,
+                                           const din::Json& params) {
+    din::Json result;
+    std::string normalized, label;
+    if (!params.empty() && params[0].is<std::string>())
+        for (char c : params[0].as<std::string>())
+            normalized += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (params.size() >= 2 && params[1].is<std::string>()) label = params[1].as<std::string>();
+    // A "p2mr" receive default asks for P2MR; "split" degrades to Taproot.
+    if (normalized.empty() && service->get().getSetting("receive_default", "") == "p2mr")
+        normalized = "p2mr";
+    if (normalized == "p2mr" || normalized == "p2mr_v3") {
+        result["error"] = dinero::WalletManager::kNativeWalletP2MRUnavailableOnV3;
+        result["error_code"] = "wallet_native_p2mr_unavailable_on_v3";
+        result["retryable"] = false;
+        return result;
+    }
+    if (!normalized.empty() && normalized != "taproot" && normalized != "p2tr" &&
+        normalized != "bech32m" && normalized != "witness_v1_taproot") {
+        result["error"] = "Unsupported address_type. Use 'taproot', 'p2tr', or 'p2mr'";
+        return result;
+    }
+    auto use = dinero::WalletService::AcquireWalletUse(service);
+    const auto issued = use->Wallet().issueNativePoolAddress(label);
+    if (issued.address.empty()) {
+        result["error"] = issued.error;
+        result["error_code"] = issued.error_code;
+        result["retryable"] = issued.retryable;
+        return result;
+    }
+    result["address"] = issued.address;
+    result["address_type"] = "taproot";
+    result["rpc_schema"] = "din.wallet.v1";
+    if (ctx.logger)
+        ctx.logger->info("[wallet.getnewaddress] Issued pooled taproot address: " + issued.address);
+    return result;
+}
+
+static void MarkNativeV3SendReady(din::Json& result) {
+    result["send_ready"] = true;
+    result["send_scope"] = "transparent_native_v3";
+    result.removeMember("send_unavailable_reason");
+    result.removeMember("send_unavailable_code");
+}
+
+static void MarkNativeV3SendUnavailable(din::Json& result) {
+    result["send_ready"] = false;
+    result["send_unavailable_reason"] = dinero::WalletManager::kNativeWalletSendUnavailableOnV3;
+    result["send_unavailable_code"] = "wallet_native_send_unavailable_on_v3";
+}
+
 static void MarkLegacyTransparentLimitedScope(din::Json& result) {
     result["wallet_scope"] = "legacy_transparent_only";
     result["balance_scope"] = "transparent_current_tip";
@@ -935,6 +1057,20 @@ bool RefuseIfLegacyTransparentSpendUnavailable(
         if (lease->WalletName().empty() ||
             (!ctx.walletName.empty() && lease->WalletName() != ctx.walletName))
             return RefuseLegacyTransparentWalletOwnership(result, "wallet_selection_changed");
+        if (lease->NativeV3TransparentState() != dinero::WalletManager::NativeV3State::Absent) {
+            // #939 phase 1: a native v3 wallet has no send route yet. The
+            // ordinary payment path would derive change (a guarded write)
+            // and its source binding is the v2 index; refuse honestly.
+            const auto source = ctx.daemon && ctx.daemon->chainstate
+                ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)
+                : nullptr;
+            if (source && source->HasFullArchiveWalletIndexV3()) {
+                result["error"] = dinero::WalletManager::kNativeWalletSendUnavailableOnV3;
+                result["error_code"] = "wallet_native_send_unavailable_on_v3";
+                result["retryable"] = false;
+                return true;
+            }
+        }
         if (lease->LegacyTransparentState() !=
             dinero::WalletManager::LegacyTransparentState::Complete) return false;
         // Address/change derivation changes the ordinary script domain and
@@ -960,16 +1096,29 @@ bool RefuseIfLegacyTransparentAddressMutation(
             return RefuseLegacyTransparentWalletOwnership(result, "wallet_selection_changed");
         if (lease->LegacyTransparentState() ==
             dinero::WalletManager::LegacyTransparentState::Absent) {
-            // #939: on a v3 node an Orchard-owner wallet cannot be tracked yet;
-            // a new address would receive funds this node can never show.
             const auto source = ctx.daemon && ctx.daemon->chainstate
                 ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)
                 : nullptr;
             if (source && source->HasFullArchiveWalletIndexV3() && lease->HasOrchardOwnerState()) {
-                result["error"] = dinero::WalletManager::kNativeWalletUnsupportedOnV3;
-                result["error_code"] = "wallet_native_unsupported_on_v3";
-                result["retryable"] = false;
-                return true;
+                // #939: once native enrollment has begun, the script domain
+                // is frozen (Pending: the reconcile proves exactly that
+                // domain; Complete: a new row would invalidate both receipts
+                // and receive funds no replay has covered). Before enrollment
+                // the domain is still free; the route will cover it.
+                if (lease->NativeV3TransparentState() != dinero::WalletManager::NativeV3State::Absent) {
+                    result["error"] = dinero::WalletManager::kNativeWalletAddressUnavailableOnV3;
+                    result["error_code"] = "wallet_native_address_unavailable_on_v3";
+                    result["retryable"] = false;
+                    return true;
+                }
+                // A wallet the route can never enroll would receive funds
+                // this node cannot show: keep the interim refusal.
+                if (!lease->NativeV3Enrollable()) {
+                    result["error"] = dinero::WalletManager::kNativeWalletUnsupportedOnV3;
+                    result["error_code"] = "wallet_native_unsupported_on_v3";
+                    result["retryable"] = false;
+                    return true;
+                }
             }
             return false;
         }
@@ -1044,7 +1193,7 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
                 // and selected-tip fence below, with an immediate retryable
                 // refusal while behind. Keep the legacy wait for other wallets.
                 auto lease = mgr.AcquireDatabaseLease();
-                const bool marked = lease->LegacyTransparentState() !=
+                const bool marked = lease->TypedTransparentState() !=
                     dinero::WalletManager::LegacyTransparentState::Absent;
                 lease.reset();
                 if (!marked) mgr.WaitForHeight(cs->getBlockHeight(), std::chrono::milliseconds(5000));
@@ -1060,6 +1209,9 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
             : nullptr;
         const bool transparent_send = transparent_only && v3_source &&
             v3_source->RecoveredV3TransparentSendSourceReady();
+        const auto native_send_state = NativeV3SendState(ctx, wallet_service, summary.wallet_name);
+        const bool native_no_send = native_send_state && !*native_send_state;
+        const bool native_send = native_send_state && *native_send_state;
         result["walletname"] = summary.wallet_name;
         if (transparent_only) MarkLegacyTransparentLimitedScope(result);
         if (transparent_send) {
@@ -1067,6 +1219,8 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
             result["send_scope"] = "transparent_recovered_v3";
             result.removeMember("send_unavailable_reason");
         }
+        if (native_no_send) MarkNativeV3SendUnavailable(result);
+        if (native_send) MarkNativeV3SendReady(result);
         result["reservation_status"] = ReservationStatusName(summary.reservations);
 
         // Phase 35: Enhanced balance breakdown
@@ -1075,7 +1229,7 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
         result["immature"] = balance.immature;
         result["locked"] = ReservationAmount(summary.locked);
         result["total"] = balance.total;
-        result["spendable"] = transparent_only && !transparent_send
+        result["spendable"] = (transparent_only && !transparent_send) || native_no_send
             ? din::Json(Json::nullValue) : ReservationAmount(summary.available_confirmed);
         result["utxo_count"] = balance.utxo_count;
 
@@ -1239,6 +1393,9 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
             : nullptr;
         const bool transparent_send = transparent_only && v3_source &&
             v3_source->RecoveredV3TransparentSendSourceReady();
+        const auto native_send_state = NativeV3SendState(ctx, wallet_service, summary.wallet_name);
+        const bool native_no_send = native_send_state && !*native_send_state;
+        const bool native_send = native_send_state && *native_send_state;
         result["walletname"] = summary.wallet_name;
         if (transparent_only) MarkLegacyTransparentLimitedScope(result);
         if (transparent_send) {
@@ -1246,6 +1403,8 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
             result["send_scope"] = "transparent_recovered_v3";
             result.removeMember("send_unavailable_reason");
         }
+        if (native_no_send) MarkNativeV3SendUnavailable(result);
+        if (native_send) MarkNativeV3SendReady(result);
         result["reservation_status"] = ReservationStatusName(summary.reservations);
         result["balance"] = balance.total;
         result["transparent_balance"] = balance.total;
@@ -2054,6 +2213,10 @@ din::Json rpc_context_wallet_getnewaddress(const ExecutionContext& ctx, const di
     }
 
     try {
+        // #939 phase 2: a native v3 wallet issues from its sealed pool; every
+        // other address mutation keeps the refusal below.
+        if (NativeV3PoolWallet(ctx, wallet_service))
+            return NativeV3PoolGetNewAddress(ctx, wallet_service, params);
         if (RefuseIfLegacyTransparentAddressMutation(ctx, wallet_service, result)) return result;
         std::string label = "";
         std::string address_type = "taproot";
@@ -2200,6 +2363,12 @@ din::Json rpc_context_wallet_listaddresses(const ExecutionContext& ctx, const di
         const bool transparent_only = ReadLegacyTransparentScope(wallet_service,
             wallet_service->getCurrentWalletName()) ==
             dinero::WalletManager::LegacyTransparentState::Complete;
+        // #939 phase 2: a native v3 wallet's unissued receive pool and unused
+        // change chain are prepared scripts, not addresses the user was given.
+        // Any pooled script that has received coins is always listed, so the
+        // listed balances add up to the wallet balance.
+        const auto hidden = NativeV3PoolWallet(ctx, wallet_service)
+            ? wallet_service->get().nativePoolHiddenAddresses() : std::set<std::string>{};
 
         auto build_path = [](const dinero::AddressRow& addr_row) -> std::string {
             if (addr_row.account < 0) {
@@ -2215,6 +2384,7 @@ din::Json rpc_context_wallet_listaddresses(const ExecutionContext& ctx, const di
         };
 
         for (const auto& addr_row : addresses) {
+            if (hidden.count(addr_row.address)) continue;
             din::Json addr_obj;
             auto balance = addr_row.script_pubkey.empty()
                                ? wallet_service->get().getAddressBalance(addr_row.address)
@@ -3120,15 +3290,28 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
     // A completed full-archive v3 recovery has an independently verified
     // transparent coin inventory. Only this ordinary send path can use it;
     // other wallet mutation RPCs retain the Orchard-enrollment refusal.
+    // #939: a native-complete wallet (no Orchard accounts) uses the same
+    // receipt-fenced payment owner; its change comes from the pooled chain.
     bool recovered_v3_send = false;
+    bool native_v3_send = false;
 #if DINERO_WALLET_RAW_ORCHARD
     if (ctx.daemon->chainstate) {
         auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
         if (source && source->HasFullArchiveWalletIndexV3()) {
             auto use = dinero::WalletService::AcquireWalletUse(wallet_service);
             auto lease = use->Wallet().AcquireDatabaseLease();
-            recovered_v3_send = lease->LegacyTransparentState() ==
+            recovered_v3_send = lease->TypedTransparentState() ==
                 dinero::WalletManager::LegacyTransparentState::Complete;
+            native_v3_send = recovered_v3_send &&
+                lease->NativeV3TransparentState() == dinero::WalletManager::NativeV3State::Complete;
+            if (native_v3_send && NativeV3OrchardAccountsPresent(*lease)) {
+                // Its Orchard reservations need the canonical Orchard replay
+                // that v3 does not have yet; never sign around them.
+                result["error"] = dinero::WalletManager::kNativeWalletSendUnavailableOnV3;
+                result["error_code"] = "wallet_native_send_unavailable_on_v3";
+                result["retryable"] = false;
+                return result;
+            }
         }
     }
 #endif
@@ -3613,7 +3796,31 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
                 lease->WalletName() != signing_identity.name)
                 throw std::runtime_error("Recovered payment wallet selection changed");
             auto pin = lease->CopyRecoverySeed(signing_identity.session);
+            if (native_v3_send) {
+                // First pooled change-chain address with no coin history. It
+                // was sealed by the enrollment receipts; nothing is derived.
+                sqlite3_stmt* raw = nullptr;
+                if (sqlite3_prepare_v2(lease->Database(),
+                        "SELECT a.address FROM addresses a WHERE a.account=0 AND a.change=1 "
+                        "AND NOT EXISTS (SELECT 1 FROM utxos u WHERE u.address=a.address) ORDER BY a.idx",
+                        -1, &raw, nullptr) != SQLITE_OK)
+                    throw std::runtime_error("Native change pool unavailable");
+                const std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> pool(raw, sqlite3_finalize);
+                int rc;
+                while (change_address.empty() && (rc = sqlite3_step(raw)) == SQLITE_ROW) {
+                    const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(raw, 0));
+                    if (!text) continue;
+                    const std::string candidate(text, sqlite3_column_bytes(raw, 0));
+                    auto recorded = wallet_use->Wallet().getScriptPubKeyForAddress(candidate);
+                    if (!recorded) continue;
+                    auto key = lease->ResolveSigningKey(*recorded, *pin);
+                    if (key && key->secret.size() == 32) change_address = candidate;
+                }
+            }
+            // A wallet enrolled before the change pool existed (and the legacy
+            // class) reuses an owned input address instead.
             for (const auto& coin : selected_utxos) {
+                if (!change_address.empty()) break;
                 if (coin.address.empty() || coin.script_pubkey.empty()) continue;
                 auto recorded = wallet_use->Wallet().getScriptPubKeyForAddress(coin.address);
                 if (!recorded || *recorded != coin.script_pubkey) continue;
@@ -7761,6 +7968,72 @@ din::Json rpc_context_wallet_generateqrcode(const ExecutionContext& ctx, const d
     return result;
 }
 
+// A new wallet receives on all three address kinds from the start (#939):
+// Taproot index 0 (derived by RpcCreateHDWallet), P2MR index 0 and Orchard
+// account 0. Both run while the fresh wallet is still unenrolled and
+// unlocked, the only state in which a v3 node lets it issue addresses. A
+// failure here never undoes creation; it is reported for the client.
+// Known limitation (kept deliberately): P2MR keys need a loaded PQ master,
+// which an unencrypted new wallet does not have, and an encrypted one is
+// skipped below; so today this reports p2mr_error and the wizard hides it.
+static void AddCreationReceiveAddresses(const ExecutionContext& ctx, din::Json& result) {
+    if (result.isMember("encrypted") && result["encrypted"].asBool()) {
+        result["p2mr_error"] = "wallet encrypted at creation; derive after unlock";
+        result["orchard_error"] = "wallet encrypted at creation; create after unlock";
+        return;
+    }
+    try {
+        if (auto* p2mr = g_rpcRegistry.lookup("wallet.getnewp2mraddress")) {
+            din::Json p2mr_params;
+            p2mr_params["account"] = 0;
+            p2mr_params["change"] = 0;
+            p2mr_params["address_index"] = 0;
+            p2mr_params["leaf_index"] = 0;
+            p2mr_params["label"] = "";
+            const auto issued = (*p2mr)(ctx, p2mr_params);
+            if (issued.isMember("address") && issued["address"].isString())
+                result["first_p2mr_address"] = issued["address"];
+            else
+                result["p2mr_error"] = issued.isMember("error") ? issued["error"] : din::Json("unavailable");
+        } else {
+            result["p2mr_error"] = "wallet.getnewp2mraddress handler not registered";
+        }
+    } catch (const std::exception& e) {
+        result["p2mr_error"] = e.what();
+    }
+#if DINERO_WALLET_RAW_ORCHARD
+    // On a full-archive v3 node the native route could deliver this account,
+    // but a native wallet that has Orchard account rows cannot yet send
+    // transparent funds there (the recovered-v3 signer refuses catalogs with
+    // accounts). Keep new v3 wallets able to send: create account 0 later,
+    // on demand, until Orchard-account sends exist (#939). v2 nodes are
+    // unchanged.
+    {
+        const auto v3_source = ctx.daemon && ctx.daemon->chainstate
+            ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)
+            : nullptr;
+        if (v3_source && v3_source->HasFullArchiveWalletIndexV3()) {
+            result["orchard_error"] = "Orchard account is created on demand on this node so the wallet can send transparent funds";
+            result["orchard_deferred"] = true;
+            return;
+        }
+    }
+    try {
+        din::Json orchard_params;
+        orchard_params["account"] = 0;
+        const auto orchard = rpc_context_wallet_orchard_createaccount(ctx, orchard_params);
+        if (orchard.isMember("address") && orchard["address"].isString())
+            result["first_orchard_address"] = orchard["address"];
+        else
+            result["orchard_error"] = orchard.isMember("error") ? orchard["error"] : din::Json("unavailable");
+    } catch (const std::exception& e) {
+        result["orchard_error"] = e.what();
+    }
+#else
+    result["orchard_error"] = "Orchard wallet backend unavailable";
+#endif
+}
+
 din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
 
@@ -7779,6 +8052,7 @@ din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Js
     result = dinero::rpc::RpcCreateHDWallet(params, &wallet_service->get(), birth_height);
     if (!result.isMember("error")) {
         wallet_service->EnsureRuntimeWalletBindings();
+        AddCreationReceiveAddresses(ctx, result);
     }
     return result;
 }
