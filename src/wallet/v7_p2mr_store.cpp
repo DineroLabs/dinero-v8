@@ -225,6 +225,27 @@ V7P2MRStore::AddResult V7P2MRStore::AddAddress(
     return AddResult::Ok;
 }
 
+bool V7P2MRStore::UpdateLabelIfExact(
+    int64_t wallet_id, const std::string& address,
+    const std::array<uint8_t, 32>& merkle_root,
+    const std::array<uint8_t, dinero::consensus::pq::ml_dsa_65::PUBKEY_BYTES>& pubkey,
+    const std::string& derivation_path, uint32_t leaf_index,
+    const std::string& label) {
+    if (!db_ || wallet_id <= 0 || label.empty()) return false;
+    Stmt s(db_,
+        "UPDATE v7_p2mr_addresses SET label=? WHERE wallet_id=? AND address=? "
+        "AND merkle_root=? AND pubkey=? AND derivation_path=? AND leaf_index=?;");
+    if (!s.ok() || !BindText(s.raw(),1,label) ||
+        sqlite3_bind_int64(s.raw(),2,wallet_id)!=SQLITE_OK ||
+        !BindText(s.raw(),3,address) ||
+        !BindBlob(s.raw(),4,merkle_root.data(),merkle_root.size()) ||
+        !BindBlob(s.raw(),5,pubkey.data(),pubkey.size()) ||
+        !BindText(s.raw(),6,derivation_path) ||
+        sqlite3_bind_int64(s.raw(),7,leaf_index)!=SQLITE_OK)
+        return false;
+    return sqlite3_step(s.raw())==SQLITE_DONE && sqlite3_changes(db_)==1;
+}
+
 std::optional<P2MRStoredAddress>
 V7P2MRStore::GetByAddress(int64_t wallet_id, const std::string& address) const {
     if (!db_) return std::nullopt;

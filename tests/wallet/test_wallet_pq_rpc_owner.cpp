@@ -136,6 +136,29 @@ TEST_F(PqRpcOwner, InvalidHrpCannotStrandAnIssuanceIntent) {
     ASSERT_TRUE(ok(created)) << created.toStyledString();
     EXPECT_TRUE(created["address"].asString().starts_with("rdin1r"));
 }
+TEST_F(PqRpcOwner, ExistingInitialAddressCanTakeAnExplicitLabel) {
+    const auto initial=call("wallet.getnewp2mraddress");
+    ASSERT_TRUE(ok(initial)) << initial.toStyledString();
+    din::Json labelled;
+    labelled["label"]="named initial address";
+    const auto repeated=call("wallet.getnewp2mraddress",labelled);
+    ASSERT_TRUE(ok(repeated)) << repeated.toStyledString();
+    EXPECT_EQ(repeated["address"].asString(),initial["address"].asString());
+    const auto inventory=call("wallet.listp2mraddresses");
+    ASSERT_TRUE(ok(inventory)) << inventory.toStyledString();
+    ASSERT_EQ(inventory["addresses"].size(),1u);
+    EXPECT_EQ(inventory["addresses"][0]["label"].asString(),"named initial address");
+    EXPECT_TRUE(ok(call("wallet.getnewp2mraddress",labelled)));
+
+    din::Json wrong_network;
+    wrong_network["hrp"]="other";
+    const auto conflict=call("wallet.getnewp2mraddress",wrong_network);
+    EXPECT_EQ(conflict["error"].asString(),"p2mr_issuance_conflict")
+        << conflict.toStyledString();
+    din::Json next;
+    next["address_index"]=1;
+    EXPECT_TRUE(ok(call("wallet.getnewp2mraddress",next)));
+}
 TEST_F(PqRpcOwner, InterruptedIssuanceIsHiddenThenRepairedOnUnlock) {
     auto& wallet=service->get();
     auto* db=wallet.getCurrentDatabase();

@@ -280,6 +280,23 @@ din::Json rpc_wallet_getnewp2mraddress(const ExecutionContext& ctx,
         return result;
     }
 
+    if (r.status == v7rpc::HandlerStatus::UniqueConflict) {
+        // Creation may already have issued this path. A second explicit
+        // request may supply a label, but it must refer to that exact key and
+        // network address. Completion above clears the durable intent first.
+        const auto existing=store_ptr->GetByAddress(p.wallet_id,r.address);
+        if (!existing || existing->merkle_root!=r.merkle_root ||
+            existing->pubkey!=r.pubkey ||
+            existing->derivation_path!=expected_path ||
+            existing->leaf_index!=p.leaf_index ||
+            (!p.label.empty() && !store_ptr->UpdateLabelIfExact(
+                p.wallet_id,r.address,r.merkle_root,r.pubkey,expected_path,
+                p.leaf_index,p.label))) {
+            result["error"] = "p2mr_issuance_conflict";
+            return result;
+        }
+    }
+
     result["address"]         = r.address;
     result["merkle_root_hex"] = HexOfArray(r.merkle_root);
     result["pubkey_hex"]      = HexOfArray(r.pubkey);
