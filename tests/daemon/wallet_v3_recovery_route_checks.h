@@ -866,9 +866,9 @@ TEST(WalletV3NativeInterim, V3CreatesGeneratedWalletsAndRefusesRestores) {
     const auto created=rpc_context_wallet_createhd(request,create);
     ASSERT_FALSE(created.isMember("error")) << created.toStyledString();
     EXPECT_TRUE(created.isMember("mnemonic"));
-    EXPECT_FALSE(created.isMember("first_orchard_address"))
-        << "no Orchard receiver before v3 can deliver Orchard notes";
-    EXPECT_EQ(created["orchard_error"].asString(),WalletManager::kNativeWalletShieldedUnavailableOnV3);
+    // Phase 3: v3 delivers Orchard accounts, so creation issues account 0.
+    EXPECT_TRUE(created.isMember("first_orchard_address")) << created.toStyledString();
+    EXPECT_FALSE(created.isMember("orchard_error")) << created.toStyledString();
     std::string error;
     ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
         WalletService::CanonicalRecovery::AppliedPrefix) << error;
@@ -878,6 +878,17 @@ TEST(WalletV3NativeInterim, V3CreatesGeneratedWalletsAndRefusesRestores) {
         auto lease=use->Wallet().AcquireDatabaseLease();
         EXPECT_EQ(lease->NativeV3TransparentState(),WalletManager::NativeV3State::Complete);
         EXPECT_TRUE(lease->SealedFreshBirthHeight(lease->Session()).has_value());
+    }
+    {
+        // The creation-time Orchard account 0 was enrolled and delivered to
+        // the authenticated head by the v3 Orchard step.
+        const auto view=f.f.service->getRuntimeAccountReplay();
+        ASSERT_TRUE(view.ok());
+        const auto session=use->Wallet().AcquireDatabaseLease()->Session();
+        const auto account=wallet::OrchardAccountDelivery::ReadForReplay(use->Wallet(),session,
+            {(*view)->Profile().domain,(*view)->Profile().activation_height,0},**view);
+        EXPECT_EQ(account.account.Delivery().sequence,(*view)->Head().sequence);
+        EXPECT_EQ(account.account.Delivery().digest,(*view)->Head().digest);
     }
     // The creation-time Taproot receiver (index 0) and the pool are enrolled.
     EXPECT_EQ(NativeTestCount(use->Wallet(),"SELECT count(*) FROM addresses WHERE account=0 AND change=0"),
@@ -1085,11 +1096,12 @@ TEST(WalletV3NativeRoute, GeneratedWalletEnrollsNativeAndReceivesOnPool) {
     const auto labelled=rpc_context_wallet_setlabel(request,label);
     EXPECT_TRUE(labelled.isMember("error")) << labelled.toStyledString();
     EXPECT_FALSE(labelled.isMember("success"));
-    // Orchard effects need a wallet binding; v3 cannot deliver Orchard yet.
+    // Phase 3: a native-complete wallet's Orchard accounts are delivered on
+    // v3, so its Orchard binding is issued (Orchard spends refuse separately).
     din::Json binding;binding["wallet_name"]="canonical-recovery";
     const auto bound=rpc_context_wallet_orchard_getwalletbinding(request,binding);
-    EXPECT_EQ(bound["error_code"].asString(),"wallet_native_shielded_unavailable_on_v3") << bound.toStyledString();
-    EXPECT_FALSE(bound.isMember("wallet_binding"));
+    EXPECT_FALSE(bound.isMember("error_code")) << bound.toStyledString();
+    EXPECT_TRUE(bound.isMember("wallet_binding"));
     // Both receipts survived the refused issuance, label and binding.
     const auto still=rpc_context_wallet_getbalance(request,din::obj());
     EXPECT_FALSE(still.isMember("error")) << still.toStyledString();
@@ -1266,6 +1278,15 @@ TEST(WalletV3NativeRoute, InterruptedNativeReconcileStaysPendingThenResumes) {
         EXPECT_FALSE(HasLegacyStateColumn(use->Wallet()));
         EXPECT_TRUE(HasNativeStateColumn(use->Wallet()));
         EXPECT_TRUE(use->Wallet().getNewAddress().empty()) << "Pending freezes the script domain";
+        {
+            // Pending also freezes the Orchard ownership inventory the
+            // reconcile rechecks: no Orchard binding is issued.
+            ExecutionContext pending_request;pending_request.daemon=&f.context;
+            pending_request.walletName="canonical-recovery";
+            din::Json binding;binding["wallet_name"]="canonical-recovery";
+            const auto bound=rpc_context_wallet_orchard_getwalletbinding(pending_request,binding);
+            EXPECT_EQ(bound["error_code"].asString(),"wallet_native_shielded_unavailable_on_v3") << bound.toStyledString();
+        }
         const auto coverage=f.f.service->getRuntimeWalletCoverageV3(use->Wallet(),session,index->Index());
         ASSERT_TRUE(coverage.ok()) << static_cast<int>(coverage.status());
         int commits=0;
