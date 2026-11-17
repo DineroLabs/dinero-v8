@@ -31,7 +31,8 @@ TEST(WalletV3NativeOrchard, NativeWalletReceivesOrchardNoteThroughV3Delivery) {
     const auto* queue_shield=g_rpcRegistry.lookup("wallet.orchard.queueshield");
     const auto* queue_spend=g_rpcRegistry.lookup("wallet.orchard.queuespend");
     ASSERT_NE(create,nullptr);ASSERT_NE(orchard_balance,nullptr);
-    ASSERT_NE(queue_shield,nullptr);ASSERT_NE(queue_spend,nullptr);
+    const auto* recover_account0=g_rpcRegistry.lookup("wallet.orchard.recoveraccount0");
+    ASSERT_NE(queue_shield,nullptr);ASSERT_NE(queue_spend,nullptr);ASSERT_NE(recover_account0,nullptr);
     auto ctx=f.RequestContext();
     const auto created=(*create)(ctx,OrchardBoundParamsForTest(ctx,OrchardCreationRequest()));
     ASSERT_FALSE(created.isMember("error")) << created.toStyledString();
@@ -74,6 +75,11 @@ TEST(WalletV3NativeOrchard, NativeWalletReceivesOrchardNoteThroughV3Delivery) {
         EXPECT_EQ(refused["error_code"].asString(),"wallet_native_orchard_spend_unavailable_on_v3")
             << refused.toStyledString();
     }
+
+    // Restored-seed account-0 recovery is not served on v3.
+    const auto recovered=(*recover_account0)(ctx,OrchardBoundParamsForTest(ctx,din::obj()));
+    EXPECT_EQ(recovered["error_code"].asString(),"wallet_native_orchard_recovery_unavailable_on_v3")
+        << recovered.toStyledString();
 
     f.wallet->Stop();
     f.context.wallet.reset();
