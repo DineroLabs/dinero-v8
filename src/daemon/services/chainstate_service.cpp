@@ -7328,6 +7328,24 @@ ChainstateService::resumeRuntimeWalletRecoveryIfNeeded(WalletManager& wallet, UT
             // This class is exclusively a full archival, never-enrolled wallet.
             // A phone, imported source or snapshot base cannot claim its old
             // transparent rows from a height alone.
+            bool source_refused=false,requires_full_archive=false;
+            {
+                std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+                if(!FullArchiveV2LegacySourceUnderLock(index)) {
+                    // Only the stable source half proves this node can never
+                    // recover the wallet. A full-archive node that is merely
+                    // below activation, in IBD or without a Utreexo snapshot
+                    // keeps the ordinary retryable deferral.
+                    source_refused=true;requires_full_archive=!FullArchiveV2LegacySourceClass(index);
+                }
+            }
+            if(source_refused) {
+                // Make the permanent refusal visible (once per wallet session)
+                // instead of a silent worker deferral; control flow is unchanged.
+                if(requires_full_archive && wallet.NoteLegacyRecoveryRequiresFullArchive(session) && logger_)
+                    logger_->warning(std::string("[WalletRecovery] ")+WalletManager::kLegacyWalletRequiresFullArchive);
+                return Status::Invalid;
+            }
             {
                 std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
                 if(!FullArchiveV2LegacySourceUnderLock(index))return Status::Invalid;

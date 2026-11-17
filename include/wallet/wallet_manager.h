@@ -180,6 +180,34 @@ public:
     // supported path is the offline `dinerod --upgrade-wallet-index-v3`.
     // Set once when chainstate binds the v2 index; one-way per manager.
     void MarkFullArchiveV2LegacySource();
+    // Recorded by chainstate when it refuses this database session's legacy
+    // (or never-enrolled) transparent recovery because the node is not a
+    // full-archive source (snapshot, AssumeUTXO, compact, stateless or
+    // imported pre-base). Recovery itself is unchanged. Returns true only the
+    // first time for a session, so callers can log once. Cleared implicitly
+    // when another database session (wallet switch or reopen) is active.
+    bool NoteLegacyRecoveryRequiresFullArchive(uint64_t session);
+    [[nodiscard]] bool LegacyRecoveryRequiresFullArchive(uint64_t session) const;
+// A full-archive v3 node has not yet enrolled this wallet, and enrollment
+    // needs the wallet's seed: the wallet is locked. Only the user can clear it.
+    // Interim (#939): a wallet with an Orchard owner (created or restored by
+    // 8.2.x) has no v3 delivery route yet. Say so instead of "catching up".
+    static constexpr const char* kNativeWalletUnsupportedOnV3 =
+        "This wallet was created or restored by Dinero 8.2 and this node's wallet index (v3) "
+        "cannot track it yet. Your funds are safe on-chain: use its seed phrase in the phone app "
+        "or on another node until the next update.";
+    static constexpr const char* kWalletCreationUnsupportedOnV3 =
+        "Creating or restoring a wallet is not supported on this node yet (wallet index v3). "
+        "Existing wallets keep working; create or restore it in the phone app or on another node "
+        "until the next update.";
+    static constexpr const char* kWalletUnlockRequiredForV3Enrollment =
+        "Wallet is locked: unlock it once so this node can finish setting it up. "
+        "Addresses and balance appear when setup completes.";
+        static constexpr const char* kLegacyWalletRequiresFullArchive =
+        "This wallet's history predates this node's snapshot base, so it cannot be "
+        "recovered on this node. Recover it on a full-archive node (full sync from "
+        "genesis without a snapshot) by copying this wallet's file there, not by "
+        "restoring its seed phrase; balances shown here may be stale.";
     static constexpr const char* kLegacyWalletV3UpgradeRequired =
         "Wallet index upgrade required: stop dinerod and run "
         "`dinerod --upgrade-wallet-index-v3 --datadir=<dir>`, then restart. "
@@ -327,6 +355,10 @@ public:
         // identity and no Orchard catalog/owner. Read-only; a malformed old
         // schema is an error rather than proof of a safe empty balance.
         [[nodiscard]] std::optional<uint32_t> UnenrolledLegacyTransparentScanHeight() const;
+        // True when the wallet carries an Orchard owner, catalog or Orchard
+        // tables: the exact condition that excludes it from v3 legacy
+        // enrollment (BeginLegacyTransparentMigrationV3).
+        [[nodiscard]] bool HasOrchardOwnerState() const;
         // Enroll a never-enrolled legacy wallet atomically. The identity and
         // pending marker become visible together, or neither does.
         [[nodiscard]] std::string BeginLegacyTransparentMigration();
@@ -1226,6 +1258,7 @@ private:
     mutable std::recursive_mutex database_lifecycle_mutex_;
     bool full_archive_v3_legacy_rescans_disabled_ = false; // same lock; one-way per manager
     bool full_archive_v2_legacy_source_ = false; // same lock; one-way per manager
+    std::optional<uint64_t> legacy_full_archive_refused_session_; // same lock
     size_t database_leases_ = 0; // protected by database_lifecycle_mutex_
     size_t recovery_seeds_ = 0; // same lock; recovery seed must die before last lease
     const std::shared_ptr<const uint8_t> instance_token_ = std::make_shared<const uint8_t>(0);
