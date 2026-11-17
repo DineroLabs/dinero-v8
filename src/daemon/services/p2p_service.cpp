@@ -529,7 +529,7 @@ P2PService::NetworkStatus P2PService::GetNetworkStatus() const {
     }
     {
         const auto autonomy = dinero::p2p::EvaluateBootstrapAutonomy(
-            connected_community_outbound, 0);
+            connected_community_outbound);
         dinero::p2p::PeerGovernorConfig governor_config;
         governor_config.max_configured_seed_hot = autonomy.max_bootstrap_hot;
         for (auto& candidate : governor_candidates) {
@@ -848,7 +848,7 @@ void P2PService::MaybeRunDynamicP2PActiveChurn(std::chrono::steady_clock::time_p
     }
 
     const auto autonomy = dinero::p2p::EvaluateBootstrapAutonomy(
-        connected_community_outbound, 0);
+        connected_community_outbound);
     dinero::p2p::PeerGovernorConfig governor_config;
     governor_config.max_configured_seed_hot = autonomy.max_bootstrap_hot;
     std::unordered_set<std::string> protected_anchors;
@@ -1200,18 +1200,15 @@ void P2PService::StartSchedulerTickLoop() {
                     auto anchors = dinero::config::getAnchorPeers(Params().name);
                     uint16_t anchor_port = Params().p2p_port;
                     auto connected_peers = p2p_mgr_->get_connected_peers();
-                    std::unordered_set<std::string> connected_ips;
-                    for (const auto& peer : connected_peers) {
-                        connected_ips.insert(peer.address);
-                    }
                     for (const auto& anchor : anchors) {
                         // Never reconnect to an anchor that resolves to a local interface —
                         // self-loops poison the BlockDownloadScheduler (see LocalInterfaceIps).
                         if (IsLocalInterfaceIp(anchor.hostname)) {
                             continue;
                         }
-                        if (connected_ips.find(anchor.hostname) == connected_ips.end()) {
-                            uint16_t port = (anchor.port != 0) ? anchor.port : anchor_port;
+                        uint16_t port = (anchor.port != 0) ? anchor.port : anchor_port;
+                        if (!dinero::daemon::hasConnectedOutboundAnchor(
+                                connected_peers, anchor.hostname, port)) {
                             if (p2p_mgr_->connect_to_peer(anchor.hostname, port)) {
                                 if (logger_interface_) {
                                     logger_interface_->info("[P2PService] Reconnecting anchor peer: " +

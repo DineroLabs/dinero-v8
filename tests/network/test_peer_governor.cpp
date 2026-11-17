@@ -105,11 +105,13 @@ int main() {
 
     {
         using dinero::p2p::EvaluateBootstrapAutonomy;
-        check(!EvaluateBootstrapAutonomy(1, 1).autonomous,
+        check(!EvaluateBootstrapAutonomy(1).autonomous,
               "bootstrap recovery remains active with too few community peers");
-        check(EvaluateBootstrapAutonomy(2, 2).autonomous,
-              "known community candidates permit autonomous transition");
-        check(EvaluateBootstrapAutonomy(4, 0).max_bootstrap_hot == 0,
+        check(!EvaluateBootstrapAutonomy(0).autonomous,
+              "stored candidates alone cannot disable bootstrap recovery");
+        check(!EvaluateBootstrapAutonomy(2).autonomous,
+              "two connected community peers still need bootstrap recovery");
+        check(EvaluateBootstrapAutonomy(4).max_bootstrap_hot == 0,
               "healthy connected community removes permanent bootstrap slots");
     }
 
