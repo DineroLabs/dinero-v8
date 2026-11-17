@@ -1077,11 +1077,15 @@ TEST(WalletV3NativeRoute, GeneratedWalletEnrollsNativeAndReceivesOnPool) {
     const auto shielded=(*shielded_balance)(request,din::obj());
     EXPECT_EQ(shielded["error_code"].asString(),"wallet_native_shielded_unavailable_on_v3")
         << shielded.toStyledString();
+    // Phase 2: getnewaddress hands out the next unissued pooled script
+    // (issuance writes only the unguarded pool table; receipts checked below).
     const auto address=rpc_context_wallet_getnewaddress(request,din::obj());
-    EXPECT_EQ(address["error_code"].asString(),"wallet_native_address_unavailable_on_v3")
-        << address.toStyledString();
-    EXPECT_FALSE(address.isMember("address"));
-    // A label is an UPDATE of the guarded addresses table: refused.
+    EXPECT_FALSE(address.isMember("error")) << address.toStyledString();
+    EXPECT_EQ(NativeTestCount(WalletService::AcquireWalletUse(f.wallet)->Wallet(),
+        "SELECT count(*) FROM addresses WHERE account=0 AND change=0 AND address='"+
+        address["address"].asString()+"'"),1) << "issued from the pool, nothing derived";
+    // A label on an unissued pool script (an UPDATE of the guarded addresses
+    // table in the legacy path) is refused.
     din::Json label(Json::arrayValue);label.append(pooled);label.append("savings");
     const auto labelled=rpc_context_wallet_setlabel(request,label);
     EXPECT_TRUE(labelled.isMember("error")) << labelled.toStyledString();

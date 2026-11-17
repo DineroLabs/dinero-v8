@@ -949,6 +949,64 @@ static std::optional<bool> NativeV3SendState(const ExecutionContext& ctx,
     return source->RecoveredV3TransparentSendSourceReady();
 }
 
+// #939 phase 2: the selected wallet is a native v3 wallet (enrollment begun)
+// on a full-archive v3 node, so its receive addresses come from the pool.
+static bool NativeV3PoolWallet(const ExecutionContext& ctx,
+                               const std::shared_ptr<dinero::WalletService>& service) {
+    const auto source = ctx.daemon && ctx.daemon->chainstate
+        ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)
+        : nullptr;
+    if (!source || !source->HasFullArchiveWalletIndexV3()) return false;
+    auto use = dinero::WalletService::AcquireWalletUse(service);
+    auto lease = use->Wallet().AcquireDatabaseLease();
+    if (lease->WalletName().empty() ||
+        (!ctx.walletName.empty() && lease->WalletName() != ctx.walletName)) return false;
+    return lease->LegacyTransparentState() == dinero::WalletManager::LegacyTransparentState::Absent &&
+        lease->NativeV3TransparentState() != dinero::WalletManager::NativeV3State::Absent;
+}
+
+// #939 phase 2: wallet.getnewaddress for a native v3 wallet. Taproot comes
+// from the sealed pool (writes only the unguarded pool row); P2MR is not
+// pooled on v3 and is refused honestly. Nothing here derives a script.
+static din::Json NativeV3PoolGetNewAddress(const ExecutionContext& ctx,
+                                           const std::shared_ptr<dinero::WalletService>& service,
+                                           const din::Json& params) {
+    din::Json result;
+    std::string normalized, label;
+    if (!params.empty() && params[0].is<std::string>())
+        for (char c : params[0].as<std::string>())
+            normalized += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (params.size() >= 2 && params[1].is<std::string>()) label = params[1].as<std::string>();
+    // A "p2mr" receive default asks for P2MR; "split" degrades to Taproot.
+    if (normalized.empty() && service->get().getSetting("receive_default", "") == "p2mr")
+        normalized = "p2mr";
+    if (normalized == "p2mr" || normalized == "p2mr_v3") {
+        result["error"] = dinero::WalletManager::kNativeWalletP2MRUnavailableOnV3;
+        result["error_code"] = "wallet_native_p2mr_unavailable_on_v3";
+        result["retryable"] = false;
+        return result;
+    }
+    if (!normalized.empty() && normalized != "taproot" && normalized != "p2tr" &&
+        normalized != "bech32m" && normalized != "witness_v1_taproot") {
+        result["error"] = "Unsupported address_type. Use 'taproot', 'p2tr', or 'p2mr'";
+        return result;
+    }
+    auto use = dinero::WalletService::AcquireWalletUse(service);
+    const auto issued = use->Wallet().issueNativePoolAddress(label);
+    if (issued.address.empty()) {
+        result["error"] = issued.error;
+        result["error_code"] = issued.error_code;
+        result["retryable"] = issued.retryable;
+        return result;
+    }
+    result["address"] = issued.address;
+    result["address_type"] = "taproot";
+    result["rpc_schema"] = "din.wallet.v1";
+    if (ctx.logger)
+        ctx.logger->info("[wallet.getnewaddress] Issued pooled taproot address: " + issued.address);
+    return result;
+}
+
 static void MarkNativeV3SendReady(din::Json& result) {
     result["send_ready"] = true;
     result["send_scope"] = "transparent_native_v3";
@@ -2155,6 +2213,10 @@ din::Json rpc_context_wallet_getnewaddress(const ExecutionContext& ctx, const di
     }
 
     try {
+        // #939 phase 2: a native v3 wallet issues from its sealed pool; every
+        // other address mutation keeps the refusal below.
+        if (NativeV3PoolWallet(ctx, wallet_service))
+            return NativeV3PoolGetNewAddress(ctx, wallet_service, params);
         if (RefuseIfLegacyTransparentAddressMutation(ctx, wallet_service, result)) return result;
         std::string label = "";
         std::string address_type = "taproot";
@@ -2301,6 +2363,12 @@ din::Json rpc_context_wallet_listaddresses(const ExecutionContext& ctx, const di
         const bool transparent_only = ReadLegacyTransparentScope(wallet_service,
             wallet_service->getCurrentWalletName()) ==
             dinero::WalletManager::LegacyTransparentState::Complete;
+        // #939 phase 2: a native v3 wallet's unissued receive pool and unused
+        // change chain are prepared scripts, not addresses the user was given.
+        // Any pooled script that has received coins is always listed, so the
+        // listed balances add up to the wallet balance.
+        const auto hidden = NativeV3PoolWallet(ctx, wallet_service)
+            ? wallet_service->get().nativePoolHiddenAddresses() : std::set<std::string>{};
 
         auto build_path = [](const dinero::AddressRow& addr_row) -> std::string {
             if (addr_row.account < 0) {
@@ -2316,6 +2384,7 @@ din::Json rpc_context_wallet_listaddresses(const ExecutionContext& ctx, const di
         };
 
         for (const auto& addr_row : addresses) {
+            if (hidden.count(addr_row.address)) continue;
             din::Json addr_obj;
             auto balance = addr_row.script_pubkey.empty()
                                ? wallet_service->get().getAddressBalance(addr_row.address)
