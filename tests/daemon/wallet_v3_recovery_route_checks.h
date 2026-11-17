@@ -6,6 +6,7 @@ din::Json rpc_context_wallet_listaddresses(const ExecutionContext&, const din::J
 din::Json rpc_context_wallet_rescanblockchain(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_wallet_importtaprootdescriptor(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_wallet_setlabel(const ExecutionContext&, const din::Json&);
+din::Json rpc_context_wallet_getlabel(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_wallet_sendmany(const ExecutionContext&, const din::Json&);
 void registerShieldedWalletMethods();
@@ -2318,6 +2319,243 @@ TEST(WalletV3NativeSpend, NativeSendRefusesPendingLockedAndStaleReceipt) {
     EXPECT_EQ(orchard_send["error_code"].asString(),"wallet_native_send_unavailable_on_v3")
         << orchard_send.toStyledString();
     EXPECT_TRUE(f.wallet->get().getPendingPayments().empty());
+}
+
+namespace {
+// #939 phase 2 helpers.
+std::string NativeChainAddress(WalletManager& wallet,int change,int index) {
+    auto lease=wallet.AcquireDatabaseLease();sqlite3_stmt* q=nullptr;
+    OrchardAdmissionFixture::Require(sqlite3_prepare_v2(lease->Database(),
+        "SELECT address FROM addresses WHERE account=0 AND change=? AND idx=?",-1,&q,nullptr)==SQLITE_OK);
+    sqlite3_bind_int(q,1,change);sqlite3_bind_int(q,2,index);
+    OrchardAdmissionFixture::Require(sqlite3_step(q)==SQLITE_ROW);
+    std::string address(reinterpret_cast<const char*>(sqlite3_column_text(q,0)));
+    sqlite3_finalize(q);return address;
+}
+int NativeReceiveRows(WalletManager& wallet) {
+    return NativeTestCount(wallet,"SELECT count(*) FROM addresses WHERE account=0 AND change=0");
+}
+din::Json NativeIssue(const ExecutionContext& request,const char* type=nullptr,const char* label=nullptr) {
+    din::Json params(Json::arrayValue);
+    if(type||label)params.append(type?type:"taproot");
+    if(label)params.append(label);
+    return rpc_context_wallet_getnewaddress(request,params);
+}
+// Both v3 receipts are present and agree (a guarded write would null the
+// ordinary receipt; a domain change would make ReadForWallet throw).
+void ExpectNativeReceiptsCurrent(CanonicalRecoveryFixture& f,uint32_t height) {
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+    const auto session=use->Wallet().AcquireDatabaseLease()->Session();
+    const auto indexed=RuntimeIndexDelivery::ReadForWalletV3(use->Wallet(),index->Index(),session);
+    const auto ordinary=RuntimeOrdinaryDelivery::ReadForWallet(use->Wallet(),session);
+    ASSERT_TRUE(indexed);ASSERT_TRUE(ordinary);
+    EXPECT_EQ(indexed->cursor,ordinary->cursor);
+    EXPECT_EQ(indexed->tip_height,height);
+    EXPECT_EQ(ordinary->tip_height,height);
+}
+WalletManager::NativeV3State NativeState(CanonicalRecoveryFixture& f) {
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    return use->Wallet().AcquireDatabaseLease()->NativeV3TransparentState();
+}
+void RestartNativeWallet(CanonicalRecoveryFixture& f,NativeV3IndexScope& v3) {
+    f.wallet->Stop();
+    f.context.wallet.reset();
+    f.wallet.reset();
+    f.wallet=std::make_shared<WalletService>();
+    f.context.wallet=f.wallet;
+    auto reopened=std::make_unique<UTXOIndex>(v3.path.string());
+    OrchardAdmissionFixture::Require(reopened->InitializeFullArchiveV3MetadataOnly());
+    auto closed=ShieldedStateStartupTestAccess::SwapWalletIndexForRpc(*f.f.service,std::move(reopened));
+    OrchardAdmissionFixture::Require(bool(closed));closed.reset();
+    OrchardAdmissionFixture::Require(f.wallet->Init(f.context));
+    OrchardAdmissionFixture::Require(f.wallet->Start());
+}
+} // namespace
+
+// #939 phase 2: a native-complete wallet hands out its pre-derived, sealed
+// receive pool. Issuance and labels write only the unguarded pool table, so
+// both receipts stay valid; pre-enrollment receive addresses and the change
+// chain are never handed out; listaddresses shows what was issued; funds to
+// an issued address are delivered; the state survives a restart.
+TEST(WalletV3NativePool, IssuesUnissuedPoolAddressesKeepingReceipts) {
+    CanonicalRecoveryFixture f(false,false);
+    const auto first=f.MineToWallet();
+    int pre=0;
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        pre=NativeTestCount(use->Wallet(),
+            "SELECT COALESCE(MAX(idx),-1)+1 FROM addresses WHERE account=0 AND change=0");
+    }
+    ASSERT_GE(pre,1);
+    NativeV3IndexScope v3(f,"v3-native-pool-issue-index");
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ASSERT_EQ(NativeState(f),WalletManager::NativeV3State::Complete);
+    ExecutionContext request;request.daemon=&f.context;request.walletName="canonical-recovery";
+    std::string pool_rent,pool_food,unissued,change0;
+    int rows_before=0;
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        rows_before=NativeTestCount(use->Wallet(),"SELECT count(*) FROM addresses");
+        pool_rent=NativeChainAddress(use->Wallet(),0,pre);
+        pool_food=NativeChainAddress(use->Wallet(),0,pre+1);
+        unissued=NativeChainAddress(use->Wallet(),0,pre+5);
+        change0=NativeChainAddress(use->Wallet(),1,0);
+    }
+    const auto issued=NativeIssue(request,"taproot","rent");
+    ASSERT_FALSE(issued.isMember("error")) << issued.toStyledString();
+    EXPECT_EQ(issued["address"].asString(),pool_rent) << "the first unissued pooled receive script";
+    EXPECT_EQ(issued["address_type"].asString(),"taproot");
+    const auto second=NativeIssue(request);
+    ASSERT_FALSE(second.isMember("error")) << second.toStyledString();
+    EXPECT_EQ(second["address"].asString(),pool_food);
+    // Nothing was derived and no guarded table was written.
+    EXPECT_EQ(NativeTestCount(WalletService::AcquireWalletUse(f.wallet)->Wallet(),
+        "SELECT count(*) FROM addresses"),rows_before);
+    ExpectNativeReceiptsCurrent(f,102);
+    const auto balance=rpc_context_wallet_getbalance(request,din::obj());
+    ASSERT_FALSE(balance.isMember("error")) << balance.toStyledString();
+    // Labels live in the pool row, not the guarded addresses table.
+    din::Json get_rent(Json::arrayValue);get_rent.append(pool_rent);
+    EXPECT_EQ(rpc_context_wallet_getlabel(request,get_rent)["label"].asString(),"rent");
+    din::Json set_food(Json::arrayValue);set_food.append(pool_food);set_food.append("food");
+    const auto labelled=rpc_context_wallet_setlabel(request,set_food);
+    EXPECT_TRUE(labelled["success"].asBool()) << labelled.toStyledString();
+    din::Json get_food(Json::arrayValue);get_food.append(pool_food);
+    EXPECT_EQ(rpc_context_wallet_getlabel(request,get_food)["label"].asString(),"food");
+    // An unissued pool script is not the user's to label yet.
+    din::Json set_unissued(Json::arrayValue);set_unissued.append(unissued);set_unissued.append("nope");
+    EXPECT_TRUE(rpc_context_wallet_setlabel(request,set_unissued).isMember("error"));
+    ExpectNativeReceiptsCurrent(f,102);
+    // listaddresses shows issued (labelled) and pre-enrollment receive
+    // addresses, never the unissued pool or the unused change chain.
+    {
+        const auto listed=rpc_context_wallet_listaddresses(request,din::obj());
+        ASSERT_TRUE(listed.isArray()) << listed.toStyledString();
+        std::map<std::string,std::string> shown;
+        for(const auto& row:listed)shown[row["address"].asString()]=row["label"].asString();
+        EXPECT_TRUE(shown.contains(f.receive_address));
+        ASSERT_TRUE(shown.contains(pool_rent));EXPECT_EQ(shown[pool_rent],"rent");
+        ASSERT_TRUE(shown.contains(pool_food));EXPECT_EQ(shown[pool_food],"food");
+        EXPECT_FALSE(shown.contains(unissued));
+        EXPECT_FALSE(shown.contains(change0));
+    }
+    // P2MR is not pooled on v3: refused honestly, nothing written.
+    const auto p2mr=NativeIssue(request,"p2mr");
+    EXPECT_EQ(p2mr["error_code"].asString(),"wallet_native_p2mr_unavailable_on_v3") << p2mr.toStyledString();
+    EXPECT_FALSE(p2mr.isMember("address"));
+    // The legacy derivation path stays closed (defense in depth).
+    EXPECT_TRUE(WalletService::AcquireWalletUse(f.wallet)->Wallet().getNewAddress().empty());
+    ExpectNativeReceiptsCurrent(f,102);
+
+    // Funds to an issued address are delivered by ordinary v3 delivery.
+    f.receive_address=pool_food;
+    const auto paid=f.MineToWallet();
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ExpectNativeReceiptsCurrent(f,103);
+    EXPECT_EQ(NativeTestCount(WalletService::AcquireWalletUse(f.wallet)->Wallet(),
+        "SELECT count(*) FROM utxos WHERE address='"+pool_food+"'"),1);
+    const auto delivered=rpc_context_wallet_getbalance(request,din::obj());
+    ASSERT_FALSE(delivered.isMember("error")) << delivered.toStyledString();
+    EXPECT_NEAR(delivered["total"].asDouble(),double(first+paid)/1e8,1e-8);
+
+    // Issuance and labels survive a restart; issuance resumes after them.
+    RestartNativeWallet(f,v3);
+    EXPECT_EQ(rpc_context_wallet_getlabel(request,get_rent)["label"].asString(),"rent");
+    EXPECT_EQ(rpc_context_wallet_getlabel(request,get_food)["label"].asString(),"food");
+    const auto third=NativeIssue(request);
+    ASSERT_FALSE(third.isMember("error")) << third.toStyledString();
+    EXPECT_EQ(third["address"].asString(),
+        NativeChainAddress(WalletService::AcquireWalletUse(f.wallet)->Wallet(),0,pre+2));
+    ExpectNativeReceiptsCurrent(f,103);
+    f.wallet->Stop();
+}
+
+// #939 phase 2: crossing the low-water mark never extends inline in the RPC.
+// The runtime worker derives the next 20 receive scripts, re-runs coverage
+// over the grown domain, reconciles and returns to Complete; issuance then
+// continues into the new scripts and funds sent to one are delivered.
+TEST(WalletV3NativePool, LowWaterExtensionIsWorkerDrivenAndCovered) {
+    CanonicalRecoveryFixture f(false,false);
+    const auto first=f.MineToWallet();
+    int pre=0;
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        pre=NativeTestCount(use->Wallet(),
+            "SELECT COALESCE(MAX(idx),-1)+1 FROM addresses WHERE account=0 AND change=0");
+    }
+    NativeV3IndexScope v3(f,"v3-native-pool-extend-index");
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ExecutionContext request;request.daemon=&f.context;request.walletName="canonical-recovery";
+    int change_rows=0;
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        ASSERT_EQ(NativeReceiveRows(use->Wallet()),WalletManager::kNativeV3ReceivePool);
+        change_rows=NativeTestCount(use->Wallet(),"SELECT count(*) FROM addresses WHERE account=0 AND change=1");
+    }
+    // Issue until fewer than 5 unissued receive scripts remain.
+    std::vector<std::string> handed;
+    int unissued=WalletManager::kNativeV3ReceivePool-pre; // pre-enrollment rows count as issued
+    while(unissued>=5) {
+        const auto issued=NativeIssue(request);
+        ASSERT_FALSE(issued.isMember("error")) << issued.toStyledString();
+        handed.push_back(issued["address"].asString());--unissued;
+    }
+    ASSERT_FALSE(handed.empty());
+    ASSERT_EQ(handed.front(),NativeChainAddress(WalletService::AcquireWalletUse(f.wallet)->Wallet(),0,pre));
+    // The RPC derived nothing and changed no state: the worker owns it.
+    EXPECT_EQ(NativeReceiveRows(WalletService::AcquireWalletUse(f.wallet)->Wallet()),WalletManager::kNativeV3ReceivePool);
+    EXPECT_EQ(NativeState(f),WalletManager::NativeV3State::Complete);
+    ExpectNativeReceiptsCurrent(f,102);
+    {
+        RuntimeDeliveryWorker worker(f.f.service,f.wallet,
+            RuntimeDeliveryWorker::Limits{1,std::chrono::milliseconds(20)});
+        worker.Start();
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(60);
+        for(;;) {
+            {
+                auto use=WalletService::AcquireWalletUse(f.wallet);
+                auto lease=use->Wallet().AcquireDatabaseLease();
+                const bool grown=lease->NativeV3TransparentState()==WalletManager::NativeV3State::Complete;
+                lease.reset();
+                if(grown && NativeReceiveRows(use->Wallet())==2*WalletManager::kNativeV3ReceivePool)break;
+            }
+            ASSERT_LT(std::chrono::steady_clock::now(),deadline) << "the worker did not extend the pool";
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        worker.Stop();
+    }
+    // The extension grew only the low chain and resealed both receipts.
+    EXPECT_EQ(NativeTestCount(WalletService::AcquireWalletUse(f.wallet)->Wallet(),
+        "SELECT count(*) FROM addresses WHERE account=0 AND change=1"),change_rows);
+    ExpectNativeReceiptsCurrent(f,102);
+    std::string grown_address;
+    for(int i=0;i<4;++i) {
+        const auto issued=NativeIssue(request);
+        ASSERT_FALSE(issued.isMember("error")) << issued.toStyledString();
+        EXPECT_EQ(issued["address"].asString(),
+            NativeChainAddress(WalletService::AcquireWalletUse(f.wallet)->Wallet(),0,16+i));
+    }
+    const auto next=NativeIssue(request);
+    ASSERT_FALSE(next.isMember("error")) << next.toStyledString();
+    grown_address=next["address"].asString();
+    EXPECT_EQ(grown_address,NativeChainAddress(WalletService::AcquireWalletUse(f.wallet)->Wallet(),0,20));
+    ExpectNativeReceiptsCurrent(f,102);
+    f.receive_address=grown_address;
+    const auto paid=f.MineToWallet();
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ExpectNativeReceiptsCurrent(f,103);
+    EXPECT_EQ(NativeTestCount(WalletService::AcquireWalletUse(f.wallet)->Wallet(),
+        "SELECT count(*) FROM utxos WHERE address='"+grown_address+"'"),1);
+    const auto balance=rpc_context_wallet_getbalance(request,din::obj());
+    ASSERT_FALSE(balance.isMember("error")) << balance.toStyledString();
+    EXPECT_NEAR(balance["total"].asDouble(),double(first+paid)/1e8,1e-8);
 }
 
 } // namespace dinero
