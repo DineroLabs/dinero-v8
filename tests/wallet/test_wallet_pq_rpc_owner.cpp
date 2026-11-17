@@ -138,6 +138,9 @@ TEST_F(PqRpcOwner, InterruptedIssuanceIsHiddenThenRepairedOnUnlock) {
         << hidden.toStyledString();
     ASSERT_EQ(sqlite3_exec(db,"DROP TRIGGER block_p2mr_watch",nullptr,nullptr,nullptr),SQLITE_OK);
     wallet.lockWallet();
+    wallet.open("other");
+    wallet.open("owner");
+    ASSERT_TRUE(wallet.isWalletLocked());
     wallet.unlockWallet("owner-password",0);
     const auto repaired=call("wallet.listp2mraddresses");
     ASSERT_TRUE(ok(repaired)) << repaired.toStyledString();
