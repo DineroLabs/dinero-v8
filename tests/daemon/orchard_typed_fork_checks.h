@@ -14,6 +14,14 @@ struct OrchardActivationParentTestAccess {
     bool Complete(ChainstateService& service) {
         return request && service.CompleteActivationParentPlan(*request);
     }
+    static uint64_t ParentCacheHits(const ChainstateService& service) {
+        return service.activation_parent_cache_hits_.load();
+    }
+    static uint64_t ParentReplays(const ChainstateService& service) {
+        return service.activation_parent_replays_.load();
+    }
+    static bool HasParentCache(ChainstateService& service) {return service.HasActivationParentCache();}
+    static void ResetParentCache(ChainstateService& service) {service.ResetActivationParentCache();}
     uint256 BestHash() const { return std::get<0>(request->snapshot.best); }
     void Apply(ChainstateService& service) {
         std::unique_ptr<ChainstateService::ActivationParentPlan> unused;
@@ -78,6 +86,10 @@ TEST(OrchardTypedFork, RetainedSuccessorsShareSelectedBoundaryProofBeforeFullBra
     // and height for every old block alone exceeds this bound. The detached
     // canonical audit and all final live/durable checks remain required.
     EXPECT_LT(gets,3*f.f.blocks.size());
+    // The first boundary is committed alone so a queued descendant cannot
+    // change its selected-parent preparation. Its normal extension follows.
+    EXPECT_EQ(f.f.service->GetActiveTip(),a102);
+    f.f.service->ActivateBestChain();
     EXPECT_EQ(f.f.service->GetActiveTip(),a103);
     EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*f.f.service));
     const auto first_stored=ReadRuntimeBlockUnderLock(f.f.db,f.files.get(),a102->hash,102);
@@ -727,6 +739,88 @@ TEST(OrchardBranchReplay, PostActivationForkReplaysTheCompletePrefix) {
     EXPECT_EQ(observer->progress[plans].disconnected,1u);EXPECT_EQ(observer->progress[plans].connected,2u);
     EXPECT_EQ(*f.f.db.getOrchardState(),*state);
     EXPECT_EQ(*f.f.db.getOrchardCommitmentSets(*state),*sets);
+    EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*f.f.service));
+}
+TEST(OrchardBranchReplay, RepeatedPostActivationForkReusesCompletedParentProof) {
+    CanonicalPoolFixture f;auto observer=std::make_shared<TypedForkNotices>();
+    f.f.service->setRuntimeBlockNotifications(observer);ASSERT_NO_FATAL_FAILURE(BranchReplayHistory(f));
+    const auto first=f.Build();ASSERT_TRUE(first);ASSERT_TRUE(f.Submit(first->WireBytes()).connected);
+    auto* common=f.f.service->GetActiveTip();const auto parent_tx=first->Transactions()[1];
+    const MempoolTransaction spend(SelectionSpend(f.f,OutPoint(parent_tx.GetTxid(),0),parent_tx.OutputCoin(0,102),100000));
+    ASSERT_TRUE(f.f.ingress->SubmitBody(spend,TxOrigin::INTERNAL).accepted());
+    BlockAssembler assembler(&f.f.db);WireOrchardAssembler(assembler,f.f);
+    const auto second=assembler.CreateOrchardBlock(OrchardMiningPayout);ASSERT_TRUE(second);
+    ASSERT_TRUE(f.Submit(second->WireBytes()).connected);auto* a103=f.f.service->GetActiveTip();
+    const auto third=assembler.CreateOrchardBlock(OrchardMiningPayout);ASSERT_TRUE(third);
+    ASSERT_TRUE(f.Submit(third->WireBytes()).connected);auto* a104=f.f.service->GetActiveTip();
+    const auto state=f.f.db.getOrchardState();ASSERT_TRUE(state.ok());
+    const auto sets=f.f.db.getOrchardCommitmentSets(*state);ASSERT_TRUE(sets.ok());
+    std::string error;ASSERT_TRUE(f.f.service->InvalidateBlock(a103->hash,error))<<error;
+    ASSERT_EQ(f.f.service->GetActiveTip(),common);
+    const auto [header,bytes]=ForkSibling(*second);ASSERT_TRUE(f.Submit(bytes).connected);
+    auto* b103=f.f.service->GetActiveTip();ASSERT_EQ(b103->hash,header.GetHash());
+    ASSERT_TRUE(f.f.service->ReconsiderBlock(a103->hash,error))<<error;
+    ASSERT_TRUE(f.Submit(third->WireBytes()).retained());ASSERT_EQ(f.f.service->GetActiveTip(),b103);
+    // Each preparation of this fork needs the activation parent proof more
+    // than once (outgoing and incoming owners). Across both preparations the
+    // parent is replayed from genesis at most once; every later need adopts it.
+    // Start cold, as after a restart: the first preparation replays once,
+    // and its other need for the same parent adopts that result.
+    using Access=OrchardActivationParentTestAccess;Access::ResetParentCache(*f.f.service);
+    const auto replays=Access::ParentReplays(*f.f.service),hits=Access::ParentCacheHits(*f.f.service);
+    auto discarded=ShieldedStateStartupTestAccess::CaptureActivationPlan(*f.f.service);
+    ASSERT_TRUE(ShieldedStateStartupTestAccess::CompleteActivationPlan(*f.f.service,discarded));
+    const auto first_replays=Access::ParentReplays(*f.f.service)-replays;
+    const auto first_hits=Access::ParentCacheHits(*f.f.service)-hits;
+    EXPECT_EQ(first_replays,1u);EXPECT_GT(first_hits,0u);
+    auto plan=ShieldedStateStartupTestAccess::CaptureActivationPlan(*f.f.service);
+    ASSERT_TRUE(ShieldedStateStartupTestAccess::CompleteActivationPlan(*f.f.service,plan));
+    EXPECT_EQ(Access::ParentReplays(*f.f.service)-replays,first_replays);
+    EXPECT_GT(Access::ParentCacheHits(*f.f.service)-hits,first_hits);
+    std::cout<<"[catalog-reuse] cold first preparation replays="<<first_replays<<" hits="<<first_hits
+        <<"; second preparation replays=0 hits="<<(Access::ParentCacheHits(*f.f.service)-hits-first_hits)<<"\n";
+    EXPECT_EQ(f.f.service->GetActiveTip(),b103);
+    // The reused proof commits exactly the same reorg result.
+    const auto plans=observer->plan_count;
+    ShieldedStateStartupTestAccess::ApplyActivationPlan(*f.f.service,plan);
+    ASSERT_EQ(f.f.service->GetActiveTip(),a104);
+    ASSERT_EQ(observer->plan_count,plans+1);EXPECT_TRUE(observer->progress[plans].complete);
+    EXPECT_EQ(*f.f.db.getOrchardState(),*state);
+    EXPECT_EQ(*f.f.db.getOrchardCommitmentSets(*state),*sets);
+    EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*f.f.service));
+}
+TEST(OrchardBranchReplay, FailedPreparationFromReusedParentEvictsTheEntry) {
+    CanonicalPoolFixture f;auto observer=std::make_shared<TypedForkNotices>();
+    f.f.service->setRuntimeBlockNotifications(observer);ASSERT_NO_FATAL_FAILURE(BranchReplayHistory(f));
+    const auto first=f.Build();ASSERT_TRUE(first);ASSERT_TRUE(f.Submit(first->WireBytes()).connected);
+    auto* a102=f.f.service->GetActiveTip();const auto parent_tx=first->Transactions()[1];
+    const MempoolTransaction spend(SelectionSpend(f.f,OutPoint(parent_tx.GetTxid(),0),parent_tx.OutputCoin(0,102),100000));
+    ASSERT_TRUE(f.f.ingress->SubmitBody(spend,TxOrigin::INTERNAL).accepted());
+    BlockAssembler assembler(&f.f.db);WireOrchardAssembler(assembler,f.f);
+    const auto second=assembler.CreateOrchardBlock(OrchardMiningPayout);ASSERT_TRUE(second);
+    const auto bad=BranchReplayWrongProof(*second);
+    std::string error;ASSERT_TRUE(f.f.service->InvalidateBlock(a102->hash,error))<<error;
+    const auto [header,bytes]=ForkSibling(*first);ASSERT_TRUE(f.Submit(bytes).connected);
+    auto* selected=f.f.service->GetActiveTip();ASSERT_EQ(selected->hash,header.GetHash());
+    ASSERT_TRUE(f.f.service->ReconsiderBlock(a102->hash,error))<<error;
+    ASSERT_TRUE(f.Submit(bad).retained());ASSERT_EQ(f.f.service->GetActiveTip(),selected);
+    using Access=OrchardActivationParentTestAccess;Access::ResetParentCache(*f.f.service);
+    // A cold attempt replays the parent once and retains it (its first, valid
+    // need); its later need adopts that proof, meets the invalid branch and
+    // fails, which drops the entry instead of keeping it for every retry.
+    auto replays=Access::ParentReplays(*f.f.service);auto hits=Access::ParentCacheHits(*f.f.service);
+    auto cold=ShieldedStateStartupTestAccess::CaptureActivationPlan(*f.f.service);
+    EXPECT_FALSE(ShieldedStateStartupTestAccess::CompleteActivationPlan(*f.f.service,cold));
+    EXPECT_EQ(Access::ParentReplays(*f.f.service),replays+1);
+    EXPECT_GT(Access::ParentCacheHits(*f.f.service),hits);
+    EXPECT_FALSE(Access::HasParentCache(*f.f.service));
+    // So the next attempt replays from genesis again, as before reuse existed.
+    replays=Access::ParentReplays(*f.f.service);
+    auto retry=ShieldedStateStartupTestAccess::CaptureActivationPlan(*f.f.service);
+    EXPECT_FALSE(ShieldedStateStartupTestAccess::CompleteActivationPlan(*f.f.service,retry));
+    EXPECT_EQ(Access::ParentReplays(*f.f.service),replays+1);
+    EXPECT_FALSE(Access::HasParentCache(*f.f.service));
+    EXPECT_EQ(f.f.service->GetActiveTip(),selected);
     EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*f.f.service));
 }
 TEST(OrchardBranchReplay, ChangedProofWireAfterPreparationRefusesBeforeRollback) {

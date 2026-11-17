@@ -18,6 +18,18 @@
 #include <cstring>
 
 namespace dinero {
+// The initial catalog at one completed, independently proved activation parent
+// and its exact captured history. It is a pure function of that parent, so
+// branches from the same parent share it read-only: the spool is frozen and
+// every branch writes only its own private overlay. It is never sourced from
+// any selected database, and binds the exact parent/history owners it was built
+// from, which the holder must keep alive.
+struct OrchardInitialCatalog final {
+    const OrchardParentReplay* parent=nullptr;
+    const OrchardHistoryCapture* history=nullptr;
+    std::unique_ptr<wallet::detail::RuntimeReplaySpool> spool;
+    storage::catalog::State state;
+};
 // Private, single-threaded replay from an independently proved historical
 // parent, or (only through the sealed snapshot store) an authenticated v6 base.
 // The latter validates the suffix only and never claims pre-base execution.
@@ -62,8 +74,12 @@ public:
     }
     // The service owns this immutable capture for longer than the branch. No
     // historical header vector or all-history transaction set is reconstructed.
+    // A non-null initial catalog is adopted only when it was built from these
+    // exact parent and history owners at this parent; otherwise it is ignored
+    // and the catalog is rebuilt. Adoption writes nothing to the shared base.
     OrchardBranchReplay(const OrchardParentReplay& parent,
-        const OrchardHistoryCapture& history,Target target)
+        const OrchardHistoryCapture& history,Target target,
+        std::shared_ptr<const OrchardInitialCatalog> initial={})
         : parent_(&parent),target_(target),profile_(consensus::ValidatedOrchardBlock::CaptureProfile()),
           coins_(parent.ProvenState().ProvenUtxos()),forest_(*parent.ProvenState().Forest()),
           history_(&history),height_(parent.ValidatedTarget().height),work_(parent.ValidatedTarget().chainwork) {
@@ -74,8 +90,12 @@ public:
             "Branch replay parent mismatch");
         header_=captured.header;
         captured_headers_=std::make_unique<OrchardReplayHeaderView>(history);
-        InitializeCatalog([&](const auto& visitor){history.ForEachTransaction(visitor);});
+        if(!AdoptInitialCatalog(initial))
+            InitializeCatalog([&](const auto& visitor){history.ForEachTransaction(visitor);});
     }
+    // The immutable initial catalog this branch built or adopted, for reuse by
+    // later branches from the same parent. Null when the catalog is inactive.
+    std::shared_ptr<const OrchardInitialCatalog> InitialCatalog() const {return initial_catalog_;}
     OrchardBranchReplay(const OrchardBranchReplay&)=delete;
     OrchardBranchReplay& operator=(const OrchardBranchReplay&)=delete;
     void Append(const OrchardBlockCandidate& block,uint32_t height,const arith_uint256& work,uint64_t now) {
@@ -250,54 +270,117 @@ private:
     static std::array<uint8_t,32> CatalogKey(const uint256& id) {
         std::array<uint8_t,32> key;std::copy(id.begin(),id.end(),key.begin());return key;
     }
+    // Reads see this branch's private nodes, then the shared frozen initial
+    // catalog. Writes go only to the private spool; a node already present in
+    // either layer must match byte-for-byte.
+    std::optional<wallet::detail::RuntimeReplaySpool::Bytes> CatalogNode(const std::array<uint8_t,32>& key) const {
+        auto value=catalog_spool_->Get(key);
+        if(!value && initial_catalog_)value=initial_catalog_->spool->Get(key);
+        return value;
+    }
     storage::catalog::Tree::Read CatalogRead() const {
         return [this](const uint256& id) {
-            const auto value=catalog_spool_->Get(CatalogKey(id));
+            const auto value=CatalogNode(CatalogKey(id));
             Require(value.has_value(),"Branch replay missing catalog node");
             return std::string(value->begin(),value->end());
         };
     }
     storage::catalog::Tree::Write CatalogWrite() {
         return [this](const uint256& id,const std::string& bytes) {
-            const auto key=CatalogKey(id);const auto prior=catalog_spool_->Get(key);
+            const auto key=CatalogKey(id);const auto prior=CatalogNode(key);
             if(prior)Require(std::string(prior->begin(),prior->end())==bytes,"Branch replay catalog collision");
             else catalog_spool_->Insert(key,{reinterpret_cast<const uint8_t*>(bytes.data()),bytes.size()});
         };
     }
-    template<class Enumerate> void InitializeCatalog(const Enumerate& enumerate) {
+    // Binds only a base built from these exact parent/history owners at this
+    // parent and profile. A mismatch is ignored, never trusted.
+    bool AdoptInitialCatalog(const std::shared_ptr<const OrchardInitialCatalog>& initial) {
+        if(!initial || Params().orchard_catalog_commitment_activation_height==UINT32_MAX)return false;
+        const auto& s=initial->state;const auto& r=Retirement();
+        if(initial->parent!=parent_ || !history_ || initial->history!=history_ || !initial->spool ||
+            s.network!=r.network_code || s.genesis!=r.genesis || s.branch!=r.branch_id ||
+            s.activation!=r.activation_height ||
+            s.leaf_activation!=consensus::GetUtreexoMaturityLeafActivationHeight() ||
+            s.height!=height_ || s.block!=header_.GetHash() || s.parent!=header_.prev_block_hash ||
+            s.work!=work_ || s.transaction_count!=history_->TransactionCount() ||
+            s.stump!=consensus::UtreexoStump::fromForest(forest_).serialize())return false;
+        s.Validate();
+        catalog_spool_=std::make_unique<wallet::detail::RuntimeReplaySpool>(std::filesystem::path{},true);
+        initial_catalog_=initial;catalog_=s;return true;
+    }
+    // Items per catalog-spool transaction while building the initial catalog.
+    // Insertion order, nodes and the resulting State are identical to one
+    // transaction per item; only the commit count changes.
+    static constexpr size_t CatalogInitializationChunk=4096;
+    template<class Enumerate> void InitializeCatalog(const Enumerate& enumerate,
+        size_t chunk=CatalogInitializationChunk) {
         if(Params().orchard_catalog_commitment_activation_height==UINT32_MAX)return;
         namespace c=storage::catalog;
-        catalog_spool_=std::make_unique<wallet::detail::RuntimeReplaySpool>();
+        Require(chunk>0,"Branch replay catalog chunk");initial_catalog_.reset();
+        // Disposable, MAC-checked private spool: reuse prepared statements and
+        // give the pager its maximum bounded cache for the bulk build.
+        catalog_spool_=std::make_unique<wallet::detail::RuntimeReplaySpool>(std::filesystem::path{},true,
+            wallet::detail::RuntimeReplaySpool::MaximumPagerCacheKiB);
         c::State s;const auto& r=Retirement();
         s.network=r.network_code;s.genesis=r.genesis;s.branch=r.branch_id;s.activation=r.activation_height;
         s.leaf_activation=consensus::GetUtreexoMaturityLeafActivationHeight();s.height=height_;
         s.block=header_.GetHash();s.parent=header_.prev_block_hash;s.work=work_;
         s.stump=consensus::UtreexoStump::fromForest(forest_).serialize();
         c::Tree transactions(c::Kind::Transactions,CatalogRead(),CatalogWrite());
-        // Enumeration performs external historical reads, so each callback
-        // opens/closes only its own node batch; no spool locks are nested.
+        // Enumeration performs external historical reads, so no batch is held
+        // across callbacks: ids are buffered, and a full chunk is written and
+        // committed entirely within one callback. No spool locks are nested.
+        // State advances only after a chunk commits.
+        std::vector<TxId> pending;pending.reserve(std::min(chunk,size_t(65536)));
+        const auto flush=[&] {
+            if(pending.empty())return;
+            auto root=s.transactions;auto count=s.transaction_count;
+            wallet::detail::RuntimeReplaySpool::Batch batch(*catalog_spool_);++catalog_batches_;
+            for(const auto& id:pending) {
+                root=transactions.Insert(root,c::TransactionKey(id),{});
+                Require(count!=UINT64_MAX,"Branch replay catalog count overflow");++count;
+            }
+            batch.Commit();s.transactions=root;s.transaction_count=count;pending.clear();
+        };
         enumerate([&](const TxId& id) {
-            wallet::detail::RuntimeReplaySpool::Batch batch(*catalog_spool_);
-            s.transactions=transactions.Insert(s.transactions,c::TransactionKey(id),{});
-            Require(s.transaction_count!=UINT64_MAX,"Branch replay catalog count overflow");
-            ++s.transaction_count;batch.Commit();return true;
+            pending.push_back(id);if(pending.size()==chunk)flush();return true;
         });
+        flush();
         c::Tree legacy(c::Kind::LegacyCoins,CatalogRead(),CatalogWrite());
         c::Tree special(c::Kind::NonTransparentCoins,CatalogRead(),CatalogWrite());
-        for(const auto& [point,coin]:coins_) {
-            wallet::detail::RuntimeReplaySpool::Batch batch(*catalog_spool_);
-            const auto bytes=c::OutpointBytes(point);
-            if(coin.height<s.leaf_activation) {
-                auto value=bytes;c::Number(value,coin.height,4);value.push_back(coin.isCoinbase?1:0);
-                s.legacy=legacy.Insert(s.legacy,c::LegacyKey(bytes),value);++s.legacy_count;
-            }
-            if(coin.is_confidential||!coin.commitment.empty()) {
-                s.nontransparent=special.Insert(s.nontransparent,c::NonTransparentKey(bytes),bytes);++s.nontransparent_count;
+        // Coins are in memory: one batch per chunk, in the same iteration order.
+        for(auto it=coins_.begin();it!=coins_.end();) {
+            auto legacy_root=s.legacy,special_root=s.nontransparent;
+            auto legacy_count=s.legacy_count,special_count=s.nontransparent_count;
+            wallet::detail::RuntimeReplaySpool::Batch batch(*catalog_spool_);++catalog_batches_;
+            for(size_t n=0;n<chunk&&it!=coins_.end();++n,++it) {
+                const auto& [point,coin]=*it;
+                const auto bytes=c::OutpointBytes(point);
+                if(coin.height<s.leaf_activation) {
+                    auto value=bytes;c::Number(value,coin.height,4);value.push_back(coin.isCoinbase?1:0);
+                    legacy_root=legacy.Insert(legacy_root,c::LegacyKey(bytes),value);++legacy_count;
+                }
+                if(coin.is_confidential||!coin.commitment.empty()) {
+                    special_root=special.Insert(special_root,c::NonTransparentKey(bytes),bytes);++special_count;
+                }
             }
             batch.Commit();
+            s.legacy=legacy_root;s.legacy_count=legacy_count;
+            s.nontransparent=special_root;s.nontransparent_count=special_count;
         }
-        s.Validate();catalog_=std::move(s);
+        s.Validate();
+        // Seal the completed build as the shared immutable base (vector-history
+        // builds have no capture owner and are never offered for reuse). This
+        // branch's appends go to a fresh private overlay.
+        catalog_spool_->Freeze();
+        auto initial=std::make_shared<OrchardInitialCatalog>();
+        initial->parent=parent_;initial->history=history_;initial->spool=std::move(catalog_spool_);initial->state=s;
+        initial_catalog_=std::move(initial);
+        catalog_spool_=std::make_unique<wallet::detail::RuntimeReplaySpool>(std::filesystem::path{},true);
+        catalog_=std::move(s);
     }
+    // Test-only observation of initial-catalog spool transactions.
+    size_t catalog_batches_=0;
     friend struct OrchardBranchCaptureTestAccess;
     friend struct OrchardBranchAncestryTestAccess;
     bool ContainsTransaction(const TxId& id) const {
@@ -373,6 +456,7 @@ private:
     std::map<uint256,uint64_t,RawLess> anchors_;
     std::optional<storage::OrchardStoredState> state_;
     std::unique_ptr<wallet::detail::RuntimeReplaySpool> catalog_spool_;
+    std::shared_ptr<const OrchardInitialCatalog> initial_catalog_;
     std::optional<storage::catalog::State> catalog_;
     BlockHeader header_;uint32_t height_;arith_uint256 work_;bool poisoned_=false,finished_=false;
 };

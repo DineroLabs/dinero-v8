@@ -5243,6 +5243,29 @@ add_test(NAME ReindexWireInventory COMMAND test_reindex_wire_inventory
 set_tests_properties(ReindexWireInventory PROPERTIES
   LABELS "reindex;unit;mandatory" TIMEOUT 30)
 
+add_executable(test_reindex_historical_pow
+  tests/consensus/test_reindex_historical_pow.cpp
+  src/consensus/reindexer.cpp
+  src/consensus/state_commitment.cpp
+  src/consensus/genesis_canonical.cpp
+  src/consensus/undo.cpp
+  src/primitives/transaction_serializer.cpp
+  src/common/logger.cpp
+)
+target_link_libraries(test_reindex_historical_pow PRIVATE
+  dinero_chainstate dinero_consensus dinero_shielded dinero_crypto
+  jsoncpp_static RocksDB::rocksdb OpenSSL::Crypto OpenSSL::SSL pthread sqlite3)
+link_zstd_if_needed(test_reindex_historical_pow)
+target_include_directories(test_reindex_historical_pow PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+if(APPLE)
+  target_link_libraries(test_reindex_historical_pow PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME ReindexHistoricalPoW COMMAND test_reindex_historical_pow)
+set_tests_properties(ReindexHistoricalPoW PROPERTIES
+  LABELS "reindex;unit;mandatory" TIMEOUT 30)
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_reindex_deep_chain.cpp)
   add_executable(test_reindex_deep_chain
     tests/consensus/test_reindex_deep_chain.cpp

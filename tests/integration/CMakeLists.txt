@@ -307,6 +307,18 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_reindex_chainstate_utreexo_equivalenc
     message(STATUS "  ✓ ReindexChainstateUtreexoEquivalence registered")
 endif()
 
+# A foreground maintenance reindex must run once and fail closed even when
+# the datadir is new and its block archive is empty.
+add_test(
+    NAME ReindexSingleInvocation
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_reindex_single_invocation.sh
+)
+set_tests_properties(ReindexSingleInvocation PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;reindex;startup;maintenance"
+    TIMEOUT 60
+)
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_reindex_promotion_restart_equivalence.sh)
     add_test(
         NAME ReindexPromotionRestartEquivalence
@@ -2285,6 +2297,7 @@ if(WIN32 AND NOT MINGW AND NOT CYGWIN)
         ConsensusIntrospectionRpc MinorityTipHeaderRelay GetChainTipsValidFork
         D3FullUserTxMissingUndo UndoMetadataRestamp
         ReindexChainstateUtreexoEquivalence ReindexPromotionRestartEquivalence
+        ReindexSingleInvocation
         InvalidityRestartSticky InvalidityCrashRestartEquivalence
         ReconsiderCrashRestartEquivalence InvalidityImportEquivalence
         TipPersistRestartEquivalence RecoveryMarkerRestartEquivalence

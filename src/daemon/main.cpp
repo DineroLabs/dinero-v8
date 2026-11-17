@@ -1310,8 +1310,11 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
     std::cout << "[DaemonApp] Starting Dinero daemon with service architecture...\n";
     std::cout << "\n";
 
-    // Create and initialize the daemon application
-    {
+    // Create and initialize the daemon application. Maintenance reindexing
+    // builds a fresh temporary ChainDB itself. Running it in the fresh-store
+    // bootstrap would replay the full archive a second time, and a failed
+    // first replay would be silently retried by the real application below.
+    if (!do_reindex && !do_reindex_chainstate) {
         // A brand-new datadir: one short run writes the genesis records the
         // storage upgrade needs, so the real start below upgrades it at once
         // instead of reaching Orchard activation on the legacy layout.

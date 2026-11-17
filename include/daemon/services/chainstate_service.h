@@ -1669,6 +1669,15 @@ private:
     struct BoundaryParentCache;
     std::mutex boundary_parent_cache_mutex_;
     std::unique_ptr<BoundaryParentCache> boundary_parent_cache_;
+    // Completed activation-parent proof material reused by post-activation
+    // branch preparations (reorgs). Held only briefly; never across a replay.
+    struct ActivationParentCache;
+    std::mutex activation_parent_cache_mutex_;
+    std::unique_ptr<ActivationParentCache> activation_parent_cache_;
+    std::atomic<uint64_t> activation_parent_cache_hits_{0};
+    std::atomic<uint64_t> activation_parent_replays_{0};
+    bool HasActivationParentCache();
+    void ResetActivationParentCache();
     struct PreparedOrchardExtension;
     struct PreparedOrchardInverse;
     std::unique_ptr<PreparedOrchardInverse> CaptureOrchardInverseUnderLock();
