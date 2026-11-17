@@ -2853,6 +2853,133 @@ TEST(WalletV3NativePool, ExhaustionRefusesHonestly) {
     ExpectNativeReceiptsCurrent(f,103);
 }
 
+// #939 phase 2, production shape: a wallet created on a v3 node carries a
+// sealed fresh birth, so its extension's coverage replay starts at the
+// activation parent even though the wallet already holds delivered coins. A
+// missing pre-activation body proves no extension replays from genesis (it
+// would defer and leave the wallet Pending).
+TEST(WalletV3NativePool, FreshBirthWalletExtendsWithoutGenesisReplay) {
+    CanonicalRecoveryFixture f(false,false);
+    (void)f.MineToWallet();
+    const auto activation=Params().orchard_activation_height;
+    ASSERT_GE(f.f.service->GetActiveTip()->height,activation);
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        use->Wallet().createFromGeneratedBip39("fresh-pool",WalletManager::GenerateBip39Identity(12,""),"",activation);
+        f.receive_address=use->Wallet().getNewAddress();
+        ASSERT_FALSE(f.receive_address.empty());
+    }
+    const auto paid=f.MineToWallet();
+    const int pre=NativePreEnrollmentReceive(f);
+    ASSERT_EQ(f.f.db.deleteBlock(f.f.token,f.f.blocks[50].GetHash()),Status::Ok);
+    NativeV3IndexScope v3(f,"v3-native-pool-fresh-index");
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ASSERT_EQ(NativeState(f),WalletManager::NativeV3State::Complete);
+    ExecutionContext request;request.daemon=&f.context;request.walletName="fresh-pool";
+    (void)NativeIssueDownTo(request,WalletManager::kNativeV3ReceivePool-pre,4);
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ASSERT_EQ(NativeState(f),WalletManager::NativeV3State::Complete) << "the extension replayed from genesis";
+    EXPECT_EQ(NativeReceiveRows(WalletService::AcquireWalletUse(f.wallet)->Wallet()),2*WalletManager::kNativeV3ReceivePool);
+    ExpectNativeReceiptsCurrent(f,103);
+    const auto balance=rpc_context_wallet_getbalance(request,din::obj());
+    ASSERT_FALSE(balance.isMember("error")) << balance.toStyledString();
+    EXPECT_NEAR(balance["total"].asDouble(),double(paid)/1e8,1e-8);
+    std::string grown;
+    for(int i=0;i<5;++i) {
+        const auto issued=NativeIssue(request);
+        ASSERT_FALSE(issued.isMember("error")) << issued.toStyledString();
+        grown=issued["address"].asString();
+    }
+    EXPECT_EQ(grown,NativeChainAddress(WalletService::AcquireWalletUse(f.wallet)->Wallet(),0,WalletManager::kNativeV3ReceivePool));
+    f.receive_address=grown;
+    const auto paid2=f.MineToWallet();
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ExpectNativeReceiptsCurrent(f,104);
+    const auto after=rpc_context_wallet_getbalance(request,din::obj());
+    ASSERT_FALSE(after.isMember("error")) << after.toStyledString();
+    EXPECT_NEAR(after["total"].asDouble(),double(paid+paid2)/1e8,1e-8);
+}
+
+// #939 phase 2: a process restart in the middle of an extension (after its
+// commit, before coverage). The encrypted wallet reopens locked: reads say
+// "unlock required", the older sealed generation still issues, the worker
+// does not replay. After unlock the extension resumes to Complete.
+TEST(WalletV3NativePool, ExtensionInterruptedByRestartResumesAfterUnlock) {
+    CanonicalRecoveryFixture f(true,false);
+    (void)f.MineToWallet();
+    const int pre=NativePreEnrollmentReceive(f);
+    NativeV3IndexScope v3(f,"v3-native-pool-restart-index");
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ExecutionContext request;request.daemon=&f.context;request.walletName="canonical-recovery";
+    (void)NativeIssueDownTo(request,WalletManager::kNativeV3ReceivePool-pre,4);
+    ASSERT_TRUE(NativeBeginExtension(f));
+    RestartNativeWallet(f,v3);
+    ASSERT_TRUE(WalletService::AcquireWalletUse(f.wallet)->Wallet().isLocked());
+    EXPECT_EQ(NativeState(f),WalletManager::NativeV3State::Pending);
+    const auto balance=rpc_context_wallet_getbalance(request,din::obj());
+    EXPECT_EQ(balance["error_code"].asString(),"wallet_unlock_required") << balance.toStyledString();
+    const auto during=NativeIssue(request);
+    ASSERT_FALSE(during.isMember("error")) << during.toStyledString();
+    EXPECT_EQ(during["address"].asString(),NativeChainAddress(WalletService::AcquireWalletUse(f.wallet)->Wallet(),0,
+        WalletManager::kNativeV3ReceivePool-4));
+    {
+        RuntimeDeliveryWorker worker(f.f.service,f.wallet,
+            RuntimeDeliveryWorker::Limits{1,std::chrono::milliseconds(20)});
+        worker.Start();
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(30);
+        while(worker.Snapshot().slices<3) {
+            ASSERT_LT(std::chrono::steady_clock::now(),deadline);
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        const auto report=worker.Snapshot();
+        worker.Stop();
+        EXPECT_EQ(report.wallet,RuntimeDeliveryWorker::WalletOutcome::Deferred);
+        EXPECT_EQ(report.wallet_recovery_attempts,0u) << "a locked extending wallet must not replay";
+    }
+    EXPECT_EQ(NativeState(f),WalletManager::NativeV3State::Pending);
+    WalletService::AcquireWalletUse(f.wallet)->Wallet().unlockWallet("canonical-fixture-pass",0);
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    EXPECT_EQ(NativeState(f),WalletManager::NativeV3State::Complete);
+    ExpectNativeReceiptsCurrent(f,102);
+    EXPECT_EQ(NativeReceiveRows(WalletService::AcquireWalletUse(f.wallet)->Wallet()),2*WalletManager::kNativeV3ReceivePool);
+    f.wallet->Stop();
+}
+
+// #939 phase 2: issuance in Complete, and an extension's claim that older
+// generations stay issuable, both rest on a present ordinary receipt. Without
+// it, Complete issuance refuses and no extension begins.
+TEST(WalletV3NativePool, IssuanceAndExtensionRequireTheSealedReceipt) {
+    CanonicalRecoveryFixture f(false,false);
+    (void)f.MineToWallet();
+    const int pre=NativePreEnrollmentReceive(f);
+    NativeV3IndexScope v3(f,"v3-native-pool-receipt-index");
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ExecutionContext request;request.daemon=&f.context;request.walletName="canonical-recovery";
+    (void)NativeIssueDownTo(request,WalletManager::kNativeV3ReceivePool-pre,4);
+    const int issued_before=NativeTestCount(WalletService::AcquireWalletUse(f.wallet)->Wallet(),
+        "SELECT count(*) FROM native_v3_address_pool WHERE issued=1");
+    ASSERT_EQ(sqlite3_exec(WalletService::AcquireWalletUse(f.wallet)->Wallet().getCurrentDatabase(),
+        "UPDATE wallet_meta SET runtime_ordinary_receipt=NULL,runtime_ordinary_invalid=1 WHERE id=1",
+        nullptr,nullptr,nullptr),SQLITE_OK);
+    const auto refused=NativeIssue(request);
+    EXPECT_EQ(refused["error_code"].asString(),"wallet_native_address_unavailable_on_v3") << refused.toStyledString();
+    EXPECT_FALSE(refused.isMember("address"));
+    EXPECT_THROW((void)NativeBeginExtension(f),std::exception);
+    EXPECT_EQ(NativeState(f),WalletManager::NativeV3State::Complete);
+    EXPECT_EQ(NativeReceiveRows(WalletService::AcquireWalletUse(f.wallet)->Wallet()),WalletManager::kNativeV3ReceivePool);
+    EXPECT_EQ(NativeTestCount(WalletService::AcquireWalletUse(f.wallet)->Wallet(),
+        "SELECT count(*) FROM native_v3_address_pool WHERE issued=1"),issued_before);
+}
+
 // #939 phase 2: a wallet enrolled before the pool table existed (phase 1)
 // showed every pooled receive row in listaddresses. It issues nothing until
 // its first extension adopts all of them as issued and derives fresh ones.
