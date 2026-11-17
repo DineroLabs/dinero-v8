@@ -45,7 +45,7 @@
     },
     "src/daemon/services/chainstate_service.cpp": {
       "g_block_index": 2,
-      "g_block_index_mutex": 23
+      "g_block_index_mutex": 24
     },
     "src/rpc/methods_vault.cpp": {
       "g_block_index_mutex": 1
