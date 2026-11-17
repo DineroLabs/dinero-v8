@@ -2980,6 +2980,92 @@ TEST(WalletV3NativePool, IssuanceAndExtensionRequireTheSealedReceipt) {
         "SELECT count(*) FROM native_v3_address_pool WHERE issued=1"),issued_before);
 }
 
+// #939 phase 2: the extension may retire only the index receipt over exactly
+// the pre-extension domain. A receipt that names neither that domain nor the
+// current one (here: its recorded script digest is altered) is refused by the
+// retirement's own check, before any index or wallet commit; nothing is
+// retired or sealed and the wallet stays fail-closed native Pending.
+TEST(WalletV3NativePool, ExtensionRefusesIndexReceiptOverUnknownDomain) {
+    CanonicalRecoveryFixture f(false,false);
+    (void)f.MineToWallet();
+    const int pre=NativePreEnrollmentReceive(f);
+    NativeV3IndexScope v3(f,"v3-native-pool-unknown-domain-index");
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ExecutionContext request;request.daemon=&f.context;request.walletName="canonical-recovery";
+    (void)NativeIssueDownTo(request,WalletManager::kNativeV3ReceivePool-pre,4);
+    std::string identity;
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        identity=use->Wallet().AcquireDatabaseLease()->EnsureDeliveryIdentity();
+    }
+    ASSERT_TRUE(NativeBeginExtension(f));
+    // Alter the first byte of the recorded script digest, which follows the
+    // receipt's magic, identity length and identity.
+    const auto read_receipt=[&](int& invalidated) {
+        sqlite3* db=nullptr;
+        OrchardAdmissionFixture::Require(sqlite3_open(v3.path.string().c_str(),&db)==SQLITE_OK);
+        sqlite3_busy_timeout(db,10000);
+        sqlite3_stmt* q=nullptr;
+        OrchardAdmissionFixture::Require(sqlite3_prepare_v2(db,
+            "SELECT receipt,invalidated FROM wallet_index_receipts_v3",-1,&q,nullptr)==SQLITE_OK);
+        OrchardAdmissionFixture::Require(sqlite3_step(q)==SQLITE_ROW);
+        std::string bytes;
+        if(sqlite3_column_type(q,0)==SQLITE_BLOB)
+            bytes.assign(static_cast<const char*>(sqlite3_column_blob(q,0)),sqlite3_column_bytes(q,0));
+        invalidated=sqlite3_column_int(q,1);
+        OrchardAdmissionFixture::Require(sqlite3_step(q)==SQLITE_DONE);
+        sqlite3_finalize(q);sqlite3_close(db);return bytes;
+    };
+    int invalidated=-1;
+    auto tampered=read_receipt(invalidated);
+    ASSERT_EQ(invalidated,0);
+    const auto at=tampered.find(identity);
+    ASSERT_EQ(at,8u) << "receipt framing: magic(6) + length(2) + identity";
+    tampered[at+identity.size()]^=0x01;
+    {
+        sqlite3* db=nullptr;
+        ASSERT_EQ(sqlite3_open(v3.path.string().c_str(),&db),SQLITE_OK);
+        sqlite3_busy_timeout(db,10000);
+        sqlite3_stmt* q=nullptr;
+        ASSERT_EQ(sqlite3_prepare_v2(db,"UPDATE wallet_index_receipts_v3 SET receipt=?",-1,&q,nullptr),SQLITE_OK);
+        sqlite3_bind_blob(q,1,tampered.data(),int(tampered.size()),SQLITE_TRANSIENT);
+        ASSERT_EQ(sqlite3_step(q),SQLITE_DONE);
+        ASSERT_EQ(sqlite3_changes(db),1);
+        sqlite3_finalize(q);sqlite3_close(db);
+    }
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+        const auto session=use->Wallet().AcquireDatabaseLease()->Session();
+        const auto coverage=f.f.service->getRuntimeWalletCoverageV3(use->Wallet(),session,index->Index());
+        ASSERT_TRUE(coverage.ok()) << static_cast<int>(coverage.status());
+        int commits=0;
+        std::string refused;
+        try {
+            RuntimeOrdinaryDelivery::ReconcileNativeTransparentCoverageV3(
+                use->Wallet(),index->Index(),**coverage,[&](const auto& commit) {
+                    auto selected=f.f.service->AcquireBlockIngressActivationLock();
+                    ++commits;commit();
+                });
+        } catch(const std::exception& e) { refused=e.what(); }
+        EXPECT_NE(refused.find("index receipt names an unknown domain"),std::string::npos)
+            << "refused by: " << (refused.empty()?"(nothing: reconcile succeeded)":refused);
+        EXPECT_EQ(commits,0) << "no index or ordinary commit may run";
+    }
+    EXPECT_EQ(read_receipt(invalidated),tampered) << "the receipt must not be retired or resealed";
+    EXPECT_EQ(invalidated,0);
+    EXPECT_EQ(NativeState(f),WalletManager::NativeV3State::Pending);
+    EXPECT_FALSE(NativeOrdinarySealed(f));
+    const auto balance=rpc_context_wallet_getbalance(request,din::obj());
+    EXPECT_EQ(balance["error_code"].asString(),"wallet_balance_not_current") << balance.toStyledString();
+    EXPECT_FALSE(balance.isMember("total"));
+    EXPECT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),WalletService::CanonicalRecovery::Deferred);
+    EXPECT_EQ(NativeState(f),WalletManager::NativeV3State::Pending);
+    EXPECT_EQ(read_receipt(invalidated),tampered);
+}
+
 // #939 phase 2: a wallet enrolled before the pool table existed (phase 1)
 // showed every pooled receive row in listaddresses. It issues nothing until
 // its first extension adopts all of them as issued and derives fresh ones.
