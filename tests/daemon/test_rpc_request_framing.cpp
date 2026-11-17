@@ -32,6 +32,10 @@ struct HttpRpcRequestTestAccess {
         server.configure_client_socket(fd);
         server.handle_connection(fd, false);
     }
+    static bool CanReadWhileCreating(HttpRpcServer& server) {
+        std::shared_lock<std::shared_mutex> owner(server.wallet_creation_rpc_mutex_, std::try_to_lock);
+        return owner.owns_lock();
+    }
 };
 namespace dinero {
 struct ReopenRpcGateTestAccess {
@@ -136,6 +140,65 @@ void RequireRestarting(const Json::Value& response){
     EXPECT_EQ(response["error"]["message"].asString(),"Core restarting; retry request");
     EXPECT_TRUE(response["error"]["data"]["retryable"].asBool());
     EXPECT_EQ(response["error"]["data"]["reason"].asString(),"restarting");
+}
+TEST(RpcRequestFraming, ExportAliasWaitsForEncryptedCreationOwner) {
+    RpcRegistry registry;
+    HttpRpcServer server("127.0.0.1", 0);
+    server.set_rpc_registry(&registry);
+    std::promise<void> creation_entered;
+    std::promise<void> release_creation;
+    auto release = release_creation.get_future().share();
+    std::atomic<unsigned> exports{0};
+    ASSERT_TRUE(registry.registerHandler("wallet.createhd",
+        [&](const ExecutionContext&, const din::Json&) {
+            creation_entered.set_value();
+            release.wait(); // Model the temporary unlock through address issuance.
+            din::Json result;
+            result["created"] = true;
+            return result;
+        }));
+    ASSERT_TRUE(registry.registerHandler("wallet.exportseed",
+        [&](const ExecutionContext&, const din::Json&) {
+            ++exports;
+            din::Json result;
+            result["mnemonic"] = "secret";
+            return result;
+        }));
+    ASSERT_EQ(registry.handlerSource("exportseed"), "wallet.exportseed");
+
+    auto creation = std::async(std::launch::async, [&] {
+        return HttpRpcRequestTestAccess::Dispatch(server, "createhd");
+    });
+    const bool entered = creation_entered.get_future().wait_for(std::chrono::seconds(5)) ==
+        std::future_status::ready;
+    if (!entered) {
+        release_creation.set_value();
+        creation.wait();
+        FAIL() << "creation handler did not start";
+        return;
+    }
+    const bool creation_is_exclusive = !HttpRpcRequestTestAccess::CanReadWhileCreating(server);
+
+    std::promise<void> export_started;
+    auto exporter = std::async(std::launch::async, [&] {
+        export_started.set_value();
+        return HttpRpcRequestTestAccess::Dispatch(server, "exportseed");
+    });
+    const bool started = export_started.get_future().wait_for(std::chrono::seconds(5)) ==
+        std::future_status::ready;
+    const bool blocked = started &&
+        exporter.wait_for(std::chrono::milliseconds(500)) == std::future_status::timeout &&
+        exports.load() == 0;
+    release_creation.set_value();
+
+    const auto created = creation.get();
+    const auto exported = exporter.get();
+    EXPECT_TRUE(creation_is_exclusive);
+    EXPECT_TRUE(started);
+    EXPECT_TRUE(blocked) << "seed export entered during the creation unlock window";
+    EXPECT_TRUE(created["result"]["created"].asBool());
+    EXPECT_EQ(exported["result"]["mnemonic"].asString(), "secret");
+    EXPECT_EQ(exports.load(), 1U);
 }
 TEST(RpcReopenPause, PausedQueuesNeverReachHandlersAndAbortInvalidatesOldEpoch){
     DaemonContext context;HttpRpcServer server("127.0.0.1",0);server.set_daemon_context(&context);

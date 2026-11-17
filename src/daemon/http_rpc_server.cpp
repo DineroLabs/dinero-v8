@@ -808,6 +808,26 @@ Json::Value HttpRpcServer::process_admitted_rpc_call(const Json::Value& request)
                 "Method '" + method + "' is admin-only (server running in read-only mode)");
         }
 
+        // Creation is the only RPC that may briefly unlock a newly encrypted
+        // wallet without a user-visible unlock session. Its exclusive owner
+        // spans the existing mnemonic/first-address bind as well as P2MR and
+        // Orchard issuance. Every other RPC takes a shared owner, including
+        // flat aliases and legacy handlers whose registry source may be empty.
+        // This prevents a concurrent exportseed (or another secret RPC) from
+        // observing the temporary unlock. A flat createhd alias must acquire
+        // the exclusive owner even if its source was invalidated by a later
+        // registry overwrite.
+        const std::string rpc_source = readonly_source();
+        const bool creating_wallet = rpc_source == "wallet.createhd" ||
+            admin_check_method == "wallet.createhd" || method == "createhd";
+        std::unique_lock<std::shared_mutex> creation_owner;
+        std::shared_lock<std::shared_mutex> ordinary_owner;
+        if (creating_wallet) {
+            creation_owner = std::unique_lock<std::shared_mutex>(wallet_creation_rpc_mutex_);
+        } else {
+            ordinary_owner = std::shared_lock<std::shared_mutex>(wallet_creation_rpc_mutex_);
+        }
+
         // Reserve core daemon control/introspection builtins so auto-flat RPC
         // aliases such as mining.stop never shadow daemon stop.
         if (method == "stop" || method == "help" || method == "getinfo" ||
