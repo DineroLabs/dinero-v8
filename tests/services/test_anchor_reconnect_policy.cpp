@@ -13,8 +13,21 @@
 #include "daemon/services/anchor_reconnect_policy.h"
 
 #include <gtest/gtest.h>
+#include <cstdint>
+#include <string>
+#include <vector>
 
 using dinero::daemon::shouldRunAnchorAutoReconnect;
+using dinero::daemon::hasConnectedOutboundAnchor;
+
+namespace {
+struct TestPeer {
+    std::string address;
+    uint16_t port;
+    bool is_connected;
+    bool is_outbound;
+};
+}  // namespace
 
 TEST(AnchorReconnectPolicy, RunsWhenNoConnectFlagGiven) {
     // Normal operation: no `-connect=` was specified, so the empty
@@ -31,4 +44,26 @@ TEST(AnchorReconnectPolicy, SkipsWhenConnectOnlyMultiplePeers) {
     // Multiple `-connect=` flags accumulate as a comma-separated value
     // upstream; connect-only mode still applies with more than one target.
     EXPECT_FALSE(shouldRunAnchorAutoReconnect("127.0.0.1:29999,127.0.0.1:30000"));
+}
+
+TEST(AnchorReconnectPolicy, InboundFromAnchorDoesNotSatisfyOutboundProbe) {
+    const std::vector<TestPeer> peers = {
+        {"192.0.2.10", 51000, true, false},
+    };
+    EXPECT_FALSE(hasConnectedOutboundAnchor(peers, "192.0.2.10", 20999));
+}
+
+TEST(AnchorReconnectPolicy, OnlyConnectedOutboundAtAnchorPortSatisfiesProbe) {
+    const std::vector<TestPeer> peers = {
+        {"192.0.2.10", 20999, false, true},
+        {"192.0.2.10", 21000, true, true},
+        {"192.0.2.10", 51000, true, false},
+    };
+    EXPECT_FALSE(hasConnectedOutboundAnchor(peers, "192.0.2.10", 20999));
+
+    const std::vector<TestPeer> with_anchor = {
+        {"192.0.2.10", 20999, true, true},
+        {"192.0.2.10", 51000, true, false},
+    };
+    EXPECT_TRUE(hasConnectedOutboundAnchor(with_anchor, "192.0.2.10", 20999));
 }
