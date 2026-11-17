@@ -8,8 +8,23 @@ struct CompactServiceStartFixture {
     DaemonContext context;
     std::shared_ptr<ChainstateService> service;
     std::shared_ptr<CompactTransitionNotices> notices=std::make_shared<CompactTransitionNotices>();
-    explicit CompactServiceStartFixture(bool boundary=false) {
+    std::shared_ptr<consensus::HeaderChainSelector> selector;
+    std::optional<BlockHeader> competing_header;
+    std::optional<BlockHeader> branch_child_header;
+    explicit CompactServiceStartFixture(bool boundary=false,bool competing_sibling=false) {
         if(boundary)RestoreCompactAuditBoundary(*storage);
+        if(competing_sibling) {
+            auto sibling=storage->second->Header();
+            sibling.merkle_root=uint256::FromHexUnsafe(std::string(64,'a'));
+            competing_header=OrchardAdmissionFixture::SolveHeader(sibling);
+            OrchardAdmissionFixture::Require(AddBlockIndex(*competing_header,storage->second->Height())!=nullptr);
+            auto child=sibling;
+            child.prev_block_hash=competing_header->GetHash();
+            child.timestamp+=120;
+            child.merkle_root=uint256::FromHexUnsafe(std::string(64,'b'));
+            branch_child_header=OrchardAdmissionFixture::SolveHeader(child);
+            OrchardAdmissionFixture::Require(AddBlockIndex(*branch_child_header,storage->second->Height()+1)!=nullptr);
+        }
         Open();
     }
     void Open() {
@@ -18,7 +33,10 @@ struct CompactServiceStartFixture {
         DaemonContext::setInstance(&context);
         service->setOwnedChainDB(std::shared_ptr<ChainDB>(storage,&storage->reopened));
         OrchardAdmissionFixture::Require(service->Init(context));
-        service->setHeaderChainSelector(CompactBindingSelector(*storage));
+        selector=CompactBindingSelector(*storage);
+        if(competing_header)OrchardAdmissionFixture::Require(selector->AddHeader(*competing_header));
+        if(branch_child_header)OrchardAdmissionFixture::Require(selector->AddHeader(*branch_child_header));
+        service->setHeaderChainSelector(selector);
         service->setRuntimeBlockNotifications(notices);
     }
     std::filesystem::path WalletPath()const{return storage->f.path/"flatfiles"/"blockchain"/"utxo";}
@@ -45,6 +63,55 @@ TEST(OrchardCompactStart, ActualStartAndReopenKeepCompactAuthority) {
     f.Close();f.storage->reopened.close();ASSERT_EQ(f.storage->reopened.init(f.storage->f.path),Status::Ok);
     f.Open();f.Closed();ASSERT_TRUE(f.service->Start());
     EXPECT_EQ(f.storage->Rows(),rows);EXPECT_EQ(f.storage->ArchiveBytes(),archives);
+}
+TEST(OrchardCompactStart, CompetingHeaderDoesNotDisplaceSelectedTipAcrossServiceReopen) {
+    CompactServiceStartFixture f(false,true);
+    const auto sibling_hash=f.competing_header->GetHash();
+    const auto child_hash=f.branch_child_header->GetHash();
+    const auto selected_hash=f.storage->second->Header().GetHash();
+    const auto parent_hash=f.storage->first->Header().GetHash();
+    const auto check_graph=[&] {
+        const auto* sibling=FindBlockIndex(sibling_hash);
+        const auto* child=FindBlockIndex(child_hash);
+        const auto* selected=FindBlockIndex(selected_hash);
+        const auto* parent=FindBlockIndex(parent_hash);
+        ASSERT_NE(sibling,nullptr);ASSERT_NE(child,nullptr);ASSERT_NE(selected,nullptr);ASSERT_NE(parent,nullptr);
+        EXPECT_EQ(sibling->pprev,parent);
+        EXPECT_EQ(child->pprev,sibling);
+        EXPECT_EQ(sibling->prev_hash,parent_hash);
+        EXPECT_EQ(child->prev_hash,sibling_hash);
+        EXPECT_EQ(sibling->height,selected->height);
+        EXPECT_EQ(sibling->chainwork,selected->chainwork);
+        EXPECT_EQ(child->height,selected->height+1);
+        EXPECT_EQ(sibling->status&BLOCK_HAVE_DATA,0u);
+        EXPECT_EQ(child->status&BLOCK_HAVE_DATA,0u);
+        EXPECT_TRUE(f.storage->reopened.getHeaderMetadata(selected_hash).ok());
+        EXPECT_FALSE(f.storage->reopened.getHeaderMetadata(sibling_hash).ok());
+        EXPECT_FALSE(f.storage->reopened.getHeaderMetadata(child_hash).ok());
+        EXPECT_EQ(std::count(parent->children.begin(),parent->children.end(),sibling),1);
+        EXPECT_EQ(std::count(sibling->children.begin(),sibling->children.end(),child),1);
+        // The higher-work header-only branch wins header selection. The
+        // body-backed candidate set must still select the durable compact tip.
+        ASSERT_NE(f.selector,nullptr);
+        const auto best_header=f.selector->GetBestHeaderValue();
+        ASSERT_TRUE(best_header.has_value());
+        EXPECT_EQ(best_header->hash,child_hash);
+        EXPECT_EQ(GetBestCandidate(),selected);
+    };
+    check_graph();
+    f.Closed();ASSERT_TRUE(f.service->Start());
+    ASSERT_NE(f.service->GetActiveTip(),nullptr);
+    EXPECT_EQ(f.service->GetActiveTip()->hash,selected_hash); // Durable body-backed selection.
+    check_graph();
+
+    // Reopen the service and ChainDB in this process; the global graph stays
+    // alive. A fresh-process graph rebuild is covered by separate startup tests.
+    f.Close();f.storage->reopened.close();
+    ASSERT_EQ(f.storage->reopened.init(f.storage->f.path),Status::Ok);
+    f.Open();f.Closed();check_graph();
+    ASSERT_TRUE(f.service->Start());ASSERT_NE(f.service->GetActiveTip(),nullptr);
+    EXPECT_EQ(f.service->GetActiveTip()->hash,selected_hash);
+    check_graph();
 }
 TEST(OrchardCompactStart, MissingCompositionAndWrongValidationPolicyRefuseThenRetry) {
     CompactServiceStartFixture f;
