@@ -216,6 +216,11 @@ public:
     // v8.2.4 (#939): set by wallet.restore on a v3 node; the runtime worker
     // continues Orchard account-0 recovery for that wallet until it completes.
     static constexpr const char* kOrchardAccount0RestorePendingSetting = "orchard_account0_restore_pending_v1";
+    // v8.2.5: swaps bind to a wallet with an Orchard owner (a delivery
+    // identity with binding authority); a legacy-class wallet has none.
+    static constexpr const char* kSwapLegacyWalletUnsupported =
+        "Swaps need a wallet created by Dinero 8.2 or later. Create a new wallet in this app, "
+        "move your funds to it, and swap from the new wallet.";
     // Last reason an automatic account-0 recovery pass did not complete
     // (empty while progressing normally); reported by wallet.getwalletinfo.
     static constexpr const char* kOrchardAccount0RestoreStatusSetting = "orchard_account0_restore_status_v1";

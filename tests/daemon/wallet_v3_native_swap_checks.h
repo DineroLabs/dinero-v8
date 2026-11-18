@@ -5,6 +5,9 @@
 #include "daemon/services/swap_service.h"
 #include "wallet/swap/htlc.h"
 #include "wallet/swap/runner.h"
+#include "rpc/swap_rpc.h"
+
+void registerWalletMethodsContext();  // src/rpc/methods_wallet_context.cpp
 
 namespace dinero {
 
@@ -114,6 +117,88 @@ TEST(WalletV3NativeSwap, SendManyOneRecipientPaysWithPooledChange) {
         WalletService::CanonicalRecovery::AppliedPrefix) << error;
     ExpectNativeReceiptsCurrent(f, 103);
     f.context.tx_ingress = nullptr;
+}
+
+namespace {
+// A legacy-class wallet (no Orchard owner) enrolled on a v3 node: the shape
+// of the owner's Windows and Dell wallets.
+struct LegacyV3SwapFixture {
+    CanonicalRecoveryFixture f{true, true};
+    std::unique_ptr<UTXOIndex> original;
+    LegacyV3SwapFixture() {
+        (void)f.PrepareFundedHistoricalWallet();
+        f.DowngradeToPreIdentityTransparentWallet();
+        (void)f.MineToWallet();
+        const auto index_path = f.f.path / "v3-legacy-swap-index";
+        { UTXOIndex v2(index_path.string()); OrchardAdmissionFixture::Require(v2.Initialize()); }
+        (void)UpgradeFullArchiveWalletIndexSchemaToV3(index_path);
+        auto metadata = std::make_unique<UTXOIndex>(index_path.string());
+        OrchardAdmissionFixture::Require(metadata->InitializeFullArchiveV3MetadataOnly());
+        {
+            auto use = WalletService::AcquireWalletUse(f.wallet);
+            use->Wallet().setUTXOIndex(nullptr);
+            use->Wallet().DisableLegacyRescansForFullArchiveV3();
+        }
+        original = ShieldedStateStartupTestAccess::SwapWalletIndexForRpc(*f.f.service, std::move(metadata));
+        std::string error;
+        OrchardAdmissionFixture::Require(f.wallet->RecoverActiveWalletFromCanonicalSource(&error) ==
+            WalletService::CanonicalRecovery::AppliedPrefix);
+    }
+    ~LegacyV3SwapFixture() {
+        auto replacement = ShieldedStateStartupTestAccess::SwapWalletIndexForRpc(*f.f.service, std::move(original));
+        (void)replacement;
+    }
+};
+}  // namespace
+
+// A legacy-class wallet (no Orchard owner, so no binding authority) is
+// refused by swap funding with a clear "create a new wallet" message, before
+// any payment, address row or receipt change.
+TEST(WalletV3NativeSwap, LegacyClassSwapFundingRefusesClearlyWithoutEffects) {
+    LegacyV3SwapFixture x;
+    auto& f = x.f;
+    {
+        auto use = WalletService::AcquireWalletUse(f.wallet);
+        ASSERT_EQ(use->Wallet().AcquireDatabaseLease()->LegacyTransparentState(),
+            WalletManager::LegacyTransparentState::Complete);
+    }
+    f.context.tx_ingress = f.f.ingress.get();
+    auto request = V3SwapFundingRequest(WalletService::AcquireWalletUse(f.wallet)->Wallet());
+    const auto rows_before = NativeTestCount(WalletService::AcquireWalletUse(f.wallet)->Wallet(),
+        "SELECT count(*) FROM addresses");
+    auto owner = MakeRetainedSwapFundingOwner(f.context);
+    try {
+        (void)owner(request, swap::DinFundingOperation::Prepare, {});
+        ADD_FAILURE() << "legacy-class swap funding was not refused";
+    } catch (const std::exception& e) {
+        EXPECT_STREQ(e.what(), WalletManager::kSwapLegacyWalletUnsupported);
+    }
+    EXPECT_TRUE(WalletService::AcquireWalletUse(f.wallet)->Wallet().getPendingPayments().empty());
+    EXPECT_EQ(NativeTestCount(WalletService::AcquireWalletUse(f.wallet)->Wallet(),
+        "SELECT count(*) FROM addresses"), rows_before);
+    f.context.tx_ingress = nullptr;
+}
+
+// Swap offers/accepts need a DIN payout address. On a native v3 wallet it is
+// the next sealed pooled address, so the payout is delivered and the receipts
+// stay certified.
+TEST(WalletV3NativeSwap, PayoutAddressComesFromTheSealedPool) {
+    registerWalletMethodsContext();
+    {
+        CanonicalRecoveryFixture f(true, true);
+        (void)f.MineToWallet();
+        NativeV3IndexScope v3(f, "v3-native-payout-index");
+        std::string error;
+        ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+            WalletService::CanonicalRecovery::AppliedPrefix) << error;
+        ExecutionContext ctx; ctx.daemon = &f.context; ctx.walletName = "canonical-recovery";
+        std::string address;
+        ASSERT_NO_THROW(address = SwapWalletPayoutAddress(ctx));
+        EXPECT_EQ(NativeTestCount(WalletService::AcquireWalletUse(f.wallet)->Wallet(),
+            "SELECT count(*) FROM native_v3_address_pool WHERE issued=1 AND address='" + address + "'"), 1)
+            << "native payout comes from the sealed pool";
+        ExpectNativeReceiptsCurrent(f, 102);
+    }
 }
 
 }  // namespace dinero

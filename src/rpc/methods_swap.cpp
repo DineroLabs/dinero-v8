@@ -16,6 +16,7 @@
 // No RPC returns a secret, a private key or a raw session. The wallet must be
 // encrypted and unlocked to start a swap; while it is locked swaps pause.
 #include "daemon/services/swap_service.h"
+#include "rpc/swap_rpc.h"
 #include "rpc/rpc_registry.h"
 #include "wallet/wallet_manager.h"
 #include "daemon/daemon_context.h"
@@ -79,14 +80,7 @@ std::optional<din::Json> Refuse(const ExecutionContext& ctx, bool starting) {
 
 // A fresh Taproot address of this wallet (DIN payouts).
 std::string NewWalletAddress(const ExecutionContext& ctx) {
-    ::RpcHandler* h = g_rpcRegistry.lookup("wallet.getnewaddress");
-    if (!h) throw std::runtime_error("wallet.getnewaddress unavailable");
-    din::Json p(Json::arrayValue);
-    p.append("taproot");
-    const din::Json r = (*h)(ctx, p);
-    if (r.isString()) return r.asString();
-    if (r.isObject() && r["address"].isString()) return r["address"].asString();
-    throw std::runtime_error("could not get a new wallet address");
+    return dinero::SwapWalletPayoutAddress(ctx);
 }
 
 const din::Json& Arg(const din::Json& params, const char* key) {
@@ -263,4 +257,16 @@ void registerSwapMethods() {
     g_rpcRegistry.registerHandler("swap.status", RpcStatus, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.cancel", RpcCancel, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.refund", RpcRefund, RegisterMode::Overwrite, "context-aware");
+}
+
+std::string dinero::SwapWalletPayoutAddress(const ExecutionContext& ctx) {
+    ::RpcHandler* h = g_rpcRegistry.lookup("wallet.getnewaddress");
+    if (!h) throw std::runtime_error("wallet.getnewaddress unavailable");
+    din::Json p(Json::arrayValue);
+    p.append("taproot");
+    const din::Json r = (*h)(ctx, p);
+    if (r.isString()) return r.asString();
+    if (r.isObject() && r["address"].isString()) return r["address"].asString();
+    if (r.isObject() && r["error"].isString()) throw std::runtime_error(r["error"].asString());
+    throw std::runtime_error("could not get a new wallet address");
 }

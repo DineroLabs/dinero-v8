@@ -81,6 +81,8 @@ swap::DinFundingOwner RetainedFundingOwner(DaemonContext* ctx) {
         WalletSigningIdentity identity;
         {
             auto lease=wallet_use->Wallet().AcquireDatabaseLease();
+            if (lease->LegacyTransparentState() != WalletManager::LegacyTransparentState::Absent)
+                throw std::runtime_error(WalletManager::kSwapLegacyWalletUnsupported);
             lease->RequireOrchardWalletReady();
             if(lease->ReadDeliveryIdentity()!=request.binding.wallet_id)
                 throw std::runtime_error("Swap funding selected a different payer database");
@@ -214,7 +216,9 @@ bool SwapService::Init(DaemonContext& ctx) {
         if (paths.empty() || paths.size() > 4) throw std::invalid_argument("invalid swap key batch size");
         auto wallet_use = WalletService::AcquireWalletUse(ctx.wallet);
         auto lease = wallet_use->Wallet().AcquireDatabaseLease();
-        lease->RequireOrchardWalletReady();
+        if (lease->LegacyTransparentState() != WalletManager::LegacyTransparentState::Absent)
+                throw std::runtime_error(WalletManager::kSwapLegacyWalletUnsupported);
+            lease->RequireOrchardWalletReady();
         auto seed = lease->CopyRecoverySeed(lease->Session());
         // One actual seed owner spans ALL paths. Derivers and temporary keys
         // are wiped before this lease ends. No chain/RPC callback under it.
