@@ -63,6 +63,8 @@
 #include "daemon/coinbase_readback_gate.h"  // maturity gate for coinbase read-back
 #include "common/crash_injection.h"
 #include "rpc/longpoll_notifier.h"  // Server-side long-poll signaling for getblocktemplate
+#include "rpc/v7_pq_handlers.h"   // v8.2.4: native v3 P2MR pool fill
+#include <openssl/crypto.h>
 #include "daemon/services/chainstate_restart_import.h"
 #include "daemon/services/logger_service.h"
 #include "daemon/services/assumeutxo_state.h"
@@ -7259,6 +7261,52 @@ StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
 ChainstateService::resumeRuntimeWalletRecoveryIfNeeded(WalletManager& wallet, UTXOIndex& index,
         uint64_t expected_session,size_t legacy_material_limit_bytes) {
     if (activation_mutex_.HeldByCurrentThread()) return Status::Invalid;
+    auto result=resumeRuntimeWalletRecoveryIfNeededImpl(wallet,index,expected_session,legacy_material_limit_bytes);
+    continueRestoredOrchardAccount0(wallet,expected_session);
+    return result;
+}
+
+void ChainstateService::continueRestoredOrchardAccount0(WalletManager& wallet,uint64_t expected_session) {
+    try {
+        if(activation_mutex_.HeldByCurrentThread() || !wallet.hasActiveWallet() || wallet.isWalletLocked() ||
+           wallet.getSetting(WalletManager::kOrchardAccount0RestorePendingSetting)!="1")return;
+        uint64_t session=0;
+        {
+            auto lease=wallet.AcquireDatabaseLease();
+            if(!wallet.SoleDatabaseLeaseHeld() || !lease->Database())return;
+            session=lease->Session();
+        }
+        if(expected_session && session!=expected_session)return;
+        const auto progress=recoverOrchardAccount0(wallet,session,false);
+        // A refusal is retried on the next pass, but never silently: record
+        // the reason for wallet.getwalletinfo and log each change of it.
+        std::string status;
+        if(!progress.ok())status="recovery refused (status "+std::to_string(int(progress.status()))+
+            "); retrying on the next block";
+        else if(progress->complete) {
+            wallet.setSetting(WalletManager::kOrchardAccount0RestorePendingSetting,"");
+            wallet.setSetting(WalletManager::kOrchardAccount0RestoreStatusSetting,"");
+            std::cerr << "[ChainstateService] Restored wallet Orchard account 0 recovered\n";
+            return;
+        }
+        else if(progress->awaiting_history_source)status="waiting for an Orchard history source";
+        else if(progress->history_requested && !progress->history_ready)status="downloading Orchard history";
+        if(wallet.getSetting(WalletManager::kOrchardAccount0RestoreStatusSetting)!=status) {
+            wallet.setSetting(WalletManager::kOrchardAccount0RestoreStatusSetting,status);
+            if(!status.empty())
+                std::cerr << "[ChainstateService] Restored wallet Orchard account 0 recovery: " << status << "\n";
+        }
+    } catch(const std::exception& e) {
+        std::cerr << "[ChainstateService] Restored wallet Orchard account 0 recovery failed: " << e.what() << "\n";
+        try { wallet.setSetting(WalletManager::kOrchardAccount0RestoreStatusSetting,
+                  std::string("recovery failed: ")+e.what()+"; retrying on the next block"); } catch(...) {}
+    }
+}
+
+StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
+ChainstateService::resumeRuntimeWalletRecoveryIfNeededImpl(WalletManager& wallet, UTXOIndex& index,
+        uint64_t expected_session,size_t legacy_material_limit_bytes) {
+    if (activation_mutex_.HeldByCurrentThread()) return Status::Invalid;
     try {
         // Require the actual lifetime gate before touching the index. The
         // caller retains it through replay; no selected lock is held here.
@@ -7454,6 +7502,62 @@ Status ChainstateService::resumeRuntimeOrchardDeliveryV3(WalletManager& wallet,U
 #endif
 }
 
+// v8.2.4 (#939): issue every P2MR pool index an open native v3 target owes,
+// before the Pending wallet's coverage runs. Each index is one #945
+// cross-store issuance: durable intent -> key-store row -> adoption, which
+// also inserts the pool row in that same wallet transaction. An interrupted
+// issuance is repaired first (AuthenticateP2MRInventory adopts its row).
+void FillNativeP2MRTargetsV3(WalletManager& wallet,uint64_t session) {
+    for(int guard=0;guard<4*WalletManager::kNativeV3ReceivePool+8;++guard) {
+        auto lease=wallet.AcquireDatabaseLease();
+        if(lease->Session()!=session)throw std::runtime_error("Native P2MR pool wallet changed");
+        if(lease->NativeP2MRTargetMissing().empty())return;
+        auto seed=lease->CopyRecoverySeed(session);
+        lease->AuthenticateP2MRInventory(*seed);
+        const auto missing=lease->NativeP2MRTargetMissing();
+        if(missing.empty())return;
+        const auto idx=missing.front();
+        if(idx<0 || idx>INT32_MAX)throw std::runtime_error("Native P2MR pool index out of range");
+        const std::string path="m/88'/1448'/0'/0/"+std::to_string(idx);
+        lease->BeginP2MRIssuance(*seed,path,0);
+        namespace v7rpc=dinero::rpc::v7;
+        v7rpc::GetNewP2MRAddressParams params{};
+        params.wallet_id=1;  // as wallet.getnewp2mraddress: single-wallet store
+        params.hrp=HrpForActiveNetworkRef();
+        params.account=0;params.change=0;params.address_index=int(idx);params.leaf_index=0;
+        params.now_unix=std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        auto bip32=wallet.DeriveV7Bip32Material(0,0,uint32_t(idx));
+        auto master=wallet.GetV7PqMasterKey();
+        if(!bip32||!master) {
+            if(bip32){OPENSSL_cleanse(bip32->private_key.data(),32);OPENSSL_cleanse(bip32->chain_code.data(),32);}
+            if(master)OPENSSL_cleanse(master->data(),master->size());
+            throw std::runtime_error("Native P2MR pool key material unavailable");
+        }
+        params.bip32_priv=bip32->private_key;params.bip32_chain=bip32->chain_code;
+        std::memcpy(params.master_key.data(),master->data(),params.master_key.size());
+        OPENSSL_cleanse(bip32->private_key.data(),32);OPENSSL_cleanse(bip32->chain_code.data(),32);
+        OPENSSL_cleanse(master->data(),master->size());
+        wallet::V7P2MRStore store;
+        if(store.Open(wallet.GetV7P2MRStorePath())!=wallet::V7P2MRStore::OpenResult::Ok) {
+            OPENSSL_cleanse(params.master_key.data(),params.master_key.size());
+            OPENSSL_cleanse(params.bip32_priv.data(),params.bip32_priv.size());
+            OPENSSL_cleanse(params.bip32_chain.data(),params.bip32_chain.size());
+            throw std::runtime_error("Native P2MR pool key store unavailable");
+        }
+        const auto issued=v7rpc::GetNewP2MRAddress(store,params);  // scrubs its own copy
+        OPENSSL_cleanse(params.master_key.data(),params.master_key.size());
+        OPENSSL_cleanse(params.bip32_priv.data(),params.bip32_priv.size());
+        OPENSSL_cleanse(params.bip32_chain.data(),params.bip32_chain.size());
+        if(issued.status!=v7rpc::HandlerStatus::Ok && issued.status!=v7rpc::HandlerStatus::UniqueConflict)
+            throw std::runtime_error("Native P2MR pool key issuance failed: "+issued.error_message);
+        if(issued.derivation_path!=path || issued.leaf_index!=0)
+            throw std::runtime_error("Native P2MR pool derivation changed");
+        lease->CompleteP2MRIssuance(*seed,path,0,wallet::BuildP2MRScriptPubKey(issued.merkle_root));
+    }
+    throw std::runtime_error("Native P2MR pool fill did not converge");
+}
+
 StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
 ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,UTXOIndex& metadata_index,
         uint64_t expected_session,size_t material_limit_bytes) {
@@ -7483,6 +7587,12 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
             native=lease->NativeV3TransparentState()!=WalletManager::NativeV3State::Absent ||
                 (state==WalletManager::LegacyTransparentState::Absent && lease->HasOrchardOwnerState());
         }
+        // v8.2.4 (#939): a wallet restored on this v3 node recovers Orchard
+        // account 0 without a manual RPC. Each pass advances the bounded,
+        // resumable recovery (needs the unlocked seed and an enrolled wallet)
+        // and clears the marker once it is complete. A refusal only retries.
+        const auto continue_restored_account0=[&] { continueRestoredOrchardAccount0(wallet,session); };
+        if(native && state==WalletManager::LegacyTransparentState::Complete)continue_restored_account0();
         // Startup and explicit callers bypass the runtime worker's cheap
         // preflight. An absent/pending v3 wallet cannot reconcile coverage
         // without its encrypted seed, so refuse before any origin replay.
@@ -7532,6 +7642,18 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
             state=WalletManager::LegacyTransparentState::Pending;
         }
         if(state==WalletManager::LegacyTransparentState::Pending) {
+            // v8.2.4: a Pending native wallet may owe P2MR pool scripts. The
+            // coverage below must prove them, so it never starts before the
+            // owed fill is complete (Pending stays fail-closed meanwhile).
+            if(native) {
+                try { FillNativeP2MRTargetsV3(wallet,session); }
+                catch(const std::exception& e) {
+                    std::cerr << "[ChainstateService] Native v3 P2MR pool fill deferred: " << e.what() << "\n";
+                    return Status::Invalid;
+                }
+                auto lease=wallet.AcquireDatabaseLease();
+                if(!lease->NativeP2MRTargetMissing().empty())return Status::Invalid;
+            }
             const auto coverage=getRuntimeWalletCoverageV3(wallet,session,metadata_index,material_limit_bytes);
             if(!coverage.ok())return coverage.status();
             const auto& source=**coverage;
@@ -7567,6 +7689,7 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
             if(native) {
                 const auto orchard=resumeRuntimeOrchardDeliveryV3(wallet,metadata_index,session);
                 if(orchard!=Status::Ok)return orchard;
+                continue_restored_account0();
             }
             return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
                 RuntimeEnrolledWalletRecoveryResult{applied,{},source.Head(),std::nullopt});
@@ -23740,7 +23863,18 @@ std::unique_ptr<wallet::OrchardQueuedSpend> ChainstateService::queueRuntimeWalle
         if(lease->Session()!=session||!sqlite3_get_autocommit(lease->Database()))
             throw std::runtime_error("Shield selected wallet session changed");
         if(total>required){
-            const auto address=wallet.getNewChangeAddress("","taproot");
+            // A native wallet served by a full-archive v3 index owns only the
+            // scripts its sealed receipts proved: deriving a change script
+            // would invalidate them and leave the change unscanned. Pay change
+            // to a pooled (already covered) change address instead.
+            const bool native_v3=HasFullArchiveWalletIndexV3()&&
+                lease->NativeV3TransparentState()!=WalletManager::NativeV3State::Absent;
+            std::string address;
+            if(native_v3){
+                auto pin=lease->CopyRecoverySeed(session);
+                address=lease->NativeV3PooledChangeAddress(*pin);
+                if(address.empty())throw std::runtime_error("Shield change pool exhausted; retry after the wallet extends its address pool");
+            }else address=wallet.getNewChangeAddress("","taproot");
             const auto network=selected->context.domain.network_code;
             const auto decoded=DecodeWitnessAddress(address,network==0?"din":network==1?"tdin":"rdin");
             if(!decoded.is_valid||decoded.witness_version!=1||decoded.witness_program.size()!=32)

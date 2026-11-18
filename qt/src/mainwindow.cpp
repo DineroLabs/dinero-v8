@@ -4140,11 +4140,24 @@ void MainWindow::setupUI() {
     {
       // Preview: the new Orchard screens sit beside the current pool, so the
       // main tab bar keeps its width.
+      // v8.2.4: Orchard is the shielded pool. The pre-Orchard pool is
+      // retired (read-only) after activation; its tab appears only for a
+      // wallet that still holds notes there (regtest keeps it as before).
       auto* shieldedTabs = new QTabWidget(this);
       shieldedTabs->setObjectName("shieldedSubTabs");
-      shieldedTabs->addTab(shieldedWidget_, "Current pool");
       orchardWidget_ = new OrchardWidget(rpc_, this);
-      shieldedTabs->addTab(makeScrollableTab(orchardWidget_), "Orchard (preview)");
+      shieldedTabs->addTab(makeScrollableTab(orchardWidget_), "Orchard");
+      const int legacyTab = shieldedTabs->addTab(shieldedWidget_, "Retired pool");
+      shieldedTabs->setTabVisible(legacyTab, false);
+      shieldedTabs->setCurrentIndex(0);
+      connect(shieldedWidget_, &ShieldedWidget::retiredPoolVisibilityChanged, shieldedTabs,
+              [shieldedTabs, legacy = shieldedWidget_](bool visible, const QString& label) {
+                const int index = shieldedTabs->indexOf(legacy);
+                if (index < 0) return;
+                shieldedTabs->setTabText(index, label);
+                if (!visible && shieldedTabs->currentIndex() == index) shieldedTabs->setCurrentIndex(0);
+                shieldedTabs->setTabVisible(index, visible);
+              });
       tabs->addTab(shieldedTabs, navigationIcon(NavigationGlyph::Shield), "Shielded");
     }
 #else

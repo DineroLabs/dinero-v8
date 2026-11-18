@@ -281,6 +281,34 @@ struct WalletFixture {
     }
     void Wire(HttpRpcServer& server){server.set_daemon_context(&context);server.set_rpc_registry(&registry);}
 };
+// v8.2.4: wallet.restore holds the exclusive creation owner across its file
+// creation and gap-limit derivation, so the dispatcher must not already hold
+// the shared reader for it (a recursive acquire would deadlock).
+TEST(RpcRequestFraming, RestoreTakesTheExclusiveCreationOwner) {
+    WalletFixture fixture;
+    RpcRegistry& registry = fixture.registry;
+    HttpRpcServer server("127.0.0.1", 0);
+    fixture.Wire(server);
+    ASSERT_TRUE(registry.registerHandler("wallet.restore",
+        [&](const ExecutionContext&, const din::Json&) {
+            auto owner = fixture.service->AcquireCreationOwner();
+            din::Json result;
+            result["success"] = true;
+            return result;
+        }));
+    auto done = std::make_shared<std::promise<Json::Value>>();
+    auto finished = done->get_future();
+    std::thread([&server, done] {
+        done->set_value(HttpRpcRequestTestAccess::Dispatch(server, "wallet.restore"));
+    }).detach();
+    if (finished.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+        ADD_FAILURE() << "wallet.restore deadlocked on the dispatcher's creation reader";
+        std::_Exit(1);  // the dispatch thread can never finish; fail the process
+    }
+    const auto response = finished.get();
+    EXPECT_TRUE(response["result"]["success"].asBool()) << response.toStyledString();
+}
+
 TEST(RpcRequestFraming, ExportAliasWaitsForEncryptedCreationOwner) {
     WalletFixture fixture;
     RpcRegistry& registry = fixture.registry;

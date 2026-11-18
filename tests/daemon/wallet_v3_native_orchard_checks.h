@@ -68,18 +68,11 @@ TEST(WalletV3NativeOrchard, NativeWalletReceivesOrchardNoteThroughV3Delivery) {
         EXPECT_FALSE(HasLegacyStateColumn(use->Wallet()));
     };
     check_delivered(500000,"delivered");
-    // Orchard spends are not served on v3 yet: refused before any effect.
-    for(const auto* method:{queue_shield,queue_spend}) {
-        din::Json request;request["account"]=3;
-        const auto refused=(*method)(ctx,OrchardBoundParamsForTest(ctx,request));
-        EXPECT_EQ(refused["error_code"].asString(),"wallet_native_orchard_spend_unavailable_on_v3")
-            << refused.toStyledString();
-    }
+    // v8.2.4: Orchard spends and shields are served on v3; the end-to-end
+    // round trip lives in WalletV3NativeOrchardSpend.
 
-    // Restored-seed account-0 recovery is not served on v3.
-    const auto recovered=(*recover_account0)(ctx,OrchardBoundParamsForTest(ctx,din::obj()));
-    EXPECT_EQ(recovered["error_code"].asString(),"wallet_native_orchard_recovery_unavailable_on_v3")
-        << recovered.toStyledString();
+    // v8.2.4: restored-seed account-0 recovery is served on v3 (WalletV3NativeRestore).
+    (void)recover_account0;
 
     f.wallet->Stop();
     f.context.wallet.reset();
