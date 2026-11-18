@@ -753,6 +753,52 @@ TEST(SwapManager, PayoutScriptFromAddress) {
                  std::invalid_argument);  // bad program length
 }
 
+// Exchanges and older wallets still hand out 1…/3… addresses: the BTC side
+// takes them, on the node's own Bitcoin network only. DIN payouts stay bech32.
+TEST(SwapManager, BtcPayoutScriptAcceptsLegacyAddresses) {
+    const std::string pkh = "77bff20c60e522dfaa3350c39b030a5d004e839a";
+    const std::string sh = "b472a266d0bd89c13706a4132ccfb16f7c3b9fcb";
+    EXPECT_EQ(detail::ToHex(BtcPayoutScriptFromAddress("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2", "bc")), "76a914" + pkh + "88ac");
+    EXPECT_EQ(detail::ToHex(BtcPayoutScriptFromAddress("3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy", "bc")), "a914" + sh + "87");
+    for (const char* hrp : {"tb", "bcrt"}) {
+        EXPECT_EQ(detail::ToHex(BtcPayoutScriptFromAddress("mrS8eVKXguwufwvsVe9GtgGb7fif9UQeAu", hrp)), "76a914" + pkh + "88ac");
+        EXPECT_EQ(detail::ToHex(BtcPayoutScriptFromAddress("2N9hLwkSqr1cPQAPxbrGVUjxyjD11G2e1he", hrp)), "a914" + sh + "87");
+    }
+    // The all-zero hash keeps its leading zero bytes.
+    EXPECT_EQ(detail::ToHex(BtcPayoutScriptFromAddress("1111111111111111111114oLvT2", "bc")),
+              "76a914" + std::string(40, '0') + "88ac");
+    // Segwit addresses are unchanged.
+    EXPECT_EQ(BtcPayoutScriptFromAddress(P2trAddress("bcrt", 0x44), "bcrt"),
+              PayoutScriptFromAddress(P2trAddress("bcrt", 0x44), "bcrt"));
+
+    // Another network's address, a typo, or anything else is refused.
+    EXPECT_THROW(BtcPayoutScriptFromAddress("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2", "bcrt"), std::invalid_argument);
+    EXPECT_THROW(BtcPayoutScriptFromAddress("mrS8eVKXguwufwvsVe9GtgGb7fif9UQeAu", "bc"), std::invalid_argument);
+    EXPECT_THROW(BtcPayoutScriptFromAddress("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN3", "bc"), std::invalid_argument);
+    EXPECT_THROW(BtcPayoutScriptFromAddress("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN0", "bc"), std::invalid_argument);
+    EXPECT_THROW(BtcPayoutScriptFromAddress("", "bc"), std::invalid_argument);
+    EXPECT_THROW(BtcPayoutScriptFromAddress(std::string(200, '2'), "bc"), std::invalid_argument);
+    EXPECT_THROW(BtcPayoutScriptFromAddress(P2trAddress("bc", 0x44), "bcrt"), std::invalid_argument);
+    // A Dinero payout never takes a Bitcoin legacy address.
+    EXPECT_THROW(PayoutScriptFromAddress("mrS8eVKXguwufwvsVe9GtgGb7fif9UQeAu", "rdin"), std::invalid_argument);
+}
+
+// Both entry points take a legacy Bitcoin address: the seller's claim address
+// in the offer and the buyer's refund address in the accept.
+TEST(SwapManager, OfferAndAcceptTakeLegacyBitcoinAddresses) {
+    TempDir da("legacy_btc_alice"), db("legacy_btc_bob");
+    FakeWallet wa{0xd1}, wb{0xd2};
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    OfferRequest r = Request();
+    r.btc_claim_address = "mrS8eVKXguwufwvsVe9GtgGb7fif9UQeAu";
+    std::string offer;
+    ASSERT_NO_THROW(offer = alice.MakeOffer(r, kNow));
+    EXPECT_NO_THROW(bob.Accept(offer, P2trAddress("rdin", 0x31), "2N9hLwkSqr1cPQAPxbrGVUjxyjD11G2e1he", kNow + 1));
+    r.btc_claim_address = "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2";  // mainnet address on a regtest node
+    EXPECT_THROW(alice.MakeOffer(r, kNow), std::invalid_argument);
+}
+
 // Switching the key source is serialized here: no concurrent threads, IPC,
 // network node or synchronization-removal control is involved. A manager's
 // cached live session must not be rewritten under another wallet's store key.

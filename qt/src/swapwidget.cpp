@@ -178,8 +178,9 @@ void SwapWidget::setupUi() {
     btcAmount_->setToolTip("How much BTC you want for it (up to 8 decimals)");
     btcAddress_ = new QLineEdit(sell);
     btcAddress_->setObjectName("btcAddress");
-    btcAddress_->setPlaceholderText("Your Bitcoin address");
-    btcAddress_->setToolTip("The BTC is paid to this address of yours when you claim it");
+    btcAddress_->setPlaceholderText("Paste the Receive address from your Bitcoin app or exchange");
+    btcAddress_->setToolTip("Open your Bitcoin app or exchange, choose Receive (or Deposit) Bitcoin, copy the address "
+                            "and paste it here. Your BTC is paid to it.");
     sellGrid->addWidget(Plain("DIN you sell:", sell), 0, 0);
     sellGrid->addWidget(dinAmount_, 0, 1);
     sellGrid->addWidget(Plain("BTC you want:", sell), 1, 0);
@@ -244,8 +245,9 @@ void SwapWidget::setupUi() {
     pasteIn_->setToolTip("An offer starts a purchase; a reply to your offer starts your sale");
     btcRefundAddress_ = new QLineEdit(paste);
     btcRefundAddress_->setObjectName("btcRefundAddress");
-    btcRefundAddress_->setPlaceholderText("Your Bitcoin address (buying DIN only)");
-    btcRefundAddress_->setToolTip("If the swap does not complete, your BTC comes back to this address");
+    btcRefundAddress_->setPlaceholderText("Paste the Receive address from your Bitcoin app or exchange (buying DIN only)");
+    btcRefundAddress_->setToolTip("Open your Bitcoin app or exchange, choose Receive (or Deposit) Bitcoin, copy the "
+                                  "address and paste it here. If the swap does not complete, your BTC comes back to it.");
     pasteGrid->addWidget(pasteIn_, 0, 0, 1, 2);
     pasteGrid->addWidget(Plain("BTC refund address:", paste), 1, 0);
     pasteGrid->addWidget(btcRefundAddress_, 1, 1);
@@ -371,8 +373,8 @@ void SwapWidget::updatePasteReview() {
         blocker = "paste an offer you received, or the buyer's reply to your offer";
     } else if (kind.isEmpty()) {
         blocker = "this is not a swap offer or reply; paste the full text you received";
-    } else if (kind == "offer" && !btcRefundAddress_->text().trimmed().toLower().startsWith(hrp + "1")) {
-        blocker = "enter your Bitcoin refund address (" + hrp + "1…)";
+    } else if (kind == "offer" && !SwapFormPolicy::looksLikeBtcAddress(btcRefundAddress_->text(), hrp)) {
+        blocker = "enter your Bitcoin refund address (it starts with " + SwapFormPolicy::btcAddressStarts(hrp) + ")";
     }
     SetHint(pasteHint_, blocker,
             kind == "offer" ? "Ready. Review shows the offer's terms before you accept."
@@ -424,8 +426,9 @@ void SwapWidget::acceptOffer(const QString& offerText, const QJsonObject& decode
                                                            QDateTime::currentSecsSinceEpoch());
     if (!review.blocker.isEmpty()) return showStatus(review.blocker, true);
     const QString refund = btcRefundAddress_->text().trimmed();
-    if (!refund.toLower().startsWith(SwapFormPolicy::btcHrpForChain(chain_) + "1")) {
-        return showStatus("Enter your Bitcoin refund address (" + SwapFormPolicy::btcHrpForChain(chain_) + "1…)", true);
+    if (!SwapFormPolicy::looksLikeBtcAddress(refund, SwapFormPolicy::btcHrpForChain(chain_))) {
+        return showStatus("Enter your Bitcoin refund address (it starts with " +
+                              SwapFormPolicy::btcAddressStarts(SwapFormPolicy::btcHrpForChain(chain_)) + ")", true);
     }
     const QString first = review.text.section('\n', 0, 0);
     const QString rest = review.text.section('\n', 1);
