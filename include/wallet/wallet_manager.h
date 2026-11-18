@@ -174,6 +174,11 @@ public:
         bool retryable = false;
     };
     NativePoolIssue issueNativePoolAddress(const std::string& label);
+    // v8.2.5 (#939): the next pooled P2MR receive address of a native v3
+    // wallet (m/88'/1448'/0'/0/idx, leaf 0). Same issuability rule as the
+    // Taproot pool; writes only the unguarded pool table (and the label in
+    // the separate P2MR key store), so the sealed receipts stay valid.
+    NativePoolIssue issueNativeP2MRPoolAddress(const std::string& label);
     // Pool scripts listaddresses must not present as "yours to receive on":
     // unissued receive and change scripts that have no coin history.
     std::set<std::string> nativePoolHiddenAddresses() const;
@@ -442,6 +447,10 @@ public:
         // fewer than kNativeV3PoolLowWater unissued receive or unused change
         // scripts (or no pool table yet) needs an extension.
         [[nodiscard]] bool NativeV3PoolNeedsExtension() const;
+        // v8.2.5 (#939): pool indices (m/88'/1448'/0'/0/idx) that an open
+        // native P2MR target still owes, ascending. A Pending wallet's
+        // coverage must not run until this is empty. Read-only.
+        [[nodiscard]] std::vector<int64_t> NativeP2MRTargetMissing() const;
         // The first pooled change-chain address of a native v3 wallet with no
         // coin history whose key this seed pin resolves. Enrollment receipts
         // sealed it, so paying change there derives nothing and keeps both

@@ -1278,6 +1278,7 @@ target_link_libraries(dinero_core PUBLIC
   dinero_bridge           # BridgeNode::* (Utreexo proof gen) — used by chainstate_service.cpp
   dinero_pool             # PoolDB / PoolManager / PayoutCalculator — used by chainstate_service.cpp
   dinero_wallet
+  dinero_pq_wallet_handlers  # v8.2.5: native v3 P2MR pool fill (chainstate_service.cpp)
   dinero_rpc_client      # Bitcoin Core RPC for swaps (thin client; see firewall note)
   dinero_lightning_keys  # Phase 3: Lightning key derivation for gRPC wallet service
   dinero_gpu_mining      # GPU mining backends (Metal/CUDA/OpenCL)

@@ -62,6 +62,8 @@
 #include "daemon/coinbase_readback_gate.h"  // maturity gate for coinbase read-back
 #include "common/crash_injection.h"
 #include "rpc/longpoll_notifier.h"  // Server-side long-poll signaling for getblocktemplate
+#include "rpc/v7_pq_handlers.h"   // v8.2.5: native v3 P2MR pool fill
+#include <openssl/crypto.h>
 #include "daemon/services/chainstate_restart_import.h"
 #include "daemon/services/logger_service.h"
 #include "daemon/services/assumeutxo_state.h"
@@ -7453,6 +7455,62 @@ Status ChainstateService::resumeRuntimeOrchardDeliveryV3(WalletManager& wallet,U
 #endif
 }
 
+// v8.2.5 (#939): issue every P2MR pool index an open native v3 target owes,
+// before the Pending wallet's coverage runs. Each index is one #945
+// cross-store issuance: durable intent -> key-store row -> adoption, which
+// also inserts the pool row in that same wallet transaction. An interrupted
+// issuance is repaired first (AuthenticateP2MRInventory adopts its row).
+void FillNativeP2MRTargetsV3(WalletManager& wallet,uint64_t session) {
+    for(int guard=0;guard<4*WalletManager::kNativeV3ReceivePool+8;++guard) {
+        auto lease=wallet.AcquireDatabaseLease();
+        if(lease->Session()!=session)throw std::runtime_error("Native P2MR pool wallet changed");
+        if(lease->NativeP2MRTargetMissing().empty())return;
+        auto seed=lease->CopyRecoverySeed(session);
+        lease->AuthenticateP2MRInventory(*seed);
+        const auto missing=lease->NativeP2MRTargetMissing();
+        if(missing.empty())return;
+        const auto idx=missing.front();
+        if(idx<0 || idx>INT32_MAX)throw std::runtime_error("Native P2MR pool index out of range");
+        const std::string path="m/88'/1448'/0'/0/"+std::to_string(idx);
+        lease->BeginP2MRIssuance(*seed,path,0);
+        namespace v7rpc=dinero::rpc::v7;
+        v7rpc::GetNewP2MRAddressParams params{};
+        params.wallet_id=1;  // as wallet.getnewp2mraddress: single-wallet store
+        params.hrp=HrpForActiveNetworkRef();
+        params.account=0;params.change=0;params.address_index=int(idx);params.leaf_index=0;
+        params.now_unix=std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        auto bip32=wallet.DeriveV7Bip32Material(0,0,uint32_t(idx));
+        auto master=wallet.GetV7PqMasterKey();
+        if(!bip32||!master) {
+            if(bip32){OPENSSL_cleanse(bip32->private_key.data(),32);OPENSSL_cleanse(bip32->chain_code.data(),32);}
+            if(master)OPENSSL_cleanse(master->data(),master->size());
+            throw std::runtime_error("Native P2MR pool key material unavailable");
+        }
+        params.bip32_priv=bip32->private_key;params.bip32_chain=bip32->chain_code;
+        std::memcpy(params.master_key.data(),master->data(),params.master_key.size());
+        OPENSSL_cleanse(bip32->private_key.data(),32);OPENSSL_cleanse(bip32->chain_code.data(),32);
+        OPENSSL_cleanse(master->data(),master->size());
+        wallet::V7P2MRStore store;
+        if(store.Open(wallet.GetV7P2MRStorePath())!=wallet::V7P2MRStore::OpenResult::Ok) {
+            OPENSSL_cleanse(params.master_key.data(),params.master_key.size());
+            OPENSSL_cleanse(params.bip32_priv.data(),params.bip32_priv.size());
+            OPENSSL_cleanse(params.bip32_chain.data(),params.bip32_chain.size());
+            throw std::runtime_error("Native P2MR pool key store unavailable");
+        }
+        const auto issued=v7rpc::GetNewP2MRAddress(store,params);  // scrubs its own copy
+        OPENSSL_cleanse(params.master_key.data(),params.master_key.size());
+        OPENSSL_cleanse(params.bip32_priv.data(),params.bip32_priv.size());
+        OPENSSL_cleanse(params.bip32_chain.data(),params.bip32_chain.size());
+        if(issued.status!=v7rpc::HandlerStatus::Ok && issued.status!=v7rpc::HandlerStatus::UniqueConflict)
+            throw std::runtime_error("Native P2MR pool key issuance failed: "+issued.error_message);
+        if(issued.derivation_path!=path || issued.leaf_index!=0)
+            throw std::runtime_error("Native P2MR pool derivation changed");
+        lease->CompleteP2MRIssuance(*seed,path,0,wallet::BuildP2MRScriptPubKey(issued.merkle_root));
+    }
+    throw std::runtime_error("Native P2MR pool fill did not converge");
+}
+
 StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
 ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,UTXOIndex& metadata_index,
         uint64_t expected_session,size_t material_limit_bytes) {
@@ -7531,6 +7589,18 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
             state=WalletManager::LegacyTransparentState::Pending;
         }
         if(state==WalletManager::LegacyTransparentState::Pending) {
+            // v8.2.5: a Pending native wallet may owe P2MR pool scripts. The
+            // coverage below must prove them, so it never starts before the
+            // owed fill is complete (Pending stays fail-closed meanwhile).
+            if(native) {
+                try { FillNativeP2MRTargetsV3(wallet,session); }
+                catch(const std::exception& e) {
+                    std::cerr << "[ChainstateService] Native v3 P2MR pool fill deferred: " << e.what() << "\n";
+                    return Status::Invalid;
+                }
+                auto lease=wallet.AcquireDatabaseLease();
+                if(!lease->NativeP2MRTargetMissing().empty())return Status::Invalid;
+            }
             const auto coverage=getRuntimeWalletCoverageV3(wallet,session,metadata_index,material_limit_bytes);
             if(!coverage.ok())return coverage.status();
             const auto& source=**coverage;

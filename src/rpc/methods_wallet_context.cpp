@@ -942,9 +942,9 @@ static bool NativeV3PoolWallet(const ExecutionContext& ctx,
         lease->NativeV3TransparentState() != dinero::WalletManager::NativeV3State::Absent;
 }
 
-// #939 phase 2: wallet.getnewaddress for a native v3 wallet. Taproot comes
-// from the sealed pool (writes only the unguarded pool row); P2MR is not
-// pooled on v3 and is refused honestly. Nothing here derives a script.
+// #939 phase 2: wallet.getnewaddress for a native v3 wallet. Taproot and
+// (v8.2.5) P2MR come from their sealed pools (writes only the unguarded pool
+// row). Nothing here derives a script.
 static din::Json NativeV3PoolGetNewAddress(const ExecutionContext& ctx,
                                            const std::shared_ptr<dinero::WalletService>& service,
                                            const din::Json& params) {
@@ -958,9 +958,18 @@ static din::Json NativeV3PoolGetNewAddress(const ExecutionContext& ctx,
     if (normalized.empty() && service->get().getSetting("receive_default", "") == "p2mr")
         normalized = "p2mr";
     if (normalized == "p2mr" || normalized == "p2mr_v3") {
-        result["error"] = dinero::WalletManager::kNativeWalletP2MRUnavailableOnV3;
-        result["error_code"] = "wallet_native_p2mr_unavailable_on_v3";
-        result["retryable"] = false;
+        // v8.2.5: P2MR comes from the sealed P2MR pool (unguarded row only).
+        auto use = dinero::WalletService::AcquireWalletUse(service);
+        const auto issued = use->Wallet().issueNativeP2MRPoolAddress(label);
+        if (issued.address.empty()) {
+            result["error"] = issued.error;
+            result["error_code"] = issued.error_code;
+            result["retryable"] = issued.retryable;
+            return result;
+        }
+        result["address"] = issued.address;
+        result["address_type"] = "p2mr";
+        result["rpc_schema"] = "din.wallet.v1";
         return result;
     }
     if (!normalized.empty() && normalized != "taproot" && normalized != "p2tr" &&

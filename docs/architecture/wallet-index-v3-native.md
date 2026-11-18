@@ -1,7 +1,7 @@
 # Wallet index v3: native wallets (issue #939)
 
-Status: native v3 route merged; creation-time three-address completion is in
-`codex/v824-native-three-lane-create` for v8.2.4 qualification.
+Status: native v3 route and creation-time three addresses shipped in v8.2.4.
+Restore, Orchard spends and the P2MR pool are v8.2.5 (see the last section).
 
 ## Problem
 
@@ -223,7 +223,53 @@ The v3 transparent signer authenticates Orchard ownership and rejects inputs
 reserved by Orchard before staging a payment. Balance and status only claim
 native send readiness when the Orchard inventory is valid; a locked wallet
 cannot authenticate that inventory and reports send readiness after unlock.
-Orchard spends and
-restored-wallet enrollment remain separate #939 work. Additional P2MR
-addresses after v3 enrollment still need the P2MR pool and extension protocol
-described above; no new unsealed P2MR script is issued on that route.
+In v8.2.4, Orchard spends, restored-wallet enrollment and additional P2MR
+addresses after enrollment were refused; v8.2.5 serves all three.
+
+## v8.2.5: restore, Orchard spends and the P2MR pool
+
+**Restore.** `wallet.restore` on a v3 node skips the legacy rescan and
+reports `history_recovery=native_v3_after_unlock`. The creation owner accepts
+a restored seed; it never seals a fresh birth, so native enrollment replays
+the full history. Enrollment tops the receive pool up when the restore's
+gap-limit rows leave fewer than the low water unissued, so a restored wallet
+does not need a second full replay. `wallet.orchard.recoveraccount0` is
+served on v3 (explicit, as on v2). Restore holds the exclusive wallet
+creation owner (as `wallet.createhd`), so the worker cannot enroll a
+half-restored wallet; the HTTP and NodeCore dispatchers exempt it from their
+shared reader.
+
+**Orchard spends and shields.** The spend route already worked against the
+v3 source; the refusal is removed. A shield's transparent change goes to a
+pooled change address the enrollment receipts already cover
+(`NativeV3PooledChangeAddress`, shared with native sends); the wallet never
+derives a change script. Other derivation sites still fail closed for any
+typed v3 wallet.
+
+**P2MR pool.**
+- `native_v3_p2mr_pool(script_pubkey, address, idx, generation, issued,
+  label, issued_at)`, unguarded, at `m/88'/1448'/0'/0/idx`, leaf 0.
+  Generations share one sequence with `native_v3_address_pool`.
+- `native_v3_p2mr_target(generation, first_idx, count)`: an owed fill. Begin
+  (generation 0) and an extension (generation g) open it in the same
+  transaction that sets Pending. A P2MR-only extension retires the ordinary
+  receipt explicitly. The first target adopts every existing watched P2MR key
+  as issued.
+- The worker fills the target before a Pending wallet's coverage: one #945
+  cross-store issuance per index. `AdoptP2MRIssuanceIntent` inserts the pool
+  row in the same wallet transaction that adopts the watch script, and closes
+  the target with its last index. `BeginP2MRIssuance` accepts a typed wallet
+  only for an index an open target owes.
+- The native reconcile refuses while any target is owed, so no receipt is
+  sealed over a domain about to grow. The DNUI03 retire rule unions both pool
+  tables' newest generation.
+- A wallet without a PQ master or key store never opens a target and never
+  counts P2MR as low (no extension loop); P2MR stays
+  `wallet_native_p2mr_unavailable_on_v3`.
+- `wallet.getnewaddress p2mr` and `wallet.getnewp2mraddress` issue from the
+  pool (the latter refuses explicit derivation parameters with
+  `wallet_native_p2mr_pool_only`); `wallet.listp2mraddresses` hides unissued
+  pool rows.
+
+**Tests:** `WalletV3NativeOrchardSpend`, `WalletV3NativeRestore`,
+`WalletV3NativeP2MRPool`, `RpcRequestFraming.RestoreTakesTheExclusiveCreationOwner`.

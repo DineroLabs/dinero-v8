@@ -1402,6 +1402,9 @@ TEST(WalletV3NativeRoute, InterruptedNativeReconcileStaysPendingThenResumes) {
             EXPECT_THROW((void)lease->BeginNativeTransparentMigrationV3(index->Index(),session),std::exception);
             EXPECT_THROW((void)lease->BeginLegacyTransparentMigrationV3(index->Index(),session),std::exception);
         }
+        // v8.2.5: the owed P2MR pool fill precedes coverage (the reconcile
+        // refuses while it is owed); the worker does this before coverage.
+        FillNativeP2MRTargetsV3(use->Wallet(),session);
         EXPECT_FALSE(HasLegacyStateColumn(use->Wallet()));
         EXPECT_TRUE(HasNativeStateColumn(use->Wallet()));
         EXPECT_TRUE(use->Wallet().getNewAddress().empty()) << "Pending freezes the script domain";
@@ -1459,6 +1462,7 @@ TEST(WalletV3NativeRoute, OrchardOwnershipChangeDuringReconcileStaysPending) {
         auto lease=use->Wallet().AcquireDatabaseLease();
         ASSERT_FALSE(lease->BeginNativeTransparentMigrationV3(index->Index(),session).empty());
     }
+    FillNativeP2MRTargetsV3(use->Wallet(),session);  // v8.2.5: owed before coverage
     const auto coverage=f.f.service->getRuntimeWalletCoverageV3(use->Wallet(),session,index->Index());
     ASSERT_TRUE(coverage.ok()) << static_cast<int>(coverage.status());
     int commits=0;
@@ -2608,10 +2612,14 @@ TEST(WalletV3NativePool, IssuesUnissuedPoolAddressesKeepingReceipts) {
         EXPECT_FALSE(shown.contains(unissued));
         EXPECT_FALSE(shown.contains(change0));
     }
-    // P2MR is not pooled on v3: refused honestly, nothing written.
+    // v8.2.5: P2MR comes from the P2MR pool sealed with the same receipts
+    // (filled at enrollment): two distinct addresses, receipts untouched.
     const auto p2mr=NativeIssue(request,"p2mr");
-    EXPECT_EQ(p2mr["error_code"].asString(),"wallet_native_p2mr_unavailable_on_v3") << p2mr.toStyledString();
-    EXPECT_FALSE(p2mr.isMember("address"));
+    ASSERT_TRUE(p2mr.isMember("address")) << p2mr.toStyledString();
+    EXPECT_TRUE(p2mr["address"].asString().starts_with("rdin1r")) << p2mr.toStyledString();
+    const auto p2mr_next=NativeIssue(request,"p2mr");
+    ASSERT_TRUE(p2mr_next.isMember("address")) << p2mr_next.toStyledString();
+    EXPECT_NE(p2mr_next["address"].asString(),p2mr["address"].asString());
     // The legacy derivation path stays closed (defense in depth).
     EXPECT_TRUE(WalletService::AcquireWalletUse(f.wallet)->Wallet().getNewAddress().empty());
     ExpectNativeReceiptsCurrent(f,102);

@@ -14,6 +14,7 @@
 
 #include "daemon/daemon_context.h"
 #include "daemon/services/wallet_service.h"
+#include "daemon/services/chainstate_service.h"
 #include "dinero/daemon/execution_context.h"
 #include "rpc/rpc_registry.h"
 #include "rpc/legacy_transparent_freshness.h"
@@ -28,6 +29,8 @@
 #include <chrono>
 #include <cstring>
 #include <optional>
+#include <set>
+#include <sqlite3.h>
 #include <string>
 
 #include <openssl/crypto.h>
@@ -165,6 +168,66 @@ std::string HexOfArray(const std::array<uint8_t, N>& a) {
 din::Json rpc_wallet_getnewp2mraddress(const ExecutionContext& ctx,
                                        const din::Json&        params) {
     din::Json result;
+    // v8.2.5 (#939): a native wallet enrolled on a full-archive v3 node
+    // issues P2MR only from its sealed pool (m/88'/1448'/0'/0/idx, leaf 0).
+    // Deriving any other script would invalidate its receipts, so explicit
+    // derivation parameters are refused there.
+    if (ctx.daemon && ctx.daemon->wallet && ctx.daemon->wallet->hasActiveWallet()) {
+        const auto source = ctx.daemon->chainstate
+            ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate) : nullptr;
+        auto service = std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
+        if (source && service && source->HasFullArchiveWalletIndexV3()) {
+            try {
+                auto use = dinero::WalletService::AcquireWalletUse(service);
+                bool native = false;
+                {
+                    auto lease = use->Wallet().AcquireDatabaseLease();
+                    if (!ctx.walletName.empty() && lease->WalletName() != ctx.walletName) {
+                        result["error"] = "wallet_selection_changed";
+                        return result;
+                    }
+                    native = lease->LegacyTransparentState() ==
+                            dinero::WalletManager::LegacyTransparentState::Absent &&
+                        lease->NativeV3TransparentState() != dinero::WalletManager::NativeV3State::Absent;
+                }
+                if (native) {
+                    for (const char* key : {"account", "change", "address_index", "leaf_index", "hrp"}) {
+                        if (params.isMember(key)) {
+                            result["error"] = "This wallet issues P2MR addresses from its pool on this node; "
+                                              "derivation parameters are not accepted";
+                            result["error_code"] = "wallet_native_p2mr_pool_only";
+                            result["retryable"] = false;
+                            return result;
+                        }
+                    }
+                    const std::string label = params.isMember("label") && params["label"].is<std::string>()
+                        ? params["label"].as<std::string>() : std::string();
+                    const auto issued = use->Wallet().issueNativeP2MRPoolAddress(label);
+                    if (issued.address.empty()) {
+                        result["error"] = issued.error;
+                        result["error_code"] = issued.error_code;
+                        result["retryable"] = issued.retryable;
+                        return result;
+                    }
+                    auto store = OpenWalletStore(use->Wallet(), true);
+                    const auto row = store ? store->GetByAddress(1, issued.address) : std::nullopt;
+                    if (!row) {
+                        result["error"] = "p2mr_inventory_incomplete";
+                        return result;
+                    }
+                    result["address"]         = row->address;
+                    result["merkle_root_hex"] = HexOfArray(row->merkle_root);
+                    result["pubkey_hex"]      = HexOfArray(row->pubkey);
+                    result["derivation_path"] = row->derivation_path;
+                    result["leaf_index"]      = static_cast<int64_t>(row->leaf_index);
+                    return result;
+                }
+            } catch (const std::exception&) {
+                result["error"] = "wallet_ownership_unavailable";
+                return result;
+            }
+        }
+    }
     if (ctx.daemon && ctx.daemon->wallet && ctx.daemon->wallet->hasActiveWallet() &&
         RefuseIfLegacyTransparentAddressMutation(ctx, ctx.daemon->wallet, result)) return result;
     auto owner = AcquireUnlockedWallet(ctx, result);
@@ -338,8 +401,23 @@ din::Json rpc_wallet_listp2mraddresses(const ExecutionContext& ctx,
         return result;
     }
 
+    // v8.2.5 (#939): a native v3 wallet's P2MR pool scripts are not the
+    // user's to receive on until issued; list them only once issued.
+    std::set<std::string> unissued;
+    {
+        sqlite3* db = owner->lease->Database();
+        sqlite3_stmt* q = nullptr;
+        if (sqlite3_prepare_v2(db, "SELECT address FROM native_v3_p2mr_pool WHERE issued=0",
+                               -1, &q, nullptr) == SQLITE_OK) {
+            while (sqlite3_step(q) == SQLITE_ROW)
+                if (const auto* text = sqlite3_column_text(q, 0))
+                    unissued.emplace(reinterpret_cast<const char*>(text));
+        }
+        sqlite3_finalize(q);  // no table (no pool): nothing hidden
+    }
     din::Json arr = din::Json(Json::arrayValue);
     for (const auto& e : r.entries) {
+        if (unissued.contains(e.address)) continue;
         din::Json row;
         row["address"]         = e.address;
         row["merkle_root_hex"] = HexOfArray(e.merkle_root);

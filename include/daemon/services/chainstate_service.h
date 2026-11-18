@@ -154,6 +154,13 @@ namespace pool {
  * - Start() initializes genesis block and loads chain state
  * - Stop() performs clean shutdown and flushes data
  */
+class WalletManager;
+// v8.2.5 (#939): issue every P2MR pool script an open native v3 P2MR target
+// owes (one #945 cross-store issuance each, pool row adopted atomically with
+// its watch script). Needs the unlocked wallet; throws on any failure. The
+// runtime worker calls it before a Pending native wallet's coverage.
+void FillNativeP2MRTargetsV3(WalletManager& wallet,uint64_t session);
+
 class ChainstateService : public IService, public std::enable_shared_from_this<ChainstateService> {
     struct SelectedReadUse;
 public:
