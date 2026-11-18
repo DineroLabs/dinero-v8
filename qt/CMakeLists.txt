@@ -598,6 +598,8 @@ set(GUI_SOURCES
   # tied to the new daemon shielded RPCs).
   src/shieldedwidget.cpp
   src/bordercomet.cpp
+  src/mempoolsparkline.cpp
+  src/mempoolsparkline.h
   src/bordercomet.h
   src/shieldedwidget.h
   # Track C — Liquidity Vault (production, daemon-side custodial vault).

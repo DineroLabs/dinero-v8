@@ -101,12 +101,14 @@ private Q_SLOTS:
             QVERIFY2(qAbs(left(resources) - left(consensus)) <= 1, qPrintable("resources left edge" + at));
             QVERIFY2(qAbs(mempool->width() - consensus->width()) <= 1, qPrintable("mempool width" + at));
             QVERIFY2(qAbs(resources->width() - consensus->width()) <= 1, qPrintable("resources width" + at));
-            // My mining rewards sits under Resources in the same column and
+            // My mining rewards sits under Mempool in the same column and
             // ends level with Node operation.
             auto top = [&](QWidget* w) { return w->mapTo(&window, QPoint(0, 0)).y(); };
             QVERIFY2(qAbs(left(rewards) - left(consensus)) <= 1, qPrintable("rewards left edge" + at));
             QVERIFY2(qAbs(rewards->width() - consensus->width()) <= 1, qPrintable("rewards width" + at));
-            QVERIFY2(top(rewards) > top(resources) + resources->height(), qPrintable("rewards below resources" + at));
+            QVERIFY2(top(rewards) > top(mempool) + mempool->height(), qPrintable("rewards below mempool" + at));
+            // Row order: Node operation sits above Latest Blocks.
+            QVERIFY2(top(node) < top(blocks), qPrintable("node operation above latest blocks" + at));
             QVERIFY2(qAbs((top(rewards) + rewards->height()) - (top(node) + node->height())) <= 2,
                      qPrintable(QString("rewards bottom %1 vs node bottom %2").arg(top(rewards) + rewards->height())
                                     .arg(top(node) + node->height()) + at));

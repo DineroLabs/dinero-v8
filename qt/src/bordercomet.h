@@ -46,6 +46,7 @@ private:
     std::function<QRect()> frame_;
     qreal radius_;
     QTimer timer_;
+    QTimer resume_;             // shows the comet again after scrolling stops
     QElapsedTimer clock_;
     QPixmap base_;              // cached faint frame line
     QVector<QPointF> path_;     // frame samples, ~2 px apart, clockwise

@@ -1,6 +1,9 @@
 #include "bordercomet.h"
 
 #include <QEvent>
+#include <QScrollBar>
+#include <QMouseEvent>
+#include <QApplication>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPaintEvent>
@@ -70,6 +73,16 @@ void BorderComet::start() {
         return;
     }
     host_->installEventFilter(this);
+    // Step aside while the user scrolls: a see-through layer over a scrolling
+    // page defeats Qt's scroll fast path (stale areas, stutter on macOS).
+    if (qApp) qApp->installEventFilter(this);
+    resume_.setSingleShot(true);
+    resume_.setInterval(250);
+    connect(&resume_, &QTimer::timeout, this, [this] {
+        clock_.restart();
+        show();
+        raise();
+    });
     connect(&timer_, &QTimer::timeout, this, &BorderComet::tick);
     timer_.setTimerType(Qt::PreciseTimer);
     timer_.start(kFrameMs);
@@ -80,6 +93,20 @@ void BorderComet::start() {
 
 
 bool BorderComet::eventFilter(QObject* watched, QEvent* event) {
+    const auto type = event->type();
+    if (type == QEvent::Wheel || type == QEvent::ScrollPrepare || type == QEvent::Scroll ||
+        ((type == QEvent::MouseButtonPress || type == QEvent::MouseMove) &&
+         qobject_cast<QScrollBar*>(watched) && static_cast<QMouseEvent*>(event)->buttons())) {
+        auto* widget = qobject_cast<QWidget*>(watched);
+        if (widget && widget != this && host_->isAncestorOf(widget)) {
+            if (isVisible()) hide();
+            resume_.start();
+        }
+        return false;
+    }
+    if (watched != host_ && watched != watchedWindow_ &&
+        !(host_->isAncestorOf(qobject_cast<QWidget*>(watched)) && qobject_cast<QStackedWidget*>(watched)))
+        return false;
     if (event->type() == QEvent::Resize || event->type() == QEvent::Move ||
         event->type() == QEvent::Show || event->type() == QEvent::ParentChange ||
         event->type() == QEvent::ScreenChangeInternal)
