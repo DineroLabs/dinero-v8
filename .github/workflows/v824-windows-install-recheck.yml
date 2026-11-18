@@ -1,0 +1,87 @@
+name: v8.2.4 Windows signed installer recheck
+
+on:
+  push:
+    branches: [ci/v824-windows-install-recheck]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  install-recheck:
+    runs-on: windows-2022
+    timeout-minutes: 105
+    env:
+      EXPECTED_CORE_SOURCE: 5959d29035375b818a2238546f55559700122c92
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-candidate-failure-44252864077
+          run-id: 44252864077
+          github-token: ${{ github.token }}
+          path: signed-input
+
+      - name: Verify the exact signed packages
+        shell: powershell
+        run: |
+          $expected = @{
+            'Dinero-8.2.4-windows-x86_64-Setup.exe' = 'fcfb652c38ae3a5755d68815b6f926d3c54b641f70fdb05dad72b144349daf94'
+            'Dinero-Server-8.2.4-windows-x86_64-Setup.exe' = '7621f57667ae2bfaca21ffd9a9e88e5c1c940fdef0c45b84700bdcb0b5c3151a'
+            'dinero-v8.2.4-windows-x86_64-msvc.zip' = '747c66f121084765b66452e4ddb7f563c4952124cfc91be2e818f6a71951d113'
+          }
+          $dist = New-Item -ItemType Directory -Force packaging/windows/dist
+          foreach ($name in $expected.Keys) {
+            $files = @(Get-ChildItem signed-input -Recurse -File -Filter $name)
+            if ($files.Count -ne 1 -or (Get-FileHash $files[0].FullName).Hash -ne $expected[$name]) {
+              throw "Preserved package digest differs for $name"
+            }
+            if ($name.EndsWith('.exe') -and (Get-AuthenticodeSignature $files[0].FullName).Status -ne 'Valid') {
+              throw "Preserved signature is invalid for $name"
+            }
+            Copy-Item $files[0].FullName $dist.FullName
+          }
+          Expand-Archive (Join-Path $dist.FullName 'dinero-v8.2.4-windows-x86_64-msvc.zip') (Join-Path $env:RUNNER_TEMP 'orchard-operator-zip')
+
+      - name: Run the corrected release smoke and shipped wallet checks
+        shell: powershell
+        run: |
+          @'
+          from pathlib import Path
+          import os
+          import subprocess
+
+          workflow = Path('.github/workflows/windows-release.yml').read_text(encoding='utf-8')
+          steps = (
+              ('Silent GUI and server installer smoke', 'Preserve failed installer diagnostics and signed candidates'),
+              ('Qualify the shipped portable wallet recovery paths', 'Upload shipped-wallet qualification evidence'),
+          )
+          marker = '$' + '{{'
+          for number, (name, following_step) in enumerate(steps):
+              section = workflow.split(f'      - name: {name}\n', 1)[1]
+              section = section.split(f'      - name: {following_step}\n', 1)[0]
+              body = section.split('        run: |\n', 1)[1]
+              script = '\n'.join(line[10:] if line.startswith('          ') else line for line in body.splitlines())
+              script = script.replace(marker + ' steps.ver.outputs.version }}', '8.2.4')
+              if marker in script:
+                  raise RuntimeError('Unexpected expression in the release qualification step')
+              path = Path(os.environ['RUNNER_TEMP']) / f'check-{number}.ps1'
+              path.write_text("$ErrorActionPreference = 'Stop'\n" + script, encoding='utf-8-sig')
+              subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(path)],
+                             check=True, timeout=5400)
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Exact signed installer recheck failed' }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v824-signed-windows-install-recheck
+          path: |
+            installed-windows-snapshot-result.json
+            shipped-wallet-*.log
+            shipped-wallet-result.json
+            ${{ runner.temp }}/dinero-qt-startup-smoke/*.log
+          if-no-files-found: warn
+          retention-days: 7
