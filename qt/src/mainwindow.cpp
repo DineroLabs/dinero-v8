@@ -9,6 +9,7 @@
 #include "miningrewards.h"
 #include "inforow.h"
 #include "mainwindow.h"
+#include "bordercomet.h"
 #include "daemonoutput.h"
 #if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
 #include "orchardwidget.h"
@@ -2495,6 +2496,10 @@ void MainWindow::setupUI() {
   // the names and the switch to icon-only tabs below never got a chance.
   tabs->tabBar()->setUsesScrollButtons(true);
   mainTabs_ = tabs;
+  // A small light circling the content frame (decorative, low cost).
+  new BorderComet(tabs);
+  // ...and around every other window the user opens.
+  BorderComet::InstallForAllWindows(this);
   // Icon-only tabs when the full names do not fit; names come back when they do.
   class CompactTabsWatcher : public QObject {
   public:
@@ -3028,6 +3033,13 @@ void MainWindow::setupUI() {
     // ═══════════════════════════════════════════════════════════════════
     
     overview->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
+    // Uniform Overview typography: every card title in capitals, and one
+    // whitish tone for titles, values and tables (status colours keep theirs).
+    for (auto* group : overview->findChildren<QGroupBox*>()) group->setTitle(group->title().toUpper());
+    overview->setStyleSheet(QStringLiteral(
+        "QGroupBox::title { color: #d0d7df; } "
+        "QTableWidget, QTableView { color: #d0d7df; } "
+        "QHeaderView::section { color: #d0d7df; font-weight: 600; }"));
     tabs->addTab(makeScrollableTab(overview), navigationIcon(NavigationGlyph::Dashboard), "Overview");
   }
 

@@ -1,5 +1,6 @@
 #include "inforow.h"
 #include <QHBoxLayout>
+#include <QFont>
 #include <QLabel>
 #include <QRegularExpression>
 
@@ -26,8 +27,14 @@ InfoRow::InfoRow(const QString& text, QWidget* parent) : QWidget(parent) {
     layout->setContentsMargins(0, 1, 0, 1);
     name_ = new QLabel(this);
     value_ = new QLabel(this);
-    name_->setStyleSheet("QLabel { color: #8f9aa6; background: transparent; }");
-    value_->setStyleSheet("QLabel { color: #d6dde6; background: transparent; }");
+    // Names in capitals (display only: nameText() keeps the original text)
+    // in the same whitish family as the value, one step softer.
+    QFont nameFont = name_->font();
+    nameFont.setCapitalization(QFont::AllUppercase);
+    nameFont.setLetterSpacing(QFont::PercentageSpacing, 104);
+    name_->setFont(nameFont);
+    name_->setStyleSheet("QLabel { color: #b9c2cc; background: transparent; }");
+    value_->setStyleSheet("QLabel { color: #d0d7df; background: transparent; }");
     value_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     value_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     layout->addWidget(name_);

@@ -75,7 +75,7 @@ private Q_SLOTS:
 
         auto box = [&](const QString& title) -> QGroupBox* {
             for (auto* g : window.findChildren<QGroupBox*>())
-                if (g->title() == title) return g;
+                if (g->title().compare(title, Qt::CaseInsensitive) == 0) return g;
             return nullptr;
         };
         QGroupBox* consensus = box("v7 Consensus Health");
@@ -489,7 +489,7 @@ private Q_SLOTS:
         auto* rpc = window.findChild<RpcClient*>();
         QVERIFY(rpc);
         QGroupBox* info = nullptr;
-        for (auto* g : window.findChildren<QGroupBox*>()) if (g->title() == "Network Info") info = g;
+        for (auto* g : window.findChildren<QGroupBox*>()) if (g->title().compare("Network Info", Qt::CaseInsensitive) == 0) info = g;
         QVERIFY(info);
         Q_EMIT rpc->rpcResult("blockchain.getinfo", QJsonObject{{"blocks", 121208}, {"headers", 121208}, {"chain", "main"}});
         Q_EMIT rpc->rpcResult("economics.getinfo", QJsonObject{{"current_halving_epoch", 0}, {"halving_interval", 1314000},
