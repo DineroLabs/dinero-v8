@@ -24,6 +24,12 @@ public:
     void setWalletScope(const QString& walletName);
     void setWalletUnlocked(bool unlocked);
 
+Q_SIGNALS:
+    // v8.2.4: after Orchard activates (outside regtest) this pool is retired
+    // and read-only. The Shielded tab shows it only while the wallet still
+    // holds notes in it; `label` names it for the tab.
+    void retiredPoolVisibilityChanged(bool visible, const QString& label);
+
 public Q_SLOTS:
     void refresh();  // re-fetch balance + receive address
 
@@ -129,6 +135,15 @@ private:
     QString unshieldJournalStage_;
 
     QWidget* fundMovingSurface_ = nullptr;
+    QGroupBox* receiveBox_ = nullptr;
+    // v8.2.4 retired-pool mode, from orchard.getactivationstatus.
+    bool retired_ = false;
+    bool retiredKnown_ = false;
+    bool holdsNotes_ = false;
+    qint64 retiredAtHeight_ = 0;
+    int lastVisibility_ = -1;
+    QString lastLabel_;
+    void applyRetiredMode();
 
     // Activity
     QTextEdit* activityLog_ = nullptr;

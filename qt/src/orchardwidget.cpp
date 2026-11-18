@@ -106,7 +106,7 @@ void OrchardWidget::setupUi() {
     auto* root = new QVBoxLayout(this);
     root->setSpacing(kGutter);
     root->addWidget(Pill(Tone::Info,
-                         "Orchard preview — activation status is unknown until the node reports it.",
+                         "Orchard — checking activation status with the node…",
                          "orchardIntro", this));
 
     // --- Row 1: account | balance ---
