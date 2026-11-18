@@ -171,4 +171,35 @@ TEST(WalletV3NativeRestore, RefusedAutomaticRecoveryIsReported) {
     EXPECT_FALSE(info["orchard_account0_recovery"]["detail"].asString().empty()) << info.toStyledString();
 }
 
+// The automatic recovery is bound to the restored wallet's session: after
+// a switch to another wallet, a pass for the old session writes nothing,
+// and the new wallet's markers are never touched by the old recovery.
+TEST(OrchardAccount0Recovery, AutomaticRecoveryStaysWithItsWallet) {
+    Account0RecoveryFixture f;
+    ExecutionContext ctx;ctx.daemon=&f.context;
+    din::Json params(Json::arrayValue);
+    params.append("restored-a");params.append(RecoveryTestPhrase);params.append("");params.append("");
+    ASSERT_TRUE(rpc_context_wallet_restore(ctx,params)["success"].asBool());
+    uint64_t session_a=0;
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        session_a=use->Wallet().AcquireDatabaseLease()->Session();
+        ASSERT_EQ(use->Wallet().getSetting(WalletManager::kOrchardAccount0RestorePendingSetting),"1");
+        use->Wallet().open("before-recovery");   // switch to wallet B
+        EXPECT_EQ(use->Wallet().getSetting(WalletManager::kOrchardAccount0RestorePendingSetting),"");
+        use->Wallet().setSetting(WalletManager::kOrchardAccount0RestoreStatusSetting,"b-untouched");
+    }
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+        f.f.service->continueRestoredOrchardAccount0(use->Wallet(),session_a);   // stale session
+        f.f.service->continueRestoredOrchardAccount0(use->Wallet(),0);           // B: nothing pending
+        EXPECT_EQ(use->Wallet().getSetting(WalletManager::kOrchardAccount0RestoreStatusSetting),"b-untouched");
+        EXPECT_EQ(use->Wallet().getSetting(WalletManager::kOrchardAccount0RestorePendingSetting),"");
+        use->Wallet().open("restored-a");
+        EXPECT_EQ(use->Wallet().getSetting(WalletManager::kOrchardAccount0RestorePendingSetting),"1")
+            << "A's pending recovery survives the switch";
+    }
+}
+
 } // namespace dinero
