@@ -771,11 +771,11 @@ CreateSeedPage::CreateSeedPage(ConnectionManager* connMgr, QWidget* parent)
   compatGroup->setStyleSheet("QGroupBox { background: #e7f5ff; padding: 10px; border-radius: 8px; }");
   
   auto* compatInfo = new QLabel(
-    "<b>Your BIP39 seed phrase works across Dinero wallets.</b><br><br>"
+    "<b>Your BIP39 seed phrase restores Taproot addresses on supported Dinero wallets.</b><br><br>"
     "✅ <b>Taproot lane:</b> BIP86 <code>din1p...</code> addresses for mobile-friendly payments<br>"
     "✅ <b>Quantum-safe lane:</b> purpose 88 P2MR <code>din1r...</code> addresses using ML-DSA-65 in Qt<br><br>"
-    "Mobile restore uses the same seed for Taproot payments. P2MR keys derive from that same seed as mobile support expands.<br><br>"
-    "<i>One seed phrase, clear address lanes.</i>"
+    "P2MR keys are generated separately. A seed phrase alone cannot restore them or their funds. "
+    "Keep a separate wallet backup before receiving to a P2MR address."
   );
   compatInfo->setWordWrap(true);
   compatLayout->addWidget(compatInfo);
@@ -1328,7 +1328,9 @@ bool RestoreSeedPage::validatePage() {
     "Restore Wallet Confirmation",
     QString("Restore seed phrase into wallet '%1'?\n\n"
             "This creates a new named wallet for migration or recovery.\n"
-            "If you already have this wallet locally, cancel and use Load + Unlock + Rescan instead.\n\n"
+            "If you already have this wallet locally, cancel and use Load + Unlock + Rescan instead.\n"
+            "A seed phrase does not recover separately generated P2MR keys or funds. "
+            "Use your full wallet backup if you received to P2MR addresses.\n\n"
             "Continue with restore?")
       .arg(walletName),
     QMessageBox::Yes | QMessageBox::Cancel,
@@ -1493,7 +1495,8 @@ SetPasswordPage::SetPasswordPage(QWidget* parent) : QWizardPage(parent) {
   layout->addWidget(lblMatch_);
   
   auto* warning = new QLabel(
-    "⚠️ <b>Important:</b> If you forget this password, you'll need your seed phrase to restore your wallet."
+    "⚠️ <b>Important:</b> Keep your seed phrase and a separate wallet backup. "
+    "The seed can restore Taproot addresses, but not separately generated P2MR keys."
   );
   warning->setWordWrap(true);
   warning->setStyleSheet("QLabel { background: #fab005; padding: 8px; border-radius: 4px; margin-top: 10px; }");

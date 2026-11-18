@@ -3093,8 +3093,8 @@ void MainWindow::setupUI() {
     
     auto *compatSummaryRow = new QHBoxLayout;
     auto *lblCompatSummary = new QLabel(
-        "<b>One seed, two address lanes:</b> <code>din1p\u2026</code> Taproot and "
-        "<code>din1r\u2026</code> quantum-safe, restorable on desktop and mobile.");
+        "<b>Back up both key types:</b> your BIP39 seed restores Taproot addresses, "
+        "but P2MR keys need a separate wallet backup.");
     lblCompatSummary->setWordWrap(true);
     compatSummaryRow->addWidget(lblCompatSummary, 1);
     auto *btnSeedAbout = new QPushButton("About seed compatibility");
@@ -3105,12 +3105,14 @@ void MainWindow::setupUI() {
 
     // The full explanation is useful once; it no longer pushes the balance down.
     auto *lblCompat = new QLabel(
-        "<b>One seed, two address lanes.</b><br><br>"
-        "<b>BIP39 seed phrase</b> restores the same wallet across Dinero Qt and mobile. "
-        "<b>BIP86 Taproot</b> addresses (<code>din1p...</code>) are the mobile-friendly payment lane. "
-        "<b>Purpose 88 P2MR</b> addresses (<code>din1r...</code>) are the quantum-safe lane using ML-DSA-65 signatures.<br><br>"
+        "<b>Keep a backup of your wallet and seed phrase.</b><br><br>"
+        "<b>BIP39 seed phrase</b> restores BIP86 Taproot addresses (<code>din1p...</code>) "
+        "on supported desktop and mobile wallets. "
+        "<b>P2MR</b> addresses (<code>din1r...</code>) use separately generated "
+        "quantum-safe keys. A seed phrase alone does not restore those keys or their funds; "
+        "preserve a separate wallet backup before receiving to P2MR addresses.<br><br>"
         "✅ Desktop (Qt Wallet) - full node, mining, Taproot, P2MR quantum-safe receive/spend<br>"
-        "✅ Mobile (iOS Wallet) - seed-compatible Taproot payments; P2MR keys derive from the same seed as mobile support expands"
+        "✅ Mobile - seed-compatible Taproot payments on supported apps"
     );
     lblCompat->setWordWrap(true);
     lblCompat->setObjectName("walletSeedDetails");
