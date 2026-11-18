@@ -1,8 +1,10 @@
 #pragma once
 
 #include <QElapsedTimer>
+#include <QPixmap>
 #include <QPointF>
 #include <QRect>
+#include <QRegion>
 #include <QTimer>
 #include <QVector>
 #include <QWidget>
@@ -26,10 +28,6 @@ public:
     // Any window: the frame is the host's own edge.
     BorderComet(QWidget* host, qreal radius);
 
-    // Gives every top-level window the user opens (dialogs, the wallet
-    // wizard, settings, ...) its own comet when it is first shown. Menus,
-    // tooltips, popups and the main window itself are skipped.
-    static void InstallForAllWindows(QWidget* mainWindow);
     static bool Enabled();
 
 protected:
@@ -40,14 +38,16 @@ private:
     void start();
     void relayout();
     void tick();
-    QRect cometBounds(double head) const;
+    QRegion cometRegion(double head) const;
     bool onScreen() const;
 
     QWidget* host_;
+    QWidget* watchedWindow_ = nullptr;
     std::function<QRect()> frame_;
     qreal radius_;
     QTimer timer_;
     QElapsedTimer clock_;
+    QPixmap base_;              // cached faint frame line
     QVector<QPointF> path_;     // frame samples, ~2 px apart, clockwise
     double head_ = 0.0;         // head position as an index into path_
 };

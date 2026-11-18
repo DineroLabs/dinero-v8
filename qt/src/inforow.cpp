@@ -31,10 +31,11 @@ InfoRow::InfoRow(const QString& text, QWidget* parent) : QWidget(parent) {
     // in the same whitish family as the value, one step softer.
     QFont nameFont = name_->font();
     nameFont.setCapitalization(QFont::AllUppercase);
+    nameFont.setPointSizeF(nameFont.pointSizeF() * 0.8);  // capitals read 20% smaller
     nameFont.setLetterSpacing(QFont::PercentageSpacing, 104);
     name_->setFont(nameFont);
     name_->setStyleSheet("QLabel { color: #b9c2cc; background: transparent; }");
-    value_->setStyleSheet("QLabel { color: #d0d7df; background: transparent; }");
+    value_->setStyleSheet("QLabel { color: #ccd3dc; background: transparent; }");
     value_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     value_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     layout->addWidget(name_);

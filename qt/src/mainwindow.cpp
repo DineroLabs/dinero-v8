@@ -2498,8 +2498,6 @@ void MainWindow::setupUI() {
   mainTabs_ = tabs;
   // A small light circling the content frame (decorative, low cost).
   new BorderComet(tabs);
-  // ...and around every other window the user opens.
-  BorderComet::InstallForAllWindows(this);
   // Icon-only tabs when the full names do not fit; names come back when they do.
   class CompactTabsWatcher : public QObject {
   public:
@@ -3035,11 +3033,21 @@ void MainWindow::setupUI() {
     overview->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
     // Uniform Overview typography: every card title in capitals, and one
     // whitish tone for titles, values and tables (status colours keep theirs).
-    for (auto* group : overview->findChildren<QGroupBox*>()) group->setTitle(group->title().toUpper());
+    // Titles are 20% smaller than the body text; contents keep their size.
+    for (auto* group : overview->findChildren<QGroupBox*>()) {
+      group->setTitle(group->title().toUpper());
+      const QFont body = group->font();
+      QFont title = body;
+      title.setPointSizeF(body.pointSizeF() * 0.8);
+      group->setFont(title);
+      for (auto* child : group->findChildren<QWidget*>(Qt::FindDirectChildrenOnly)) child->setFont(body);
+    }
+    // Nothing on Overview is brighter than the top tab bar (#d5dce5).
     overview->setStyleSheet(QStringLiteral(
-        "QGroupBox::title { color: #d0d7df; } "
-        "QTableWidget, QTableView { color: #d0d7df; } "
-        "QHeaderView::section { color: #d0d7df; font-weight: 600; }"));
+        "QLabel, QPushButton, QCheckBox { color: #ccd3dc; } "
+        "QGroupBox::title { color: #ccd3dc; } "
+        "QTableWidget, QTableView { color: #ccd3dc; } "
+        "QHeaderView::section { color: #ccd3dc; font-weight: 600; }"));
     tabs->addTab(makeScrollableTab(overview), navigationIcon(NavigationGlyph::Dashboard), "Overview");
   }
 
