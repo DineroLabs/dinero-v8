@@ -1181,6 +1181,10 @@ int main(int argc, char** argv) {
 #include "orchard_proof_finalization_checks.h"
 
 #include "orchard_spend_rpc_checks.h"
+#ifdef DINERO_TEST_ORCHARD_ORIGIN
+// Uses ServiceProofTerminal and the v3 route helpers (Orchard-origin only).
+#include "wallet_v3_native_orchard_spend_checks.h"
+#endif
 
 #include "orchard_finish_rpc_checks.h"
 

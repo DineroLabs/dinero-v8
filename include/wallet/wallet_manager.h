@@ -446,6 +446,11 @@ public:
         // fewer than kNativeV3PoolLowWater unissued receive or unused change
         // scripts (or no pool table yet) needs an extension.
         [[nodiscard]] bool NativeV3PoolNeedsExtension() const;
+        // The first pooled change-chain address of a native v3 wallet with no
+        // coin history whose key this seed pin resolves. Enrollment receipts
+        // sealed it, so paying change there derives nothing and keeps both
+        // receipts valid. Empty if the pool has none. Read-only.
+        [[nodiscard]] std::string NativeV3PooledChangeAddress(const RecoverySeed& owner);
         // #939 phase 2 extension, driven by the runtime worker. One durable
         // transaction (unlocked seed): requires native Complete with a sealed
         // ordinary receipt, derives the next kNativeV3ReceivePool scripts of

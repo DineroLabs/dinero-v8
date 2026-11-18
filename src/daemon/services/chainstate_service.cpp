@@ -23736,7 +23736,18 @@ std::unique_ptr<wallet::OrchardQueuedSpend> ChainstateService::queueRuntimeWalle
         if(lease->Session()!=session||!sqlite3_get_autocommit(lease->Database()))
             throw std::runtime_error("Shield selected wallet session changed");
         if(total>required){
-            const auto address=wallet.getNewChangeAddress("","taproot");
+            // A native wallet served by a full-archive v3 index owns only the
+            // scripts its sealed receipts proved: deriving a change script
+            // would invalidate them and leave the change unscanned. Pay change
+            // to a pooled (already covered) change address instead.
+            const bool native_v3=HasFullArchiveWalletIndexV3()&&
+                lease->NativeV3TransparentState()!=WalletManager::NativeV3State::Absent;
+            std::string address;
+            if(native_v3){
+                auto pin=lease->CopyRecoverySeed(session);
+                address=lease->NativeV3PooledChangeAddress(*pin);
+                if(address.empty())throw std::runtime_error("Shield change pool exhausted; retry after the wallet extends its address pool");
+            }else address=wallet.getNewChangeAddress("","taproot");
             const auto network=selected->context.domain.network_code;
             const auto decoded=DecodeWitnessAddress(address,network==0?"din":network==1?"tdin":"rdin");
             if(!decoded.is_valid||decoded.witness_version!=1||decoded.witness_program.size()!=32)

@@ -4387,6 +4387,33 @@ bool WalletManager::DatabaseLease::NativeV3PoolNeedsExtension() const {
     return low.receive || low.change;
 }
 
+std::string WalletManager::DatabaseLease::NativeV3PooledChangeAddress(const RecoverySeed& owner) {
+    if (thread_ != std::this_thread::get_id())
+        throw std::logic_error("Native change pool used on another thread");
+    if (!db_ || name_.empty() || owner_.db_ != db_ || owner_.database_session_ != session_)
+        throw std::runtime_error("Native change pool ownership unavailable");
+    std::vector<std::pair<std::string, std::string>> candidates;
+    {
+        LegacyMigrationStatement pool(db_,
+            "SELECT a.address, a.script_pubkey FROM addresses a WHERE a.account=0 AND a.change=1 "
+            "AND NOT EXISTS (SELECT 1 FROM utxos u WHERE u.address=a.address) ORDER BY a.idx");
+        int rc;
+        while ((rc = sqlite3_step(pool.stmt)) == SQLITE_ROW) {
+            const auto* address = reinterpret_cast<const char*>(sqlite3_column_text(pool.stmt, 0));
+            const auto* script = reinterpret_cast<const char*>(sqlite3_column_text(pool.stmt, 1));
+            if (!address || !script) continue;
+            candidates.emplace_back(std::string(address, sqlite3_column_bytes(pool.stmt, 0)),
+                                    std::string(script, sqlite3_column_bytes(pool.stmt, 1)));
+        }
+        if (rc != SQLITE_DONE) throw std::runtime_error("Native change pool unavailable");
+    }
+    for (const auto& [address, script] : candidates) {
+        auto key = ResolveSigningKey(script, owner);
+        if (key && key->secret.size() == 32) return address;
+    }
+    return {};
+}
+
 bool WalletManager::DatabaseLease::BeginNativePoolExtensionV3(
     const dinero::UTXOIndex& metadata_index, uint64_t expected_session) {
     if (thread_ != std::this_thread::get_id())

@@ -3782,23 +3782,7 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
             if (native_v3_send) {
                 // First pooled change-chain address with no coin history. It
                 // was sealed by the enrollment receipts; nothing is derived.
-                sqlite3_stmt* raw = nullptr;
-                if (sqlite3_prepare_v2(lease->Database(),
-                        "SELECT a.address FROM addresses a WHERE a.account=0 AND a.change=1 "
-                        "AND NOT EXISTS (SELECT 1 FROM utxos u WHERE u.address=a.address) ORDER BY a.idx",
-                        -1, &raw, nullptr) != SQLITE_OK)
-                    throw std::runtime_error("Native change pool unavailable");
-                const std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> pool(raw, sqlite3_finalize);
-                int rc;
-                while (change_address.empty() && (rc = sqlite3_step(raw)) == SQLITE_ROW) {
-                    const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(raw, 0));
-                    if (!text) continue;
-                    const std::string candidate(text, sqlite3_column_bytes(raw, 0));
-                    auto recorded = wallet_use->Wallet().getScriptPubKeyForAddress(candidate);
-                    if (!recorded) continue;
-                    auto key = lease->ResolveSigningKey(*recorded, *pin);
-                    if (key && key->secret.size() == 32) change_address = candidate;
-                }
+                change_address = lease->NativeV3PooledChangeAddress(*pin);
             }
             // A wallet enrolled before the change pool existed (and the legacy
             // class) reuses an owned input address instead.
