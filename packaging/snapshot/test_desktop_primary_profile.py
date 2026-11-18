@@ -17,7 +17,7 @@ from fetch_desktop_primary import fetch, helper_dirs
 
 
 class DesktopPrimaryProfileTest(unittest.TestCase):
-    name = "dinero-assumeutxo-153578-v6-full.dat"
+    name = "dinero-assumeutxo-155650-v6-full.dat"
     block_hash = "ab" * 32
 
     def setUp(self):
@@ -34,11 +34,11 @@ class DesktopPrimaryProfileTest(unittest.TestCase):
         header[:4] = b"UXTO"
         struct.pack_into("<I", header, 4, 6)
         header[8:40] = bytes.fromhex(self.block_hash)[::-1]
-        struct.pack_into("<I", header, 40, 153578)
+        struct.pack_into("<I", header, 40, 155650)
         section = b"ORCH" + struct.pack("<I", 1) + bytes([profile])
         body = bytes(header) + struct.pack("<Q", len(section)) + section
         self.payload.write_bytes(body + hashlib.sha256(body).digest())
-        identity = {"snapshot_file": self.name, "height": 153578,
+        identity = {"snapshot_file": self.name, "height": 155650,
                     "block_hash": self.block_hash, "bytes": self.payload.stat().st_size,
                     "sha256": hashlib.sha256(self.payload.read_bytes()).hexdigest()}
         self.manifest.write_text(json.dumps({"network": "mainnet", "format_version": 6,
@@ -136,7 +136,7 @@ class DesktopPrimaryProfileTest(unittest.TestCase):
         catalog["primary"]["format_version"] = 5
         self.catalog.write_text(json.dumps(catalog))
         destination = self.root / "refused"
-        with self.assertRaisesRegex(ValueError, "qualified H153578"):
+        with self.assertRaisesRegex(ValueError, "desktop primary pin"):
             fetch(self.payload.as_uri(), self.manifest.as_uri(), self.catalog,
                   destination, allow_file=True)
         self.assertFalse(destination.exists())
@@ -224,7 +224,7 @@ class DesktopPrimaryProfileTest(unittest.TestCase):
                                     self.catalog, destination, publisher_key=public,
                                     allow_file=True, fallback_height=153051)
         self.assertEqual(payload.name, fallback_name)
-        self.assertEqual(verify_recent_fallback(payload, normalized, self.catalog)["profile"], "full")
+        self.assertEqual(verify_recent_fallback(payload, normalized, self.catalog, fallback_name)["profile"], "full")
         verify_publisher(normalized, destination / (fallback_name + ".publisher.manifest.json"),
                          destination / (fallback_name + ".publisher.manifest.sig"), fallback_name, public)
         self.assertEqual(json.loads(normalized.read_text())["snapshot"]["snapshot_file"], fallback_name)

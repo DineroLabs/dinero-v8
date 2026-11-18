@@ -33,7 +33,7 @@ sys.path.insert(0, str(script_dir))
 if source_helpers.is_dir():
     sys.path.insert(0, str(source_helpers))
 from check_snapshot_freshness import validate as check_freshness
-from check_desktop_primary import verify, verify_recent_fallback, verify_publisher
+from check_desktop_primary import full_v6_pin, verify_pinned, verify_publisher
 
 
 def _download(url: str, destination: Path, limit: int) -> None:
@@ -63,21 +63,7 @@ def fetch(payload_url: str, manifest_url: str, catalog_path: Path, destination: 
         scheme = urlsplit(url).scheme
         if scheme != "https" and not (allow_file and scheme == "file"):
             raise ValueError("snapshot input URL must use HTTPS")
-    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-    if fallback_height is None:
-        pin = catalog["primary"]
-        if (pin.get("filename") != "dinero-assumeutxo-153578-v6-full.dat" or
-                pin.get("height") != 153578 or pin.get("format_version") != 6 or
-                pin.get("snapshot_profile") != "full"):
-            raise ValueError("qualified H153578 full-v6 catalog pin is unavailable")
-    elif fallback_height == 153051:
-        matches = [entry for entry in catalog["fallbacks"] if entry.get("height") == 153051]
-        if (len(matches) != 1 or matches[0].get("filename") != "dinero-assumeutxo-153051-v6-full.dat" or
-                matches[0].get("format_version") != 6 or matches[0].get("snapshot_profile") != "full"):
-            raise ValueError("qualified H153051 full-v6 fallback pin is unavailable")
-        pin = matches[0]
-    else:
-        raise ValueError("only the exact H153051 full-v6 fallback may be fetched")
+    pin = full_v6_pin(catalog_path, fallback_height)
     if type(pin.get("bytes")) is not int or pin["bytes"] < 109 or pin["bytes"] > 536870912:
         raise ValueError("invalid pinned full-v6 payload length")
     destination.mkdir(parents=True, exist_ok=True)
@@ -127,10 +113,7 @@ def fetch(payload_url: str, manifest_url: str, catalog_path: Path, destination: 
         staged_manifest.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         staged_payload = root / pin["filename"]
         _download(payload_url, staged_payload, pin["bytes"])
-        if fallback_height is None:
-            verify(staged_payload, staged_manifest, catalog_path, pin["filename"])
-        else:
-            verify_recent_fallback(staged_payload, staged_manifest, catalog_path)
+        verify_pinned(staged_payload, staged_manifest, pin, pin["filename"])
         if signature_verified:
             verify_publisher(staged_manifest, source_manifest, source_signature,
                              pin["filename"], publisher_key)
@@ -156,7 +139,7 @@ if __name__ == "__main__":
     parser.add_argument("--signature-url", help="publisher detached signature URL; inferred from manifest URL if absent")
     parser.add_argument("--destination", type=Path, required=True)
     parser.add_argument("--catalog", type=Path, default=Path(__file__).with_name("desktop-inputs-candidate.json"))
-    parser.add_argument("--fallback-height", type=int, choices=[153051], help="fetch the signed exact-lifecycle fallback")
+    parser.add_argument("--fallback-height", type=int, help="fetch a signed exact-lifecycle fallback from the catalog")
     args = parser.parse_args()
     try:
         print(*fetch(args.payload_url, args.manifest_url, args.catalog, args.destination,

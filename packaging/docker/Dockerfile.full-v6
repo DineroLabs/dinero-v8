@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
-# Full-v6 image source. H153578 is the primary only after final-source native
+# Full-v6 image source. H155650 is the primary only after final-source native
 # import/restart and public signed-asset qualification; older bases remain fallbacks.
 ARG DINERO_VERSION=8.2.4
-ARG PRIMARY_SNAPSHOT_RELEASE=v8.2.3
+ARG PRIMARY_SNAPSHOT_RELEASE=v8.2.4
 ARG RECOVERY_SNAPSHOT_RELEASE=v8.2.2
 ARG PRIMARY_SNAPSHOT_PAYLOAD_URL=
 ARG PRIMARY_SNAPSHOT_MANIFEST_URL=
@@ -45,9 +45,9 @@ RUN set -eux; \
       RECENT_FALLBACK_MANIFEST_URL='https://seed3.dinerolabs.org/v823-candidate/h153051-f7-05105aa3-20d87ae6/manifest.json'; \
       RECENT_FALLBACK_SIGNATURE_URL='https://seed3.dinerolabs.org/v823-candidate/h153051-f7-05105aa3-20d87ae6/manifest.sig'; \
     else \
-      PRIMARY_SNAPSHOT_PAYLOAD_URL="${PRIMARY}/dinero-assumeutxo-153578-v6-full.dat"; \
-      PRIMARY_SNAPSHOT_MANIFEST_URL="${PRIMARY}/dinero-assumeutxo-153578-v6-full.dat.publisher.manifest.json"; \
-      PRIMARY_SNAPSHOT_SIGNATURE_URL="${PRIMARY}/dinero-assumeutxo-153578-v6-full.dat.publisher.manifest.sig"; \
+      PRIMARY_SNAPSHOT_PAYLOAD_URL="${PRIMARY}/dinero-assumeutxo-155650-v6-full.dat"; \
+      PRIMARY_SNAPSHOT_MANIFEST_URL="${PRIMARY}/dinero-assumeutxo-155650-v6-full.dat.publisher.manifest.json"; \
+      PRIMARY_SNAPSHOT_SIGNATURE_URL="${PRIMARY}/dinero-assumeutxo-155650-v6-full.dat.publisher.manifest.sig"; \
       RECENT_FALLBACK_PAYLOAD_URL="${PRIMARY}/dinero-assumeutxo-153051-v6-full.dat"; \
       RECENT_FALLBACK_MANIFEST_URL="${PRIMARY}/dinero-assumeutxo-153051-v6-full.dat.publisher.manifest.json"; \
       RECENT_FALLBACK_SIGNATURE_URL="${PRIMARY}/dinero-assumeutxo-153051-v6-full.dat.publisher.manifest.sig"; \
@@ -75,6 +75,13 @@ RUN set -eux; \
       --manifest-url "${RECENT_FALLBACK_MANIFEST_URL}" \
       --signature-url "${RECENT_FALLBACK_SIGNATURE_URL}" \
       --destination /tmp/dl --catalog /verify/desktop-inputs-candidate.json; \
+    PREVIOUS='https://github.com/DineroLabs/dinero-v8/releases/download/v8.2.3'; \
+    python3 /verify/fetch_desktop_primary.py \
+      --fallback-height 153578 \
+      --payload-url "${PREVIOUS}/dinero-assumeutxo-153578-v6-full.dat" \
+      --manifest-url "${PREVIOUS}/dinero-assumeutxo-153578-v6-full.dat.publisher.manifest.json" \
+      --signature-url "${PREVIOUS}/dinero-assumeutxo-153578-v6-full.dat.publisher.manifest.sig" \
+      --destination /tmp/dl --catalog /verify/desktop-inputs-candidate.json; \
     curl -fsSL -O "${RECOVERY}/dinero-assumeutxo-148375-v5.dat"; \
     curl -fsSL -O "${RECOVERY}/dinero-assumeutxo-148375-v5.dat.manifest.json"; \
     curl -fsSL -O "${RECOVERY}/dinero-assumeutxo-99677-v4.dat"; \
@@ -94,7 +101,8 @@ RUN set -eux; \
     mkdir -p /out; \
     cp "dinero-linux-x86_64-${DINERO_VERSION}/dinerod" /out/dinerod; \
     cp "dinero-linux-x86_64-${DINERO_VERSION}/dinero-cli" /out/dinero-cli; \
-    cp dinero-assumeutxo-153578-v6-full.dat* \
+    cp dinero-assumeutxo-155650-v6-full.dat* \
+       dinero-assumeutxo-153578-v6-full.dat* \
        dinero-assumeutxo-153051-v6-full.dat* \
        dinero-assumeutxo-148375-v5.dat* \
        dinero-assumeutxo-99677-v4.dat* \
@@ -118,6 +126,7 @@ COPY --from=fetch /out/dinero-cli /usr/local/bin/dinero-cli
 # compiled daemon identity too before the image can pass a build.
 COPY packaging/docker/check_binary_source.sh /verify/check_binary_source.sh
 RUN sh /verify/check_binary_source.sh /usr/local/bin/dinerod "${EXPECTED_SOURCE_SHA}" "${DINERO_VERSION}"
+COPY --from=fetch /out/dinero-assumeutxo-155650-v6-full.dat* /opt/dinero/
 COPY --from=fetch /out/dinero-assumeutxo-153578-v6-full.dat* /opt/dinero/
 COPY --from=fetch /out/dinero-assumeutxo-153051-v6-full.dat* /opt/dinero/
 COPY --from=fetch /out/dinero-assumeutxo-148375-v5.dat* /opt/dinero/
@@ -126,8 +135,8 @@ COPY --from=fetch /out/dinero-assumeutxo-73035-v4.dat* /opt/dinero/
 COPY --from=fetch /out/utxo-snapshot-65300.dat* /opt/dinero/
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
-ENV DINERO_SNAPSHOT=/opt/dinero/dinero-assumeutxo-153578-v6-full.dat
-ENV DINERO_SNAPSHOT_FALLBACKS="/opt/dinero/dinero-assumeutxo-153051-v6-full.dat;/opt/dinero/dinero-assumeutxo-148375-v5.dat;/opt/dinero/dinero-assumeutxo-99677-v4.dat;/opt/dinero/dinero-assumeutxo-73035-v4.dat;/opt/dinero/utxo-snapshot-65300.dat"
+ENV DINERO_SNAPSHOT=/opt/dinero/dinero-assumeutxo-155650-v6-full.dat
+ENV DINERO_SNAPSHOT_FALLBACKS="/opt/dinero/dinero-assumeutxo-153578-v6-full.dat;/opt/dinero/dinero-assumeutxo-153051-v6-full.dat;/opt/dinero/dinero-assumeutxo-148375-v5.dat;/opt/dinero/dinero-assumeutxo-99677-v4.dat;/opt/dinero/dinero-assumeutxo-73035-v4.dat;/opt/dinero/utxo-snapshot-65300.dat"
 VOLUME /data
 EXPOSE 20999/tcp
 USER dinero
