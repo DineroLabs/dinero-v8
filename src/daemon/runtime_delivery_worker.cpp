@@ -43,10 +43,17 @@ void RuntimeDeliveryWorker::Start() {
         std::lock_guard lock(state_->mutex);state_->stopping=true;state_->requested=false;state_->report.running=false;throw;
     }
 }
-void RuntimeDeliveryWorker::Stop() {
-    std::lock_guard lifecycle(lifecycle_);
+void RuntimeDeliveryWorker::SignalStop() noexcept {
     {std::lock_guard lock(state_->mutex);state_->stopping=true;state_->requested=false;}
     state_->wake.notify_one();
+}
+void RuntimeDeliveryWorker::RequestStop() {
+    std::lock_guard lifecycle(lifecycle_);
+    SignalStop();
+}
+void RuntimeDeliveryWorker::Stop() {
+    std::lock_guard lifecycle(lifecycle_);
+    SignalStop();
     // No consumer mutex or selected/wallet owner is held while joining.
     if (thread_.joinable()) thread_.join();
     std::lock_guard lock(state_->mutex);state_->report.running=false;
@@ -238,6 +245,7 @@ void RuntimeDeliveryWorker::Run() noexcept {
             if (restart) {
                 pass=Report{};
                 RecoverWallet(pass,resource_blocked_session,recovery_attempts);
+                if (Stopping()) break;
                 try { RestoreRetiredLegacyPendingNotes(); }
                 catch (...) { /* Keep the durable note state for the next retry. */ }
                 ObserveVault(pass,vault_observation);

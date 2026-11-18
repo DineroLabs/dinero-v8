@@ -8145,6 +8145,15 @@ void DaemonApp::Stop() {
     const auto shutdown_start = ShutdownClock::now();
     LogShutdownPhase("interrupting", shutdown_start, "DaemonApp::Stop entered");
 
+    // A replay may hold activation_mutex_ while walking old headers. Signal
+    // its cancellation BEFORE detaching notifications, which needs that same
+    // mutex; the later Stop() joins after the provider has been detached.
+    if (runtime_delivery_worker_) {
+        runtime_delivery_worker_->RequestStop();
+        LogShutdownPhase("runtime_delivery_cancel_requested", shutdown_start,
+                         "wallet replay cancellation signaled before selected ownership");
+    }
+
     // Remove the daemon-owned handoff before joining either worker. These
     // tokens own only wake mailboxes, so removal cannot join under selected
     // ownership. Acquiring/releasing selected ownership happens inside setter.

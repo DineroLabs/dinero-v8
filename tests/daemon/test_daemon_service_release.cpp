@@ -1,8 +1,10 @@
 #include <algorithm>
+#include <atomic>
 #include "daemon/daemon_app.h"
 #include "daemon/runtime_delivery_worker.h"
 #include "pool/pool_manager.h"
 #include <chrono>
+#include <exception>
 #include <filesystem>
 #include <thread>
 #include "daemon/services/chainstate_service.h"
@@ -257,7 +259,37 @@ int main(int argc, char** argv) try {
             try { ctx.chainstate->Stop(); } catch (const std::logic_error&) { refused=true; }
             if (!refused) throw std::runtime_error("owned wallet index did not prevent same-thread shutdown");
         }
-        app.Stop();
+        if(scheduled_fixture) {
+            // Reproduce the shutdown ordering that the Windows H149999 node
+            // exposed: selected ownership is unavailable while Stop begins.
+            // The worker must receive cancellation before provider detachment
+            // waits for that owner. Releasing the lock after the observation
+            // keeps a failing version of the test from hanging.
+            std::atomic<bool> selected_held=false,release_selected=false;
+            std::thread selected_holder([&] {
+                auto selected=ctx.chainstate->AcquireBlockIngressActivationLock();
+                selected_held.store(true);
+                while(!release_selected.load())std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            });
+            const auto hold_deadline=std::chrono::steady_clock::now()+std::chrono::seconds(10);
+            while(!selected_held.load() && std::chrono::steady_clock::now()<hold_deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            if(!selected_held.load()) {
+                release_selected.store(true);selected_holder.join();
+                throw std::runtime_error("shutdown test could not hold selected ownership");
+            }
+            std::exception_ptr stop_error;
+            std::thread stopper([&] {try {app.Stop();}catch(...) {stop_error=std::current_exception();}});
+            const auto signal_deadline=std::chrono::steady_clock::now()+std::chrono::seconds(10);
+            while(wake.Running() && std::chrono::steady_clock::now()<signal_deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            const bool cancellation_before_detach=!wake.Running();
+            release_selected.store(true);selected_holder.join();stopper.join();
+            if(stop_error)std::rethrow_exception(stop_error);
+            if(!cancellation_before_detach)
+                throw std::runtime_error("worker cancellation waited behind selected ownership");
+            std::cout << "PASS runtime replay cancellation precedes selected-owner notification detach\n";
+        } else app.Stop();
         if (dinero::RuntimeDeliveryStartupTestAccess::Notifications(app) ||
             dinero::RuntimeDeliveryStartupTestAccess::Installed(*ctx.chainstate) || !notifications_weak.expired())
             throw std::runtime_error("daemon retained typed notification ownership after Stop");
