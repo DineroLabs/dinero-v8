@@ -23,6 +23,7 @@ on:
 jobs:
   swap-windows:
     name: Windows MSVC — dinerod + swap store tests
+    if: ${{ github.ref == 'refs/heads/dinero-main' }} # Diagnostic branch runs only the Qt job.
     runs-on: windows-2022
     timeout-minutes: 120
     steps:
@@ -166,6 +167,16 @@ jobs:
           $env:QT_QPA_PLATFORM = 'offscreen'
           $env:QT_QPA_FONTDIR = "$env:WINDIR\Fonts"
           $env:PATH = "$env:QT_ROOT_DIR\bin;$env:PATH"
+          $details = Join-Path $env:RUNNER_TEMP 'overview-details.txt'
+          & '.\build-msvc-qt\bin\Release\test_overview_columns.exe' '-v2' '-o' "$details,txt"
+          $overviewExit = $LASTEXITCODE
+          if (Test-Path $details) {
+            Get-Content $details -Tail 240
+          } else {
+            Write-Host 'OverviewColumns did not create a Qt Test detail file'
+          }
+          Write-Host "OverviewColumns direct exit code: $overviewExit"
+          if ($overviewExit -ne 0) { exit $overviewExit }
           ctest --test-dir build-msvc-qt -C Release -R '^(SwapTab|OverviewColumns)$' --output-on-failure | Tee-Object ctest.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Select-String -Path ctest.log -Pattern '100% tests passed, 0 tests failed out of 2')) {
