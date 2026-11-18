@@ -6257,7 +6257,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
       --gtest_filter=WalletV3NativeInterim.*)
     set_tests_properties(WalletV3NativeInterim PROPERTIES TIMEOUT 180 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
     # #939 native-wallet route on v3: phase 1, sends, pool (phase 2), Orchard (phase 3).
-    foreach(_native_v3_suite WalletFreshBirth WalletV3NativeRoute WalletV3NativeSpend WalletV3NativePool WalletV3NativeOrchard WalletV3NativeOrchardSpend WalletV3NativeRestore WalletV3NativeP2MRPool)
+    foreach(_native_v3_suite WalletFreshBirth WalletV3NativeRoute WalletV3NativeSpend WalletV3NativePool WalletV3NativeOrchard WalletV3NativeOrchardSpend WalletV3NativeRestore WalletV3NativeP2MRPool WalletV3NativeSwap)
       add_test(NAME ${_native_v3_suite} COMMAND test_assumeutxo_replay
         --gtest_filter=${_native_v3_suite}.*)
       set_tests_properties(${_native_v3_suite} PROPERTIES TIMEOUT 300 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")

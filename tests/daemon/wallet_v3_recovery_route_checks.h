@@ -2426,13 +2426,19 @@ TEST(WalletV3NativeSpend, NativeSendRefusesPendingLockedAndStaleReceipt) {
     std::string error;
     ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
         WalletService::CanonicalRecovery::AppliedPrefix) << error;
-    // Only sendtoaddress is enabled: every other spend RPC (sendmany and the
-    // bound pool/swap dispatch built on it) keeps the native refusal.
+    // v8.2.5: sendmany and the bound pool/swap dispatch now pay through the
+    // native v3 owner (one recipient, change on a sealed script); a payment
+    // to several recipients is still refused by that owner, nothing retained.
+    f.context.tx_ingress=f.f.ingress.get();
     din::Json many(Json::arrayValue);din::Json recipients=din::obj();
-    recipients[OrchardMiningPayout]=0.001;many.append(recipients);
+    recipients[OrchardMiningPayout]=0.001;
+    recipients[bech32::Encode("rdin",1,std::vector<uint8_t>(32,0x22),bech32::Encoding::BECH32M)]=0.001;
+    many.append(recipients);
     const auto sent_many=rpc_context_wallet_sendmany(request,many);
-    EXPECT_EQ(sent_many["error_code"].asString(),"wallet_native_send_unavailable_on_v3") << sent_many.toStyledString();
+    EXPECT_NE(sent_many["error"].asString().find("one recipient"),std::string::npos) << sent_many.toStyledString();
+    EXPECT_FALSE(sent_many.isMember("txid"));
     EXPECT_TRUE(f.wallet->get().getPendingPayments().empty());
+    f.context.tx_ingress=nullptr;
     // The payment owner itself refuses a native transaction whose change pays
     // a script outside the sealed domain, whoever built it.
     {
