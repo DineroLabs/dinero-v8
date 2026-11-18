@@ -88,6 +88,13 @@ TEST(WalletV3NativeRestore, RestoredSeedRecoversOrchardAccount0OnV3) {
         EXPECT_EQ(use->Wallet().AcquireDatabaseLease()->NativeV3TransparentState(),
             WalletManager::NativeV3State::Complete);
     }
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        // One full replay only: no pool extension is due after the restore
+        // (the receive pool was topped up; a restored seed has no PQ master
+        // on any route, so no P2MR target opens).
+        EXPECT_FALSE(use->Wallet().AcquireDatabaseLease()->NativeV3PoolNeedsExtension());
+    }
     ExecutionContext ctx;ctx.daemon=&f.context;ctx.walletName="restored-orchard-on-v3";
     auto recovered=rpc_context_wallet_orchard_recoveraccount0(ctx,din::obj());
     ASSERT_FALSE(recovered.isMember("error")) << recovered.toStyledString();

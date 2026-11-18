@@ -191,14 +191,55 @@ din::Json rpc_wallet_getnewp2mraddress(const ExecutionContext& ctx,
                         lease->NativeV3TransparentState() != dinero::WalletManager::NativeV3State::Absent;
                 }
                 if (native) {
-                    for (const char* key : {"account", "change", "address_index", "leaf_index", "hrp"}) {
-                        if (params.isMember(key)) {
-                            result["error"] = "This wallet issues P2MR addresses from its pool on this node; "
-                                              "derivation parameters are not accepted";
-                            result["error_code"] = "wallet_native_p2mr_pool_only";
-                            result["retryable"] = false;
-                            return result;
+                    const auto refuse_pool_only = [&] {
+                        result["error"] = "This wallet issues P2MR addresses from its pool on this node; "
+                                          "only the pool's own derivation is accepted";
+                        result["error_code"] = "wallet_native_p2mr_pool_only";
+                        result["retryable"] = false;
+                        return result;
+                    };
+                    // Parameters naming the pool's own derivation are accepted.
+                    for (const char* key : {"account", "change", "leaf_index"}) {
+                        if (!params.isMember(key)) continue;
+                        const auto& v = params[key];
+                        if (!(v.is<int>() && v.as<int>() == 0) && !(v.is<int64_t>() && v.as<int64_t>() == 0))
+                            return refuse_pool_only();
+                    }
+                    if (params.isMember("hrp") && (!params["hrp"].is<std::string>() ||
+                            params["hrp"].as<std::string>() != dinero::HrpForActiveNetworkRef()))
+                        return refuse_pool_only();
+                    auto store = OpenWalletStore(use->Wallet(), true);
+                    const auto shape = [&](const dinero::wallet::P2MRStoredAddress& row) {
+                        result["address"]         = row.address;
+                        result["merkle_root_hex"] = HexOfArray(row.merkle_root);
+                        result["pubkey_hex"]      = HexOfArray(row.pubkey);
+                        result["derivation_path"] = row.derivation_path;
+                        result["leaf_index"]      = static_cast<int64_t>(row.leaf_index);
+                        return result;
+                    };
+                    // An explicit index returns only an already-issued pooled
+                    // address at that index (idempotent); it never derives.
+                    if (params.isMember("address_index")) {
+                        const auto& v = params["address_index"];
+                        const int64_t index = v.is<int>() ? v.as<int>() : v.is<int64_t>() ? v.as<int64_t>() : -1;
+                        if (index < 0 || !store) return refuse_pool_only();
+                        const std::string path = "m/88'/1448'/0'/0/" + std::to_string(index);
+                        for (const auto& row : store->ListByWallet(1)) {
+                            if (row.derivation_path != path || row.leaf_index != 0) continue;
+                            bool issued = false;
+                            {
+                                auto lease = use->Wallet().AcquireDatabaseLease();
+                                sqlite3_stmt* q = nullptr;
+                                if (sqlite3_prepare_v2(lease->Database(),
+                                        "SELECT 1 FROM native_v3_p2mr_pool WHERE address=? AND issued=1",
+                                        -1, &q, nullptr) == SQLITE_OK &&
+                                    sqlite3_bind_text(q, 1, row.address.c_str(), -1, SQLITE_TRANSIENT) == SQLITE_OK)
+                                    issued = sqlite3_step(q) == SQLITE_ROW;
+                                sqlite3_finalize(q);
+                            }
+                            if (issued) return shape(row);
                         }
+                        return refuse_pool_only();
                     }
                     const std::string label = params.isMember("label") && params["label"].is<std::string>()
                         ? params["label"].as<std::string>() : std::string();
@@ -209,18 +250,13 @@ din::Json rpc_wallet_getnewp2mraddress(const ExecutionContext& ctx,
                         result["retryable"] = issued.retryable;
                         return result;
                     }
-                    auto store = OpenWalletStore(use->Wallet(), true);
+                    if (!store) store = OpenWalletStore(use->Wallet(), true);
                     const auto row = store ? store->GetByAddress(1, issued.address) : std::nullopt;
                     if (!row) {
                         result["error"] = "p2mr_inventory_incomplete";
                         return result;
                     }
-                    result["address"]         = row->address;
-                    result["merkle_root_hex"] = HexOfArray(row->merkle_root);
-                    result["pubkey_hex"]      = HexOfArray(row->pubkey);
-                    result["derivation_path"] = row->derivation_path;
-                    result["leaf_index"]      = static_cast<int64_t>(row->leaf_index);
-                    return result;
+                    return shape(*row);
                 }
             } catch (const std::exception&) {
                 result["error"] = "wallet_ownership_unavailable";

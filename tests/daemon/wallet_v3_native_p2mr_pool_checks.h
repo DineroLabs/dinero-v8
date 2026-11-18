@@ -47,9 +47,20 @@ TEST(WalletV3NativeP2MRPool, CreatedWalletIssuesFundedP2MRFromPool) {
     registerV7PqWalletMethods();
     const auto* pq=g_rpcRegistry.lookup("wallet.getnewp2mraddress");
     ASSERT_NE(pq,nullptr);
-    din::Json explicit_index;explicit_index["address_index"]=7;
-    const auto refused=(*pq)(request,explicit_index);
-    EXPECT_EQ(refused["error_code"].asString(),"wallet_native_p2mr_pool_only") << refused.toStyledString();
+    // Only the pool's own derivation is accepted: another account or an
+    // unissued index is refused; the issued index is returned unchanged.
+    din::Json other_account;other_account["account"]=1;
+    EXPECT_EQ((*pq)(request,other_account)["error_code"].asString(),"wallet_native_p2mr_pool_only");
+    din::Json unissued_index;unissued_index["address_index"]=19;
+    EXPECT_EQ((*pq)(request,unissued_index)["error_code"].asString(),"wallet_native_p2mr_pool_only");
+    {
+        const auto decoded_path=NativeTestCount(WalletService::AcquireWalletUse(f.wallet)->Wallet(),
+            "SELECT idx FROM native_v3_p2mr_pool WHERE address='"+first["address"].asString()+"'");
+        din::Json same;same["address_index"]=decoded_path;same["account"]=0;same["leaf_index"]=0;
+        same["hrp"]="rdin";
+        const auto again=(*pq)(request,same);
+        EXPECT_EQ(again["address"].asString(),first["address"].asString()) << again.toStyledString();
+    }
     din::Json labelled;labelled["label"]="rent";
     const auto second=(*pq)(request,labelled);
     ASSERT_TRUE(second.isMember("address")) << second.toStyledString();
@@ -220,6 +231,59 @@ TEST(WalletV3NativeP2MRPool, NoPqMasterKeepsTaprootPoolAndRefusesP2MR) {
     EXPECT_TRUE(taproot.isMember("address")) << taproot.toStyledString();
     Deliver(f);
     EXPECT_EQ(NativeState(f),WalletManager::NativeV3State::Complete) << "no P2MR extension loop";
+}
+
+// A MATURE P2MR coin on a native v3 wallet (unshielded to a pooled P2MR
+// address): the balance counts it and a native send either spends it
+// correctly or leaves it out cleanly; it never fails the send.
+TEST(WalletV3NativeP2MRPool, MatureP2MRCoinIsCountedAndSendable) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-p2mr-spend-index");
+    Deliver(f);
+    f.context.tx_ingress=f.f.ingress.get();
+    auto ctx=f.RequestContext();
+    const auto created=rpc_context_wallet_orchard_createaccount(ctx,OrchardCreationRequest());
+    ASSERT_FALSE(created.isMember("error")) << created.toStyledString();
+    const auto [body,bundle]=f.Shield(f.AccountKeys());(void)bundle;
+    (void)f.Mine(body);
+    Deliver(f);
+    const auto p2mr=NativeIssue(ctx,"p2mr");
+    ASSERT_TRUE(p2mr.isMember("address")) << p2mr.toStyledString();
+    din::Json request,output;
+    request["account"]=Json::UInt64(3);request["expected_revision"]=Json::UInt64(f.Account().revision);
+    std::vector<uint8_t> id(32);id[0]=0x95;request["request_id"]=util::hex(id);
+    request["fee_una"]=Json::UInt64(10000);request["payments"]=din::arr();request["outputs"]=din::arr();
+    output["address"]=p2mr["address"];output["amount_una"]=Json::UInt64(300000);request["outputs"].append(output);
+    ASSERT_FALSE(rpc_context_wallet_orchard_queuespend(ctx,request).isMember("error"));
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        orchard::Hash op{};std::copy(id.begin(),id.end(),op.begin());
+        ASSERT_EQ(ServiceProofTerminal(use->OrchardProofs(),op),wallet::OrchardProofJobs::State::Succeeded);
+    }
+    din::Json finish;finish["account"]=Json::UInt64(3);finish["request_id"]=request["request_id"];
+    const auto finished=rpc_context_wallet_orchard_finishspend(ctx,finish);
+    ASSERT_TRUE(finished["admitted"].asBool()) << finished.toStyledString();
+    const auto pooled=f.f.ingress->mempool().getMempoolEntry(uint256::FromHexUnsafe(finished["txid"].asString()));
+    ASSERT_TRUE(bool(pooled));ASSERT_TRUE(f.Mine(pooled->tx));
+    Deliver(f);
+    const auto funded=rpc_context_wallet_getbalance(ctx,din::obj());
+    ASSERT_FALSE(funded.isMember("error")) << funded.toStyledString();
+    EXPECT_NEAR(funded["spendable"].asDouble()*1e8,300000.0,0.5) << "the P2MR coin is counted: " << funded.toStyledString();
+    din::Json payment=din::obj();
+    payment["address"]=OrchardMiningPayout;payment["amount_una"]=Json::UInt64(100000);payment["fee_rate"]=1;
+    const auto sent=rpc_context_wallet_sendtoaddress(ctx,payment);
+    if(sent.isMember("txid")) {
+        const auto tx=f.f.ingress->mempool().getMempoolEntry(uint256::FromHexUnsafe(sent["txid"].asString()));
+        ASSERT_TRUE(bool(tx)) << "a signed P2MR spend is admitted";
+        ASSERT_TRUE(f.Mine(tx->tx));
+        Deliver(f);
+        const auto after=rpc_context_wallet_getbalance(ctx,din::obj());
+        ASSERT_FALSE(after.isMember("error")) << after.toStyledString();
+        EXPECT_LT(after["spendable"].asDouble()*1e8,200000.0) << after.toStyledString();
+    } else {
+        ADD_FAILURE() << "native send with only a P2MR coin failed: " << sent.toStyledString();
+    }
+    f.context.tx_ingress=nullptr;
 }
 
 } // namespace dinero
