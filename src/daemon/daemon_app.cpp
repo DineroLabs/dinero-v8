@@ -1,3 +1,4 @@
+#include "daemon/prebase_marker_refusal.h"
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 #include "daemon/orchard_reindex.h"
 #include "daemon/orchard_snapshot_store.h"
@@ -203,8 +204,8 @@ void RequireFullArchiveWalletV3StartupSource(const std::filesystem::path& datadi
     storage::RequireFullOrchardStorage(source);
     if (storage::ReadOrchardSnapshotBase(source))
         throw std::runtime_error("Wallet index v3 startup refuses a snapshot source");
-    if (source.getPreBaseCoinSetBase().status() != Status::NotFound)
-        throw std::runtime_error("Wallet index v3 startup refuses an imported pre-base source");
+    if (const auto refusal = PreBaseMarkerRefusal(source.getPreBaseCoinSetBase(), "startup"))
+        throw std::runtime_error(*refusal);
     const auto prune_height = source.getPruneHeight();
     if (!prune_height.ok() || prune_height.value() != 0)
         throw std::runtime_error("Wallet index v3 startup requires unpruned block storage");

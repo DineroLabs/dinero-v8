@@ -112,6 +112,18 @@ try:
     assert index_files(index) == after_upgrade, "status preflight changed v3 index or rollback"
     assert not wal.exists() or wal.stat().st_size == 0, "ready status wrote a WAL"
     print("PASS authenticated v3 status is read-only after upgrade")
+
+    rc, output = run([fixture, "--fixture-prebase-refusal-messages"])
+    assert rc == 0 and "PASS pre-base refusal messages" in output, output[-8000:]
+    # A retained pre-base marker (snapshot bootstrap) is refused by name, with
+    # its base height, before the index version is reported.
+    rc, output = run([fixture, "--fixture-write-prebase-marker",
+                      str(datadir / "blockchain" / "chaindb"), "7"])
+    assert rc == 0 and "PASS pre-base marker 7" in output, output[-8000:]
+    rc, output = run(status)
+    assert rc != 0 and "refuses an imported pre-base source (snapshot base height 7, block" in output, output[-12000:]
+    assert "could not read the pre-base marker" not in output, output[-12000:]
+    print("PASS retained pre-base marker is reported with its snapshot base")
     success = True
 finally:
     if success:
