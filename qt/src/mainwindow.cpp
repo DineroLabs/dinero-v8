@@ -3093,7 +3093,8 @@ void MainWindow::setupUI() {
       QFont title = body;
       title.setPointSizeF(body.pointSizeF() * 0.8);
       group->setFont(title);
-      for (auto* child : group->findChildren<QWidget*>(Qt::FindDirectChildrenOnly)) child->setFont(body);
+      // (name, options) form: the options-only overload needs Qt 6.3+.
+      for (auto* child : group->findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly)) child->setFont(body);
     }
     // Nothing on Overview is brighter than the top tab bar (#d5dce5).
     overview->setStyleSheet(QStringLiteral(
