@@ -10,7 +10,6 @@
 #include "inforow.h"
 #include "mainwindow.h"
 #include "bordercomet.h"
-#include "mempoolsparkline.h"
 #include "daemonoutput.h"
 #if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
 #include "orchardwidget.h"
@@ -2907,9 +2906,6 @@ void MainWindow::setupUI() {
     mempoolTile(3, "Oldest", lblMempoolOldest_, nullptr);
     lblMempoolSize_->setText("Loading…");
     mempoolLayout->addLayout(mempoolTiles);
-    // Live activity: pending count over recent polls.
-    mempoolSparkline_ = new MempoolSparkline;
-    mempoolLayout->addWidget(mempoolSparkline_);
     tblMempoolOverview_ = new QTableWidget(0, 4);
     tblMempoolOverview_->setObjectName("overviewMempoolTable");
     tblMempoolOverview_->setHorizontalHeaderLabels({"Transaction", "Fee", "Size", "Age"});
@@ -7920,7 +7916,6 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
               ? QString("una/vB · %1–%2").arg(minFeeRate).arg(maxFeeRate) : QString("una/vB"));
         }
         if (lblMempoolOldest_) lblMempoolOldest_->setText(size > 0 && oldestTxAge > 0 ? shortAge(oldestTxAge) : QString("—"));
-        if (mempoolSparkline_) mempoolSparkline_->addSample(size);
       } else {
         qWarning() << "getmempoolinfo missing required fields";
         lblMempool_->setText("Mempool: N/A");

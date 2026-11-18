@@ -323,7 +323,6 @@ private:
   QLabel* lblMempoolFeeRange_ = nullptr;
   QLabel* lblMempoolOldest_ = nullptr;
   QLabel* lblMempoolEmpty_ = nullptr;
-  class MempoolSparkline* mempoolSparkline_ = nullptr;
   QTableWidget* tblMempoolOverview_ = nullptr;
   QSet<QString> overviewMempoolTxids_;
   bool overviewMempoolInitialized_ = false;
