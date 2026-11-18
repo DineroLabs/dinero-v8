@@ -387,13 +387,15 @@ jobs:
             throw 'dinero-qt.exe does not import the CUDA driver and NVRTC runtime'
           }
 
-      - name: Verify Qt daemon output and wallet backup lock
+      - name: Verify Qt safety and header ancestor parity
         shell: powershell
         run: |
-          cmake --build build-msvc-native --config Release --parallel 2 --target test_daemon_output test_wallet_backup_lock
-          if ($LASTEXITCODE -ne 0) { throw 'Qt safety test build failed' }
+          cmake --build build-msvc-native --config Release --parallel 2 --target test_daemon_output test_wallet_backup_lock test_header_skip_pointers
+          if ($LASTEXITCODE -ne 0) { throw 'Qt or header safety test build failed' }
           ctest --test-dir build-msvc-native\qt -C Release -R '^(DaemonOutputBeforeEventLoop|WalletBackupLock)$' --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw 'Qt safety test failed' }
+          ctest --test-dir build-msvc-native -C Release -R '^HeaderSkipPointers$' --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'header ancestor parity test failed' }
 
       - name: Build Windows server release and installer
         shell: powershell

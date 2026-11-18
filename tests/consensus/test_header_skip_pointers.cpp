@@ -32,8 +32,13 @@
 #include <random>
 #include <string>
 #include <system_error>
-#include <unistd.h>
 #include <vector>
+
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 using namespace dinero;
 using namespace dinero::consensus;
@@ -187,7 +192,12 @@ uint256 Extend(HeaderChainSelector& sel, uint256 tip, int n) {
 
 void TestSelectorForksEvictionAndReload() {
     std::cout << "selector forks, eviction, reload..." << std::endl;
-    const std::string db = (std::filesystem::temp_directory_path() / ("test_header_skip_pointers_db_" + std::to_string(::getpid()))).string();
+#ifdef _WIN32
+    const auto pid = ::_getpid();
+#else
+    const auto pid = ::getpid();
+#endif
+    const std::string db = (std::filesystem::temp_directory_path() / ("test_header_skip_pointers_db_" + std::to_string(pid))).string();
     std::error_code ec;
     std::filesystem::remove_all(db, ec);
     std::vector<uint256> tips;
