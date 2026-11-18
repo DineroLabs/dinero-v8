@@ -5769,7 +5769,8 @@ void MainWindow::setupUI() {
     backupLayout->setSpacing(10);
 
     auto *backupInfoLabel = new QLabel(
-      "<b>Wallet backup:</b> copies wallet databases, HD wallet state, and wallet registry from the live daemon data directory. "
+      "<b>Wallet backup:</b> stop the daemon first, then copy wallet databases, HD wallet state, and wallet registry. "
+      "A seed phrase alone does not restore P2MR keys. "
       "<b>Chain backup:</b> optional; it can be large and can always be rebuilt by syncing again."
     );
     backupInfoLabel->setWordWrap(true);
@@ -5783,13 +5784,27 @@ void MainWindow::setupUI() {
 
     auto *btnBackupWallet = new QPushButton("💼 Backup Wallet Data");
     btnBackupWallet->setStyleSheet(chromeButtonStyle());
-    btnBackupWallet->setToolTip("Backup wallets/, hd_wallet/, and wallet_registry.db files from the daemon data directory.");
+    btnBackupWallet->setToolTip("Stop the daemon, then back up wallets/, hd_wallet/, and wallet_registry.db from its data directory.");
     connect(btnBackupWallet, &QPushButton::clicked,
             [this, actualDataDir, copyFileIntoBackup, copyDirectoryIntoBackup]() {
+      if ((daemonProcess_ && daemonProcess_->state() != QProcess::NotRunning) ||
+          (connectionMgr_ && connectionMgr_->isConnected())) {
+        QMessageBox::warning(this, "Stop Daemon Before Backup",
+          "Wallet databases can change while the daemon is running. Use Stop Daemon, "
+          "wait for it to finish, then run Backup Wallet Data again.");
+        return;
+      }
       const QString backupDir = QFileDialog::getExistingDirectory(this, "Select Wallet Backup Location");
       if (backupDir.isEmpty()) return;
 
       const QString dataDir = actualDataDir();
+      const QDir walletsDir(QDir(dataDir).filePath("wallets"));
+      if (walletsDir.entryList(QStringList{QStringLiteral("wallet_*.db")}, QDir::Files).isEmpty()) {
+        QMessageBox::warning(this, "Backup Failed",
+          QString("No wallet database was found in %1. Nothing was backed up.")
+            .arg(walletsDir.path()));
+        return;
+      }
       const QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
       const QString backupPath = QDir(backupDir).filePath("dinero_wallet_backup_" + timestamp);
       if (!QDir().mkpath(backupPath)) {
@@ -5818,14 +5833,15 @@ void MainWindow::setupUI() {
         }
       }
 
-      if (copiedCount > 0) {
+      if (copiedCount > 0 && errors.isEmpty()) {
         QString message = QString("Wallet backup complete.\n\nItems copied: %1\nLocation: %2")
           .arg(copiedCount)
           .arg(backupPath);
-        if (!errors.isEmpty()) {
-          message += QString("\n\nSkipped: %1 item(s)").arg(errors.size());
-        }
         QMessageBox::information(this, "Backup Complete", message);
+      } else if (!errors.isEmpty()) {
+        QMessageBox::warning(this, "Backup Incomplete",
+          QString("Some wallet files could not be copied to %1. Do not rely on this backup.\n\n%2")
+            .arg(backupPath, errors.join("\n")));
       } else {
         QMessageBox::warning(this, "Backup Failed",
           QString("No wallet data was found in:\n%1").arg(dataDir));
@@ -5833,7 +5849,7 @@ void MainWindow::setupUI() {
     });
     backupGrid->addWidget(btnBackupWallet, 0, 0);
 
-    auto *lblWalletBackup = new QLabel("Copies wallets/, hd_wallet/, wallet registry, and the local SV2 pool key.");
+    auto *lblWalletBackup = new QLabel("After stopping the daemon, copies wallets/, hd_wallet/, wallet registry, and the local SV2 pool key.");
     lblWalletBackup->setWordWrap(true);
     lblWalletBackup->setStyleSheet(mutedLabelStyle());
     backupGrid->addWidget(lblWalletBackup, 0, 1);
