@@ -43,6 +43,7 @@ function Wait-SelectedTip {
     param([System.Diagnostics.Process]$Qt, [int]$MinHeight, [bool]$ProveImport, [int]$Minutes)
     $started = Get-Date
     $deadline = $started.AddMinutes($Minutes)
+    $nextReport = $started
     $sawImport = $false
     $last = $null
     do {
@@ -58,6 +59,11 @@ function Wait-SelectedTip {
             $status.assumeutxo_active -and $status.snapshot_base_height -eq $base.height -and
             $status.snapshot_base_block -eq $base.block_hash)
         $last = Get-NodeRpc 'getblockchaininfo'
+        if ((Get-Date) -ge $nextReport) {
+            $elapsed = [int]((Get-Date) - $started).TotalSeconds
+            Write-Host "Installed GUI progress after ${elapsed}s (blocks=$($last.blocks), headers=$($last.headers), imported=$sawImport)"
+            $nextReport = (Get-Date).AddMinutes(1)
+        }
         if ($last.chain -eq 'mainnet' -and $last.blocks -ge $MinHeight -and
             $last.blocks -eq $last.headers -and $last.initialblockdownload -eq $false -and
             ($sawImport -or -not $ProveImport)) {
@@ -92,7 +98,9 @@ function Stop-InstalledQt {
 
 $qt = $InitialQt
 try {
-    $fresh = Wait-SelectedTip -Qt $qt -MinHeight ([int]$base.height + 288) -ProveImport $true -Minutes 25
+    # GitHub's Windows runner took over 25 minutes to index the downloaded
+    # headers and import the signed snapshot before forward validation began.
+    $fresh = Wait-SelectedTip -Qt $qt -MinHeight ([int]$base.height + 288) -ProveImport $true -Minutes 60
     Stop-InstalledQt $qt
     $launch = @{
         FilePath = $qtExe
@@ -102,7 +110,7 @@ try {
         PassThru = $true
     }
     $qt = Start-Process @launch
-    $restart = Wait-SelectedTip -Qt $qt -MinHeight $fresh.blocks -ProveImport $false -Minutes 8
+    $restart = Wait-SelectedTip -Qt $qt -MinHeight $fresh.blocks -ProveImport $false -Minutes 20
     Stop-InstalledQt $qt
     [ordered]@{ primary = $base.height; base_hash = $base.block_hash;
         fresh = $fresh; cold_restart = $restart } |

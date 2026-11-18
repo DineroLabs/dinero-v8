@@ -49,10 +49,10 @@ jobs:
   windows-release:
     name: Windows MSVC x86_64 — release installer
     runs-on: windows-2022
-    # Two native builds plus CUDA, signing and package verification exceed two
-    # hours on a cold runner (30721e5 was cancelled during signed packaging).
-    # Keep the whole qualification intact rather than losing its final checks.
-    timeout-minutes: 220
+    # Cold builds and signing take over two hours. Allow the installed GUI
+    # another hour for header index creation, snapshot import and live sync,
+    # plus time for the installed restart and portable-wallet checks.
+    timeout-minutes: 260
     # `release` environment carries the Azure OIDC federation for Windows
     # code signing (subject repo:DineroLabs/dinero-v8:environment:release).
     environment: release
@@ -623,15 +623,22 @@ jobs:
                 $manifest = Join-Path $case.Dir "$($catalog.primary.filename).manifest.json"
                 .\scripts\ci\check_windows_installed_snapshot.ps1 -InstallDir $case.Dir -DataDir $dataDir -Manifest $manifest -InitialQt $qt
               } catch {
+                Write-Host "Installer smoke failed: $($_.Exception.Message)"
                 $qt.Refresh()
                 Write-Host "GUI window title: $($qt.MainWindowTitle)"
                 Get-NetTCPConnection -LocalPort 20998 -ErrorAction SilentlyContinue | Format-Table State,OwningProcess
-                Add-Type -AssemblyName UIAutomationClient
-                $window = [System.Windows.Automation.AutomationElement]::FromHandle($qt.MainWindowHandle)
-                if ($window) {
-                  $elements = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
-                  @($elements | Select-Object -First 100 | ForEach-Object { $_.Current.Name }) | Out-File "$dataDir\window-text.txt"
-                  Get-Content "$dataDir\window-text.txt"
+                if ($qt.MainWindowHandle -ne [IntPtr]::Zero) {
+                  try {
+                    Add-Type -AssemblyName UIAutomationClient
+                    $window = [System.Windows.Automation.AutomationElement]::FromHandle($qt.MainWindowHandle)
+                    if ($window) {
+                      $elements = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+                      @($elements | Select-Object -First 100 | ForEach-Object { $_.Current.Name }) | Out-File "$dataDir\window-text.txt"
+                      Get-Content "$dataDir\window-text.txt"
+                    }
+                  } catch {
+                    Write-Host "Window diagnostics unavailable: $($_.Exception.Message)"
+                  }
                 }
                 Get-ChildItem $dataDir -Filter '*.log' -File | ForEach-Object { Write-Host $_.Name; Get-Content $_.FullName -Tail 60 }
                 throw
