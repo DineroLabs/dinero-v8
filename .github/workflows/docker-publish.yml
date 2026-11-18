@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Exact Dinero version to build (8.2.3 for this candidate)"
+        description: "Exact Dinero version to build; must match the source"
         required: true
       candidate_source:
         description: "Full source SHA for pre-publication exact-binary dry run"
@@ -43,8 +43,8 @@ on:
         description: "Reviewed SHA-256 of staged SHA256SUMS"
         required: false
   # PRs run source contracts only and say so explicitly. They cannot fetch
-  # unpublished v8.2.3 assets, and an 8.2.2 binary transport smoke would not
-  # qualify the final source. Manual dry-run and release events build the image.
+  # unpublished release assets. Manual dry-run and release events exercise
+  # a real image using archives from the same source.
   #
   # Path-filtered because the image is assembled from PUBLISHED release artifacts, not
   # from this tree's source (see Dockerfile stage 1) — a source-only PR cannot change
@@ -92,7 +92,7 @@ jobs:
       - name: PR result is contract-only, not image-qualified
         if: github.event_name == 'pull_request'
         run: |
-          echo 'Docker source contracts passed. Exact v8.2.3 image build, signed snapshot fetch, and fresh-volume/restart smoke remain required before publication.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Docker source contracts passed. Exact-source image build, signed snapshot fetch, and fresh-volume/restart smoke remain required before publication.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Admit exact full-v6 catalog primary
         if: github.event_name != 'pull_request'
@@ -148,7 +148,6 @@ jobs:
             test "$GITHUB_EVENT_NAME" = workflow_dispatch && test "$INPUT_DRY_RUN" = true || {
               echo '::error::candidate inputs are allowed only in manual dry runs'; exit 1;
             }
-            test "$V" = 8.2.3 || { echo '::error::candidate input version must be 8.2.3'; exit 1; }
             [[ "$INPUT_CANDIDATE_SOURCE" =~ ^[0-9a-f]{40}$ ]] && test "$SOURCE_SHA" = "$INPUT_CANDIDATE_SOURCE" || {
               echo '::error::candidate source SHA does not match the checked-out source'; exit 1;
             }

@@ -211,14 +211,14 @@ class FullV6DockerCandidateTest(unittest.TestCase):
         base = os.environ | {
             'GITHUB_OUTPUT': str(output), 'GITHUB_EVENT_NAME': 'workflow_dispatch',
             'GITHUB_REF_NAME': 'codex/v823-desktop-full-v6-packaging',
-            'INPUT_VERSION': '8.2.3', 'INPUT_CANDIDATE_SOURCE': source_sha,
+            'INPUT_VERSION': '8.2.4', 'INPUT_CANDIDATE_SOURCE': source_sha,
             'INPUT_PUBLISH_LATEST': 'false', 'INPUT_DRY_RUN': 'true',
             'RELEASE_PRERELEASE': 'false', 'RELEASE_DRAFT': 'false',
             'INPUT_SNAPSHOT_PAYLOAD_URL': 'https://example.org/snapshot.dat',
             'INPUT_SNAPSHOT_MANIFEST_URL': 'https://example.org/manifest.json',
             'INPUT_SNAPSHOT_SIGNATURE_URL': 'https://example.org/manifest.sig',
-            'INPUT_BINARY_TARBALL_URL': 'https://example.org/dinero-linux-x86_64-8.2.3.tar.gz',
-            'INPUT_BINARY_SUMS_URL': 'https://example.org/SHA256SUMS-linux-x86_64-8.2.3',
+            'INPUT_BINARY_TARBALL_URL': 'https://example.org/dinero-linux-x86_64-8.2.4.tar.gz',
+            'INPUT_BINARY_SUMS_URL': 'https://example.org/SHA256SUMS-linux-x86_64-8.2.4',
             'INPUT_BINARY_TARBALL_SHA256': 'a' * 64,
             'INPUT_BINARY_SUMS_SHA256': 'b' * 64,
         }
@@ -241,7 +241,7 @@ class FullV6DockerCandidateTest(unittest.TestCase):
         ):
             with self.subTest(changes=changes):
                 self.assertNotEqual(run_case(**changes).returncode, 0)
-        release = run_case(GITHUB_EVENT_NAME='release', GITHUB_REF_NAME='v8.2.3',
+        release = run_case(GITHUB_EVENT_NAME='release', GITHUB_REF_NAME='v8.2.4',
                            INPUT_CANDIDATE_SOURCE='', INPUT_SNAPSHOT_PAYLOAD_URL='',
                            INPUT_SNAPSHOT_MANIFEST_URL='', INPUT_SNAPSHOT_SIGNATURE_URL='',
                            INPUT_BINARY_TARBALL_URL='', INPUT_BINARY_SUMS_URL='',
