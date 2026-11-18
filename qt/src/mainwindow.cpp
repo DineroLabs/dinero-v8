@@ -19,6 +19,7 @@
 #include "miningsessionstatus.h"
 #include "peerheightsemantics.h"
 #include "responsiveuipolicy.h"
+#include "walletbackuplock.h"
 #include "rpcclient.h"
 #include <QMenu>
 #include <QMenuBar>
@@ -5501,7 +5502,9 @@ void MainWindow::setupUI() {
         QDir::NoDotAndDotDot | QDir::AllEntries | QDir::Hidden | QDir::System);
       for (const QFileInfo& entry : entries) {
         const QString dst = QDir(dstPath).filePath(entry.fileName());
-        if (entry.isDir()) {
+        if (entry.isSymbolicLink()) {
+          errors << QString("Wallet backup source contains a symlink: %1").arg(entry.absoluteFilePath());
+        } else if (entry.isDir()) {
           copied += self(self, entry.absoluteFilePath(), dst, errors);
         } else if (copyFileIntoBackup(entry.absoluteFilePath(), dst, errors)) {
           ++copied;
@@ -5798,11 +5801,40 @@ void MainWindow::setupUI() {
       if (backupDir.isEmpty()) return;
 
       const QString dataDir = actualDataDir();
+      const QString sourceRoot = QFileInfo(dataDir).canonicalFilePath();
+      const QString destinationRoot = QFileInfo(backupDir).canonicalFilePath();
+      if (sourceRoot.isEmpty() || destinationRoot.isEmpty()) {
+        QMessageBox::warning(this, "Backup Failed", "Could not resolve the wallet or backup directory.");
+        return;
+      }
+#ifdef Q_OS_WIN
+      const auto pathComparison = Qt::CaseInsensitive;
+#else
+      const auto pathComparison = Qt::CaseSensitive;
+#endif
+      if (destinationRoot.compare(sourceRoot, pathComparison) == 0 ||
+          destinationRoot.startsWith(sourceRoot + QLatin1Char('/'), pathComparison)) {
+        QMessageBox::warning(this, "Choose Another Backup Location",
+          "Save the backup outside the daemon's data directory.");
+        return;
+      }
       const QDir walletsDir(QDir(dataDir).filePath("wallets"));
       if (walletsDir.entryList(QStringList{QStringLiteral("wallet_*.db")}, QDir::Files).isEmpty()) {
         QMessageBox::warning(this, "Backup Failed",
           QString("No wallet database was found in %1. Nothing was backed up.")
             .arg(walletsDir.path()));
+        return;
+      }
+      if (!QFile::exists(QDir(dataDir).filePath("wallet_registry.db"))) {
+        QMessageBox::warning(this, "Backup Failed",
+          "The wallet registry is missing. No complete wallet backup can be made.");
+        return;
+      }
+      WalletBackupDatadirLock datadirLock(dataDir);
+      if (!datadirLock.held()) {
+        QMessageBox::warning(this, "Stop Daemon Before Backup",
+          "The selected data directory is in use or cannot be locked. "
+          "Stop every daemon using it, then retry the backup.");
         return;
       }
       const QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");

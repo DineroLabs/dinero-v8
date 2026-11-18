@@ -1688,6 +1688,10 @@ if(BUILD_TESTING)
   target_compile_definitions(test_rpc_reply_alias PRIVATE QT_NO_KEYWORDS)
   add_test(NAME RpcReplyAlias COMMAND test_rpc_reply_alias)
 
+  add_executable(test_wallet_backup_lock tests/test_wallet_backup_lock.cpp)
+  target_link_libraries(test_wallet_backup_lock PRIVATE Qt6::Core Qt6::Test)
+  add_test(NAME WalletBackupLock COMMAND test_wallet_backup_lock)
+
   add_executable(test_mining_rewards tests/test_mining_rewards.cpp src/miningrewards.cpp src/chaintiming.cpp)
   target_include_directories(test_mining_rewards PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(test_mining_rewards PRIVATE Qt6::Core Qt6::Test)
