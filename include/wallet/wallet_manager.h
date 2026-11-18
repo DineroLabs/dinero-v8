@@ -212,10 +212,6 @@ public:
         "This wallet was created or restored by Dinero 8.2 and this node's wallet index (v3) "
         "cannot track it yet. Your funds are safe on-chain: use its seed phrase in the phone app "
         "or on another node until the next update.";
-    static constexpr const char* kWalletCreationUnsupportedOnV3 =
-        "Restoring a wallet from a seed phrase is not supported on this node yet (wallet index v3). "
-        "Existing and newly created wallets keep working; restore it in the phone app or on another "
-        "node until the next update.";
     // #939 phase 1: a native wallet on v3 receives on its pre-derived pool;
     // issuing a new script after enrollment would invalidate its receipts.
     static constexpr const char* kNativeWalletAddressUnavailableOnV3 =

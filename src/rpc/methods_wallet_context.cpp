@@ -8091,6 +8091,12 @@ din::Json rpc_context_wallet_restore(const ExecutionContext& ctx, const din::Jso
     // Refuse an unavailable historical source BEFORE those effects; returning
     // a warning after switching wallets leaves a new partial inventory active.
     // rescan=false remains an explicit key-import operation, never recovery.
+    // v8.2.5 (#939): a full-archive v3 index has no legacy rescan. A restored
+    // seed is recovered by the native v3 route instead: after the first
+    // unlock it enrolls with a FULL historical replay (a restored identity
+    // never has a sealed fresh birth), and Orchard account 0 is recovered
+    // from the authenticated v3 source.
+    bool native_v3_recovery = false;
     if (rescan_requested) {
         auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
         if (!source) {
@@ -8098,6 +8104,7 @@ din::Json rpc_context_wallet_restore(const ExecutionContext& ctx, const din::Jso
             result["recovery_required"] = true;
             return result;
         }
+        native_v3_recovery = source->HasFullArchiveWalletIndexV3();
         const auto selected = source->GetSyncSnapshot();
         auto* database = source->GetChainDB();
         const auto durable = database ? database->getTip() : dinero::StatusOr<dinero::TipInfo>(dinero::Status::Invalid);
@@ -8108,7 +8115,7 @@ din::Json rpc_context_wallet_restore(const ExecutionContext& ctx, const din::Jso
             result["recovery_required"] = true;
             return result;
         }
-        const auto readiness = CheckRescanReadiness(source);
+        const auto readiness = native_v3_recovery ? RescanReadiness{true, {}, {}} : CheckRescanReadiness(source);
         if (!readiness.ok) {
             result["error"] = readiness.reason;
             if (!readiness.error_code.empty()) result["error_code"] = readiness.error_code;
@@ -8123,7 +8130,9 @@ din::Json rpc_context_wallet_restore(const ExecutionContext& ctx, const din::Jso
     }
 
     if (result.isMember("success") && result["success"].asBool()) {
-        if (rescan_requested) {
+        if (native_v3_recovery) {
+            result["history_recovery"] = "native_v3_after_unlock";
+        } else if (rescan_requested) {
             din::Json rescan_params(Json::arrayValue);
             rescan_params.append(0);
             din::Json rescan_result = rpc_context_wallet_rescanblockchain(ctx, rescan_params);

@@ -851,17 +851,12 @@ TEST(WalletV3NativeInterim, UnservableNativeWalletKeepsUnsupportedRefusal) {
 // is allowed and its sealed birth enrolls it without a genesis replay. A
 // restored seed may own Orchard history that v3 cannot deliver before phase
 // 3, so restoring stays refused.
-TEST(WalletV3NativeInterim, V3CreatesGeneratedWalletsAndRefusesRestores) {
+// v8.2.5: restores are served on v3 too (WalletV3NativeRestore); this case
+// keeps the generated-wallet creation contract.
+TEST(WalletV3NativeInterim, V3CreatesGeneratedWalletsWithThreeAddresses) {
     CanonicalRecoveryFixture f(false,false);
     (void)f.MineToWallet();
     NativeV3IndexScope v3(f,"v3-native-create-index");
-    {
-        auto use=WalletService::AcquireWalletUse(f.wallet);
-        EXPECT_THROW(use->Wallet().createFromBip39("native-restored",
-            "legal winner thank year wave sausage worth useful legal winner thank yellow",""),
-            std::runtime_error);
-        EXPECT_FALSE(use->Wallet().exists("native-restored"));
-    }
     ExecutionContext request;
     request.daemon=&f.context;
     registerV7PqWalletMethods();

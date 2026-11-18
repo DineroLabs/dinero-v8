@@ -224,17 +224,6 @@ din::Json rpc_context_wallet_orchard_enrollpreactivation(const ExecutionContext&
 
 din::Json rpc_context_wallet_orchard_recoveraccount0(const ExecutionContext& ctx,const din::Json& params){
     din::Json result;
-    {
-        // #939: restored-seed Orchard history is not served on a v3 source yet
-        // (a v3 node also refuses restores); never run this recovery there.
-        const auto v3=ctx.daemon?std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate):nullptr;
-        if(v3&&v3->HasFullArchiveWalletIndexV3()){
-            result["error"]="Orchard account recovery is not available on this node yet (wallet index v3)";
-            result["error_code"]="wallet_native_orchard_recovery_unavailable_on_v3";
-            result["retryable"]=false;
-            return result;
-        }
-    }
     try {
         if(!params.isObject()||params.size()>1||(params.size()==1&&(!params.isMember("restart")||!params["restart"].isBool())))
             throw std::runtime_error("wallet.orchard.recoveraccount0 takes only optional restart:boolean; Core selects the profile and full history");

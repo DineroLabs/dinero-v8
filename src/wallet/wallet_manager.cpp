@@ -1810,12 +1810,10 @@ void WalletManager::createWithInitialSeed(
     const std::string& bip39_passphrase, InitialSeedKind kind,
     std::optional<uint32_t> fresh_birth_height) {
     std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
-    // #939: a v3 node enrolls a freshly generated identity through the native
-    // route (its sealed birth skips the genesis replay). A restored seed may
-    // own Orchard history that v3 cannot deliver before Orchard delivery
-    // exists there, so a restore is still refused before any file exists.
-    if (full_archive_v3_legacy_rescans_disabled_ && kind != InitialSeedKind::Generated)
-        throw std::runtime_error(kWalletCreationUnsupportedOnV3);
+    // #939: a v3 node enrolls every identity through the native route. A
+    // generated identity may seal a fresh birth that skips the genesis
+    // replay; a restored seed never does (below), so its enrollment replays
+    // the full history, and Orchard account 0 is recovered from the v3 source.
     if (fresh_birth_height && kind != InitialSeedKind::Generated)
         throw std::logic_error("Only a generated identity can seal a fresh birth height");
     if (database_leases_ != 0) throw std::logic_error("Cannot create a wallet during database delivery");
