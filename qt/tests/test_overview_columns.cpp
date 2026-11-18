@@ -481,7 +481,10 @@ private Q_SLOTS:
         QVERIFY(!alerts->isHidden());
         QVERIFY2(alerts->height() >= 3 * alerts->fontMetrics().lineSpacing(),
                  qPrintable(QString("alerts list %1 px for 3 lines").arg(alerts->height())));
-        QVERIFY2(box->height() <= 220, qPrintable(QString("alerts box grew to %1 px").arg(box->height())));
+        // Showing the editor schedules a layout pass. Windows may report the
+        // old expanded geometry once before the compact fixed height settles.
+        QTRY_VERIFY2_WITH_TIMEOUT(box->height() <= 220,
+                                  qPrintable(QString("alerts box grew to %1 px").arg(box->height())), 2000);
     }
     void networkInfoReadsAsAList() {
         QTemporaryDir dir;
