@@ -603,9 +603,13 @@ private Q_SLOTS:
             // macOS sizes tabs without the stylesheet padding, leaving no slack; a label
             // that is allowed to elide then shows as "Colle…". Labels must never be cut.
             QCOMPARE(bar->elideMode(), Qt::ElideNone);
-            for (int i = 0; i < t->count(); ++i)
+            for (int i = 0; i < t->count(); ++i) {
+                // A deliberately hidden sub-tab (the retired shielded pool for a
+                // wallet without old notes) has no width to check.
+                if (!t->isTabVisible(i)) continue;
                 QVERIFY2(bar->tabRect(i).width() >= bar->fontMetrics().horizontalAdvance(t->tabText(i)),
                          qPrintable(QString("sub-tab '%1' narrower than its name").arg(t->tabText(i))));
+            }
         }
     }
     void tabNamesFitAtCommonWidths() {
