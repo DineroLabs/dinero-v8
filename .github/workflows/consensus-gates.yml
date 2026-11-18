@@ -1,0 +1,149 @@
+# ─────────────────────────────────────────────────────────────────────────
+# Consensus-validation gate CV1 header reach (option A; report only, not required)
+# Spec: docs/superpowers/specs/2026-11-01-consensus-validation-design.md
+#
+# Configure only (no compile): CV1 reads compile_commands.json and the
+# preprocessor. Each lane runs OFF and ON.
+# Owner no-upload rule: no cache saves, no artifact uploads. Evidence goes to
+# the job log and step summary only. A lane without a committed baseline
+# prints a freshly recorded candidate to the log (MISSING_REFERENCE, rc 2); it
+# is never checked against in the same run and is committed only by review.
+# Such a lane is never green: the Summary step fails on any non-zero gate rc.
+# The committed macos-local baseline was recorded on a developer Mac; CI lanes
+# (linux, macos15) use their own tags.
+# ─────────────────────────────────────────────────────────────────────────
+name: Consensus gates
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/consensus-gates.yml'
+      - 'scripts/ci/consensus-separation/**'
+      - '**/CMakeLists.txt'
+      - 'src/**'
+      - 'include/**'
+      - 'rust/orchard_backend/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: consensus-gates-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  gates:
+    name: consensus gates ${{ matrix.plat }} orchard=${{ matrix.orchard }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+        orchard: [off, on]
+        include:
+          - os: ubuntu-24.04
+            plat: linux
+          - os: macos-15
+            plat: macos15
+            xcode: '16.4'
+    env:
+      CV_BUILD: ${{ github.workspace }}/build-cv
+      CV_CANDIDATE_DIR: ${{ github.workspace }}/cv-candidates
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Measure the PR commit itself, not the merge with the base branch,
+          # so candidates compare to baselines recorded on the same tree.
+          ref: ${{ github.event.pull_request.head.sha }}
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Record measured commit
+        run: |
+          echo "measured commit: $(git rev-parse HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+
+      - name: Install CMake, Ninja, pytest
+        run: python -m pip install --disable-pip-version-check "cmake==4.3.4" "ninja==1.13.2" "pytest==9.2.0"
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config perl \
+            libcurl4-openssl-dev libudev-dev libusb-1.0-0-dev
+
+      - name: Select Xcode
+        if: runner.os == 'macOS'
+        run: |
+          sudo xcode-select -s "/Applications/Xcode_${{ matrix.xcode }}.app"
+          test "$(xcodebuild -version | head -1)" = "Xcode ${{ matrix.xcode }}"
+
+      - name: Install the source-pinned Orchard Rust toolchain
+        if: matrix.orchard == 'on'
+        run: |
+          pin="$(python - <<'PY'
+          import tomllib
+          with open('rust/orchard_backend/rust-toolchain.toml', 'rb') as f:
+              print(tomllib.load(f)['toolchain']['channel'])
+          PY
+          )"
+          rustup toolchain install "$pin" --profile minimal
+
+      - name: Restore vendored OpenSSL (restore only)
+        uses: actions/cache/restore@v4
+        with:
+          path: third_party/openssl-3.5.7/prebuilt
+          key: separation-openssl-${{ matrix.os }}-${{ hashFiles('scripts/build-openssl-vendored.sh') }}
+
+      - name: Build vendored OpenSSL
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+
+      - name: Gate self-tests
+        run: python -m pytest -q -o addopts="" scripts/ci/consensus-separation/tests
+
+      # Same flags as the local baseline configure (defaults otherwise), so lanes stay comparable.
+      - name: Configure (no build)
+        run: |
+          orchard=OFF; [ "${{ matrix.orchard }}" = on ] && orchard=ON
+          cmake -S . -B "$CV_BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_BUILD_ORCHARD_BACKEND="$orchard" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            > "$RUNNER_TEMP/configure.log" 2>&1 \
+            || { tail -60 "$RUNNER_TEMP/configure.log"; exit 1; }
+
+      - name: Gate CV1
+        id: gates
+        continue-on-error: true
+        run: |
+          set +e
+          scripts/ci/consensus-separation/run_gates.sh "$CV_BUILD" "${{ matrix.plat }}" "${{ matrix.orchard }}" | tee "$RUNNER_TEMP/gates.log"
+          rc="${PIPESTATUS[0]}"
+          echo "$rc" > "$RUNNER_TEMP/gates.rc"
+          exit "$rc"
+
+      - name: Print candidate baselines (missing references only)
+        if: always()
+        run: |
+          shopt -s nullglob
+          for f in "$CV_CANDIDATE_DIR"/*.json; do echo "===== $(basename "$f")"; cat "$f"; done
+
+      - name: Summary
+        if: always()
+        run: |
+          { echo "### consensus gates ${{ matrix.plat }} orchard=${{ matrix.orchard }}"; echo '```';
+            grep '^GATE' "$RUNNER_TEMP/gates.log" || echo "no gate output"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          rc="$(cat "$RUNNER_TEMP/gates.rc" 2>/dev/null || echo missing)"
+          echo "run_gates.sh rc=$rc" | tee -a "$GITHUB_STEP_SUMMARY"
+          # rc 0 is the only green; MISSING_REFERENCE (2), FAIL (1) or no result all fail the lane.
+          [ "$rc" = 0 ]
