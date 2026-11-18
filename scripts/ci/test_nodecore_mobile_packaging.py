@@ -8,6 +8,8 @@ import json
 import os
 import shutil
 import subprocess
+from unittest import mock
+import hashlib
 
 ROOT=Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('package', ROOT/'scripts/mobile/package_nodecore_archive.py')
@@ -27,6 +29,15 @@ class Packaging(unittest.TestCase):
         declaration=consensus.reviewed_defaults(ROOT)
         self.assertEqual(declaration['dnorst02_activation_height'],dict(mainnet=150000,testnet=4294967295,regtest=4294967295))
         self.assertIn('NOT runtime attestation',declaration['evidence'])
+
+    def test_h1_schedule_is_explicit_in_sdk_receipt(self):
+        # Isolate the schedule contract from the separately tested source-byte
+        # guard, so an outdated hash cannot mask a missing activation field.
+        current={name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in consensus.REVIEWED}
+        with mock.patch.object(consensus,'REVIEWED',current):
+            declaration=consensus.reviewed_defaults(ROOT)
+        self.assertEqual(declaration['coinbase_structure_activation_height'],
+                         dict(mainnet=1,testnet=4294967295,regtest=1))
 
     def test_source_change_requires_explicit_declaration_review(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -85,6 +96,10 @@ class Packaging(unittest.TestCase):
         def test_declaration_matches_actual_compiled_network_parameters(self):
             actual=json.loads(subprocess.check_output([os.environ['NODECORE_LINK_SMOKE'],'--consensus-json'],text=True))
             self.assertEqual(actual,consensus.reviewed_defaults(ROOT)['dnorst02_activation_height'])
+
+        def test_h1_declaration_matches_actual_compiled_network_parameters(self):
+            actual=json.loads(subprocess.check_output([os.environ['NODECORE_LINK_SMOKE'],'--coinbase-structure-json'],text=True))
+            self.assertEqual(actual,consensus.reviewed_defaults(ROOT)['coinbase_structure_activation_height'])
 
     def test_exact_link_command_and_quoted_paths(self):
         tokens=module.link_tokens('clang++ -c smoke.cpp -o CMakeFiles/x/nodecore_link_smoke.cpp.o\n'
