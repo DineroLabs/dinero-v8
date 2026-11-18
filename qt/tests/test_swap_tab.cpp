@@ -108,6 +108,13 @@ private Q_SLOTS:
         QVERIFY2(pasteHint->text().contains("refund address"), qPrintable(pasteHint->text()));
         Find<QLineEdit>(tab_, "btcRefundAddress")->setText(kBtcAddress);
         QVERIFY(review->isEnabled());
+        // A 1… address from an exchange is as good; a mistyped one is not.
+        Find<QLineEdit>(tab_, "btcRefundAddress")->setText("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN3");
+        QVERIFY(!review->isEnabled());
+        QVERIFY2(pasteHint->text().contains("bc1, 1 or 3"), qPrintable(pasteHint->text()));
+        Find<QLineEdit>(tab_, "btcRefundAddress")->setText("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2");
+        QVERIFY(review->isEnabled());
+        Find<QLineEdit>(tab_, "btcRefundAddress")->setText(kBtcAddress);
         Find<QPlainTextEdit>(tab_, "pasteIn")->setPlainText("dinswap1a00");  // a reply needs nothing more
         Find<QLineEdit>(tab_, "btcRefundAddress")->clear();
         QVERIFY(review->isEnabled());

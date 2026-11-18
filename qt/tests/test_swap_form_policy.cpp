@@ -24,8 +24,33 @@ private Q_SLOTS:
         QCOMPARE(reviewOffer("1", "0.001", " ", "bcrt").blocker,
                  QString("Enter your Bitcoin address (where you receive the BTC)"));
         QCOMPARE(reviewOffer("1", "0.001", "bc1qmainnet", "bcrt").blocker,
-                 QString("Enter a Bitcoin bcrt1… address (P2WPKH, P2WSH or Taproot)"));
+                 QString("That is not a Bitcoin address of this network (it starts with bcrt1, m, n or 2)"));
         QCOMPARE(reviewOffer("1", "0.001", "BCRT1PUPPER", "bcrt").blocker, QString());
+        // Exchanges and older wallets hand out 1… / 3… addresses.
+        QCOMPARE(reviewOffer("1", "0.001", " 1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2 ", "bc").blocker, QString());
+        QCOMPARE(reviewOffer("1", "0.001", "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy", "bc").blocker, QString());
+        QCOMPARE(reviewOffer("1", "0.001", "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN3", "bc").blocker,  // one wrong character
+                 QString("That is not a Bitcoin address of this network (it starts with bc1, 1 or 3)"));
+    }
+    void bitcoinAddresses() {
+        using SwapFormPolicy::looksLikeBtcAddress;
+        QVERIFY(looksLikeBtcAddress("bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", "bc"));
+        QVERIFY(looksLikeBtcAddress("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2", "bc"));
+        QVERIFY(looksLikeBtcAddress("3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy", "bc"));
+        QVERIFY(looksLikeBtcAddress("1111111111111111111114oLvT2", "bc"));  // leading zero bytes
+        for (const char* hrp : {"tb", "bcrt"}) {
+            QVERIFY(looksLikeBtcAddress("mrS8eVKXguwufwvsVe9GtgGb7fif9UQeAu", hrp));
+            QVERIFY(looksLikeBtcAddress("2N9hLwkSqr1cPQAPxbrGVUjxyjD11G2e1he", hrp));
+            QVERIFY(!looksLikeBtcAddress("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2", hrp));  // mainnet address
+        }
+        QVERIFY(!looksLikeBtcAddress("mrS8eVKXguwufwvsVe9GtgGb7fif9UQeAu", "bc"));     // testnet address
+        QVERIFY(!looksLikeBtcAddress("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN3", "bc"));     // bad checksum
+        QVERIFY(!looksLikeBtcAddress("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN0", "bc"));     // not base58
+        QVERIFY(!looksLikeBtcAddress("1bvbmseystwetqtfn5au4m4gfg7xjanvn2", "bc"));     // case matters
+        QVERIFY(!looksLikeBtcAddress("", "bc"));
+        QVERIFY(!looksLikeBtcAddress(QString(200, '2'), "bc"));
+        QCOMPARE(SwapFormPolicy::btcAddressStarts("bc"), QString("bc1, 1 or 3"));
+        QCOMPARE(SwapFormPolicy::btcAddressStarts("tb"), QString("tb1, m, n or 2"));
     }
     void networkHrp() {
         QCOMPARE(SwapFormPolicy::btcHrpForChain("mainnet"), QString("bc"));

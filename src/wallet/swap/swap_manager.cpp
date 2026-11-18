@@ -163,6 +163,55 @@ std::vector<uint8_t> PayoutScriptFromAddress(const std::string& address, const s
     throw std::invalid_argument("unsupported payout address (P2WPKH, P2WSH or P2TR only): " + address);
 }
 
+namespace {
+
+// Base58Check payload (version byte + data), or nullopt on a bad character,
+// length or checksum.
+std::optional<std::vector<uint8_t>> Base58CheckDecode(const std::string& text) {
+    static const std::string kAlphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    if (text.empty() || text.size() > 64) return std::nullopt;
+    std::vector<uint8_t> bytes;  // little-endian
+    for (char c : text) {
+        const size_t digit = kAlphabet.find(c);
+        if (digit == std::string::npos) return std::nullopt;
+        uint32_t carry = uint32_t(digit);
+        for (auto& b : bytes) {
+            carry += uint32_t(b) * 58;
+            b = uint8_t(carry);
+            carry >>= 8;
+        }
+        for (; carry; carry >>= 8) bytes.push_back(uint8_t(carry));
+    }
+    for (size_t i = 0; i < text.size() && text[i] == '1'; ++i) bytes.push_back(0);
+    std::reverse(bytes.begin(), bytes.end());
+    if (bytes.size() < 5) return std::nullopt;
+    uint8_t once[32], twice[32];
+    crypto::CSHA256().Write(bytes.data(), bytes.size() - 4).Finalize(once);
+    crypto::CSHA256().Write(once, 32).Finalize(twice);
+    if (!std::equal(twice, twice + 4, bytes.end() - 4)) return std::nullopt;
+    bytes.resize(bytes.size() - 4);
+    return bytes;
+}
+
+}  // namespace
+
+std::vector<uint8_t> BtcPayoutScriptFromAddress(const std::string& address, const std::string& hrp) {
+    if (bech32::Decode(hrp, address)) return PayoutScriptFromAddress(address, hrp);
+    const bool mainnet = hrp == "bc";
+    const uint8_t p2pkh = mainnet ? 0x00 : 0x6f, p2sh = mainnet ? 0x05 : 0xc4;
+    const auto payload = Base58CheckDecode(address);
+    if (payload && payload->size() == 21 && ((*payload)[0] == p2pkh || (*payload)[0] == p2sh)) {
+        std::vector<uint8_t> spk = (*payload)[0] == p2pkh ? std::vector<uint8_t>{0x76, 0xa9, 0x14}
+                                                          : std::vector<uint8_t>{0xa9, 0x14};
+        spk.insert(spk.end(), payload->begin() + 1, payload->end());
+        if ((*payload)[0] == p2pkh) spk.insert(spk.end(), {0x88, 0xac});
+        else spk.push_back(0x87);
+        return spk;
+    }
+    throw std::invalid_argument("not a Bitcoin address of this network (" + hrp + "1…, " +
+                                (mainnet ? "1… or 3…" : "m…, n… or 2…") + "): " + address);
+}
+
 std::string SwapId(const SwapOffer& offer) {
     const auto id = OfferId(offer);
     return ToHex(std::vector<uint8_t>(id.begin(), id.begin() + 8));
@@ -272,7 +321,7 @@ std::string SwapManager::MakeOffer(const OfferRequest& r, uint32_t now) {
     RequireWithinCaps(config_, r.din_amount_una, r.btc_amount_sat);
     RequireSane(config_, r.din_amount_una, r.btc_amount_sat, r.n_btc_confirmations);
     const auto din_payout = PayoutScriptFromAddress(r.din_refund_address, config_.runner.din_hrp);
-    const auto btc_payout = PayoutScriptFromAddress(r.btc_claim_address, config_.runner.btc_hrp);
+    const auto btc_payout = BtcPayoutScriptFromAddress(r.btc_claim_address, config_.runner.btc_hrp);
     // The cached store key outlives a relock: ask the wallet itself, so a
     // locked wallet is refused before an index is used up.
     SwapStoreKeyFromSeed(derive_, config_.network);
@@ -346,7 +395,7 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
         if (already_started(id)) throw std::runtime_error("swap " + id + " already exists");
         SwapSession s;
         s.din_payout_script = PayoutScriptFromAddress(din_payout_address, config_.runner.din_hrp);
-        s.btc_payout_script = PayoutScriptFromAddress(btc_refund_address, config_.runner.btc_hrp);
+        s.btc_payout_script = BtcPayoutScriptFromAddress(btc_refund_address, config_.runner.btc_hrp);
         SwapStoreKeyFromSeed(derive_, config_.network);  // a relocked wallet: refused before an index is used
         const uint32_t index = AllocateIndex();
         const auto mat = BoundSwapKeysForIndex(derive_, config_.network, index, store_key);
