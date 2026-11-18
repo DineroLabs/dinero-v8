@@ -597,6 +597,8 @@ set(GUI_SOURCES
   # Phase 5 — Shielded pool surface (re-introduced post-v7-cleanup,
   # tied to the new daemon shielded RPCs).
   src/shieldedwidget.cpp
+  src/bordercomet.cpp
+  src/bordercomet.h
   src/shieldedwidget.h
   # Track C — Liquidity Vault (production, daemon-side custodial vault).
   src/vaultpanel.cpp

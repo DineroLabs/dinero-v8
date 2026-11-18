@@ -319,6 +319,11 @@ private:
   QLabel* lblGpuThermalsOverview_;
   QLabel* lblMempoolSize_;
   QLabel* lblMempoolBytes_;
+  QString errorMessageMethod_;  // call whose failure the error bar shows
+  QLabel* lblMempoolFeeRate_ = nullptr;
+  QLabel* lblMempoolFeeRange_ = nullptr;
+  QLabel* lblMempoolOldest_ = nullptr;
+  QLabel* lblMempoolEmpty_ = nullptr;
   QTableWidget* tblMempoolOverview_ = nullptr;
   QSet<QString> overviewMempoolTxids_;
   bool overviewMempoolInitialized_ = false;

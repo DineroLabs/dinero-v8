@@ -373,7 +373,8 @@ void ShieldedWidget::refresh() {
     if (!rpc_) return;
     rpc_->call("orchard.getactivationstatus", {});
     rpc_->call("wallet.shieldedbalance", {});
-    rpc_->callNamed("wallet.getshieldedaddress",
+    // A retired pool shows no receive address, so it never asks for one.
+    if (!retired_) rpc_->callNamed("wallet.getshieldedaddress",
                     QJsonObject{{"account", 0}, {"j", static_cast<qint64>(currentJ_)}});
     rpc_->call("wallet.listshielded", {});
 }
