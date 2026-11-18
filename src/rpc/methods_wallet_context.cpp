@@ -8124,9 +8124,15 @@ din::Json rpc_context_wallet_restore(const ExecutionContext& ctx, const din::Jso
         }
     }
 
-    result = dinero::rpc::RpcRestoreWallet(params, &wallet_service->get());
-    if (!result.isMember("error")) {
-        wallet_service->EnsureRuntimeWalletBindings();
+    {
+        // Exclusive creation owner (as wallet.createhd): no worker recovery or
+        // other RPC may enroll or read the restored wallet until its file,
+        // policy and gap-limit addresses exist. Released before any rescan.
+        auto creation_owner = wallet_service->AcquireCreationOwner();
+        result = dinero::rpc::RpcRestoreWallet(params, &wallet_service->get());
+        if (!result.isMember("error")) {
+            wallet_service->EnsureRuntimeWalletBindings();
+        }
     }
 
     if (result.isMember("success") && result["success"].asBool()) {

@@ -1798,7 +1798,8 @@ char* nodecore_rpc_call(const char* method, const char* params_json) {
         // encrypted-wallet unlock performed by wallet.createhd.
         const std::string source = g_rpcRegistry.handlerSource(method_name);
         const bool creating_wallet = method_name == "wallet.createhd" ||
-            method_name == "createhd" || source == "wallet.createhd";
+            method_name == "createhd" || source == "wallet.createhd" ||
+            method_name == "wallet.restore" || source == "wallet.restore";
         std::shared_ptr<dinero::WalletService> wallet_service;
         std::shared_lock<std::shared_mutex> creation_reader;
         if (!creating_wallet && daemon_ctx.wallet) {

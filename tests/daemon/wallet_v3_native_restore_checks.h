@@ -12,10 +12,11 @@ constexpr const char* kV3RestoreMnemonic =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 }
 
-din::Json RestoreOnV3(CanonicalRecoveryFixture& f,const char* name,const char* mnemonic){
+din::Json RestoreOnV3(CanonicalRecoveryFixture& f,const char* name,const char* mnemonic,
+                     const char* password="restore-pass"){
     ExecutionContext ctx;ctx.daemon=&f.context;
     din::Json params(Json::arrayValue);
-    params.append(name);params.append(mnemonic);params.append("");params.append("restore-pass");
+    params.append(name);params.append(mnemonic);params.append("");params.append(password);
     return rpc_context_wallet_restore(ctx,params);
 }
 void ExpectRestoredOnV3(CanonicalRecoveryFixture& f,const din::Json& restored,const char* name){
@@ -69,12 +70,24 @@ TEST(WalletV3NativeRestore, RestoredSeedRecoversOrchardAccount0OnV3) {
     const auto [body,bundle]=f.Shield(keys);(void)bundle;
     (void)f.Mine(body);
     NativeV3IndexScope v3(f,"v3-native-restore-orchard-index");
-    const auto restored=RestoreOnV3(f,"restored-orchard-on-v3",kV3RestoreMnemonic);
+    // The Qt wizard's order: restore with no password, then encrypt, then unlock.
+    const auto restored=RestoreOnV3(f,"restored-orchard-on-v3",kV3RestoreMnemonic,"");
     ExpectRestoredOnV3(f,restored,"restored-orchard-on-v3");
-    WalletService::AcquireWalletUse(f.wallet)->Wallet().unlockWallet("restore-pass",0);
     std::string error;
     ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
         WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        use->Wallet().encryptWallet("restore-pass");
+        use->Wallet().unlockWallet("restore-pass",0);
+    }
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        EXPECT_EQ(use->Wallet().AcquireDatabaseLease()->NativeV3TransparentState(),
+            WalletManager::NativeV3State::Complete);
+    }
     ExecutionContext ctx;ctx.daemon=&f.context;ctx.walletName="restored-orchard-on-v3";
     auto recovered=rpc_context_wallet_orchard_recoveraccount0(ctx,din::obj());
     ASSERT_FALSE(recovered.isMember("error")) << recovered.toStyledString();
