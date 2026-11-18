@@ -627,7 +627,7 @@ jobs:
                 $qt.Refresh()
                 Write-Host "GUI window title: $($qt.MainWindowTitle)"
                 Get-NetTCPConnection -LocalPort 20998 -ErrorAction SilentlyContinue | Format-Table State,OwningProcess
-                if ($qt.MainWindowHandle -ne [IntPtr]::Zero) {
+                if ($qt.MainWindowHandle) {
                   try {
                     Add-Type -AssemblyName UIAutomationClient
                     $window = [System.Windows.Automation.AutomationElement]::FromHandle($qt.MainWindowHandle)

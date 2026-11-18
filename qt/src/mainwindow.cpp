@@ -14222,32 +14222,39 @@ void MainWindow::onStartupWatchdogTimeout() {
 
   qWarning() << "Startup watchdog: no daemon RPC connection after 180s";
 
-  QMessageBox box(this);
-  box.setIcon(QMessageBox::Information);
-  box.setWindowTitle("Node Still Starting");
-  box.setText("Dinero has not connected to its local node after three minutes.");
-  box.setInformativeText(
+  // The node can finish reopening its database while this notice is visible.
+  // Keep the wallet window active and dismiss the notice when RPC connects.
+  auto* box = new QMessageBox(this);
+  box->setAttribute(Qt::WA_DeleteOnClose);
+  box->setModal(false);
+  box->setIcon(QMessageBox::Information);
+  box->setWindowTitle("Node Still Starting");
+  box->setText("Dinero has not connected to its local node after three minutes.");
+  box->setInformativeText(
     "A large database may still be checking saved chain data. If the node "
     "stopped or could not open its port, Show Log provides the cause. "
     "Keep Waiting lets startup continue; Quit closes Dinero.");
-  box.setDetailedText(daemonDebugLogTail(datadir));
-  QPushButton* showLogBtn = box.addButton("Show Log", QMessageBox::ActionRole);
-  QPushButton* waitBtn = box.addButton("Keep Waiting", QMessageBox::AcceptRole);
-  box.addButton("Quit", QMessageBox::DestructiveRole);
-  box.setDefaultButton(waitBtn);
-  box.exec();
-
-  if (box.clickedButton() == showLogBtn) {
-    if (!logPath.isEmpty()) {
+  box->setDetailedText(daemonDebugLogTail(datadir));
+  QPushButton* showLogBtn = box->addButton("Show Log", QMessageBox::ActionRole);
+  QPushButton* waitBtn = box->addButton("Keep Waiting", QMessageBox::AcceptRole);
+  QPushButton* quitBtn = box->addButton("Quit", QMessageBox::DestructiveRole);
+  box->setDefaultButton(waitBtn);
+  box->setEscapeButton(waitBtn);
+  connect(connectionMgr_, &ConnectionManager::connected, box, [box]() { box->close(); });
+  connect(box, &QMessageBox::finished, this, [this, box, showLogBtn, quitBtn, logPath](int) {
+    if (box->clickedButton() == quitBtn) {
+      close();
+      return;
+    }
+    if (shuttingDown_ || (connectionMgr_ && connectionMgr_->isConnected())) {
+      return;
+    }
+    if (box->clickedButton() == showLogBtn && !logPath.isEmpty()) {
       QDesktopServices::openUrl(QUrl::fromLocalFile(logPath));
     }
-    // Re-arm: the user is investigating, keep the watchdog alive.
     QTimer::singleShot(180000, this, &MainWindow::onStartupWatchdogTimeout);
-  } else if (box.clickedButton() == waitBtn) {
-    QTimer::singleShot(180000, this, &MainWindow::onStartupWatchdogTimeout);
-  } else {
-    close();
-  }
+  });
+  box->show();
 }
 
 void MainWindow::maybeAutoStartDaemon() {

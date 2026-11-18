@@ -91,7 +91,16 @@ function Stop-InstalledQt {
     try {
         $null = $Qt.Handle
         $null = $daemon.Handle
-        if (-not $Qt.CloseMainWindow()) { throw 'Could not close the installed Qt window' }
+        $windowDeadline = (Get-Date).AddSeconds(30)
+        do {
+            $Qt.Refresh()
+            if ($Qt.HasExited) { throw "Installed Qt exited before close (exit=$($Qt.ExitCode))" }
+            $closeRequested = $Qt.CloseMainWindow()
+            if (-not $closeRequested) { Start-Sleep -Milliseconds 500 }
+        } while (-not $closeRequested -and (Get-Date) -lt $windowDeadline)
+        if (-not $closeRequested) {
+            throw "Could not close the installed Qt window (title=$($Qt.MainWindowTitle), hwnd=$($Qt.MainWindowHandle))"
+        }
         if (-not $Qt.WaitForExit(150000)) { throw 'Installed Qt did not close within 150 seconds' }
         if ($Qt.ExitCode -ne 0) { throw "Installed Qt did not exit cleanly (exit=$($Qt.ExitCode))" }
         if (-not $daemon.WaitForExit(5000)) { throw 'Installed Qt left its bundled daemon running' }
@@ -122,6 +131,7 @@ try {
     }
     $qt = Start-Process @launch
     $restart = Wait-SelectedTip -Qt $qt -MinHeight $fresh.blocks -ProveImport $false -Minutes 20
+    Write-Host "Restarted Qt selected H$($restart.blocks) with $($restart.peers) peers"
     Stop-InstalledQt $qt
     [ordered]@{ primary = $base.height; base_hash = $base.block_hash;
         fresh = $fresh; cold_restart = $restart } |
