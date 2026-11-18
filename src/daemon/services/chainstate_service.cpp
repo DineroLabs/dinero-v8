@@ -7266,39 +7266,56 @@ ChainstateService::resumeRuntimeWalletRecoveryIfNeeded(WalletManager& wallet, UT
 }
 
 void ChainstateService::continueRestoredOrchardAccount0(WalletManager& wallet,uint64_t expected_session) {
+    // Every marker/status read and write happens under a database lease held
+    // for the original session: WalletManager::open cannot switch wallets
+    // while a lease exists, so nothing lands in a newly selected wallet.
+    uint64_t session=0;
+    const auto under_session=[&](const auto& action) {
+        auto lease=wallet.AcquireDatabaseLease();
+        if(!wallet.SoleDatabaseLeaseHeld() || !lease->Database() || lease->Session()!=session)return false;
+        action();
+        return true;
+    };
+    const auto record=[&](const std::string& status) {
+        (void)under_session([&] {
+            if(wallet.getSetting(WalletManager::kOrchardAccount0RestorePendingSetting)!="1")return;
+            if(wallet.getSetting(WalletManager::kOrchardAccount0RestoreStatusSetting)==status)return;
+            wallet.setSetting(WalletManager::kOrchardAccount0RestoreStatusSetting,status);
+            if(!status.empty())
+                std::cerr << "[ChainstateService] Restored wallet Orchard account 0 recovery: " << status << "\n";
+        });
+    };
     try {
-        if(activation_mutex_.HeldByCurrentThread() || !wallet.hasActiveWallet() || wallet.isWalletLocked() ||
-           wallet.getSetting(WalletManager::kOrchardAccount0RestorePendingSetting)!="1")return;
-        uint64_t session=0;
+        if(activation_mutex_.HeldByCurrentThread() || !wallet.hasActiveWallet() || wallet.isWalletLocked())return;
+        bool pending=false;
         {
             auto lease=wallet.AcquireDatabaseLease();
             if(!wallet.SoleDatabaseLeaseHeld() || !lease->Database())return;
             session=lease->Session();
+            if(expected_session && session!=expected_session)return;
+            pending=wallet.getSetting(WalletManager::kOrchardAccount0RestorePendingSetting)=="1";
         }
-        if(expected_session && session!=expected_session)return;
+        if(!pending)return;
         const auto progress=recoverOrchardAccount0(wallet,session,false);
-        // A refusal is retried on the next pass, but never silently: record
-        // the reason for wallet.getwalletinfo and log each change of it.
-        std::string status;
-        if(!progress.ok())status="recovery refused (status "+std::to_string(int(progress.status()))+
-            "); retrying on the next block";
-        else if(progress->complete) {
-            wallet.setSetting(WalletManager::kOrchardAccount0RestorePendingSetting,"");
-            wallet.setSetting(WalletManager::kOrchardAccount0RestoreStatusSetting,"");
-            std::cerr << "[ChainstateService] Restored wallet Orchard account 0 recovered\n";
-            return;
-        }
-        else if(progress->awaiting_history_source)status="waiting for an Orchard history source";
-        else if(progress->history_requested && !progress->history_ready)status="downloading Orchard history";
-        if(wallet.getSetting(WalletManager::kOrchardAccount0RestoreStatusSetting)!=status) {
-            wallet.setSetting(WalletManager::kOrchardAccount0RestoreStatusSetting,status);
-            if(!status.empty())
-                std::cerr << "[ChainstateService] Restored wallet Orchard account 0 recovery: " << status << "\n";
+        // A refusal is retried on the next pass, but never silently.
+        if(!progress.ok()) {
+            record("recovery refused (status "+std::to_string(int(progress.status()))+"); retrying on the next block");
+        } else if(progress->complete) {
+            if(under_session([&] {
+                   wallet.setSetting(WalletManager::kOrchardAccount0RestorePendingSetting,"");
+                   wallet.setSetting(WalletManager::kOrchardAccount0RestoreStatusSetting,"");
+               }))
+                std::cerr << "[ChainstateService] Restored wallet Orchard account 0 recovered\n";
+        } else if(progress->awaiting_history_source) {
+            record("waiting for an Orchard history source");
+        } else if(progress->history_requested && !progress->history_ready) {
+            record("downloading Orchard history");
+        } else {
+            record("");
         }
     } catch(const std::exception& e) {
         std::cerr << "[ChainstateService] Restored wallet Orchard account 0 recovery failed: " << e.what() << "\n";
-        try { wallet.setSetting(WalletManager::kOrchardAccount0RestoreStatusSetting,
-                  std::string("recovery failed: ")+e.what()+"; retrying on the next block"); } catch(...) {}
+        try { if(session)record(std::string("recovery failed: ")+e.what()+"; retrying on the next block"); } catch(...) {}
     }
 }
 
