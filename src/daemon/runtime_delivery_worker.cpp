@@ -1,4 +1,5 @@
 #include "daemon/runtime_delivery_worker.h"
+#include "daemon/runtime_replay_cancellation.h"
 #include "daemon/runtime_reorg_readmission.h"
 #include "daemon/services/chainstate_service.h"
 #include "daemon/services/wallet_service.h"
@@ -101,6 +102,12 @@ void RuntimeDeliveryWorker::RecoverWallet(Report& report,
     report.wallet=WalletOutcome::Deferred;report.wallet_head.reset();
     report.wallet_recovery_attempts=recovery_attempts;
     if (!wallet_) {report.wallet=WalletOutcome::ExplicitlyAbsent;return;}
+    // A stop request cancels long chain-length replays on this thread, so Stop
+    // can join promptly; the cancelled attempt fails before any projection and
+    // its committed per-store prefixes stay retryable.
+    const RuntimeReplayCancellationScope cancellation([state=state_] {
+        std::lock_guard lock(state->mutex);return state->stopping;
+    });
     try {
         auto recovery_owner=wallet_->AcquireCreationReader();
         auto use=WalletService::AcquireWalletUse(wallet_);
