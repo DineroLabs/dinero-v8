@@ -82,25 +82,36 @@ function Wait-SelectedTip {
 
 function Stop-InstalledQt {
     param([System.Diagnostics.Process]$Qt)
-    if ($Qt.HasExited) { return }
+    $Qt.Refresh()
+    if ($Qt.HasExited) { throw "Installed Qt exited before it could close (exit=$($Qt.ExitCode))" }
     $child = Get-EmbeddedDaemon $Qt
-    if (-not $Qt.CloseMainWindow()) { throw 'Could not close the installed Qt window' }
-    # Qt uses its normal quit path. Supply the isolated data directory to the
-    # companion CLI so its cookie is used if the daemon is still stopping.
-    $null = Get-NodeRpc 'stop'
-    if (-not $Qt.WaitForExit(120000) -or $Qt.ExitCode -ne 0) {
-        throw 'Installed Qt did not exit cleanly'
-    }
-    if ($child -and (Get-Process -Id $child.ProcessId -ErrorAction SilentlyContinue)) {
-        throw 'Installed Qt left its bundled daemon running'
+    if (-not $child) { throw 'Installed Qt has no bundled daemon to close' }
+    $daemon = [System.Diagnostics.Process]::GetProcessById($child.ProcessId)
+    # Retain both process handles so Windows still exposes their exit codes.
+    try {
+        $null = $Qt.Handle
+        $null = $daemon.Handle
+        if (-not $Qt.CloseMainWindow()) { throw 'Could not close the installed Qt window' }
+        if (-not $Qt.WaitForExit(150000)) { throw 'Installed Qt did not close within 150 seconds' }
+        if ($Qt.ExitCode -ne 0) { throw "Installed Qt did not exit cleanly (exit=$($Qt.ExitCode))" }
+        if (-not $daemon.WaitForExit(5000)) { throw 'Installed Qt left its bundled daemon running' }
+        if ($daemon.ExitCode -ne 0) { throw "Installed daemon stopped uncleanly (exit=$($daemon.ExitCode))" }
+        $daemonLog = Join-Path $DataDir 'embedded-daemon.log'
+        if (-not (Select-String -LiteralPath $daemonLog -SimpleMatch 'phase=shutdown_complete' -Quiet)) {
+            throw 'Installed daemon did not record completed shutdown'
+        }
+        Write-Host 'Installed Qt and its bundled daemon exited cleanly'
+    } finally {
+        $daemon.Dispose()
     }
 }
 
 $qt = $InitialQt
 try {
-    # GitHub's Windows runner took over 25 minutes to index the downloaded
-    # headers and import the signed snapshot before forward validation began.
+    # The first hosted run was still validating forward blocks at its original
+    # 25-minute deadline. Budget for cold header indexing, import and catch-up.
     $fresh = Wait-SelectedTip -Qt $qt -MinHeight ([int]$base.height + 288) -ProveImport $true -Minutes 60
+    Write-Host "Installed Qt reached H$($fresh.blocks) with $($fresh.peers) peers"
     Stop-InstalledQt $qt
     $launch = @{
         FilePath = $qtExe

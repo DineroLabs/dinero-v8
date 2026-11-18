@@ -561,7 +561,7 @@ static QString daemonFailureDetails(QProcess* process, const QString& datadir) {
         .arg(daemonLogTail(datadir, 40), datadirLockDiagnostic(datadir));
 }
 
-static void gracefulShutdownDaemon(QProcess* daemonProc) {
+static void gracefulShutdownDaemon(QProcess* daemonProc, const QString& datadir) {
     if (!daemonProc) return;
     if (daemonProc->state() != QProcess::Running) {
         qDebug() << "Daemon already stopped; nothing to do";
@@ -570,21 +570,23 @@ static void gracefulShutdownDaemon(QProcess* daemonProc) {
 
     qDebug() << "Shutting down daemon (RPC stop -> terminate -> kill)...";
 
-    // Step 1: graceful RPC stop. dinerod handles this by flushing wallet
-    // and chain state to disk and exiting cleanly within ~1-3 seconds.
+    // Step 1: graceful RPC stop using the cookie from this daemon's datadir.
+    // History download and P2P workers may still be active when Qt closes.
     const QString cliPath = defaultCliPath();
+    constexpr int kGracefulStopMs = 120'000;
     if (QFile::exists(cliPath)) {
         QProcess stopProc;
-        stopProc.start(cliPath, QStringList() << "stop");
-        stopProc.waitForFinished(3000);
-        // dinero-cli returns immediately after the daemon acknowledges
-        // the stop request; the daemon itself takes a moment to actually
-        // exit. Wait for the QProcess to report finished too.
-        if (daemonProc->waitForFinished(5000)) {
-            qDebug() << "Daemon stopped gracefully via RPC";
+        stopProc.start(cliPath, QStringList() << (QStringLiteral("-datadir=") + datadir)
+                       << "-rpcclienttimeout=5" << "stop");
+        const bool accepted = stopProc.waitForFinished(7000)
+            && stopProc.exitStatus() == QProcess::NormalExit && stopProc.exitCode() == 0;
+        if (daemonProc->state() == QProcess::NotRunning
+            || daemonProc->waitForFinished(accepted ? kGracefulStopMs : 5000)) {
+            qDebug() << "Daemon exited after RPC stop attempt"
+                     << daemonProc->exitCode() << daemonProc->exitStatus();
             return;
         }
-        qDebug() << "RPC stop didn't take effect within 5s; escalating";
+        qWarning() << "Daemon still active after RPC stop attempt; escalating";
     } else {
         qDebug() << "dinero-cli not found at" << cliPath << "; skipping RPC stop";
     }
@@ -1500,10 +1502,10 @@ int main(int argc, char** argv) {
   // for all of them; the post-exec gracefulShutdownDaemon() call below is
   // kept as an idempotent backstop (it no-ops once the daemon is stopped).
   QPointer<QProcess> daemonProcessGuard(daemonProcess);
-  QObject::connect(&app, &QCoreApplication::aboutToQuit, [daemonProcessGuard]() {
+  QObject::connect(&app, &QCoreApplication::aboutToQuit, [daemonProcessGuard, datadir]() {
     g_quittingCleanly = true;
     if (daemonProcessGuard) {
-      gracefulShutdownDaemon(daemonProcessGuard.data());
+      gracefulShutdownDaemon(daemonProcessGuard.data(), datadir);
     }
   });
 
@@ -1567,7 +1569,7 @@ int main(int argc, char** argv) {
   // startDaemon() also kills the daemon if dinero-qt itself crashed
   // before reaching this point.
   if (daemonProcess) {
-    gracefulShutdownDaemon(daemonProcess);
+    gracefulShutdownDaemon(daemonProcess, datadir);
     delete daemonProcess;
   }
 
