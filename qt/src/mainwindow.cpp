@@ -9,6 +9,7 @@
 #include "miningrewards.h"
 #include "inforow.h"
 #include "mainwindow.h"
+#include "bordercomet.h"
 #include "daemonoutput.h"
 #if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
 #include "orchardwidget.h"
@@ -2496,6 +2497,8 @@ void MainWindow::setupUI() {
   // the names and the switch to icon-only tabs below never got a chance.
   tabs->tabBar()->setUsesScrollButtons(true);
   mainTabs_ = tabs;
+  // A small light circling the content frame (decorative, low cost).
+  new BorderComet(tabs);
   // Icon-only tabs when the full names do not fit; names come back when they do.
   class CompactTabsWatcher : public QObject {
   public:
@@ -2731,7 +2734,6 @@ void MainWindow::setupUI() {
       overviewColumnCard(blocksCard);
       chainActivityRow->addWidget(blocksCard, kOverviewLeftStretch);
     }
-    layout->addLayout(chainActivityRow);
 
 
     // ═══════════════════════════════════════════════════════════════════
@@ -2771,9 +2773,11 @@ void MainWindow::setupUI() {
         }
       }
     });
-    contributionHeader->addWidget(contributionSummary, 1);
-    contributionHeader->addWidget(btnNetworkSettings);
-    connectivityLayout->addLayout(contributionHeader);
+    // Compact: the explanation is the button's tooltip, and the button sits at
+    // the end of the status tiles instead of on a row of its own.
+    contributionSummary->hide();
+    btnNetworkSettings->setToolTip(contributionSummary->text());
+    delete contributionHeader;
 
     auto* contributionTiles = new QHBoxLayout;
     contributionTiles->setSpacing(8);
@@ -2782,10 +2786,12 @@ void MainWindow::setupUI() {
       auto* tile = new QWidget(connectivityBox);
       tile->setStyleSheet(
           "QWidget { background: #171b20; border: 1px solid #2f363f; border-radius: 6px; }");
-      auto* tileLayout = new QHBoxLayout(tile);
-      tileLayout->setContentsMargins(10, 6, 10, 6);
-      tileLayout->setSpacing(7);
-      auto* titleLabel = new QLabel(title + QStringLiteral(" —"), tile);
+      // Label above value (as the Mempool tiles), so both fit beside the
+      // Network settings button without truncation.
+      auto* tileLayout = new QVBoxLayout(tile);
+      tileLayout->setContentsMargins(10, 5, 10, 5);
+      tileLayout->setSpacing(1);
+      auto* titleLabel = new QLabel(title, tile);
       titleLabel->setStyleSheet(
           "QLabel { color: #8f9ba8; font-size: 10px; border: none; background: transparent; }");
       valueLabel = new QLabel("Checking…", tile);
@@ -2793,12 +2799,12 @@ void MainWindow::setupUI() {
           "QLabel { color: #d6dde6; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
       tileLayout->addWidget(titleLabel);
       tileLayout->addWidget(valueLabel);
-      tileLayout->addStretch();
       contributionTiles->addWidget(tile, 1);
     };
     addContributionTile("REACHABILITY", lblOverviewReachability_);
     addContributionTile("CONTRIBUTION", lblOverviewContribution_);
     addContributionTile("CONNECTIVITY", lblOverviewConnectivity_);
+    contributionTiles->addWidget(btnNetworkSettings);
     connectivityLayout->addLayout(contributionTiles);
 
     connectivityBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
@@ -2862,15 +2868,45 @@ void MainWindow::setupUI() {
     // counter that can remain visually indistinguishable from "unavailable".
     auto *mempoolBox = new QGroupBox("📦 Mempool");
     auto *mempoolLayout = new QVBoxLayout(mempoolBox);
+    mempoolLayout->setSpacing(6);
     mempoolBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     mempoolBox->setMinimumHeight(210);
     mempoolBox->setMaximumHeight(235);
-    lblMempoolSize_ = new QLabel("Loading…");
-    lblMempoolSize_->setStyleSheet("QLabel { font-size: 18px; font-weight: bold; color: #d6dde6; }");
-    lblMempoolBytes_ = new QLabel("Waiting for local node");
-    lblMempoolBytes_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
-    mempoolLayout->addWidget(lblMempoolSize_);
-    mempoolLayout->addWidget(lblMempoolBytes_);
+    // Four stat tiles: pending, size, fee rate, oldest.
+    auto* mempoolTiles = new QGridLayout;
+    mempoolTiles->setHorizontalSpacing(6);
+    mempoolTiles->setVerticalSpacing(0);
+    auto mempoolTile = [&](int column, const QString& name, QLabel*& value, QLabel** detail) {
+      auto* tile = new QFrame;
+      tile->setObjectName("overviewMempoolTile");
+      tile->setStyleSheet("QFrame#overviewMempoolTile { background: #1c2026; border: 1px solid #2c323a; border-radius: 6px; }");
+      auto* v = new QVBoxLayout(tile);
+      v->setContentsMargins(8, 5, 8, 5);
+      v->setSpacing(1);
+      auto* label = new QLabel(name);
+      QFont capsFont = label->font();
+      capsFont.setCapitalization(QFont::AllUppercase);
+      capsFont.setPointSizeF(capsFont.pointSizeF() * 0.8);
+      label->setFont(capsFont);
+      label->setStyleSheet("QLabel { color: #b9c2cc; background: transparent; border: none; }");
+      value = new QLabel("—");
+      value->setStyleSheet("QLabel { color: #ccd3dc; font-size: 15px; font-weight: 600; background: transparent; border: none; }");
+      v->addWidget(label);
+      v->addWidget(value);
+      if (detail) {
+        *detail = new QLabel("");
+        (*detail)->setStyleSheet("QLabel { color: #8f9aa6; font-size: 10px; background: transparent; border: none; }");
+        v->addWidget(*detail);
+      }
+      mempoolTiles->addWidget(tile, 0, column);
+      mempoolTiles->setColumnStretch(column, 1);
+    };
+    mempoolTile(0, "Pending", lblMempoolSize_, nullptr);
+    mempoolTile(1, "Size", lblMempoolBytes_, nullptr);
+    mempoolTile(2, "Fee rate", lblMempoolFeeRate_, &lblMempoolFeeRange_);
+    mempoolTile(3, "Oldest", lblMempoolOldest_, nullptr);
+    lblMempoolSize_->setText("Loading…");
+    mempoolLayout->addLayout(mempoolTiles);
     tblMempoolOverview_ = new QTableWidget(0, 4);
     tblMempoolOverview_->setObjectName("overviewMempoolTable");
     tblMempoolOverview_->setHorizontalHeaderLabels({"Transaction", "Fee", "Size", "Age"});
@@ -2883,13 +2919,29 @@ void MainWindow::setupUI() {
       tblMempoolOverview_->horizontalHeader()->resizeSection(column, width);
     }
     tblMempoolOverview_->verticalHeader()->setVisible(false);
+    tblMempoolOverview_->verticalHeader()->setDefaultSectionSize(22);
+    tblMempoolOverview_->setShowGrid(false);
+    tblMempoolOverview_->setAlternatingRowColors(true);
+    tblMempoolOverview_->setFrameShape(QFrame::NoFrame);
+    tblMempoolOverview_->setStyleSheet(
+        "QTableWidget#overviewMempoolTable { background: transparent; alternate-background-color: #1c2026; border: none; } "
+        "QTableWidget#overviewMempoolTable QHeaderView::section { background: transparent; border: none; "
+        "border-bottom: 1px solid #2c323a; color: #b9c2cc; padding: 3px 4px; }");
     tblMempoolOverview_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tblMempoolOverview_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    tblMempoolOverview_->setMinimumHeight(120);
+    tblMempoolOverview_->setMinimumHeight(70);
     tblMempoolOverview_->setToolTip("Transactions currently held by this local node");
     mempoolLayout->addWidget(tblMempoolOverview_);
+    // Empty state: a quiet line instead of an otherwise empty table.
+    lblMempoolEmpty_ = new QLabel("No pending transactions in this local node");
+    lblMempoolEmpty_->setObjectName("overviewMempoolEmpty");
+    lblMempoolEmpty_->setAlignment(Qt::AlignCenter);
+    lblMempoolEmpty_->setStyleSheet("QLabel { color: #8f9aa6; padding: 10px 0; }");
+    lblMempoolEmpty_->hide();
+    mempoolLayout->addWidget(lblMempoolEmpty_);
+    mempoolLayout->addStretch(1);
     overviewColumnCard(mempoolBox);
-    chainActivityRow->addWidget(mempoolBox, kOverviewRightStretch);
+    chainActivityRow->addWidget(cpuBox, kOverviewRightStretch);
     
     // Peers Summary + compact connected peers table
     auto *peersBox = new QGroupBox("🌐 Peers");
@@ -2971,7 +3023,7 @@ void MainWindow::setupUI() {
     auto* rightMonitoringLayout = new QVBoxLayout(rightMonitoring);
     rightMonitoringLayout->setContentsMargins(0, 0, 0, 0);
     rightMonitoringLayout->setSpacing(kOverviewGutter);
-    rightMonitoringLayout->addWidget(cpuBox);
+    rightMonitoringLayout->addWidget(mempoolBox);
     rightMonitoringLayout->addWidget(rewardsBox, 1);
     overviewColumnCard(rightMonitoring);
 
@@ -2979,7 +3031,10 @@ void MainWindow::setupUI() {
     nodeOperationBox->setSizePolicy(nodeOperationBox->sizePolicy().horizontalPolicy(), QSizePolicy::Preferred);
     monitoringColumns->addWidget(nodeOperationBox, kOverviewLeftStretch);
     monitoringColumns->addWidget(rightMonitoring, kOverviewRightStretch);
+    // Row order by importance: Network Info, then Node operation + Peers
+    // (with Mempool), then Latest Blocks (with Resources).
     layout->addLayout(monitoringColumns);
+    layout->addLayout(chainActivityRow);
 
     // Row 3: Alerts (last 5 events)
     auto *alertsBox = new QGroupBox("⚠️ Recent Alerts");
@@ -3029,6 +3084,23 @@ void MainWindow::setupUI() {
     // ═══════════════════════════════════════════════════════════════════
     
     overview->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
+    // Uniform Overview typography: every card title in capitals, and one
+    // whitish tone for titles, values and tables (status colours keep theirs).
+    // Titles are 20% smaller than the body text; contents keep their size.
+    for (auto* group : overview->findChildren<QGroupBox*>()) {
+      group->setTitle(group->title().toUpper());
+      const QFont body = group->font();
+      QFont title = body;
+      title.setPointSizeF(body.pointSizeF() * 0.8);
+      group->setFont(title);
+      for (auto* child : group->findChildren<QWidget*>(Qt::FindDirectChildrenOnly)) child->setFont(body);
+    }
+    // Nothing on Overview is brighter than the top tab bar (#d5dce5).
+    overview->setStyleSheet(QStringLiteral(
+        "QLabel, QPushButton, QCheckBox { color: #ccd3dc; } "
+        "QGroupBox::title { color: #ccd3dc; } "
+        "QTableWidget, QTableView { color: #ccd3dc; } "
+        "QHeaderView::section { color: #ccd3dc; font-weight: 600; }"));
     tabs->addTab(makeScrollableTab(overview), navigationIcon(NavigationGlyph::Dashboard), "Overview");
   }
 
@@ -4048,7 +4120,9 @@ void MainWindow::setupUI() {
     hardwareWalletWidget_ = new HardwareWalletWidget(rpc_);
     connect(hardwareWalletWidget_, &HardwareWalletWidget::transactionBroadcasted,
             this, &MainWindow::handleHardwareWalletBroadcast);
-    tabs->addTab(hardwareWalletWidget_, navigationIcon(NavigationGlyph::Hardware), "Hardware");  // short: every name fits at 1440 px
+    // Scrollable like the other tall pages: its content must never force the
+    // whole window taller than the screen.
+    tabs->addTab(makeScrollableTab(hardwareWalletWidget_), navigationIcon(NavigationGlyph::Hardware), "Hardware");  // short: every name fits at 1440 px
   }
 
   // === DPI Pay/Collect Tab ===
@@ -4147,12 +4221,13 @@ void MainWindow::setupUI() {
       shieldedTabs->setObjectName("shieldedSubTabs");
       orchardWidget_ = new OrchardWidget(rpc_, this);
       shieldedTabs->addTab(makeScrollableTab(orchardWidget_), "Orchard");
-      const int legacyTab = shieldedTabs->addTab(shieldedWidget_, "Retired pool");
+      auto* legacyPage = makeScrollableTab(shieldedWidget_);
+      const int legacyTab = shieldedTabs->addTab(legacyPage, "Retired pool");
       shieldedTabs->setTabVisible(legacyTab, false);
       shieldedTabs->setCurrentIndex(0);
       connect(shieldedWidget_, &ShieldedWidget::retiredPoolVisibilityChanged, shieldedTabs,
-              [shieldedTabs, legacy = shieldedWidget_](bool visible, const QString& label) {
-                const int index = shieldedTabs->indexOf(legacy);
+              [shieldedTabs, legacyPage](bool visible, const QString& label) {
+                const int index = shieldedTabs->indexOf(legacyPage);
                 if (index < 0) return;
                 shieldedTabs->setTabText(index, label);
                 if (!visible && shieldedTabs->currentIndex() == index) shieldedTabs->setCurrentIndex(0);
@@ -5994,7 +6069,17 @@ void MainWindow::setupUI() {
     "  border-top: 1px solid #3d434d; "
     "}"
   );
-  lblErrorMessage_->setWordWrap(true);
+  // One fixed line whose space is kept while hidden: messages coming and
+  // going must never resize (and so jump) the page above. Long messages are
+  // elided by the label's width; the full text stays in the tooltip.
+  lblErrorMessage_->setWordWrap(false);
+  lblErrorMessage_->setFixedHeight(lblErrorMessage_->sizeHint().height() + 4);
+  {
+    QSizePolicy keep = lblErrorMessage_->sizePolicy();
+    keep.setHorizontalPolicy(QSizePolicy::Ignored);
+    keep.setRetainSizeWhenHidden(true);
+    lblErrorMessage_->setSizePolicy(keep);
+  }
   mainLayout->addWidget(lblErrorMessage_);
 }
 
@@ -6725,6 +6810,15 @@ void MainWindow::onRefreshBlocks() {
 void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
   // Guard: if RPC client has been destroyed (app shutting down), bail out
   if (!rpc_) return;
+
+  // A call that failed earlier has now succeeded: its error is resolved.
+  if (!errorMessageMethod_.isEmpty() && method == errorMessageMethod_ && lblErrorMessage_ &&
+      !(result.isObject() && result.toObject().contains(QStringLiteral("error")) &&
+        !result.toObject().value(QStringLiteral("error")).isNull())) {
+    lblErrorMessage_->setVisible(false);
+    lblErrorMessage_->clear();
+    errorMessageMethod_.clear();
+  }
 
   // Any reply proving the active wallet is encrypted retires the Encrypt
   // action, including the setup wizard's own wallet.encrypt (issue #939).
@@ -7860,35 +7954,27 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         }
         lblMempool_->setText(mempoolText);
 
-        // Update monitoring dashboard
-        if (lblMempoolSize_) {
-          QString sizeText = QString("%1 txs").arg(size);
-          if (oldestTxAge > 0) {
-            // Show oldest tx age
-            QString ageText;
-            if (oldestTxAge > 3600) {
-              ageText = QString("%1h").arg(oldestTxAge / 3600);
-            } else if (oldestTxAge > 60) {
-              ageText = QString("%1m").arg(oldestTxAge / 60);
-            } else {
-              ageText = QString("%1s").arg(oldestTxAge);
-            }
-            sizeText += QString(" (oldest: %1)").arg(ageText);
-          }
-          lblMempoolSize_->setText(sizeText);
-        }
+        // Update the Overview mempool tiles and activity line.
+        const auto shortAge = [](int seconds) {
+          return seconds >= 3600 ? QString("%1h").arg(seconds / 3600)
+               : seconds >= 60 ? QString("%1m").arg(seconds / 60)
+               : QString("%1s").arg(seconds);
+        };
+        if (lblMempoolSize_) lblMempoolSize_->setText(QString::number(size));
         if (lblMempoolBytes_) {
-          // Format bytes nicely with fee rate range
-          QString bytesStr;
-          if (bytes > 1024 * 1024) {
-            bytesStr = QString("%1 MB").arg(bytes / (1024.0 * 1024.0), 0, 'f', 2);
-          } else if (bytes > 1024) {
-            bytesStr = QString("%1 KB").arg(bytes / 1024.0, 0, 'f', 2);
-          } else {
-            bytesStr = QString("%1 bytes").arg(bytes);
-          }
-          lblMempoolBytes_->setText(bytesStr);
+          lblMempoolBytes_->setText(bytes >= 1024 * 1024 ? QString("%1 MB").arg(bytes / (1024.0 * 1024.0), 0, 'f', 2)
+                                    : bytes >= 1024 ? QString("%1 KB").arg(bytes / 1024.0, 0, 'f', 1)
+                                    : QString("%1 B").arg(bytes));
         }
+        if (lblMempoolFeeRate_) {
+          lblMempoolFeeRate_->setText(size > 0 && avgFeeRate > 0 ? QString::number(avgFeeRate, 'f', 1) : QString("—"));
+          lblMempoolFeeRate_->setToolTip("Average fee rate, una per virtual byte");
+        }
+        if (lblMempoolFeeRange_) {
+          lblMempoolFeeRange_->setText(size > 0 && maxFeeRate > 0
+              ? QString("una/vB · %1–%2").arg(minFeeRate).arg(maxFeeRate) : QString("una/vB"));
+        }
+        if (lblMempoolOldest_) lblMempoolOldest_->setText(size > 0 && oldestTxAge > 0 ? shortAge(oldestTxAge) : QString("—"));
       } else {
         qWarning() << "getmempoolinfo missing required fields";
         lblMempool_->setText("Mempool: N/A");
@@ -7946,21 +8032,26 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       auto* txidItem = new QTableWidgetItem(shortTxid);
       txidItem->setToolTip(entry.txid);
       tblMempoolOverview_->setItem(row, 0, txidItem);
-      tblMempoolOverview_->setItem(row, 1, new QTableWidgetItem(
-          QString::number(entry.details.value("fee").toDouble(), 'f', 8) + " DIN"));
+      {
+        // Compact fee: trailing zeros trimmed; the exact value is the tooltip.
+        const double fee = entry.details.value("fee").toDouble();
+        QString compact = QString::number(fee, 'f', 8);
+        while (compact.contains('.') && (compact.endsWith('0') || compact.endsWith('.'))) compact.chop(1);
+        auto* feeItem = new QTableWidgetItem(compact + " DIN");
+        feeItem->setToolTip(QString::number(fee, 'f', 8) + " DIN");
+        tblMempoolOverview_->setItem(row, 1, feeItem);
+      }
       tblMempoolOverview_->setItem(row, 2, new QTableWidgetItem(
           QStringLiteral("%1 B").arg(static_cast<qint64>(entry.details.value("size").toDouble()))));
       tblMempoolOverview_->setItem(row, 3, new QTableWidgetItem(age));
     }
-    if (rows.isEmpty()) {
-      tblMempoolOverview_->insertRow(0);
-      auto* empty = new QTableWidgetItem(overviewNodeSynced_
+    // Empty pool: the quiet empty-state line replaces the table.
+    tblMempoolOverview_->setVisible(!rows.isEmpty());
+    if (lblMempoolEmpty_) {
+      lblMempoolEmpty_->setText(overviewNodeSynced_
           ? "No pending transactions in this local node"
           : "No pending transactions shown while the local node is syncing");
-      empty->setForeground(QBrush(QColor("#868e96")));
-      empty->setTextAlignment(Qt::AlignCenter);
-      tblMempoolOverview_->setItem(0, 0, empty);
-      tblMempoolOverview_->setSpan(0, 0, 1, 4);
+      lblMempoolEmpty_->setVisible(rows.isEmpty());
     }
     tblMempoolOverview_->setSortingEnabled(true);
 
@@ -8812,6 +8903,17 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
   // route and must not turn a pool-only error into a global error banner.
   if (method.startsWith(QStringLiteral("pool.earnings."))) return;
 
+  // The same for the Orchard tab (every call is tagged "orchardtab|...") and
+  // the shielded pool view's background reads: each widget shows its own
+  // state and explains it there. A poll failing every few seconds must not
+  // become a sticky global "Error" bar.
+  if (method.startsWith(QStringLiteral("orchardtab|")) ||
+      method == QStringLiteral("wallet.shieldedbalance") ||
+      method == QStringLiteral("wallet.getshieldedaddress") ||
+      method == QStringLiteral("wallet.listshielded") ||
+      method == QStringLiteral("orchard.getactivationstatus"))
+    return;
+
   if (method.startsWith(QLatin1String("overview.miningrewards:"))) {
     if (!walletSwitchInFlight_ && method == miningRewardsReplyAlias()) {
       // The HTTP dispatcher normalizes a wallet_balance_not_current result to
@@ -8934,9 +9036,13 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
     return;
   }
 
-  // ALWAYS show error in dedicated error bar at bottom (doesn't overlap connection status)
+  // ALWAYS show error in dedicated error bar at bottom (doesn't overlap connection status).
+  // Remember which call produced it: the bar clears as soon as that same call
+  // succeeds, so a resolved condition never leaves a stale error behind.
   lblErrorMessage_->setText(QString("⚠️ Error: %1 failed - %2 (code: %3)").arg(method).arg(message).arg(code));
+  lblErrorMessage_->setToolTip(lblErrorMessage_->text());
   lblErrorMessage_->setVisible(true);
+  errorMessageMethod_ = method;
 
   // Keep send UI usable after RPC failures.
   if (method == "wallet.sendtoaddress" || method == "sendtoaddress" ||
