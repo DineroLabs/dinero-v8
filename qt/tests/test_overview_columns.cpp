@@ -507,6 +507,38 @@ private Q_SLOTS:
         for (auto* r : info->findChildren<InfoRow*>())
             QVERIFY2(r->nameText() != "Mempool" || r->isHidden(), "duplicate Mempool row is visible");
     }
+    void errorBarClearsWhenTheFailedCallSucceeds() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        auto* bar = window.findChild<QLabel*>("walletGlobalError");
+        QVERIFY(bar);
+        window.onRpcError("wallet.listunspent", -32603, "node busy");
+        QVERIFY(!bar->isHidden());
+        QVERIFY(bar->text().contains("wallet.listunspent"));
+        // An unrelated success leaves it; the same call succeeding clears it.
+        window.onRpcResult("getblockcount", QJsonValue(5));
+        QVERIFY(!bar->isHidden());
+        window.onRpcResult("wallet.listunspent", QJsonArray{});
+        QVERIFY2(bar->isHidden(), "resolved error stayed on screen");
+        QVERIFY(bar->text().isEmpty());
+    }
+    void backgroundPollErrorsStayOutOfTheErrorBar() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        auto* bar = window.findChild<QLabel*>("walletGlobalError");
+        QVERIFY(bar);
+        for (const char* method : {"orchardtab|accounts|6465|3", "wallet.getshieldedaddress",
+                                   "wallet.listshielded", "wallet.shieldedbalance",
+                                   "orchard.getactivationstatus"}) {
+            window.onRpcError(method, -32603, "Legacy transparent wallet is catching up to the selected chain");
+            QVERIFY2(bar->isHidden() || !bar->text().contains(method),
+                     qPrintable(QString("%1 reached the global error bar").arg(method)));
+        }
+    }
     void mempoolColumnsAreNotCramped() {
         QTemporaryDir dir;
         QVERIFY(dir.isValid());

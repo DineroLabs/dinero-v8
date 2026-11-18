@@ -6761,6 +6761,15 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
   // Guard: if RPC client has been destroyed (app shutting down), bail out
   if (!rpc_) return;
 
+  // A call that failed earlier has now succeeded: its error is resolved.
+  if (!errorMessageMethod_.isEmpty() && method == errorMessageMethod_ && lblErrorMessage_ &&
+      !(result.isObject() && result.toObject().contains(QStringLiteral("error")) &&
+        !result.toObject().value(QStringLiteral("error")).isNull())) {
+    lblErrorMessage_->setVisible(false);
+    lblErrorMessage_->clear();
+    errorMessageMethod_.clear();
+  }
+
   // Any reply proving the active wallet is encrypted retires the Encrypt
   // action, including the setup wizard's own wallet.encrypt (issue #939).
   if (btnEncryptWallet_ && result.isObject()) {
@@ -8844,6 +8853,17 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
   // route and must not turn a pool-only error into a global error banner.
   if (method.startsWith(QStringLiteral("pool.earnings."))) return;
 
+  // The same for the Orchard tab (every call is tagged "orchardtab|...") and
+  // the shielded pool view's background reads: each widget shows its own
+  // state and explains it there. A poll failing every few seconds must not
+  // become a sticky global "Error" bar.
+  if (method.startsWith(QStringLiteral("orchardtab|")) ||
+      method == QStringLiteral("wallet.shieldedbalance") ||
+      method == QStringLiteral("wallet.getshieldedaddress") ||
+      method == QStringLiteral("wallet.listshielded") ||
+      method == QStringLiteral("orchard.getactivationstatus"))
+    return;
+
   if (method.startsWith(QLatin1String("overview.miningrewards:"))) {
     if (!walletSwitchInFlight_ && method == miningRewardsReplyAlias()) {
       // The HTTP dispatcher normalizes a wallet_balance_not_current result to
@@ -8966,9 +8986,13 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
     return;
   }
 
-  // ALWAYS show error in dedicated error bar at bottom (doesn't overlap connection status)
+  // ALWAYS show error in dedicated error bar at bottom (doesn't overlap connection status).
+  // Remember which call produced it: the bar clears as soon as that same call
+  // succeeds, so a resolved condition never leaves a stale error behind.
   lblErrorMessage_->setText(QString("⚠️ Error: %1 failed - %2 (code: %3)").arg(method).arg(message).arg(code));
+  lblErrorMessage_->setToolTip(lblErrorMessage_->text());
   lblErrorMessage_->setVisible(true);
+  errorMessageMethod_ = method;
 
   // Keep send UI usable after RPC failures.
   if (method == "wallet.sendtoaddress" || method == "sendtoaddress" ||
