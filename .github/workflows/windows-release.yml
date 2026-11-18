@@ -387,13 +387,13 @@ jobs:
             throw 'dinero-qt.exe does not import the CUDA driver and NVRTC runtime'
           }
 
-      - name: Verify daemon output cannot block before the Qt event loop
+      - name: Verify Qt daemon output and wallet backup lock
         shell: powershell
         run: |
-          cmake --build build-msvc-native --config Release --parallel 2 --target test_daemon_output
-          if ($LASTEXITCODE -ne 0) { throw 'daemon output test build failed' }
-          ctest --test-dir build-msvc-native\qt -C Release -R '^DaemonOutputBeforeEventLoop$' --output-on-failure
-          if ($LASTEXITCODE -ne 0) { throw 'daemon output test failed' }
+          cmake --build build-msvc-native --config Release --parallel 2 --target test_daemon_output test_wallet_backup_lock
+          if ($LASTEXITCODE -ne 0) { throw 'Qt safety test build failed' }
+          ctest --test-dir build-msvc-native\qt -C Release -R '^(DaemonOutputBeforeEventLoop|WalletBackupLock)$' --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'Qt safety test failed' }
 
       - name: Build Windows server release and installer
         shell: powershell
