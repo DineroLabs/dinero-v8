@@ -168,7 +168,7 @@ std::string HexOfArray(const std::array<uint8_t, N>& a) {
 din::Json rpc_wallet_getnewp2mraddress(const ExecutionContext& ctx,
                                        const din::Json&        params) {
     din::Json result;
-    // v8.2.5 (#939): a native wallet enrolled on a full-archive v3 node
+    // v8.2.4 (#939): a native wallet enrolled on a full-archive v3 node
     // issues P2MR only from its sealed pool (m/88'/1448'/0'/0/idx, leaf 0).
     // Deriving any other script would invalidate its receipts, so explicit
     // derivation parameters are refused there.
@@ -437,7 +437,7 @@ din::Json rpc_wallet_listp2mraddresses(const ExecutionContext& ctx,
         return result;
     }
 
-    // v8.2.5 (#939): a native v3 wallet's P2MR pool scripts are not the
+    // v8.2.4 (#939): a native v3 wallet's P2MR pool scripts are not the
     // user's to receive on until issued; list them only once issued.
     std::set<std::string> unissued;
     {

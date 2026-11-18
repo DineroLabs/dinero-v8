@@ -2355,7 +2355,7 @@ constexpr const char* kNativePoolSchema =
     "label TEXT NOT NULL DEFAULT '',"
     "issued_at INTEGER,"
     "UNIQUE(chain,idx))";
-// v8.2.5 (#939): the P2MR receive pool of a native v3 wallet, also unguarded.
+// v8.2.4 (#939): the P2MR receive pool of a native v3 wallet, also unguarded.
 // Each row is an authenticated V7P2MRStore key at m/88'/1448'/0'/0/idx (leaf
 // 0). AdoptP2MRIssuanceIntent inserts the row in the SAME wallet transaction
 // that adopts its watch script, so every pooled script belongs to exactly one
@@ -2856,7 +2856,7 @@ bool AdoptP2MRIssuanceIntent(sqlite3* db,const wallet::P2MRStoredAddress& row,
     }
     IssuedStatement clear(db,"DELETE FROM p2mr_issuance_intent_v1 WHERE id=1 AND path=? AND leaf_index=?");
     clear.Text(1,expected);clear.Int(2,leaf);clear.Done(true);
-    // v8.2.5: an index an open native v3 P2MR target owes is pooled here,
+    // v8.2.4: an index an open native v3 P2MR target owes is pooled here,
     // atomically with its watch script, so its generation's domain is exact.
     NativeP2MRPoolAdopted(db,expected,uint32_t(leaf),row.address,script);
     return true;
@@ -4577,7 +4577,7 @@ std::string WalletManager::DatabaseLease::BeginNativeTransparentMigrationV3(
             if (first < 0 || first > INT_MAX || sqlite3_step(next.stmt) != SQLITE_DONE)
                 throw std::runtime_error("V3 native wallet pool index invalid");
             if (chain == 0) receive_first = first;
-            // v8.2.5: a restored wallet already shows its gap-limit receive
+            // v8.2.4: a restored wallet already shows its gap-limit receive
             // rows, which all count as issued. Top the receive pool up so
             // enrollment leaves issuable scripts instead of forcing an
             // immediate extension (a second full replay for a restored seed).
@@ -4597,7 +4597,7 @@ std::string WalletManager::DatabaseLease::BeginNativeTransparentMigrationV3(
         if (NativePoolCount(db_, "SELECT count(*) FROM native_v3_address_pool") != 0)
             throw std::runtime_error("V3 native wallet address pool already populated");
         NativePoolAdopt(db_, 0, receive_first);
-        // v8.2.5: the P2MR receive pool joins this first coverage (generation
+        // v8.2.4: the P2MR receive pool joins this first coverage (generation
         // 0), so a restored wallet never needs a second full replay for it.
         if (NativeP2MRDerivable(owner_))
             NativeP2MROpenTarget(db_, 0, owner_.GetV7P2MRStorePath(), owner_.current_wallet_id_);
@@ -4748,7 +4748,7 @@ bool WalletManager::DatabaseLease::BeginNativePoolExtensionV3(
                 pooled.Int(4, index);pooled.Int(5, generation);pooled.Done(1);
             }
         }
-        // v8.2.5: the P2MR fill of this generation is owed before coverage.
+        // v8.2.4: the P2MR fill of this generation is owed before coverage.
         // A P2MR-only extension writes no guarded row here, so retire the
         // ordinary receipt explicitly (its domain is about to grow).
         if (p2mr) {

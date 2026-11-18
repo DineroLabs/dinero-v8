@@ -1,7 +1,7 @@
 # Wallet index v3: native wallets (issue #939)
 
-Status: native v3 route and creation-time three addresses shipped in v8.2.4.
-Restore, Orchard spends and the P2MR pool are v8.2.5 (see the last section).
+Status: v8.2.4 ships the native v3 route, creation-time three addresses,
+restore, Orchard spends and the P2MR pool (see the last section).
 
 ## Problem
 
@@ -223,18 +223,24 @@ The v3 transparent signer authenticates Orchard ownership and rejects inputs
 reserved by Orchard before staging a payment. Balance and status only claim
 native send readiness when the Orchard inventory is valid; a locked wallet
 cannot authenticate that inventory and reports send readiness after unlock.
-In v8.2.4, Orchard spends, restored-wallet enrollment and additional P2MR
-addresses after enrollment were refused; v8.2.5 serves all three.
+Orchard spends, restored-wallet enrollment and additional P2MR addresses
+after enrollment were first refused; the last section describes how v8.2.4
+serves all three.
 
-## v8.2.5: restore, Orchard spends and the P2MR pool
+## v8.2.4: restore, Orchard spends and the P2MR pool
 
 **Restore.** `wallet.restore` on a v3 node skips the legacy rescan and
 reports `history_recovery=native_v3_after_unlock`. The creation owner accepts
 a restored seed; it never seals a fresh birth, so native enrollment replays
 the full history. Enrollment tops the receive pool up when the restore's
 gap-limit rows leave fewer than the low water unissued, so a restored wallet
-does not need a second full replay. `wallet.orchard.recoveraccount0` is
-served on v3 (explicit, as on v2). Restore holds the exclusive wallet
+does not need a second full replay. Orchard account 0 is recovered without a
+manual call: `wallet.restore` marks the wallet
+(`orchard_account0_restore_pending_v1`) and the runtime worker advances the
+bounded, resumable recovery on each pass while the wallet is enrolled and
+unlocked, clearing the mark when it completes. `wallet.orchard.recoveraccount0`
+also remains available. A restored seed has no PQ master on any node, so no
+P2MR keys are recreated from it. Restore holds the exclusive wallet
 creation owner (as `wallet.createhd`), so the worker cannot enroll a
 half-restored wallet; the HTTP and NodeCore dispatchers exempt it from their
 shared reader.

@@ -1,5 +1,5 @@
 #pragma once
-// v8.2.5 (#939 follow-up): Orchard spends for native wallets on a full-archive
+// v8.2.4 (#939 follow-up): Orchard spends for native wallets on a full-archive
 // v3 node. Included after orchard_service_proofs_checks.h (ServiceProofTerminal)
 // and wallet_v3_recovery_route_checks.h (NativeV3IndexScope). Orchard-origin only.
 

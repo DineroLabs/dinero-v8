@@ -1,5 +1,5 @@
 #pragma once
-// v8.2.5 (#939 follow-up): restoring a wallet from its seed on a full-archive
+// v8.2.4 (#939 follow-up): restoring a wallet from its seed on a full-archive
 // v3 node. Included with the native v3 Orchard spend checks (Orchard-origin
 // only): uses CanonicalRecoveryFixture, NativeV3IndexScope and NativeTestCount.
 
@@ -73,6 +73,15 @@ TEST(WalletV3NativeRestore, RestoredSeedRecoversOrchardAccount0OnV3) {
     // The Qt wizard's order: restore with no password, then encrypt, then unlock.
     const auto restored=RestoreOnV3(f,"restored-orchard-on-v3",kV3RestoreMnemonic,"");
     ExpectRestoredOnV3(f,restored,"restored-orchard-on-v3");
+    {
+        // Right after the restore, before any worker pass: pending and reported.
+        EXPECT_EQ(WalletService::AcquireWalletUse(f.wallet)->Wallet().getSetting(
+            WalletManager::kOrchardAccount0RestorePendingSetting),"1");
+        ExecutionContext early;early.daemon=&f.context;early.walletName="restored-orchard-on-v3";
+        const auto info=rpc_context_wallet_getwalletinfo(early,din::obj());
+        ASSERT_TRUE(info.isMember("orchard_account0_recovery")) << info.toStyledString();
+        EXPECT_EQ(info["orchard_account0_recovery"]["state"].asString(),"in_progress");
+    }
     std::string error;
     ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
         WalletService::CanonicalRecovery::AppliedPrefix) << error;
@@ -96,15 +105,15 @@ TEST(WalletV3NativeRestore, RestoredSeedRecoversOrchardAccount0OnV3) {
         EXPECT_FALSE(use->Wallet().AcquireDatabaseLease()->NativeV3PoolNeedsExtension());
     }
     ExecutionContext ctx;ctx.daemon=&f.context;ctx.walletName="restored-orchard-on-v3";
-    auto recovered=rpc_context_wallet_orchard_recoveraccount0(ctx,din::obj());
-    ASSERT_FALSE(recovered.isMember("error")) << recovered.toStyledString();
-    for(int i=0;i<4&&!recovered["complete"].asBool();++i){
+    EXPECT_EQ(restored["orchard_account0_recovery"].asString(),"automatic_after_unlock");
+    // No manual RPC: the ordinary worker passes finish account-0 recovery.
+    const auto pending=[&]{return WalletService::AcquireWalletUse(f.wallet)->Wallet().getSetting(
+        WalletManager::kOrchardAccount0RestorePendingSetting)=="1";};
+    for(int i=0;i<8&&pending();++i)
         ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
             WalletService::CanonicalRecovery::AppliedPrefix) << error;
-        recovered=rpc_context_wallet_orchard_recoveraccount0(ctx,din::obj());
-        ASSERT_FALSE(recovered.isMember("error")) << recovered.toStyledString();
-    }
-    EXPECT_TRUE(recovered["complete"].asBool()) << recovered.toStyledString();
+    EXPECT_FALSE(pending()) << "account-0 recovery completes through the normal flow";
+    EXPECT_FALSE(rpc_context_wallet_getwalletinfo(ctx,din::obj()).isMember("orchard_account0_recovery"));
     din::Json account;account["account"]=Json::UInt64(0);
     const auto shown=rpc_context_wallet_orchard_getbalance(ctx,account);
     ASSERT_FALSE(shown.isMember("error")) << shown.toStyledString();
@@ -112,6 +121,54 @@ TEST(WalletV3NativeRestore, RestoredSeedRecoversOrchardAccount0OnV3) {
     // The transparent side of the restored wallet stays certified.
     const auto balance=rpc_context_wallet_getbalance(ctx,din::obj());
     EXPECT_FALSE(balance.isMember("error")) << balance.toStyledString();
+}
+
+// v8.2.4 (#939): the ordinary desktop restore on a v2 (full-archive) node
+// also recovers Orchard account 0 with no manual RPC: wallet.restore marks
+// the wallet and the runtime worker advances the recovery until complete.
+TEST(OrchardAccount0Recovery, AutomaticAfterV2DesktopRestore) {
+    Account0RecoveryFixture f;   // v2 index; "before-recovery" exists from the same seed
+    const auto keys=f.AccountKeys(0);
+    const auto [body,bundle]=f.Shield(keys);(void)bundle;
+    (void)f.Mine(body);f.MineEmpty();
+    ExecutionContext ctx;ctx.daemon=&f.context;
+    din::Json params(Json::arrayValue);
+    params.append("restored-v2");params.append(RecoveryTestPhrase);params.append("");params.append("");
+    const auto restored=rpc_context_wallet_restore(ctx,params);
+    ASSERT_TRUE(restored["success"].asBool()) << restored.toStyledString();
+    EXPECT_EQ(restored["orchard_account0_recovery"].asString(),"automatic_after_unlock") << restored.toStyledString();
+    EXPECT_FALSE(restored.isMember("history_recovery")) << "v2 keeps its legacy rescan";
+    const auto pending=[&]{return WalletService::AcquireWalletUse(f.wallet)->Wallet().getSetting(
+        WalletManager::kOrchardAccount0RestorePendingSetting)=="1";};
+    ASSERT_TRUE(pending());
+    ASSERT_FALSE(f.Catalog()->KnownInventory()) << "nothing recovered before the worker runs";
+    for(int i=0;i<8&&pending();++i)(void)f.wallet->RecoverActiveWalletFromCanonicalSource();
+    EXPECT_FALSE(pending()) << "account-0 recovery completes through the normal worker passes";
+    const auto catalog=f.Catalog();
+    ASSERT_TRUE(catalog&&catalog->recovered);
+    EXPECT_EQ(f.Account(0).account.Scan().BalanceUna(),500000u);
+    ctx.walletName="restored-v2";
+    din::Json account;account["account"]=Json::UInt64(0);
+    const auto shown=rpc_context_wallet_orchard_getbalance(ctx,account);
+    ASSERT_FALSE(shown.isMember("error")) << shown.toStyledString();
+    EXPECT_EQ(shown["confirmed_una"].asUInt64(),500000u) << shown.toStyledString();
+}
+
+// A recovery that cannot proceed is never silent: the worker records the
+// reason and wallet.getwalletinfo reports it while the mark stays set.
+TEST(WalletV3NativeRestore, RefusedAutomaticRecoveryIsReported) {
+    CanonicalRecoveryFixture f(false,false);   // generated wallet: account-0 recovery refuses
+    (void)f.MineToWallet();
+    NativeV3IndexScope v3(f,"v3-native-restore-refused-index");
+    WalletService::AcquireWalletUse(f.wallet)->Wallet().setSetting(
+        WalletManager::kOrchardAccount0RestorePendingSetting,"1");
+    std::string error;
+    for(int i=0;i<2;++i)(void)f.wallet->RecoverActiveWalletFromCanonicalSource(&error);
+    ExecutionContext ctx;ctx.daemon=&f.context;ctx.walletName="canonical-recovery";
+    const auto info=rpc_context_wallet_getwalletinfo(ctx,din::obj());
+    ASSERT_TRUE(info.isMember("orchard_account0_recovery")) << info.toStyledString();
+    EXPECT_EQ(info["orchard_account0_recovery"]["state"].asString(),"in_progress");
+    EXPECT_FALSE(info["orchard_account0_recovery"]["detail"].asString().empty()) << info.toStyledString();
 }
 
 } // namespace dinero

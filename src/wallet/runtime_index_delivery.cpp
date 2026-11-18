@@ -2105,7 +2105,7 @@ void RuntimeIndexDelivery::RetireReceiptForNativePoolExtensionV3(WalletManager& 
       const int rc=sqlite3_step(table.value);
       if(rc==SQLITE_DONE){wallet_read.Commit();return;} // first enrollment
       if(rc!=SQLITE_ROW)Fail("Native pool extension schema unavailable"); }
-    // v8.2.5: the P2MR pool shares the generation sequence; its rows of the
+    // v8.2.4: the P2MR pool shares the generation sequence; its rows of the
     // newest generation are part of the grown domain too.
     bool p2mr=false;
     { Statement table(db,"SELECT 1 FROM sqlite_master WHERE type='table' AND name='native_v3_p2mr_pool'");
@@ -2192,7 +2192,7 @@ void RuntimeOrdinaryDelivery::ReconcileNativeTransparentCoverageV3(WalletManager
     {
         auto lease=wallet.AcquireDatabaseLease();
         if(!native_pending(*lease))Fail("Native coverage v3 pending wallet owner changed");
-        // v8.2.5: an owed P2MR pool fill would grow this domain; no receipt
+        // v8.2.4: an owed P2MR pool fill would grow this domain; no receipt
         // may be sealed before it completes.
         if(!lease->NativeP2MRTargetMissing().empty())Fail("Native coverage v3 owes P2MR pool scripts");
         auto* db=lease->Database();CoverageDurability(db);OrdinaryTransaction read(db);

@@ -281,7 +281,7 @@ struct WalletFixture {
     }
     void Wire(HttpRpcServer& server){server.set_daemon_context(&context);server.set_rpc_registry(&registry);}
 };
-// v8.2.5: wallet.restore holds the exclusive creation owner across its file
+// v8.2.4: wallet.restore holds the exclusive creation owner across its file
 // creation and gap-limit derivation, so the dispatcher must not already hold
 // the shared reader for it (a recursive acquire would deadlock).
 TEST(RpcRequestFraming, RestoreTakesTheExclusiveCreationOwner) {

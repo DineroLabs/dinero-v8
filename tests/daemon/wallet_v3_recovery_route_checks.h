@@ -851,7 +851,7 @@ TEST(WalletV3NativeInterim, UnservableNativeWalletKeepsUnsupportedRefusal) {
 // is allowed and its sealed birth enrolls it without a genesis replay. A
 // restored seed may own Orchard history that v3 cannot deliver before phase
 // 3, so restoring stays refused.
-// v8.2.5: restores are served on v3 too (WalletV3NativeRestore); this case
+// v8.2.4: restores are served on v3 too (WalletV3NativeRestore); this case
 // keeps the generated-wallet creation contract.
 TEST(WalletV3NativeInterim, V3CreatesGeneratedWalletsWithThreeAddresses) {
     CanonicalRecoveryFixture f(false,false);
@@ -1402,7 +1402,7 @@ TEST(WalletV3NativeRoute, InterruptedNativeReconcileStaysPendingThenResumes) {
             EXPECT_THROW((void)lease->BeginNativeTransparentMigrationV3(index->Index(),session),std::exception);
             EXPECT_THROW((void)lease->BeginLegacyTransparentMigrationV3(index->Index(),session),std::exception);
         }
-        // v8.2.5: the owed P2MR pool fill precedes coverage (the reconcile
+        // v8.2.4: the owed P2MR pool fill precedes coverage (the reconcile
         // refuses while it is owed); the worker does this before coverage.
         FillNativeP2MRTargetsV3(use->Wallet(),session);
         EXPECT_FALSE(HasLegacyStateColumn(use->Wallet()));
@@ -1462,7 +1462,7 @@ TEST(WalletV3NativeRoute, OrchardOwnershipChangeDuringReconcileStaysPending) {
         auto lease=use->Wallet().AcquireDatabaseLease();
         ASSERT_FALSE(lease->BeginNativeTransparentMigrationV3(index->Index(),session).empty());
     }
-    FillNativeP2MRTargetsV3(use->Wallet(),session);  // v8.2.5: owed before coverage
+    FillNativeP2MRTargetsV3(use->Wallet(),session);  // v8.2.4: owed before coverage
     const auto coverage=f.f.service->getRuntimeWalletCoverageV3(use->Wallet(),session,index->Index());
     ASSERT_TRUE(coverage.ok()) << static_cast<int>(coverage.status());
     int commits=0;
@@ -2612,7 +2612,7 @@ TEST(WalletV3NativePool, IssuesUnissuedPoolAddressesKeepingReceipts) {
         EXPECT_FALSE(shown.contains(unissued));
         EXPECT_FALSE(shown.contains(change0));
     }
-    // v8.2.5: P2MR comes from the P2MR pool sealed with the same receipts
+    // v8.2.4: P2MR comes from the P2MR pool sealed with the same receipts
     // (filled at enrollment): two distinct addresses, receipts untouched.
     const auto p2mr=NativeIssue(request,"p2mr");
     ASSERT_TRUE(p2mr.isMember("address")) << p2mr.toStyledString();

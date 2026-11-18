@@ -68,10 +68,10 @@ TEST(WalletV3NativeOrchard, NativeWalletReceivesOrchardNoteThroughV3Delivery) {
         EXPECT_FALSE(HasLegacyStateColumn(use->Wallet()));
     };
     check_delivered(500000,"delivered");
-    // v8.2.5: Orchard spends and shields are served on v3; the end-to-end
+    // v8.2.4: Orchard spends and shields are served on v3; the end-to-end
     // round trip lives in WalletV3NativeOrchardSpend.
 
-    // v8.2.5: restored-seed account-0 recovery is served on v3 (WalletV3NativeRestore).
+    // v8.2.4: restored-seed account-0 recovery is served on v3 (WalletV3NativeRestore).
     (void)recover_account0;
 
     f.wallet->Stop();

@@ -1,5 +1,5 @@
 #pragma once
-// v8.2.5 (#939 follow-up): more P2MR addresses after native v3 enrollment.
+// v8.2.4 (#939 follow-up): more P2MR addresses after native v3 enrollment.
 // Orchard-origin only; uses the native v3 route helpers (NativeIssue,
 // ExpectNativeReceiptsCurrent, NativeState, RestartNativeWallet,
 // NativeTestCount) and FillNativeP2MRTargetsV3.

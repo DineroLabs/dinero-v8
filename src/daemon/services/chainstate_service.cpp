@@ -62,7 +62,7 @@
 #include "daemon/coinbase_readback_gate.h"  // maturity gate for coinbase read-back
 #include "common/crash_injection.h"
 #include "rpc/longpoll_notifier.h"  // Server-side long-poll signaling for getblocktemplate
-#include "rpc/v7_pq_handlers.h"   // v8.2.5: native v3 P2MR pool fill
+#include "rpc/v7_pq_handlers.h"   // v8.2.4: native v3 P2MR pool fill
 #include <openssl/crypto.h>
 #include "daemon/services/chainstate_restart_import.h"
 #include "daemon/services/logger_service.h"
@@ -7260,6 +7260,52 @@ StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
 ChainstateService::resumeRuntimeWalletRecoveryIfNeeded(WalletManager& wallet, UTXOIndex& index,
         uint64_t expected_session,size_t legacy_material_limit_bytes) {
     if (activation_mutex_.HeldByCurrentThread()) return Status::Invalid;
+    auto result=resumeRuntimeWalletRecoveryIfNeededImpl(wallet,index,expected_session,legacy_material_limit_bytes);
+    continueRestoredOrchardAccount0(wallet,expected_session);
+    return result;
+}
+
+void ChainstateService::continueRestoredOrchardAccount0(WalletManager& wallet,uint64_t expected_session) {
+    try {
+        if(activation_mutex_.HeldByCurrentThread() || !wallet.hasActiveWallet() || wallet.isWalletLocked() ||
+           wallet.getSetting(WalletManager::kOrchardAccount0RestorePendingSetting)!="1")return;
+        uint64_t session=0;
+        {
+            auto lease=wallet.AcquireDatabaseLease();
+            if(!wallet.SoleDatabaseLeaseHeld() || !lease->Database())return;
+            session=lease->Session();
+        }
+        if(expected_session && session!=expected_session)return;
+        const auto progress=recoverOrchardAccount0(wallet,session,false);
+        // A refusal is retried on the next pass, but never silently: record
+        // the reason for wallet.getwalletinfo and log each change of it.
+        std::string status;
+        if(!progress.ok())status="recovery refused (status "+std::to_string(int(progress.status()))+
+            "); retrying on the next block";
+        else if(progress->complete) {
+            wallet.setSetting(WalletManager::kOrchardAccount0RestorePendingSetting,"");
+            wallet.setSetting(WalletManager::kOrchardAccount0RestoreStatusSetting,"");
+            std::cerr << "[ChainstateService] Restored wallet Orchard account 0 recovered\n";
+            return;
+        }
+        else if(progress->awaiting_history_source)status="waiting for an Orchard history source";
+        else if(progress->history_requested && !progress->history_ready)status="downloading Orchard history";
+        if(wallet.getSetting(WalletManager::kOrchardAccount0RestoreStatusSetting)!=status) {
+            wallet.setSetting(WalletManager::kOrchardAccount0RestoreStatusSetting,status);
+            if(!status.empty())
+                std::cerr << "[ChainstateService] Restored wallet Orchard account 0 recovery: " << status << "\n";
+        }
+    } catch(const std::exception& e) {
+        std::cerr << "[ChainstateService] Restored wallet Orchard account 0 recovery failed: " << e.what() << "\n";
+        try { wallet.setSetting(WalletManager::kOrchardAccount0RestoreStatusSetting,
+                  std::string("recovery failed: ")+e.what()+"; retrying on the next block"); } catch(...) {}
+    }
+}
+
+StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
+ChainstateService::resumeRuntimeWalletRecoveryIfNeededImpl(WalletManager& wallet, UTXOIndex& index,
+        uint64_t expected_session,size_t legacy_material_limit_bytes) {
+    if (activation_mutex_.HeldByCurrentThread()) return Status::Invalid;
     try {
         // Require the actual lifetime gate before touching the index. The
         // caller retains it through replay; no selected lock is held here.
@@ -7455,7 +7501,7 @@ Status ChainstateService::resumeRuntimeOrchardDeliveryV3(WalletManager& wallet,U
 #endif
 }
 
-// v8.2.5 (#939): issue every P2MR pool index an open native v3 target owes,
+// v8.2.4 (#939): issue every P2MR pool index an open native v3 target owes,
 // before the Pending wallet's coverage runs. Each index is one #945
 // cross-store issuance: durable intent -> key-store row -> adoption, which
 // also inserts the pool row in that same wallet transaction. An interrupted
@@ -7540,6 +7586,12 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
             native=lease->NativeV3TransparentState()!=WalletManager::NativeV3State::Absent ||
                 (state==WalletManager::LegacyTransparentState::Absent && lease->HasOrchardOwnerState());
         }
+        // v8.2.4 (#939): a wallet restored on this v3 node recovers Orchard
+        // account 0 without a manual RPC. Each pass advances the bounded,
+        // resumable recovery (needs the unlocked seed and an enrolled wallet)
+        // and clears the marker once it is complete. A refusal only retries.
+        const auto continue_restored_account0=[&] { continueRestoredOrchardAccount0(wallet,session); };
+        if(native && state==WalletManager::LegacyTransparentState::Complete)continue_restored_account0();
         // Startup and explicit callers bypass the runtime worker's cheap
         // preflight. An absent/pending v3 wallet cannot reconcile coverage
         // without its encrypted seed, so refuse before any origin replay.
@@ -7589,7 +7641,7 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
             state=WalletManager::LegacyTransparentState::Pending;
         }
         if(state==WalletManager::LegacyTransparentState::Pending) {
-            // v8.2.5: a Pending native wallet may owe P2MR pool scripts. The
+            // v8.2.4: a Pending native wallet may owe P2MR pool scripts. The
             // coverage below must prove them, so it never starts before the
             // owed fill is complete (Pending stays fail-closed meanwhile).
             if(native) {
@@ -7636,6 +7688,7 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
             if(native) {
                 const auto orchard=resumeRuntimeOrchardDeliveryV3(wallet,metadata_index,session);
                 if(orchard!=Status::Ok)return orchard;
+                continue_restored_account0();
             }
             return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
                 RuntimeEnrolledWalletRecoveryResult{applied,{},source.Head(),std::nullopt});

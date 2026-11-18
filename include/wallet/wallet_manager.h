@@ -174,7 +174,7 @@ public:
         bool retryable = false;
     };
     NativePoolIssue issueNativePoolAddress(const std::string& label);
-    // v8.2.5 (#939): the next pooled P2MR receive address of a native v3
+    // v8.2.4 (#939): the next pooled P2MR receive address of a native v3
     // wallet (m/88'/1448'/0'/0/idx, leaf 0). Same issuability rule as the
     // Taproot pool; writes only the unguarded pool table (and the label in
     // the separate P2MR key store), so the sealed receipts stay valid.
@@ -213,6 +213,12 @@ public:
     // needs the wallet's seed: the wallet is locked. Only the user can clear it.
     // #939: a wallet with an Orchard owner that the native v3 route cannot
     // serve (DatabaseLease::NativeV3Enrollable). Say so instead of "catching up".
+    // v8.2.4 (#939): set by wallet.restore on a v3 node; the runtime worker
+    // continues Orchard account-0 recovery for that wallet until it completes.
+    static constexpr const char* kOrchardAccount0RestorePendingSetting = "orchard_account0_restore_pending_v1";
+    // Last reason an automatic account-0 recovery pass did not complete
+    // (empty while progressing normally); reported by wallet.getwalletinfo.
+    static constexpr const char* kOrchardAccount0RestoreStatusSetting = "orchard_account0_restore_status_v1";
     static constexpr const char* kNativeWalletUnsupportedOnV3 =
         "This wallet was created or restored by Dinero 8.2 and this node's wallet index (v3) "
         "cannot track it yet. Your funds are safe on-chain: use its seed phrase in the phone app "
@@ -447,7 +453,7 @@ public:
         // fewer than kNativeV3PoolLowWater unissued receive or unused change
         // scripts (or no pool table yet) needs an extension.
         [[nodiscard]] bool NativeV3PoolNeedsExtension() const;
-        // v8.2.5 (#939): pool indices (m/88'/1448'/0'/0/idx) that an open
+        // v8.2.4 (#939): pool indices (m/88'/1448'/0'/0/idx) that an open
         // native P2MR target still owes, ascending. A Pending wallet's
         // coverage must not run until this is empty. Read-only.
         [[nodiscard]] std::vector<int64_t> NativeP2MRTargetMissing() const;

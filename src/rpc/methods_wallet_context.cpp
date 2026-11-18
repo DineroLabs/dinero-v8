@@ -943,7 +943,7 @@ static bool NativeV3PoolWallet(const ExecutionContext& ctx,
 }
 
 // #939 phase 2: wallet.getnewaddress for a native v3 wallet. Taproot and
-// (v8.2.5) P2MR come from their sealed pools (writes only the unguarded pool
+// (v8.2.4) P2MR come from their sealed pools (writes only the unguarded pool
 // row). Nothing here derives a script.
 static din::Json NativeV3PoolGetNewAddress(const ExecutionContext& ctx,
                                            const std::shared_ptr<dinero::WalletService>& service,
@@ -958,7 +958,7 @@ static din::Json NativeV3PoolGetNewAddress(const ExecutionContext& ctx,
     if (normalized.empty() && service->get().getSetting("receive_default", "") == "p2mr")
         normalized = "p2mr";
     if (normalized == "p2mr" || normalized == "p2mr_v3") {
-        // v8.2.5: P2MR comes from the sealed P2MR pool (unguarded row only).
+        // v8.2.4: P2MR comes from the sealed P2MR pool (unguarded row only).
         auto use = dinero::WalletService::AcquireWalletUse(service);
         const auto issued = use->Wallet().issueNativeP2MRPoolAddress(label);
         if (issued.address.empty()) {
@@ -1359,6 +1359,15 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
 
         // Wallet name
         result["walletname"] = mgr.current();
+        // v8.2.4 (#939): Orchard account 0 of a restored wallet is recovered
+        // in the background; say so, and why it is not progressing if not.
+        if (mgr.getSetting(dinero::WalletManager::kOrchardAccount0RestorePendingSetting) == "1") {
+            din::Json recovery = din::obj();
+            const auto status = mgr.getSetting(dinero::WalletManager::kOrchardAccount0RestoreStatusSetting);
+            recovery["state"] = mgr.isWalletLocked() ? "waiting_for_unlock" : "in_progress";
+            if (!status.empty()) recovery["detail"] = status;
+            result["orchard_account0_recovery"] = recovery;
+        }
 
         // Keep non-secret loaded-wallet metadata available without reporting
         // ordinary rows as a current mixed balance. This branch writes no
@@ -8100,7 +8109,7 @@ din::Json rpc_context_wallet_restore(const ExecutionContext& ctx, const din::Jso
     // Refuse an unavailable historical source BEFORE those effects; returning
     // a warning after switching wallets leaves a new partial inventory active.
     // rescan=false remains an explicit key-import operation, never recovery.
-    // v8.2.5 (#939): a full-archive v3 index has no legacy rescan. A restored
+    // v8.2.4 (#939): a full-archive v3 index has no legacy rescan. A restored
     // seed is recovered by the native v3 route instead: after the first
     // unlock it enrolls with a FULL historical replay (a restored identity
     // never has a sealed fresh birth), and Orchard account 0 is recovered
@@ -8140,11 +8149,17 @@ din::Json rpc_context_wallet_restore(const ExecutionContext& ctx, const din::Jso
         auto creation_owner = wallet_service->AcquireCreationOwner();
         result = dinero::rpc::RpcRestoreWallet(params, &wallet_service->get());
         if (!result.isMember("error")) {
+            // The ordinary desktop restore also recovers Orchard account 0 on
+            // every node type: the runtime worker continues it while unlocked.
+            if (result.isMember("success") && result["success"].asBool())
+                wallet_service->get().setSetting(
+                    dinero::WalletManager::kOrchardAccount0RestorePendingSetting, "1");
             wallet_service->EnsureRuntimeWalletBindings();
         }
     }
 
     if (result.isMember("success") && result["success"].asBool()) {
+        result["orchard_account0_recovery"] = "automatic_after_unlock";
         if (native_v3_recovery) {
             result["history_recovery"] = "native_v3_after_unlock";
         } else if (rescan_requested) {

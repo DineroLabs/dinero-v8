@@ -155,7 +155,7 @@ namespace pool {
  * - Stop() performs clean shutdown and flushes data
  */
 class WalletManager;
-// v8.2.5 (#939): issue every P2MR pool script an open native v3 P2MR target
+// v8.2.4 (#939): issue every P2MR pool script an open native v3 P2MR target
 // owes (one #945 cross-store issuance each, pool row adopted atomically with
 // its watch script). Needs the unlocked wallet; throws on any failure. The
 // runtime worker calls it before a Pending native wallet's coverage.
@@ -1188,6 +1188,16 @@ public:
     StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
         resumeRuntimeWalletRecoveryIfNeeded(WalletManager&, UTXOIndex&, uint64_t expected_session = 0,
             size_t legacy_material_limit_bytes = 128*1024*1024);
+    // v8.2.4 (#939): a wallet restored from its seed (wallet.restore marks
+    // it) recovers Orchard account 0 without a manual RPC. Advances the
+    // bounded, resumable recovery once while the wallet is unlocked and
+    // clears the mark when it completes. Best effort: a refusal only retries
+    // on the next pass. Caller holds the wallet-index use and no lease/lock.
+    void continueRestoredOrchardAccount0(WalletManager&, uint64_t expected_session);
+    // The v2 worker body; the public entry adds the restored-wallet step.
+    StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
+        resumeRuntimeWalletRecoveryIfNeededImpl(WalletManager&, UTXOIndex&, uint64_t expected_session,
+            size_t legacy_material_limit_bytes);
     // Full-archive v3 has a metadata-only index and no legacy wallet worker.
     // Enrolls one authenticated named wallet, restores its transparent history
     // from a checked source prefix, then resumes both owner-scoped stores.
