@@ -7,6 +7,7 @@
 #include "rpc/rpc_registry.h"
 #include "wallet/utxo_index.h"
 #include "wallet/v7_p2mr_store.h"
+#include "wallet/p2mr_address.h"
 #include "consensus/pq/ml_dsa_65.h"
 #include "util/hex.h"
 #include <sqlite3.h>
@@ -120,5 +121,85 @@ TEST_F(PqRpcOwner, BorrowedTransactionAndMissingStoreRefuse) {
     }
     if(std::filesystem::exists(path))std::filesystem::remove(path);
     std::filesystem::rename(held,path);EXPECT_TRUE(ok(call("wallet.signp2mr",p)));
+}
+TEST_F(PqRpcOwner, InvalidHrpCannotStrandAnIssuanceIntent) {
+    din::Json invalid;
+    invalid["hrp"]="";
+    invalid["address_index"]=7;
+    const auto refused=call("wallet.getnewp2mraddress",invalid);
+    EXPECT_EQ(refused["error"].asString(),"invalid_params")
+        << refused.toStyledString();
+    din::Json next;
+    next["address_index"]=8;
+    next["hrp"]="rdin";
+    const auto created=call("wallet.getnewp2mraddress",next);
+    ASSERT_TRUE(ok(created)) << created.toStyledString();
+    EXPECT_TRUE(created["address"].asString().starts_with("rdin1r"));
+}
+TEST_F(PqRpcOwner, ExistingInitialAddressCanTakeAnExplicitLabel) {
+    const auto initial=call("wallet.getnewp2mraddress");
+    ASSERT_TRUE(ok(initial)) << initial.toStyledString();
+    din::Json labelled;
+    labelled["label"]="named initial address";
+    const auto repeated=call("wallet.getnewp2mraddress",labelled);
+    ASSERT_TRUE(ok(repeated)) << repeated.toStyledString();
+    EXPECT_EQ(repeated["address"].asString(),initial["address"].asString());
+    const auto inventory=call("wallet.listp2mraddresses");
+    ASSERT_TRUE(ok(inventory)) << inventory.toStyledString();
+    ASSERT_EQ(inventory["addresses"].size(),1u);
+    EXPECT_EQ(inventory["addresses"][0]["label"].asString(),"named initial address");
+    EXPECT_TRUE(ok(call("wallet.getnewp2mraddress",labelled)));
+
+    din::Json wrong_network;
+    wrong_network["hrp"]="other";
+    const auto conflict=call("wallet.getnewp2mraddress",wrong_network);
+    EXPECT_EQ(conflict["error"].asString(),"p2mr_issuance_conflict")
+        << conflict.toStyledString();
+    din::Json next;
+    next["address_index"]=1;
+    EXPECT_TRUE(ok(call("wallet.getnewp2mraddress",next)));
+}
+TEST_F(PqRpcOwner, InterruptedIssuanceIsHiddenThenRepairedOnUnlock) {
+    auto& wallet=service->get();
+    auto* db=wallet.getCurrentDatabase();
+    ASSERT_NE(db,nullptr);
+    ASSERT_EQ(sqlite3_exec(db,
+        "CREATE TRIGGER block_p2mr_watch BEFORE INSERT ON watch_scripts "
+        "BEGIN SELECT RAISE(FAIL,'forced issuance interruption'); END;",
+        nullptr,nullptr,nullptr),SQLITE_OK);
+    const auto interrupted=call("wallet.getnewp2mraddress");
+    EXPECT_EQ(interrupted["error"].asString(),"p2mr_issuance_incomplete")
+        << interrupted.toStyledString();
+    EXPECT_FALSE(interrupted.isMember("address"));
+    const auto hidden=call("wallet.listp2mraddresses");
+    EXPECT_EQ(hidden["error"].asString(),"p2mr_inventory_incomplete")
+        << hidden.toStyledString();
+    ASSERT_EQ(sqlite3_exec(db,"DROP TRIGGER block_p2mr_watch",nullptr,nullptr,nullptr),SQLITE_OK);
+    // The address list may be the first repair entry point. Its returned
+    // address must already be watched by the live index, without a reload.
+    const auto repaired_live=call("wallet.listp2mraddresses");
+    ASSERT_TRUE(ok(repaired_live)) << repaired_live.toStyledString();
+    ASSERT_EQ(repaired_live["addresses"].size(),1u);
+    const auto decoded=dinero::wallet::DecodeP2MRAddress(
+        repaired_live["addresses"][0]["address"].asString());
+    ASSERT_TRUE(decoded.has_value());
+    const auto script=dinero::wallet::BuildP2MRScriptPubKey(decoded->merkle_root);
+    const auto live=index->IsOurScript(script);
+    ASSERT_TRUE(live.has_value());
+    EXPECT_EQ(*live,repaired_live["addresses"][0]["derivation_path"].asString());
+    wallet.lockWallet();
+    wallet.open("other");
+    wallet.open("owner");
+    ASSERT_TRUE(wallet.isWalletLocked());
+    wallet.unlockWallet("owner-password",0);
+    const auto repaired=call("wallet.listp2mraddresses");
+    ASSERT_TRUE(ok(repaired)) << repaired.toStyledString();
+    ASSERT_EQ(repaired["addresses"].size(),1u);
+    sqlite3_stmt* raw=nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(wallet.getCurrentDatabase(),
+        "SELECT count(*) FROM p2mr_issuance_intent_v1",-1,&raw,nullptr),SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(raw),SQLITE_ROW);
+    EXPECT_EQ(sqlite3_column_int(raw,0),0);
+    sqlite3_finalize(raw);
 }
 }

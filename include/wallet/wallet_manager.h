@@ -517,10 +517,23 @@ public:
         void ValidatePostBaseShieldOwnersInTransaction(
             const RecoverySeed&,std::span<const PendingPaymentInput>);
         // Validate all present issued/imported signing tuples and PQ records
-        // against the pinned live authority in this SQL snapshot. Watch-only
-        // registrations stay recognition metadata. No writes or key generation;
-        // separate PQ capture and missing historical catalogs remain distinct.
-        void ValidateRecoveryInventoryInTransaction(const RecoverySeed&);
+        // against the pinned live authority in this SQL snapshot. The only
+        // permitted repair is completion of an authenticated, exact P2MR
+        // issuance intent already committed before the separate key-store
+        // write. Other missing recognition owners still refuse.
+        void ValidateRecoveryInventoryInTransaction(
+            const RecoverySeed&,
+            std::map<std::vector<uint8_t>,std::string>* authenticated_pq_scripts=nullptr);
+        // Durable cross-store P2MR issuance. The first commit records a single
+        // exact derivation path; the separate key store is written next; the
+        // second call authenticates that row, adopts its watch script under
+        // the same wallet transaction and clears the intent. No address may
+        // escape between these calls. An interrupted issuance is completed
+        // only from its authenticated intent and key row.
+        void BeginP2MRIssuance(const RecoverySeed&,const std::string& path,uint32_t leaf);
+        void CompleteP2MRIssuance(const RecoverySeed&,const std::string& path,uint32_t leaf,
+                                  const std::vector<uint8_t>& script);
+        void AuthenticateP2MRInventory(const RecoverySeed&);
         // Authenticate every present predecessor import in the caller's SQL
         // snapshot and return exact script -> recorded MAIN address. The map
         // describes non-HD ownership; it contains no derivation path or secret.
@@ -1311,7 +1324,7 @@ private:
     bool storeMasterSeedOwned(const std::vector<uint8_t>& seed, const std::string& passphrase,
                               bool reset_address_state, const std::string* initial_owner,
                               std::optional<InitialSeedKind> catalog_kind = std::nullopt);
-    std::optional<std::array<uint8_t, 32>> loadInitialPqMaster(const std::vector<uint8_t>& seed);
+    std::optional<std::array<uint8_t, 32>> loadInitialPqMaster(const std::vector<uint8_t>& seed) const;
     void createWithInitialSeed(const std::string& name,
                                const std::vector<uint8_t>& initial_master_seed,
                                const std::string* authoritative_mnemonic,

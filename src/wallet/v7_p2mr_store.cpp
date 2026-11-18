@@ -138,6 +138,23 @@ V7P2MRStore::OpenResult V7P2MRStore::Open(const std::string& path) {
         Close();
         return OpenResult::SchemaError;
     }
+    // The wallet's durable issuance intent is committed before this store's
+    // key row. A reported success must survive a process or power loss before
+    // the wallet watch-script commit can adopt that exact row.
+    if (sqlite3_exec(db_, "PRAGMA synchronous=FULL", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        Close();
+        return OpenResult::IoError;
+    }
+    bool full_sync = false;
+    {
+        Stmt durability(db_, "PRAGMA synchronous");
+        full_sync = durability.ok() && sqlite3_step(durability.raw()) == SQLITE_ROW &&
+            sqlite3_column_int(durability.raw(), 0) == 2;
+    }
+    if (!full_sync) {
+        Close();
+        return OpenResult::IoError;
+    }
     return OpenResult::Ok;
 }
 
@@ -206,6 +223,27 @@ V7P2MRStore::AddResult V7P2MRStore::AddAddress(
     if (rc == SQLITE_CONSTRAINT) return AddResult::UniqueConflict;
     if (rc != SQLITE_DONE)        return AddResult::DbError;
     return AddResult::Ok;
+}
+
+bool V7P2MRStore::UpdateLabelIfExact(
+    int64_t wallet_id, const std::string& address,
+    const std::array<uint8_t, 32>& merkle_root,
+    const std::array<uint8_t, dinero::consensus::pq::ml_dsa_65::PUBKEY_BYTES>& pubkey,
+    const std::string& derivation_path, uint32_t leaf_index,
+    const std::string& label) {
+    if (!db_ || wallet_id <= 0 || label.empty()) return false;
+    Stmt s(db_,
+        "UPDATE v7_p2mr_addresses SET label=? WHERE wallet_id=? AND address=? "
+        "AND merkle_root=? AND pubkey=? AND derivation_path=? AND leaf_index=?;");
+    if (!s.ok() || !BindText(s.raw(),1,label) ||
+        sqlite3_bind_int64(s.raw(),2,wallet_id)!=SQLITE_OK ||
+        !BindText(s.raw(),3,address) ||
+        !BindBlob(s.raw(),4,merkle_root.data(),merkle_root.size()) ||
+        !BindBlob(s.raw(),5,pubkey.data(),pubkey.size()) ||
+        !BindText(s.raw(),6,derivation_path) ||
+        sqlite3_bind_int64(s.raw(),7,leaf_index)!=SQLITE_OK)
+        return false;
+    return sqlite3_step(s.raw())==SQLITE_DONE && sqlite3_changes(db_)==1;
 }
 
 std::optional<P2MRStoredAddress>

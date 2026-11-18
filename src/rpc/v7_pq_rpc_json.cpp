@@ -6,8 +6,10 @@
 
 #include "rpc/v7_pq_handlers.h"
 #include "wallet/v7_p2mr_store.h"
+#include "wallet/p2mr_address.h"
 #include "wallet/wallet_manager.h"
 #include "wallet/retired_coin_type_guard.h"
+#include "address/addr_codec.h"
 #include "util/hex.h"
 
 #include "daemon/daemon_context.h"
@@ -121,6 +123,16 @@ std::unique_ptr<WalletCallOwner> AcquireUnlockedWallet(const ExecutionContext& c
     }
 }
 
+bool RequireCommittedP2MRInventory(WalletCallOwner& owner,din::Json& result) {
+    try {
+        owner.lease->AuthenticateP2MRInventory(*owner.seed);
+        return true;
+    } catch (const std::exception&) {
+        result["error"] = "p2mr_inventory_incomplete";
+        return false;
+    }
+}
+
 /**
  * Copy an AeadKey out of WalletManager. Logs nothing. Caller MUST scrub
  * the returned key after use.
@@ -178,7 +190,7 @@ din::Json rpc_wallet_getnewp2mraddress(const ExecutionContext& ctx,
     ClearBuffer clear_bip32_priv(p.bip32_priv);
     ClearBuffer clear_bip32_chain(p.bip32_chain);
     p.wallet_id     = /*single-wallet today*/ 1;
-    p.hrp           = get_str("hrp", "din");
+    p.hrp           = get_str("hrp", dinero::HrpForActiveNetworkRef());
     p.account       = get_int("account", 0);
     p.change        = get_int("change", 0);
     p.address_index = get_int("address_index", 0);
@@ -186,6 +198,19 @@ din::Json rpc_wallet_getnewp2mraddress(const ExecutionContext& ctx,
     p.label         = get_str("label", "");
     p.now_unix      = std::chrono::duration_cast<std::chrono::seconds>(
                         std::chrono::system_clock::now().time_since_epoch()).count();
+    if (p.account < 0 || p.change < 0 || p.change > 1 || p.address_index < 0 ||
+        (params.isMember("leaf_index") && get_int("leaf_index",0) < 0)) {
+        result["error"] = "invalid_p2mr_derivation";
+        return result;
+    }
+    // Reject malformed HRPs before committing the cross-store issuance
+    // intent. Otherwise a parameter typo would strand an intent with no key
+    // row to authenticate during recovery.
+    if (wlt::EncodeP2MRAddress(p.hrp,std::array<uint8_t,32>{}).empty()) {
+        result["error"] = "invalid_params";
+        result["error_message"] = "invalid hrp; address encoding failed";
+        return result;
+    }
 
     // Source BIP-32 material + master key from the unlocked wallet manager.
     auto bip32 = wm->DeriveV7Bip32Material(p.account, p.change, p.address_index);
@@ -205,6 +230,15 @@ din::Json rpc_wallet_getnewp2mraddress(const ExecutionContext& ctx,
         return result;
     }
 
+    const std::string expected_path = "m/88'/1448'/" + std::to_string(p.account) +
+        "'/" + std::to_string(p.change) + "/" + std::to_string(p.address_index);
+    try {
+        owner->lease->BeginP2MRIssuance(*owner->seed,expected_path,p.leaf_index);
+    } catch (const std::exception& e) {
+        result["error"] = "p2mr_issuance_owner_unavailable";
+        result["error_message"] = e.what();
+        return result;
+    }
     auto store_ptr = OpenWalletStore(*wm);
     if (!store_ptr) {
         result["error"] = "v7_store_open_failed";
@@ -217,7 +251,8 @@ din::Json rpc_wallet_getnewp2mraddress(const ExecutionContext& ctx,
     auto r = v7rpc::GetNewP2MRAddress(*store_ptr, p);
     // Both the by-value handler copy and our caller buffers have scoped cleanup.
 
-    if (r.status != v7rpc::HandlerStatus::Ok) {
+    if (r.status != v7rpc::HandlerStatus::Ok &&
+        r.status != v7rpc::HandlerStatus::UniqueConflict) {
         result["error"]         = StatusString(r.status);
         result["error_message"] = r.error_message;
         return result;
@@ -235,7 +270,32 @@ din::Json rpc_wallet_getnewp2mraddress(const ExecutionContext& ctx,
     p2mr_spk.push_back(0x53);  // OP_3 (witness v3)
     p2mr_spk.push_back(0x20);  // PUSH 32 bytes
     p2mr_spk.insert(p2mr_spk.end(), r.merkle_root.begin(), r.merkle_root.end());
-    wm->registerP2MRAddress(p2mr_spk, r.derivation_path);
+    try {
+        if (r.derivation_path != expected_path || r.leaf_index != p.leaf_index)
+            throw std::runtime_error("P2MR derivation changed before issuance commit");
+        owner->lease->CompleteP2MRIssuance(*owner->seed,expected_path,p.leaf_index,p2mr_spk);
+    } catch (const std::exception& e) {
+        result["error"] = "p2mr_issuance_incomplete";
+        result["error_message"] = e.what();
+        return result;
+    }
+
+    if (r.status == v7rpc::HandlerStatus::UniqueConflict) {
+        // Creation may already have issued this path. A second explicit
+        // request may supply a label, but it must refer to that exact key and
+        // network address. Completion above clears the durable intent first.
+        const auto existing=store_ptr->GetByAddress(p.wallet_id,r.address);
+        if (!existing || existing->merkle_root!=r.merkle_root ||
+            existing->pubkey!=r.pubkey ||
+            existing->derivation_path!=expected_path ||
+            existing->leaf_index!=p.leaf_index ||
+            (!p.label.empty() && !store_ptr->UpdateLabelIfExact(
+                p.wallet_id,r.address,r.merkle_root,r.pubkey,expected_path,
+                p.leaf_index,p.label))) {
+            result["error"] = "p2mr_issuance_conflict";
+            return result;
+        }
+    }
 
     result["address"]         = r.address;
     result["merkle_root_hex"] = HexOfArray(r.merkle_root);
@@ -259,6 +319,7 @@ din::Json rpc_wallet_listp2mraddresses(const ExecutionContext& ctx,
     din::Json result;
     auto owner = AcquireUnlockedWallet(ctx, result);
     if (!owner) return result;
+    if (!RequireCommittedP2MRInventory(*owner,result)) return result;
     auto* wm = owner->wallet;
 
     auto store_ptr = OpenWalletStore(*wm, true);
@@ -306,6 +367,7 @@ din::Json rpc_wallet_signp2mr(const ExecutionContext& ctx,
         RefuseIfLegacyTransparentSpendUnavailable(ctx, ctx.daemon->wallet, result)) return result;
     auto owner = AcquireUnlockedWallet(ctx, result);
     if (!owner) return result;
+    if (!RequireCommittedP2MRInventory(*owner,result)) return result;
     auto* wm = owner->wallet;
 
     if (!params.isMember("address") || !params["address"].is<std::string>()) {
@@ -391,6 +453,7 @@ din::Json rpc_wallet_exportp2mrseed(const ExecutionContext& ctx,
     din::Json result;
     auto owner = AcquireUnlockedWallet(ctx, result);
     if (!owner) return result;
+    if (!RequireCommittedP2MRInventory(*owner,result)) return result;
     auto* wm = owner->wallet;
 
     if (!params.isMember("address") || !params["address"].is<std::string>()) {

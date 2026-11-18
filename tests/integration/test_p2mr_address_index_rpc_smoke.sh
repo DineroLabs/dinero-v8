@@ -2,7 +2,7 @@
 #
 # Smoke: P2MR wallet addresses must work with address-index RPCs.
 #
-# This proves the user-facing din1r... path after BuildScriptPubKey accepts
+# This proves the user-facing regtest rdin1r... path after BuildScriptPubKey accepts
 # witness-v3 P2MR addresses: derive a wallet P2MR address, send to it, observe
 # the pending receive through getaddressbalance/getaddressmempool, mine it, and
 # verify the confirmed balance converges.
@@ -163,7 +163,7 @@ P2MR_ROW="$(rpc_result "wallet.getnewp2mraddress" '{"account":0,"change":0,"addr
 P2MR_ADDR="$(echo "$P2MR_ROW" | jq -r '.address // empty')"
 P2MR_ROOT="$(echo "$P2MR_ROW" | jq -r '.merkle_root_hex // empty')"
 [ -n "$P2MR_ADDR" ] || fail "wallet.getnewp2mraddress returned empty address"
-[[ "$P2MR_ADDR" == din1r* ]] || fail "expected din1r P2MR address, got $P2MR_ADDR"
+[[ "$P2MR_ADDR" == rdin1r* ]] || fail "expected regtest rdin1r P2MR address, got $P2MR_ADDR"
 [[ "$P2MR_ROOT" =~ ^[0-9a-f]{64}$ ]] || fail "expected 32-byte merkle_root_hex, got $P2MR_ROOT"
 pass "derived P2MR address ${P2MR_ADDR:0:18}..."
 
@@ -207,7 +207,7 @@ pass "confirmed P2MR address-index balance converges after mining"
 
 # wallet.listaddresses backs the Receive address table. P2MR UTXOs are stored
 # under their canonical 5320... scriptPubKey, so the per-address row must use
-# that script lookup rather than looking up the human-readable din1r address.
+# that script lookup rather than looking up the human-readable rdin1r address.
 LISTED_P2MR="$(rpc_result "wallet.listaddresses" | jq -c --arg address "$P2MR_ADDR" '[.[] | select(.address == $address)]')"
 [ "$(echo "$LISTED_P2MR" | jq -r 'length')" = "1" ] || fail "wallet.listaddresses must contain exactly one derived P2MR row"
 [ "$(echo "$LISTED_P2MR" | jq -r '.[0].type')" = "p2mr" ] || fail "wallet.listaddresses P2MR row has wrong type"

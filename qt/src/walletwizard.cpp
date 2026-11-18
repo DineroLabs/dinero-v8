@@ -929,6 +929,7 @@ void CreateSeedPage::onGenerateSeed() {
         // #939: a new wallet receives on all three address kinds from the start.
         setProperty("firstP2mrAddress", payload.value("first_p2mr_address").toString());
         setProperty("firstOrchardAddress", payload.value("first_orchard_address").toString());
+        setProperty("addressesReady", payload.value("addresses_ready").toBool(false));
         if (payload.contains("wallet_name")) {
           setProperty("walletName", payload["wallet_name"].toString());
         } else {
@@ -1735,6 +1736,7 @@ void CompletionPage::initializePage() {
   const QString walletDisplayName = walletName.isEmpty()
     ? QStringLiteral("active wallet")
     : walletName;
+  const bool creationAddressesReady = isRestore || createPage->property("addressesReady").toBool();
   lblStatus_->setText(QString("✅ Wallet '%1' %2. Encrypting...")
                         .arg(walletDisplayName, walletAction));
 
@@ -1764,7 +1766,7 @@ void CompletionPage::initializePage() {
   auto errorConn = std::make_shared<QMetaObject::Connection>();
 
   *resultConn = connect(rpc_, &RpcClient::rpcResult, this,
-    [this, password, walletAction, normalizeUnlockError, resultConn, errorConn](const QString& method, const QJsonValue& result) {
+    [this, password, walletAction, creationAddressesReady, normalizeUnlockError, resultConn, errorConn](const QString& method, const QJsonValue& result) {
       if (method == "wallet.encrypt") {
         if (!result.isObject()) {
           QObject::disconnect(*resultConn);
@@ -1798,7 +1800,11 @@ void CompletionPage::initializePage() {
           return;
         }
 
-        lblStatus_->setText(QString("✅ Wallet %1, encrypted, and unlocked.").arg(walletAction));
+        if (!creationAddressesReady) {
+          lblStatus_->setText(QString("⚠️ Wallet %1 and unlocked, but one or more receive addresses could not be prepared. Check the Wallet tab before sharing an address.").arg(walletAction));
+        } else {
+          lblStatus_->setText(QString("✅ Wallet %1, encrypted, and unlocked.").arg(walletAction));
+        }
       }
     });
 

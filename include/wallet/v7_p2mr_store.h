@@ -98,6 +98,15 @@ public:
                          const std::string&      label,
                          int64_t                 now_unix);
 
+    /** Relabel only the exact previously issued public key and derivation. */
+    bool UpdateLabelIfExact(int64_t wallet_id,
+                            const std::string& address,
+                            const std::array<uint8_t, 32>& merkle_root,
+                            const std::array<uint8_t, dinero::consensus::pq::ml_dsa_65::PUBKEY_BYTES>& pubkey,
+                            const std::string& derivation_path,
+                            uint32_t leaf_index,
+                            const std::string& label);
+
     /**
      * Look up by bech32m address. Returns nullopt if absent.
      * Never returns secret material.

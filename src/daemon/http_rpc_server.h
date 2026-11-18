@@ -9,6 +9,7 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <shared_mutex>
 #include <chrono>
 #include <condition_variable>
 #include <unordered_set>

@@ -1,6 +1,7 @@
 # Wallet index v3: native wallets (issue #939)
 
-Status: design for v8.2.4. Owner-directed, owned by Claude, reviewed by codex-chainstate.
+Status: native v3 route merged; creation-time three-address completion is in
+`codex/v824-native-three-lane-create` for v8.2.4 qualification.
 
 ## Problem
 
@@ -203,14 +204,26 @@ Status: design for v8.2.4. Owner-directed, owned by Claude, reviewed by codex-ch
 6. **Orchard:** a native-complete wallet keeps Orchard readiness. In phase 3,
    Orchard account delivery advances on v3.
 
-## Interim: creation-time Orchard account on v3
+## Creation-time three-address route for v8.2.4
 
-On a v3 node, `createhd` defers Orchard account 0 (`orchard_deferred: true`).
-- **Why:** a native wallet with Orchard account rows cannot yet send transparent
-  funds there. The recovered-v3 signer refuses catalogs with accounts.
-- **Effect:** new wallets keep transparent sends.
-- **Recovering it:** account 0 can still be created on demand through
-  `wallet.orchard.createaccount`. Phase 3 delivers it on v3.
-- **Other nodes:** v2 nodes still create it at wallet creation.
-- **End of interim:** once Orchard-account transparent sends exist, the
-  creation-time account returns on v3.
+`wallet.createhd` returns Taproot, P2MR, and Orchard account-0 receive
+addresses on v3. It reports `addresses_ready` only when all three were issued;
+an encrypted new wallet is unlocked for issuance and relocked before the RPC
+returns. Generated unencrypted wallets authenticate the PQ master sealed in
+their initial owner instead of requiring a password wrapper.
+
+P2MR issuance commits an exact wallet-side intent before writing the separate
+key store. Only an authenticated key row matching that intent can be adopted
+into `watch_scripts`; the intent is then cleared under the wallet transaction.
+An interrupted issuance stays hidden until exact repair on unlock or inventory
+validation. The initial P2MR script is present before v3 enrollment so the
+ordinary receipt covers it.
+
+The v3 transparent signer authenticates Orchard ownership and rejects inputs
+reserved by Orchard before staging a payment. Balance and status only claim
+native send readiness when the Orchard inventory is valid; a locked wallet
+cannot authenticate that inventory and reports send readiness after unlock.
+Orchard spends and
+restored-wallet enrollment remain separate #939 work. Additional P2MR
+addresses after v3 enrollment still need the P2MR pool and extension protocol
+described above; no new unsealed P2MR script is issued on that route.

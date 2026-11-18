@@ -808,6 +808,20 @@ Json::Value HttpRpcServer::process_admitted_rpc_call(const Json::Value& request)
                 "Method '" + method + "' is admin-only (server running in read-only mode)");
         }
 
+        // The create handler takes the wallet service's exclusive owner across
+        // its temporary unlock and all first-address issuance. Other RPCs take
+        // a shared owner on that same service, including flat/legacy handlers.
+        // Skip the reader for create itself to avoid recursive locking.
+        const std::string rpc_source = readonly_source();
+        const bool creating_wallet = rpc_source == "wallet.createhd" ||
+            admin_check_method == "wallet.createhd" || method == "createhd";
+        std::shared_ptr<dinero::WalletService> wallet_service;
+        std::shared_lock<std::shared_mutex> ordinary_owner;
+        if (!creating_wallet && daemon_context_ && daemon_context_->wallet) {
+            wallet_service = std::dynamic_pointer_cast<dinero::WalletService>(daemon_context_->wallet);
+            if (wallet_service) ordinary_owner = wallet_service->AcquireCreationReader();
+        }
+
         // Reserve core daemon control/introspection builtins so auto-flat RPC
         // aliases such as mining.stop never shadow daemon stop.
         if (method == "stop" || method == "help" || method == "getinfo" ||

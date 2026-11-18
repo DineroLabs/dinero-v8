@@ -609,6 +609,7 @@ WalletService::CanonicalRecovery WalletService::RecoverActiveWalletFromCanonical
 }
 
 std::string WalletService::EnrollActiveLegacyTransparentWalletV3(uint64_t expected_session) {
+    auto recovery_owner=AcquireCreationReader();
     auto use = BorrowWalletUse();
     if (!chainstate_ || !use->Wallet().hasActiveWallet())
         throw std::runtime_error("V3 legacy wallet or chainstate unavailable");

@@ -4,6 +4,8 @@
 #include "mining/block_assembler.h"
 #include "daemon/daemon_context.h"
 #include "daemon/services/wallet_service.h"
+#include "daemon/services/chainstate_service.h"
+#include "daemon/runtime_delivery_worker.h"
 #include "daemon/services/config_service.h"
 #include "wallet/wallet_manager.h"
 #include "wallet/utxo_index.h"
@@ -39,6 +41,14 @@ struct ReopenRpcGateTestAccess {
     static void Hold(ReopenRpcGate::Pause& pause){pause.HoldClosed();}
     static void Resume(ReopenRpcGate::Pause& pause){pause.Resume();}
     static void Epoch(ReopenRpcGate& gate,uint64_t epoch){gate.epoch_.store(epoch);}
+};
+struct RuntimeDeliveryWorkerCreationTestAccess {
+    static void Recover(RuntimeDeliveryWorker& worker) {
+        RuntimeDeliveryWorker::Report report;
+        std::optional<uint64_t> blocked;
+        uint64_t attempts = 0;
+        worker.RecoverWallet(report, blocked, attempts);
+    }
 };
 }
 namespace {
@@ -136,6 +146,26 @@ void RequireRestarting(const Json::Value& response){
     EXPECT_EQ(response["error"]["message"].asString(),"Core restarting; retry request");
     EXPECT_TRUE(response["error"]["data"]["retryable"].asBool());
     EXPECT_EQ(response["error"]["data"]["reason"].asString(),"restarting");
+}
+TEST(RpcRequestFraming, RuntimeRecoveryWaitsForInitialAddressIssuance) {
+    auto wallet = std::make_shared<dinero::WalletService>();
+    auto source = std::make_shared<dinero::ChainstateService>();
+    dinero::RuntimeDeliveryWorker worker(source, wallet);
+    auto creation_owner = wallet->AcquireCreationOwner();
+    std::promise<void> worker_started;
+    auto recovery = std::async(std::launch::async, [&] {
+        worker_started.set_value();
+        dinero::RuntimeDeliveryWorkerCreationTestAccess::Recover(worker);
+    });
+    const bool started = worker_started.get_future().wait_for(std::chrono::seconds(5)) ==
+        std::future_status::ready;
+    const bool blocked = started &&
+        recovery.wait_for(std::chrono::milliseconds(500)) == std::future_status::timeout;
+    creation_owner.unlock();
+    EXPECT_TRUE(started);
+    EXPECT_TRUE(blocked) << "runtime recovery entered while creation was issuing addresses";
+    EXPECT_EQ(recovery.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    recovery.get();
 }
 TEST(RpcReopenPause, PausedQueuesNeverReachHandlersAndAbortInvalidatesOldEpoch){
     DaemonContext context;HttpRpcServer server("127.0.0.1",0);server.set_daemon_context(&context);
@@ -251,6 +281,65 @@ struct WalletFixture {
     }
     void Wire(HttpRpcServer& server){server.set_daemon_context(&context);server.set_rpc_registry(&registry);}
 };
+TEST(RpcRequestFraming, ExportAliasWaitsForEncryptedCreationOwner) {
+    WalletFixture fixture;
+    RpcRegistry& registry = fixture.registry;
+    HttpRpcServer server("127.0.0.1", 0);
+    fixture.Wire(server);
+    std::promise<void> creation_entered;
+    std::promise<void> release_creation;
+    auto release = release_creation.get_future().share();
+    std::atomic<unsigned> exports{0};
+    ASSERT_TRUE(registry.registerHandler("wallet.createhd",
+        [&](const ExecutionContext&, const din::Json&) {
+            auto owner = fixture.service->AcquireCreationOwner();
+            creation_entered.set_value();
+            release.wait(); // Model the temporary unlock through address issuance.
+            din::Json result;
+            result["created"] = true;
+            return result;
+        }));
+    ASSERT_TRUE(registry.registerHandler("wallet.exportseed",
+        [&](const ExecutionContext&, const din::Json&) {
+            ++exports;
+            din::Json result;
+            result["mnemonic"] = "secret";
+            return result;
+        }));
+    ASSERT_EQ(registry.handlerSource("exportseed"), "wallet.exportseed");
+
+    auto creation = std::async(std::launch::async, [&] {
+        return HttpRpcRequestTestAccess::Dispatch(server, "createhd");
+    });
+    const bool entered = creation_entered.get_future().wait_for(std::chrono::seconds(5)) ==
+        std::future_status::ready;
+    if (!entered) {
+        release_creation.set_value();
+        creation.wait();
+        FAIL() << "creation handler did not start";
+        return;
+    }
+
+    std::promise<void> export_started;
+    auto exporter = std::async(std::launch::async, [&] {
+        export_started.set_value();
+        return HttpRpcRequestTestAccess::Dispatch(server, "exportseed");
+    });
+    const bool started = export_started.get_future().wait_for(std::chrono::seconds(5)) ==
+        std::future_status::ready;
+    const bool blocked = started &&
+        exporter.wait_for(std::chrono::milliseconds(500)) == std::future_status::timeout &&
+        exports.load() == 0;
+    release_creation.set_value();
+
+    const auto created = creation.get();
+    const auto exported = exporter.get();
+    EXPECT_TRUE(started);
+    EXPECT_TRUE(blocked) << "seed export entered during the creation unlock window";
+    EXPECT_TRUE(created["result"]["created"].asBool());
+    EXPECT_EQ(exported["result"]["mnemonic"].asString(), "secret");
+    EXPECT_EQ(exports.load(), 1U);
+}
 Json::Value Call(uint16_t port,const std::string& method) {
     Socket client;Connect(client,port);SendFrame(client.fd,Body("payload",method));return Response(Read(client.fd),200);
 }

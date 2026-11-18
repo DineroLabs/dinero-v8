@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <shared_mutex>
 #include <condition_variable>
 #include <map>
 #include <thread>
@@ -106,6 +107,16 @@ public:
     // wallet.createhd / wallet.open / wallet.restore, not only at daemon start.
     bool EnsureRuntimeWalletBindings();
 
+    // Creation temporarily unlocks an encrypted wallet and must finish initial
+    // address issuance before another RPC reads secrets or v3 recovery enrolls
+    // it. Both HTTP and embedded NodeCore use this same service-scoped owner.
+    [[nodiscard]] std::unique_lock<std::shared_mutex> AcquireCreationOwner() const {
+        return std::unique_lock<std::shared_mutex>(wallet_creation_mutex_);
+    }
+    [[nodiscard]] std::shared_lock<std::shared_mutex> AcquireCreationReader() const {
+        return std::shared_lock<std::shared_mutex>(wallet_creation_mutex_);
+    }
+
     // Recover the active wallet from an already-loaded AssumeUTXO snapshot.
     // Locked encrypted wallets are deliberately deferred until wallet.unlock.
     bool RecoverActiveWalletFromSnapshotIfNeeded(std::string* error = nullptr, uint64_t expected_session = 0);
@@ -123,6 +134,7 @@ public:
 
 private:
     std::unique_ptr<WalletUse> BorrowWalletUse() const;
+    mutable std::shared_mutex wallet_creation_mutex_;
     mutable std::mutex operation_mutex_;
     mutable std::condition_variable operation_changed_;
     mutable std::map<std::thread::id,size_t> operations_by_thread_;

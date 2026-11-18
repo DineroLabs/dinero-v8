@@ -102,6 +102,7 @@ void RuntimeDeliveryWorker::RecoverWallet(Report& report,
     report.wallet_recovery_attempts=recovery_attempts;
     if (!wallet_) {report.wallet=WalletOutcome::ExplicitlyAbsent;return;}
     try {
+        auto recovery_owner=wallet_->AcquireCreationReader();
         auto use=WalletService::AcquireWalletUse(wallet_);
         uint64_t session;
         {
