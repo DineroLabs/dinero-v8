@@ -1,4 +1,7 @@
 #pragma once
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 // #939 phase 3: Orchard delivery for native wallets on a full-archive v3 node.
 // Included after orchard_account_creation_checks.h (OrchardCreationFixture)
 // and wallet_v3_recovery_route_checks.h (NativeV3IndexScope, NativeTestCount).
@@ -267,3 +270,45 @@ TEST(WalletV3NativeOrchard, OrdinaryBacklogPreemptsOrchardReplay) {
 }
 
 } // namespace dinero
+
+// Retained account history grows by one row per delivered event. Each Orchard
+// delivery pass re-authenticates every retained revision (unchanged), but must
+// not re-prove the same viewing key for each of them: that curve work made
+// per-event cost grow with history (Hotel). Proofs per pass stay constant.
+TEST(WalletV3NativeOrchard, RetainedHistoryDoesNotReproveViewingKeyPerRevision) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-orchard-retained-cost-index");
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ASSERT_FALSE(f.Call(0).isMember("error"));
+    const int blocks=std::getenv("DINERO_RETAINED_BENCH_BLOCKS")?
+        std::atoi(std::getenv("DINERO_RETAINED_BENCH_BLOCKS")):40;
+    ASSERT_GE(blocks,40);
+    for(int i=0;i<blocks;++i)(void)f.MineEmpty();
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+    const auto session=use->Wallet().AcquireDatabaseLease()->Session();
+    std::vector<double> pass_ms;std::vector<uint64_t> pass_proofs;
+    bool complete=false;
+    for(int i=0;i<blocks*2+8 && !complete;++i) {
+        const auto proofs=wallet::ValidatedViewingKeyScope::ProofsForTest();
+        const auto t0=std::chrono::steady_clock::now();
+        const auto next=f.f.service->resumeRuntimeWalletRecoveryV3IfNeeded(
+            use->Wallet(),index->Index(),session,128*1024*1024,1);
+        pass_ms.push_back(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count());
+        pass_proofs.push_back(wallet::ValidatedViewingKeyScope::ProofsForTest()-proofs);
+        ASSERT_TRUE(next.ok());
+        complete=bool(*next);
+    }
+    ASSERT_TRUE(complete);
+    ASSERT_GE(pass_ms.size(),size_t(blocks));
+    // Late passes restore ~blocks retained revisions; proofs must not follow.
+    const auto late=pass_proofs.size()-2;
+    EXPECT_GE(f.Account(0).revision,uint64_t(blocks/2));
+    EXPECT_LE(pass_proofs[late],8u) << "viewing key re-proven per retained revision";
+    const auto mean=[&](size_t from,size_t to){double s=0;for(size_t i=from;i<to;++i)s+=pass_ms[i];return s/double(to-from);};
+    std::printf("[retained-bench] passes=%zu early_ms=%.2f late_ms=%.2f late_proofs=%llu revision=%llu\n",
+        pass_ms.size(),mean(4,14),mean(pass_ms.size()-11,pass_ms.size()-1),
+        (unsigned long long)pass_proofs[late],(unsigned long long)f.Account(0).revision);
+}

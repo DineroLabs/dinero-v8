@@ -489,6 +489,9 @@ struct OrchardAccountDelivery::Owner {
             }
         }
         CatalogEnrolled Restore(const std::function<RestorePoint(RuntimeOutboxCursor)>& points) const {
+            // Every retained revision of an account restores with the same
+            // viewing key; prove it once per call, not once per revision.
+            const ValidatedViewingKeyScope viewing_once;
             const auto origin=points({}).checkpoint.block_hash;
             CatalogEnrolled result{ownership.catalog,{}};
             result.accounts.reserve(bytes.size());
@@ -531,6 +534,7 @@ struct OrchardAccountDelivery::Owner {
         }
     };
     static std::unique_ptr<CapturedCatalog> CaptureCatalog(WalletManager& wallet,uint64_t session,const Profile& profile){
+        const ValidatedViewingKeyScope viewing_once; // one proof per key per capture
         auto lease=wallet.AcquireDatabaseLease();
         Check(lease->Session()==session&&lease->Database()&&!sqlite3_get_autocommit(lease->Database()));
         auto seed=lease->CopyRecoverySeed(session);
