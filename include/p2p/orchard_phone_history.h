@@ -83,7 +83,11 @@ public:
     std::shared_ptr<const Data> Ready()const {
         std::shared_ptr<const Data> ready;{std::lock_guard lock(mutex_);if(stop_)return {};ready=ready_;}
         if(!ready)return {};
-        try{if(cache_)cache_->Check();const auto current=target_();return current&&*current==ready->target?ready:nullptr;}catch(...){return {};}
+        try {
+            if (cache_) cache_->Check();
+            const auto current = target_();
+            return current && *current == ready->target && HeaderSelected(*current) ? ready : nullptr;
+        } catch (...) { return {}; }
     }
     void Stop(){
         std::lock_guard joining(join_);
@@ -113,6 +117,10 @@ private:
     std::optional<Peer> flight_;uint256 wanted_;std::optional<Bytes> packet_;
     bool body_received_=false;
     std::shared_ptr<const Data> ready_;Progress progress_;std::atomic<bool> stop_{false};std::thread worker_;
+    bool HeaderSelected(const Target& target) const {
+        consensus::HeaderIndexEntry header;
+        return headers_ && headers_->GetHeaderAtHeightCopy(target.height, header) && header.hash == target.hash;
+    }
     void Run()noexcept {
         std::optional<Target> selected;std::optional<Peer> peer;
         std::shared_ptr<const consensus::OrchardSnapshotSection> proof;
@@ -121,6 +129,12 @@ private:
         uint64_t window_bytes=0;uint32_t next=0;bool awaiting=false;
         const auto unpublish=[&]{std::lock_guard lock(mutex_);flight_.reset();packet_.reset();ready_.reset();};
         const auto discard=[&]{unpublish();replay.reset();corpus.reset();proof.reset();selected.reset();awaiting=false;peer.reset();};
+        const auto pause=[&]{
+            unpublish();awaiting=false;
+            std::lock_guard lock(mutex_);
+            if(replay)progress_.ready=false;
+            else progress_={};
+        };
         const auto fail_peer=[&]{
             if(peer){if(cooldown.size()>=32)cooldown.erase(cooldown.begin());cooldown[peer->address]=Clock::now()+std::chrono::minutes(1);}
             peer.reset();awaiting=false;std::lock_guard lock(mutex_);flight_.reset();packet_.reset();
@@ -130,31 +144,51 @@ private:
             std::optional<Bytes> packet;
             {std::unique_lock lock(mutex_);cv_.wait_for(lock,idle?IdleWait:ActiveWait,[&]{return stop_||packet_.has_value();});
              if(stop_)break;if(packet_){packet=std::move(packet_);packet_.reset();}}++iterations_;idle=false;
+            // Include abandoned requests and invalid bodies in the wire budget.
+            if(packet)window_bytes+=packet->size();
             try{
                 const auto current=target_();
-                if(!current){discard();idle=true;std::lock_guard lock(mutex_);progress_={};continue;}
-                // A pure tip extension (same base/activation, height advanced)
-                // is absorbed by ExtendSelectedTarget below with all verified
-                // progress retained. Mid-iteration rechecks must therefore
-                // defer extensions to this handler instead of discarding, or a
-                // steadily growing selected chain starves full verification.
-                const auto extends=[&](const std::optional<Target>& now){
-                    return now&&selected&&replay&&now->base==selected->base&&
-                        now->activation==selected->activation&&now->height>=selected->height;
+                if (!current || !HeaderSelected(*current)) {
+                    pause();
+                    idle = !current;
+                    continue;
+                }
+                const auto same_base=[&](const Target& target){
+                    return selected&&target.base==selected->base&&target.activation==selected->activation;
                 };
                 if(selected&&*selected!=*current){
-                    if(current->base==selected->base&&current->activation==selected->activation&&current->height>=selected->height&&replay){
-                        replay->ExtendSelectedTarget(current->height,current->hash);selected=current;
-                        std::lock_guard lock(mutex_);ready_.reset();
-                    }else discard();
+                    using Result=OrchardBoundaryReplay::RetargetResult;
+                    const auto retarget = same_base(*current)
+                        ? replay->RetargetSelectedHistory(current->height, current->hash) : Result::PrefixChanged;
+                    if (retarget == Result::Unselected) {
+                        pause();
+                        continue;
+                    }
+                    if (retarget == Result::PrefixChanged) {
+                        discard();
+                        packet.reset();
+                    } else {
+                        selected = current;
+                        uint256 wanted;
+                        uint32_t found = 0;
+                        const bool next_on_branch = awaiting &&
+                            headers_->GetAncestorHashByHash(selected->hash, next, wanted, found) && found == selected->height;
+                        std::lock_guard lock(mutex_);
+                        ready_.reset();
+                        if (awaiting && (!next_on_branch || wanted_ != wanted)) {
+                            flight_.reset();
+                            packet_.reset();
+                            packet.reset();
+                            awaiting = false;
+                        }
+                    }
                 }
                 if(!replay){
                     proof=proof_();if(!proof)continue;
                     selected=current;replay=verify_(proof,*selected);if(!replay){discard();continue;}
-                    // On a pure extension, creation MUST still complete below
-                    // (corpus/next are not yet initialized); the loop top
-                    // absorbs the new height on the next iteration.
-                    if(const auto now=target_();now!=selected){if(!extends(now)){discard();continue;}}
+                    // Finish initializing the private corpus on a same-base
+                    // tip change. The next iteration can then retarget it.
+                    if(const auto now=target_();now&&!same_base(*now)){discard();continue;}
                     if(Cached())try{const auto size=consensus::OrchardSnapshotSectionEncodedSize(*proof);
                         cache_->Put('p',proof->state.block_hash,size,consensus::ORCHARD_SNAPSHOT_MAX_SECTION_BYTES,
                             [&](const auto& sink){Data::Require(consensus::StreamOrchardSnapshotSection(*proof,sink)==size);});}
@@ -163,9 +197,16 @@ private:
                 }
                 {std::lock_guard lock(mutex_);progress_={true,false,next-1,selected->height,selected->hash,{}};}
                 if(next>selected->height){
-                    if(!replay->AtSelectedTarget()||storage::catalog::Hash(replay->Catalog().Encode())!=selected->catalog)
+                    if (!replay->AtSelectedTarget()) {
+                        if (!HeaderSelected(*selected)) {
+                            pause();
+                            continue;
+                        }
+                        throw std::runtime_error("phone history verifier is out of step with the selected target");
+                    }
+                    if(storage::catalog::Hash(replay->Catalog().Encode())!=selected->catalog)
                         throw std::runtime_error("phone history final catalog mismatch");
-                    if(const auto now=target_();now!=selected){if(!extends(now))discard();continue;}
+                    if(target_()!=selected)continue;
                     if(cache_)cache_->Check();
                     std::lock_guard lock(mutex_);if(stop_)break;
                     ready_=std::shared_ptr<const Data>(new Data(*selected,proof,corpus));progress_.ready=true;idle=true;continue;
@@ -184,10 +225,6 @@ private:
                 }
                 if(packet){
                     if(!cached_packet&&(!awaiting||!peer))continue;
-                    // Charge received bytes even if decoding/proof checks
-                    // refuse them. Invalid peers cannot evade the wire budget
-                    // by rotating through the bounded cooldown inventory.
-                    if(!cached_packet)window_bytes+=packet->size();
                     const auto body=OrchardBlockCandidate::DecodeExact(*packet);
                     uint256 expected;uint32_t found=0;
                     if(!headers_->GetAncestorHashByHash(selected->hash,next,expected,found)||found!=selected->height||body.Header().GetHash()!=expected)
@@ -195,16 +232,18 @@ private:
                     const auto space=std::filesystem::space(work_);
                     if(space.available<(uint64_t(512)<<20)+3*packet->size())throw std::runtime_error("phone history disk reserve unavailable");
                     const auto now=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-                    const auto checked=replay->Append(body,uint64_t(now));
-                    if(!checked||checked->Context().height!=next||!checked->MatchesWire(body))throw std::runtime_error("phone history validation unavailable");
+                    const auto checked=replay->AppendForSelectedHistory(body,uint64_t(now));
+                    if(!checked){pause();continue;}
+                    if(checked->Context().height!=next||!checked->MatchesWire(body))throw std::runtime_error("phone history validation unavailable");
                     if(stop_)break;
-                    if(const auto now=target_();now!=selected){if(!extends(now)){discard();continue;}}
+                    const auto latest=target_();
                     if(Cached()&&!cached_packet)try{cache_->Put('b',expected,packet->size(),OrchardBlockCandidate::MaxWireSize(),
                         [&](const auto& sink){sink(*packet);});}catch(...){RetireCache();}
                     corpus->Append(next,*packet);++next;awaiting=false;
                     {std::lock_guard lock(mutex_);flight_.reset();}
-                    // Read the next body from the cache before any peer request.
-                    if(cached_packet)continue;
+                    // Retarget before requesting anything on a changed chain,
+                    // or read the next cached body before making a peer request.
+                    if(cached_packet||latest!=selected)continue;
                 }
                 const auto now=Clock::now();
                 const auto connected=peers_();
