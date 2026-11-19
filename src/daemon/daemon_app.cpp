@@ -7537,6 +7537,9 @@ bool DaemonApp::Start() {
     // Wire BlockAssembler to Mempool (deferred from InitializeServices)
     // MUST happen after services Init() because Mempool is created in Init()
     // ═══════════════════════════════════════════════════════════════════
+    if (ctx_.block_assembler) {
+        ctx_.block_assembler->SetHeaderChainSelector(ctx_.header_chain);
+    }
     if (ctx_.block_assembler && ctx_.mempool && ctx_.mempool->isInitialized()) {
         std::weak_ptr<ChainstateService> weak_chain = ctx_.chainstate;
         ctx_.block_assembler->SetChainstateReadGuardFactory([weak_chain]()
