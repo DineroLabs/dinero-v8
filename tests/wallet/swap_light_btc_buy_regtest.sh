@@ -8,20 +8,27 @@
 # the swap's lock from them and sends it. The deposit's excess returns to his
 # refund address. A second deposit is cancelled and comes back whole.
 #   usage: swap_light_btc_buy_regtest.sh <dinerod built with DINERO_SWAP_LIGHT_BTC>
+#          [<dinero-swap-tower> <dinero-swap-tower-intake>]
+#
+# With the two tower programs (CTest SwapPublicTowerRegtest) Bob also has a
+# public watchtower: his node arms it over HTTP (swap.tower_url), and he goes
+# offline the moment his BTC is locked. The tower, which has only his
+# pre-signed transactions and no Bitcoin Core either, claims his DIN.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/swap_regtest_lib.sh"
 DINEROD=${1:?dinerod}
+TOWER=${2:-}; INTAKE=${3:-}
 command -v bitcoind >/dev/null || { echo "SKIP: bitcoind not installed"; exit 77; }
 DIR=$(mktemp -d)
 BASE=$(swap_free_base 12)
 APORT=$BASE; AP2P=$((BASE + 1)); BPORT=$((BASE + 2)); BP2P=$((BASE + 3))
-CPORT=$((BASE + 8)); CP2P=$((BASE + 9)); EPORT=$((BASE + 10))
+CPORT=$((BASE + 8)); CP2P=$((BASE + 9)); EPORT=$((BASE + 10)); TPORT=$((BASE + 11))
 BCLI=(bitcoin-cli -regtest -datadir="$DIR/btc" -rpcport=$CPORT -rpcuser=test -rpcpassword=test)
 CONSENSUS=(--consensus-contextual-locks-height=1)
 LIGHT=(--swap.enable=1 --swap.btc_backend=light --swap.btc_servers=http://127.0.0.1:$EPORT
        --swap.btc_peers=127.0.0.1 --swap.btc_peer_port=$CP2P --swap.btc_sync_seconds=1 --swap.tick_seconds=1)
-cleanup() { for p in "${APID:-}" "${BPID:-}" "${EPID:-}"; do [[ -n "$p" ]] && kill -9 "$p" 2>/dev/null || true; done
+cleanup() { for p in "${APID:-}" "${BPID:-}" "${EPID:-}" "${TPID:-}" "${IPID:-}"; do [[ -n "$p" ]] && kill -9 "$p" 2>/dev/null || true; done
             "${BCLI[@]}" stop >/dev/null 2>&1 || true; sleep 1
             [[ -n "${KEEP_LOGS:-}" ]] && cp "$DIR"/*.log "$KEEP_LOGS"/ 2>/dev/null; rm -rf "$DIR"; }
 trap cleanup EXIT
@@ -75,8 +82,32 @@ for port in $APORT $BPORT; do
   rpc $port wallet.encrypt '["pw-swap-light"]' >/dev/null
 done
 kill "$APID" "$BPID"; wait "$APID" 2>/dev/null || true; wait "$BPID" 2>/dev/null || true; APID=; BPID=
+BOBCFG=("${LIGHT[@]}")
+if [[ -n "$TOWER" ]]; then
+  # The public tower: its door, and the tower guarding the same inbox (its
+  # Dinero node is Alice's here; a real one runs its own).
+  mkdir -p "$DIR/tower"
+  "$INTAKE" --inbox "$DIR/tower" --listen 127.0.0.1:$TPORT --network regtest >"$DIR/intake.log" 2>&1 & IPID=$!
+  for _ in $(seq 1 50); do curl -s -m 2 http://127.0.0.1:$TPORT/v1/health | grep -q '"ok":true' && break; sleep 0.2; done
+  check "the tower's door answers" '[[ "$(curl -s -m 5 http://127.0.0.1:$TPORT/v1/health)" == *"\"ok\":true"* ]]'
+  check "and refuses what is not a package" '[[ "$(curl -s -m 5 -o /dev/null -w "%{http_code}" -d junk http://127.0.0.1:$TPORT/v1/packages)" == 400 ]]'
+  check "and a body over its limit" '[[ "$(head -c 300000 /dev/zero | tr "\0" a | curl -s -m 10 -o /dev/null -w "%{http_code}" --data-binary @- http://127.0.0.1:$TPORT/v1/packages)" == 413 ]]'
+  BOBCFG+=(--swap.tower_url=http://127.0.0.1:$TPORT)
+fi
 start_node alice $APORT $AP2P "${LIGHT[@]}"; APID=$STARTED_PID; wait_rpc $APORT
-start_node bob $BPORT $BP2P "${LIGHT[@]}" --connect=127.0.0.1:$AP2P; BPID=$STARTED_PID; wait_rpc $BPORT
+start_node bob $BPORT $BP2P "${BOBCFG[@]}" --connect=127.0.0.1:$AP2P; BPID=$STARTED_PID; wait_rpc $BPORT
+if [[ -n "$TOWER" ]]; then
+  # It reads the node's credentials from a cookie file, which is wrong at first
+  # (as after the node restarted) and is put right below: the tower must follow.
+  echo "test:stale" >"$DIR/tower.cookie"
+  "$TOWER" --inbox "$DIR/tower" --din-rpc 127.0.0.1:$APORT --din-cookie "$DIR/tower.cookie" --din-hrp rdin --btc-chain regtest \
+    --btc-backend light --btc-servers http://127.0.0.1:$EPORT --btc-peers 127.0.0.1 --btc-peer-port $CP2P \
+    --interval 1 >"$DIR/tower.log" 2>&1 & TPID=$!
+  # Put right only once the buyer's package is waiting: he locks nothing until
+  # the tower, with the new cookie, confirms.
+  (for _ in $(seq 1 600); do ls "$DIR/tower" 2>/dev/null | grep -q '\.pkg$' && break; sleep 1; done; sleep 4
+   echo "test:test" >"$DIR/tower.cookie.new"; mv "$DIR/tower.cookie.new" "$DIR/tower.cookie"; touch "$DIR/cookie.fixed") &
+fi
 for port in $APORT $BPORT; do rpc $port wallet.unlock '["pw-swap-light", 7200]' >/dev/null; done
 check "neither daemon has a Bitcoin RPC" '! grep -q "btc_rpc=127" "$DIR/alice.log" "$DIR/bob.log"'
 check "both say they buy from a deposit address" '[[ $(grep -c "buys DIN from a BTC deposit address" "$DIR/alice.log" "$DIR/bob.log" | cut -d: -f2 | paste -sd+ - | bc) -ge 2 ]]'
@@ -133,10 +164,36 @@ for round in $(seq 1 ${LIGHT_ROUNDS:-150}); do
   rpc $APORT generatetoaddress "[1, \"$ALICE_DIN\"]" >/dev/null 2>&1 || true
   mine_btc 1
   sleep 1.5
-  SA=$(state $APORT); SB=$(state $BPORT)
+  SA=$(state $APORT); SB=${BOB_OFFLINE:+offline}; [[ -n "$SB" ]] || SB=$(state $BPORT)
   (( round % 5 == 0 )) && echo "  [$round] alice=$SA bob=$SB"
+  if [[ -n "$TOWER" && -z "${BOB_OFFLINE:-}" && "$SB" == btc-locked ]]; then
+    PKG=$(ls "$DIR/tower" | grep -E '^[0-9a-f]{64}\.pkg$' | head -1)
+    check "bob's node armed the tower over HTTP before locking: the inbox holds his package under its hash" '[[ -n "$PKG" ]]'
+    BOB_STATUS=$(rpc $BPORT swap.status "[\"$ID\"]")
+    check "the tower could not see Dinero with the stale cookie, and followed the new one" \
+      '[[ -e "$DIR/cookie.fixed" ]] && grep -q "Dinero node is unreachable\|neither node is reachable" "$DIR/tower.log"'
+    check "his node says the tower is armed" '[[ "$(field "$BOB_STATUS" tower_armed)" == True ]]'
+    echo "  bob goes offline with his BTC locked"
+    kill "$BPID"; wait "$BPID" 2>/dev/null || true; BPID=; BOB_OFFLINE=1
+  fi
+  if [[ -n "${BOB_OFFLINE:-}" ]]; then
+    # Alice has her BTC and the tower has claimed Bob's DIN and seen it buried.
+    [[ "$SA" == done ]] && ls "$DIR/tower" | grep -q '\.pkg\.done$' && break
+    continue
+  fi
   [[ "$SA" == done && "$SB" == done ]] && break
 done
+if [[ -n "${BOB_OFFLINE:-}" ]]; then
+  check "the tower finished the swap for bob while he was away" 'ls "$DIR/tower" | grep -q "\.pkg\.done$"'
+  grep -h "tower:" "$DIR/tower.log" | grep -iE "claim|secret" | tail -3 | cut -c1-200
+  start_node bob $BPORT $BP2P "${BOBCFG[@]}" --connect=127.0.0.1:$AP2P; BPID=$STARTED_PID; wait_rpc $BPORT
+  rpc $BPORT wallet.unlock '["pw-swap-light", 7200]' >/dev/null
+  for _ in $(seq 1 60); do
+    rpc $APORT generatetoaddress "[1, \"$ALICE_DIN\"]" >/dev/null 2>&1 || true
+    mine_btc 1; sleep 1.5
+    [[ "$(state $BPORT)" == done ]] && break
+  done
+fi
 echo "  final: alice=$(state $APORT) bob=$(state $BPORT)"
 check "alice done" '[[ "$(state $APORT)" == done ]]'
 check "bob done" '[[ "$(state $BPORT)" == done ]]'
@@ -149,7 +206,9 @@ BAL=$(rpc $BPORT wallet.getbalance '[]')
 BOB_DIN=$(python3 -c 'import sys,json
 d=json.loads(sys.argv[1]); t=d["total"]
 print(int(t) if isinstance(t,int) and t > 10**6 else int(round(float(t)*1e8)))' "$BAL")
-check "bob's wallet received the DIN ($BOB_DIN una)" '[[ $BOB_DIN -ge 999000000 && $BOB_DIN -le 1000000000 ]]'
+# (A claim sent by the tower pays one of its pre-signed fee levels, up to 1 % of the amount.)
+MIN_DIN=999000000; [[ -n "$TOWER" ]] && MIN_DIN=989000000
+check "bob's wallet received the DIN ($BOB_DIN una)" '[[ $BOB_DIN -ge $MIN_DIN && $BOB_DIN -le 1000000000 ]]'
 
 echo "=== BTC that reaches a deposit address late is recovered ==="
 # A second withdrawal from an exchange arrives after the swap is over, and something lands on the first, cancelled address.

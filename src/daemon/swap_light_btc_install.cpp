@@ -14,6 +14,9 @@
 //   swap.btc_sync_seconds=N       least time between header syncs (default 45)
 //   swap.btc_light_mainnet_rehearsal=1   required on mainnet until the mainnet rehearsal has passed
 //
+//   swap.tower_url=https://HOST   a watchtower armed over the network, for a
+//                                 buyer of DIN (instead of swap.tower_inbox)
+//
 //   swap.btc_funding_fee_sat=N    the most a lock's network fee may be; part of
 //                                 every deposit asked for (default 3000)
 //
@@ -26,6 +29,8 @@
 #include "wallet/swap/btc_light_chain_io.h"
 #include "wallet/swap/btc_light_deposit.h"
 #include "wallet/swap/swap_crypto.h"
+#include "wallet/swap/btc_http_curl.h"
+#include "wallet/swap/tower_http.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -162,8 +167,24 @@ std::function<void(uint32_t)> InstallLightBitcoin(swap::SwapManager& manager, co
     return [backend](uint32_t now) { backend->Sync(now); };
 }
 
+// swap.tower_url: a watchtower armed over the network (tower_http.h). Lives
+// here because it needs the HTTPS client, which only this dinerod links.
+bool InstallTowerUrl(swap::SwapManager& manager, const ConfigService& config) {
+    const std::string url = config.GetString("swap.tower_url", "");
+    if (const std::string problem = swap::TowerUrlProblem(url); !problem.empty()) {
+        return SwapService::Refuse("swap.tower_url: " + problem);
+    }
+    swap::BtcHttpOptions options;
+    options.max_body_bytes = 4096;  // the tower's answers are a line of JSON
+    const swap::BtcHttp http = swap::MakeBtcHttp(options);
+    manager.SetTowerSink(swap::MakeHttpTowerSink(url, http));
+    manager.SetTowerAck(swap::MakeHttpTowerAck(url, http));
+    return true;
+}
+
 const bool g_registered = [] {
     SwapService::SetLightBtcInstaller(InstallLightBitcoin);
+    SwapService::SetTowerUrlInstaller(InstallTowerUrl);
     return true;
 }();
 

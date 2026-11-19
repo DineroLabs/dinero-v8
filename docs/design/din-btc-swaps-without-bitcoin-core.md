@@ -405,3 +405,65 @@ Differences from the plan above, each found while building:
 Not built: a button for `swap.recoverdeposits` in the Swap tab, the fee-ceiling check in the Swap
 tab (section 4), the testnet4 and mainnet rehearsals (step 6), a CA bundle for Windows, fuzz targets beyond the in-test random-damage
 loops. The Windows socket code is written and has never been compiled.
+
+## 14. The switch and the public watchtower (2026-11-19)
+
+Two owner decisions after section 13: dinero-qt gets an "Enable swaps" switch, and Dinero Labs runs
+a public watchtower (on the existing `dinerotx` server).
+
+### 14.1 The switch
+
+The Swap tab has one line saying where swaps stand and one button. The choice is a stored setting;
+both node launchers add `--swap.enable=1 --swap.optional=1 --swap.btc_backend=light
+--swap.mainnet_beta=1` when it is on, and it takes effect the next time Dinero starts.
+
+- **The wallet's node always starts.** `swap.optional=1` turns a refused swap setting into "swaps
+  are off, and here is why" instead of a node that does not start. The reason reaches the tab
+  through `swap.*` ("swaps are disabled: ...") and is shown in plain words.
+- **Turning it on asks first**: swaps are a beta, small amounts, keep Dinero open until a swap ends.
+- **It cannot be turned off while a swap is open.**
+- **The mainnet gate is not the switch's to lift.** Swaps without Bitcoin Core stay refused on
+  mainnet inside `dinerod` until the mainnet rehearsal has passed (section 7, step 6); the switch
+  never passes the rehearsal flag. Until then a mainnet user who turns it on reads "not available
+  on mainnet yet".
+- The release `dinerod` must be built with `DINERO_SWAP_LIGHT_BTC=ON`, or the tab says this copy
+  was built without swaps.
+
+### 14.2 The public watchtower
+
+The tower program is unchanged in what it does: it guards the packages in its inbox directory. Until
+now only the buyer's own machine could put a package there. Two pieces let anyone do it over the
+network:
+
+- **`dinero-swap-tower-intake`**, the door: a small HTTP program in front of the inbox
+  (`wallet/swap/tower_http.h`). `POST /v1/packages` takes a package, `GET /v1/armed/<hash>` says
+  whether the tower has confirmed, within the last two minutes, that it is guarding it. It holds no
+  key and reaches no chain. It listens on the local machine only; a web server in front ends TLS and
+  limits how often one address may ask.
+- **`swap.tower_url=https://HOST`** in `dinerod`: the buyer's node sends its package there and
+  locks its BTC only once the tower confirms. It needs the HTTPS client, so the build with
+  `DINERO_SWAP_LIGHT_BTC`. An address on another machine must be `https://`.
+
+What strangers can and cannot do to it:
+
+| Attempt | What stops it |
+|---|---|
+| Send something that is not a real package | Every rung and signature is verified before anything is kept. |
+| Replace or block another buyer's package | A package is stored under its own SHA-256, never under the swap's id, and is never overwritten. Two packages naming the same swap sit side by side. |
+| Read or guess files through the address | Only 64 lower-case hex digits ever reach a file name. |
+| Fill the disk, or make the tower look up thousands of swaps | Size cap (256 KiB), a cap on packages held (20,000), a request limit at the web server, and `--expire-unfunded-after`: a package whose buyer never locked is dropped that long after its DIN deadline. A package costs chain lookups only while it is held. |
+| Hold connections open | One request per connection, ten seconds for the whole exchange, a fixed number of connections. |
+
+What the operator can and cannot do: the tower has only pre-signed transactions that pay the buyer's
+own addresses, so it cannot take coins. It can fail to act, or say "armed" and not be; either is the
+same as having no tower, and the buyer's own node still does everything while it is online. It
+learns each swap's terms, addresses and the address the package came from. A buyer who wants none
+of that runs their own tower with `swap.tower_inbox`, as before.
+
+Proved on regtest (`SwapPublicTowerRegtest`): neither node has Bitcoin Core; the buyer's node arms
+the tower over HTTP and locks only after its confirmation; the buyer goes offline with his BTC
+locked; the tower, itself without Bitcoin Core, claims his DIN and sees it buried.
+
+Not done: the deployment on `dinerotx` (docs/swaps/PUBLIC_TOWER_RUNBOOK.md), and the address of the
+public tower in the switch's arguments, which is added once that tower is up and has been used in
+the testnet rehearsal.

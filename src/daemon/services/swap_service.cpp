@@ -36,6 +36,11 @@ SwapService::LightBtcInstaller& LightBtcInstallerSlot() {
     return installer;
 }
 
+SwapService::TowerUrlInstaller& TowerUrlInstallerSlot() {
+    static SwapService::TowerUrlInstaller installer;
+    return installer;
+}
+
 bool IsWrite(const std::string& m) {
     return m == "sendrawtransaction" || m == "wallet.sendtoaddress" || m == "wallet.getnewaddress";
 }
@@ -163,6 +168,7 @@ SwapService* SwapService::Active() { return g_active.load(); }
 
 void SwapService::SetZecInstaller(ZecInstaller installer) { ZecInstallerSlot() = std::move(installer); }
 void SwapService::SetLightBtcInstaller(LightBtcInstaller installer) { LightBtcInstallerSlot() = std::move(installer); }
+void SwapService::SetTowerUrlInstaller(TowerUrlInstaller installer) { TowerUrlInstallerSlot() = std::move(installer); }
 
 namespace {
 std::mutex g_off_reason_mu;
@@ -318,6 +324,12 @@ bool SwapService::Setup(DaemonContext& ctx) {
         }
     }
     const std::string inbox = config->GetString("swap.tower_inbox", "");
+    const std::string tower_url = config->GetString("swap.tower_url", "");
+    if (!tower_url.empty()) {
+        if (!inbox.empty()) return Refuse("swap.tower_url and swap.tower_inbox are two ways to reach a watchtower: set one");
+        if (!TowerUrlInstallerSlot()) return Refuse("swap.tower_url needs a dinerod built with DINERO_SWAP_LIGHT_BTC");
+        if (!TowerUrlInstallerSlot()(*manager_, *config)) return false;
+    }
     if (!inbox.empty()) {
         manager_->SetTowerSink([inbox](const std::string& package) { swap::WriteTowerInbox(inbox, package); });
         manager_->SetTowerAck([inbox](const std::string& id, const std::string& hash) {
@@ -330,7 +342,8 @@ bool SwapService::Setup(DaemonContext& ctx) {
               << (mc.max_btc_sat ? " max_btc_sat=" + std::to_string(mc.max_btc_sat) + " max_din_una=" +
                                        std::to_string(mc.max_din_una)
                                  : std::string())
-              << (inbox.empty() ? "" : " tower_inbox=" + inbox) << std::endl;
+              << (inbox.empty() ? "" : " tower_inbox=" + inbox)
+              << (tower_url.empty() ? "" : " tower_url=" + tower_url) << std::endl;
     return true;
 }
 

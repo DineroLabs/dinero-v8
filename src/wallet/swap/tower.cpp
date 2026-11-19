@@ -4,6 +4,7 @@
 #include "wallet/swap/swap_crypto.h"
 
 #include <cstdio>
+#include <filesystem>
 #include <algorithm>
 #include <fstream>
 #include <map>
@@ -423,6 +424,72 @@ bool TowerAckFresh(const std::string& inbox_dir, const std::string& swap_id, con
     return t <= uint64_t(now) + 60 && uint64_t(now) <= t + max_age;
 }
 
+bool IsTowerPackageHash(const std::string& text) {
+    if (text.size() != 64) return false;
+    return std::all_of(text.begin(), text.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+}
+
+TowerIntakeResult TowerIntakeStore(const std::string& inbox_dir, const std::string& package_text,
+                                   const TowerIntakeLimits& limits) {
+    TowerIntakeResult r;
+    if (package_text.size() > limits.max_package_bytes) {
+        r.status = TowerIntakeStatus::TooLarge;
+        return r;
+    }
+    try {
+        const TowerPackage package = DecodeTowerPackage(package_text);  // verifies every rung and signature
+        if (limits.network && package.offer.network != *limits.network) {
+            throw std::invalid_argument("this tower guards another network");
+        }
+    } catch (const std::exception& e) {
+        r.status = TowerIntakeStatus::Invalid;
+        r.reason = e.what();
+        return r;
+    }
+    r.hash = TowerPackageHash(package_text);
+    const std::string path = inbox_dir + "/" + r.hash + ".pkg";
+    try {
+        std::error_code ec;
+        // Held already, in any state: the tower has it or has dealt with it.
+        for (const char* suffix : {"", ".done", ".expired", ".rejected"}) {
+            if (std::filesystem::exists(path + suffix, ec)) {
+                r.status = TowerIntakeStatus::AlreadyHeld;
+                return r;
+            }
+        }
+        size_t held = 0;
+        for (const auto& entry : std::filesystem::directory_iterator(inbox_dir)) {
+            if (entry.path().extension() == ".pkg") ++held;
+        }
+        if (held >= limits.max_packages) {
+            r.status = TowerIntakeStatus::Full;
+            return r;
+        }
+        WriteFileAtomically(path, package_text);
+        r.status = TowerIntakeStatus::Stored;
+    } catch (const std::exception& e) {
+        r.status = TowerIntakeStatus::Failed;
+        r.reason = e.what();
+    }
+    return r;
+}
+
+std::optional<uint32_t> TowerIntakeArmedAge(const std::string& inbox_dir, const std::string& hash, uint32_t now,
+                                            uint32_t max_age) {
+    if (!IsTowerPackageHash(hash)) return std::nullopt;
+    std::ifstream in(inbox_dir + "/" + hash + ".armed");
+    std::string held;
+    uint64_t t = 0;
+    if (!(in >> held >> t) || held != hash) return std::nullopt;
+    if (t > uint64_t(now) + 60 || uint64_t(now) > t + max_age) return std::nullopt;
+    return t >= now ? 0 : now - static_cast<uint32_t>(t);
+}
+
+bool TowerPackageAbandoned(const TowerPackage& package, const TowerReport& report, uint32_t now, uint32_t grace) {
+    return report.observed && !report.counter_lock_seen && !report.finished &&
+           uint64_t(now) > uint64_t(package.offer.t_din_unix) + grace;
+}
+
 TowerReport TickAndRecord(Watchtower& tower, const std::string& inbox_dir, const std::string& swap_id,
                           const std::string& package_hash, uint32_t now) {
     TowerReport r;
@@ -493,6 +560,7 @@ TowerReport Watchtower::Tick(uint32_t now) {
     // Healthy: both chains observed and the package's DIN lock on chain. The
     // daemon refreshes Bob's ack only while this holds.
     report.healthy = din.ok && btc.ok && din_lock_here;
+    report.counter_lock_seen = btc.ok && btc.htlc.output_seen;
 
     // Learn the secret from Alice's Bitcoin claim, once; then keep it, so a
     // later Bitcoin outage cannot stop the DIN duty.

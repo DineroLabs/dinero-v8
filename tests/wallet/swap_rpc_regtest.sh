@@ -92,6 +92,14 @@ out=$(rpc $XPORT swap.list '[]' 2>&1 || true)
 check "and swap.* say why swaps are off" '[[ "$out" == *"swaps are disabled: swap.btc_backend must be core or light"* ]]'
 check "and no swap directory is created" '[[ ! -e "$DIR/optional/swaps" ]]'
 kill "$XPID"; wait "$XPID" 2>/dev/null || true; XPID=
+if [[ $(strings "$DINEROD" | grep -c "swap.tower_url: ") -gt 0 ]]; then  # a dinerod with the HTTPS client
+  mkdir -p "$DIR/towerurl"
+  start_node towerurl $XPORT $XP2P "${SWAPCFG[@]}" --swap.optional=1 --swap.tower_url=http://tower.example; XPID=$STARTED_PID
+  wait_rpc $XPORT
+  out=$(rpc $XPORT swap.list '[]' 2>&1 || true)
+  check "a watchtower address on another machine must be https (${out:0:110})" '[[ "$out" == *"swap.tower_url: a watchtower on another machine needs https://"* ]]'
+  kill "$XPID"; wait "$XPID" 2>/dev/null || true; XPID=
+fi
 
 # --- Alice's and Bob's daemons ---------------------------------------------------
 # Establish each intended payer before SwapService captures its durable owner.

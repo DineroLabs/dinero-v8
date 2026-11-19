@@ -9,6 +9,7 @@
 //   swap.btc_rpc_user / swap.btc_rpc_pass   (the password is never logged)
 //   swap.tick_seconds=30
 //   swap.tower_inbox=DIR          optional: arm a dinero-swap-tower for Bob
+//   swap.tower_url=https://HOST   optional: arm a tower over the network instead
 //   swap.din_fee_una / swap.din_fee_urgent_una / swap.btc_fee_sat   (optional)
 //   swap.optional=1               a swap setting this node refuses leaves swaps
 //                                 off instead of stopping the node (dinero-qt's
@@ -73,6 +74,11 @@ public:
     using LightBtcInstaller = std::function<std::function<void(uint32_t now_unix)>(
         swap::SwapManager& manager, const ConfigService& config, swap::SwapNetwork network, swap::DinRpc din)>;
     static void SetLightBtcInstaller(LightBtcInstaller installer);
+
+    // swap.tower_url (the same dinerod: it has the HTTPS client). Installs the
+    // tower's sink and ack in the manager; false (after Refuse) on a bad address.
+    using TowerUrlInstaller = std::function<bool(swap::SwapManager& manager, const ConfigService& config)>;
+    static void SetTowerUrlInstaller(TowerUrlInstaller installer);
 
 private:
     bool Setup(DaemonContext& ctx);

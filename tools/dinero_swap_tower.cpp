@@ -2,10 +2,17 @@
 // (docs/design/din-btc-atomic-swaps.md §6.2). Holds only pre-signed
 // transactions; never a private key or a secret.
 //
-//   dinero-swap-tower --inbox DIR --din-rpc HOST:PORT --din-auth USER:PASS
+//   dinero-swap-tower --inbox DIR --din-rpc HOST:PORT (--din-auth USER:PASS | --din-cookie FILE)
 //                     --btc-rpc HOST:PORT --btc-auth USER:PASS
 //                     [--din-hrp din|tdin|rdin] [--btc-chain main|testnet4|regtest]
 //                     [--interval SECONDS] [--escalate-after SECONDS]
+//                     [--expire-unfunded-after SECONDS]
+// --expire-unfunded-after (a public tower): a package whose buyer never locked
+// his coins is renamed .expired that long after its DIN deadline.
+//
+// --din-cookie FILE: the Dinero node's .cookie file ("user:password"). It is
+// read again whenever it changes, because the node writes a new one each time
+// it starts; a tower given the cookie's contents once would go blind then.
 //
 // Without Bitcoin Core (a tower built with DINERO_SWAP_LIGHT_BTC; see
 // docs/design/din-btc-swaps-without-bitcoin-core.md): instead of --btc-rpc and
@@ -68,11 +75,34 @@ std::shared_ptr<rpc::RpcClient> Client(const std::string& hostport, const std::s
                                             auth.substr(0, a), auth.substr(a + 1));
 }
 
+// The Dinero node's RPC with the credentials in its cookie file, followed as
+// the file changes. No file, or a bad one: "unreachable", and tried again.
+std::function<std::optional<Json::Value>(const std::string&, const Json::Value&)> MakeCookieRpc(
+    const std::string& hostport, const std::string& cookie_file) {
+    struct State {
+        std::string cookie;
+        std::function<std::optional<Json::Value>(const std::string&, const Json::Value&)> rpc;
+    };
+    auto state = std::make_shared<State>();
+    return [state, hostport, cookie_file](const std::string& m, const Json::Value& p) -> std::optional<Json::Value> {
+        std::string cookie;
+        if (std::ifstream in(cookie_file); in) std::getline(in, cookie);
+        while (!cookie.empty() && (cookie.back() == '\r' || cookie.back() == ' ')) cookie.pop_back();
+        if (cookie.find(':') == std::string::npos) return std::nullopt;
+        if (cookie != state->cookie || !state->rpc) {
+            state->rpc = MakeRpc(Client(hostport, cookie));
+            state->cookie = cookie;
+        }
+        return state->rpc(m, p);
+    };
+}
+
 struct Watched {
     std::unique_ptr<RpcSwapChainIo> io;
     std::unique_ptr<Watchtower> tower;
     std::string id;    // file name without .pkg
     std::string hash;  // TowerPackageHash of the package text
+    TowerPackage package;
 };
 
 }  // namespace
@@ -86,7 +116,8 @@ int main(int argc, char** argv) {
         std::cerr << "tower: --btc-backend must be core or light\n";
         return 2;
     }
-    std::vector<std::string> required{"--inbox", "--din-rpc", "--din-auth"};
+    std::vector<std::string> required{"--inbox", "--din-rpc"};
+    if (!opt.count("--din-cookie")) required.push_back("--din-auth");
     if (light) required.push_back("--btc-servers");
     else required.insert(required.end(), {"--btc-rpc", "--btc-auth"});
     for (const std::string& k : required) {
@@ -97,7 +128,8 @@ int main(int argc, char** argv) {
     }
     std::signal(SIGTERM, [](int) { g_stop = 1; });
     std::signal(SIGINT, [](int) { g_stop = 1; });
-    const auto din = MakeRpc(Client(opt["--din-rpc"], opt["--din-auth"]));
+    const auto din = opt.count("--din-cookie") ? MakeCookieRpc(opt["--din-rpc"], opt["--din-cookie"])
+                                               : MakeRpc(Client(opt["--din-rpc"], opt["--din-auth"]));
     std::function<std::optional<Json::Value>(const std::string&, const Json::Value&)> btc;
 #ifdef DINERO_SWAP_LIGHT_BTC
     std::unique_ptr<BtcLightBackend> backend;
@@ -143,6 +175,8 @@ int main(int argc, char** argv) {
     TowerConfig config;
     config.escalate_after_seconds = static_cast<uint32_t>(std::stoul(opt["--escalate-after"]));
     const auto interval = std::chrono::seconds(std::stoul(opt["--interval"]));
+    const uint32_t expire_unfunded_after =
+        opt.count("--expire-unfunded-after") ? static_cast<uint32_t>(std::stoul(opt["--expire-unfunded-after"])) : 0;
     const std::string inbox = opt["--inbox"];
     std::map<std::string, Watched> watched;  // package path -> tower
 
@@ -184,6 +218,7 @@ int main(int argc, char** argv) {
                     {
                         w.io = std::make_unique<RpcSwapChainIo>(din, btc, TowerWatchSpec(package, opt["--btc-chain"]));
                     }
+                    w.package = package;
                     w.tower = std::make_unique<Watchtower>(std::move(package), config, *w.io);
                     w.id = name.substr(0, name.size() - 4);
                     w.hash = TowerPackageHash(text.str());
@@ -213,6 +248,11 @@ int main(int argc, char** argv) {
             for (const auto& ev : r.events) std::cout << "tower: " << it->first << ": " << ev << std::endl;
             if (r.finished) {
                 std::rename(it->first.c_str(), (it->first + ".done").c_str());
+                it = watched.erase(it);
+            } else if (expire_unfunded_after &&
+                       TowerPackageAbandoned(it->second.package, r, now, expire_unfunded_after)) {
+                std::cout << "tower: " << it->first << ": the buyer never locked; dropped after its DIN deadline" << std::endl;
+                std::rename(it->first.c_str(), (it->first + ".expired").c_str());
                 it = watched.erase(it);
             } else {
                 ++it;

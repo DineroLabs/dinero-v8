@@ -622,6 +622,129 @@ TEST(SwapTower, KeepsWatchingUntilTheSpendIsBuriedAndRebroadcastsAfterAReorg) {
 // Golden bytes: dinero-swap-tower is a separate program, so the package text a
 // wallet writes to its inbox is a contract between two builds. A stored
 // package must keep decoding and re-encoding byte for byte.
+// ---- A tower strangers may arm (the public tower's intake) ----
+
+std::string FreshDir(const char* name) {
+    const auto dir = (std::filesystem::temp_directory_path() / name).string();
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    return dir;
+}
+
+TEST(SwapTowerIntake, AVerifiedPackageIsKeptUnderItsOwnHash) {
+    const auto dir = FreshDir("swap_tower_intake_store");
+    const std::string text = EncodeTowerPackage(Package());
+    const auto r = TowerIntakeStore(dir, text, {});
+    EXPECT_EQ(r.status, TowerIntakeStatus::Stored) << r.reason;
+    EXPECT_EQ(r.hash, TowerPackageHash(text));
+    EXPECT_TRUE(IsTowerPackageHash(r.hash));
+    std::ifstream in(dir + "/" + r.hash + ".pkg");
+    std::stringstream held;
+    held << in.rdbuf();
+    EXPECT_EQ(held.str(), text);
+    EXPECT_EQ(TowerIntakeStore(dir, text, {}).status, TowerIntakeStatus::AlreadyHeld) << "the same package again";
+    // The tower finished with it: sending it again does not bring it back.
+    std::filesystem::rename(dir + "/" + r.hash + ".pkg", dir + "/" + r.hash + ".pkg.done");
+    EXPECT_EQ(TowerIntakeStore(dir, text, {}).status, TowerIntakeStatus::AlreadyHeld);
+    EXPECT_FALSE(std::filesystem::exists(dir + "/" + r.hash + ".pkg"));
+    std::filesystem::remove_all(dir);
+}
+
+TEST(SwapTowerIntake, WhatTheTowerWouldRefuseIsNeverKept) {
+    const auto dir = FreshDir("swap_tower_intake_refuse");
+    auto empty = [&] { return std::filesystem::is_empty(dir); };
+    EXPECT_EQ(TowerIntakeStore(dir, "hello", {}).status, TowerIntakeStatus::Invalid);
+    EXPECT_TRUE(empty());
+    // Well formed, but a signature does not verify.
+    auto bad = Package();
+    bad.din_claims.front().signature[5] ^= 1;
+    const auto r = TowerIntakeStore(dir, EncodeTowerPackage(bad), {});
+    EXPECT_EQ(r.status, TowerIntakeStatus::Invalid);
+    EXPECT_FALSE(r.reason.empty());
+    EXPECT_TRUE(empty());
+    TowerIntakeLimits small;
+    small.max_package_bytes = 100;
+    EXPECT_EQ(TowerIntakeStore(dir, EncodeTowerPackage(Package()), small).status, TowerIntakeStatus::TooLarge);
+    EXPECT_TRUE(empty());
+    TowerIntakeLimits mainnet;
+    mainnet.network = SwapNetwork::Mainnet;  // the test package is a regtest one
+    EXPECT_EQ(TowerIntakeStore(dir, EncodeTowerPackage(Package()), mainnet).status, TowerIntakeStatus::Invalid);
+    EXPECT_TRUE(empty());
+    std::filesystem::remove_all(dir);
+}
+
+TEST(SwapTowerIntake, AFullInboxTakesNoMoreAndNobodyCanReplaceAnothersPackage) {
+    const auto dir = FreshDir("swap_tower_intake_full");
+    const std::string mine = EncodeTowerPackage(Package());
+    ASSERT_EQ(TowerIntakeStore(dir, mine, {}).status, TowerIntakeStatus::Stored);
+    // Another package for the same swap (other fee levels): kept beside mine, not over it.
+    auto s = BobSession();
+    FeeLadderPolicy din_policy;
+    din_policy.start_feerate_una_per_vb = 2;
+    din_policy.max_rungs = 3;
+    din_policy.max_fee_una = s.record.offer.din_amount_una / 100;
+    din_policy.min_payout_una = s.record.offer.din_amount_una / 2;
+    BtcFeeLadderPolicy btc_policy;
+    btc_policy.max_rungs = 3;
+    btc_policy.max_fee_sat = s.record.offer.btc_amount_sat / 100;
+    btc_policy.min_payout_sat = s.record.offer.btc_amount_sat / 2;
+    const std::string other =
+        EncodeTowerPackage(BuildTowerPackage(s, kBobKeys, DinFunding(s), BtcFundingOf(s), din_policy, btc_policy));
+    ASSERT_NE(other, mine);
+    TowerIntakeLimits one;
+    one.max_packages = 1;
+    EXPECT_EQ(TowerIntakeStore(dir, other, one).status, TowerIntakeStatus::Full);
+    const auto r = TowerIntakeStore(dir, other, {});
+    EXPECT_EQ(r.status, TowerIntakeStatus::Stored) << r.reason;
+    std::ifstream in(dir + "/" + TowerPackageHash(mine) + ".pkg");
+    std::stringstream held;
+    held << in.rdbuf();
+    EXPECT_EQ(held.str(), mine) << "my package is untouched";
+    std::filesystem::remove_all(dir);
+}
+
+TEST(SwapTowerIntake, ArmedIsOnlyAFreshAckForExactlyThatPackage) {
+    const auto dir = FreshDir("swap_tower_intake_armed");
+    const std::string h = TowerPackageHash(EncodeTowerPackage(Package()));
+    EXPECT_FALSE(TowerIntakeArmedAge(dir, h, kNow));
+    MarkTowerArmed(dir, h, h, kNow);  // the tower names a public package by its hash
+    EXPECT_EQ(TowerIntakeArmedAge(dir, h, kNow + 30), std::optional<uint32_t>(30));
+    EXPECT_FALSE(TowerIntakeArmedAge(dir, h, kNow + 600)) << "the tower stopped refreshing it";
+    EXPECT_FALSE(TowerIntakeArmedAge(dir, std::string(64, '0'), kNow + 30)) << "another package";
+    // Only a hash ever reaches the file system.
+    {  // a file a path trick would reach, holding what such a request would match
+        std::ofstream trick(dir + "/../" + h + ".armed");
+        trick << "../" << h << " " << (kNow + 30) << "\n";
+    }
+    EXPECT_FALSE(TowerIntakeArmedAge(dir, "../" + h, kNow + 30));
+    std::filesystem::remove(dir + "/../" + h + ".armed");
+    EXPECT_FALSE(IsTowerPackageHash("../etc/passwd"));
+    EXPECT_FALSE(IsTowerPackageHash(std::string(64, 'A')));
+    std::filesystem::remove_all(dir);
+}
+
+TEST(SwapTowerIntake, APackageWhoseBuyerNeverLockedIsDroppedOnlyLongAfterItsDeadline) {
+    FakeChains chains;
+    chains.btc.funding.reset();
+    chains.btc.htlc.output_seen = false;  // Bob armed the tower and never funded
+    const auto package = Package();
+    Watchtower tower(package, Config(), chains);
+    const uint32_t t_din = package.offer.t_din_unix, week = 7 * 24 * kHour;
+    EXPECT_FALSE(TowerPackageAbandoned(package, tower.Tick(t_din + week), t_din + week, week)) << "not past the grace";
+    EXPECT_TRUE(TowerPackageAbandoned(package, tower.Tick(t_din + week + 1), t_din + week + 1, week));
+    // Never while a chain cannot be seen: the lock may be there.
+    chains.btc.ok = false;
+    EXPECT_FALSE(TowerPackageAbandoned(package, tower.Tick(t_din + 2 * week), t_din + 2 * week, week));
+    chains.btc.ok = true;
+    chains.din.ok = false;
+    EXPECT_FALSE(TowerPackageAbandoned(package, tower.Tick(t_din + 2 * week), t_din + 2 * week, week));
+    chains.din.ok = true;
+    // Never while his coins are locked, however late.
+    chains.btc.funding = BtcFundingOf(BobSession());
+    chains.btc.htlc.output_seen = true;
+    EXPECT_FALSE(TowerPackageAbandoned(package, tower.Tick(t_din + 2 * week), t_din + 2 * week, week));
+}
+
 TEST(SwapTower, GoldenPackageBytesAreStable) {
     const std::string kPackage = "format=dinswap1t1\noffer=dinswap1o010200ca9a3b0000000040420f000000000060bf07c488aad18fda339df07e4fbc47b4f00be71711936f18d04d352ad01890f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f902e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1320914c6ba03f4b6b1e0000000100000020ee496bc7eacd78\naccept=dinswap1a01c7eacd78cf7f1dc8c4c3d08126dfd74345f40eb179de1aea88ca7e6730b4e46a2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe403fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556a9da8cc2\nbtc_scan_from_height=101\ndin_scan_from_height=0\ndin_sweep_pubkey=5cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc\ndin_claim=02000000000101aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0100000000fdffffff01886c983b00000000225120dd6d56968f2e02d0ff94c172b1a3d48f06cd66623b67fed2af98f2a41c17aaf00000000000:bc762e901a35adabb7f58783d03c6f59bd36d44a7aa3929c18b2aae125f9d2bfc195be8ca6cd5f111710b5750e00afbb565d15bcd7db63f64000a0181e15da60:155000\ndin_claim=02000000000101aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0100000000fdffffff01100f963b00000000225120dd6d56968f2e02d0ff94c172b1a3d48f06cd66623b67fed2af98f2a41c17aaf00000000000:bc2506c8a1fb64aa66129a6cafbc8cb7334980839be93b06a1b98c7edd931c5deecbe020a57063cdb47500e93cbd76c1ce8c4391b1e09c62f2b30168cfde3a51:310000\ndin_claim=02000000000101aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0100000000fdffffff012054913b00000000225120dd6d56968f2e02d0ff94c172b1a3d48f06cd66623b67fed2af98f2a41c17aaf00000000000:d1c21a8882ca762a9e2aa349853dee4564bbc2114bc0be7974476ac98b27b0379379e2f3b132332d0bbc74c13e4c775cc7cdc5362130be53075bdf8b2a57cbd1:620000\ndin_claim=02000000000101aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0100000000fdffffff0140de873b00000000225120dd6d56968f2e02d0ff94c172b1a3d48f06cd66623b67fed2af98f2a41c17aaf00000000000:0db3be41b774710fd9cd60977fb6d04fa60c6a5977ee149cecc57f88adb25a33efe5aa803832d9fdb0ea8011a7771a0feef3b205a9f368e3303d95f674c3aa53:1240000\ndin_child=0:02000000000101692a5ea5fc0b69ff5a3eb303156a841f278c44953cd7a43ed174d5b0672603af0000000000fdffffff01100f963b00000000225120888888888888888888888888888888888888888888888888888888888888888803407a94b34cdb619e3cc151b156a9c5517de87a950a05aa6bfb7b1d26217523285671101ac8fa525270015d9e74f79bed6fdc752b4cfa83092e4294456914893b5822205cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bcac21c150929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac000000000:155000\ndin_child=0:02000000000101692a5ea5fc0b69ff5a3eb303156a841f278c44953cd7a43ed174d5b0672603af0000000000fdffffff01a8f68e3b000000002251208888888888888888888888888888888888888888888888888888888888888888034020e14876bb5732af22575899b5949a33c1541a2a3bcede475e84ff10f78a2d4eafb80b08011eeb17f898c8ae9a60e16017e05eeb00260f95ce22b58677fbf31f22205cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bcac21c150929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac000000000:620000\ndin_child=0:02000000000101692a5ea5fc0b69ff5a3eb303156a841f278c44953cd7a43ed174d5b0672603af0000000000fdffffff010895723b00000000225120888888888888888888888888888888888888888888888888888888888888888803403f9496c9bff680454702ac2651a6b3c8800f47468764ee452fd3cec18a6edca9849c57e3d5f3fa30fb6110351ed05c30613072f4732377f17350062c09c8d75c22205cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bcac21c150929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac000000000:2480000\ndin_child=0:02000000000101692a5ea5fc0b69ff5a3eb303156a841f278c44953cd7a43ed174d5b0672603af0000000000fdffffff01880e013b0000000022512088888888888888888888888888888888888888888888888888888888888888880340ab48c7e8676bb42bd394241736891caf1722eb1621f6b41fe045312552f8884734a3e08e8ca128b69d2807656fef3b604150b6ea0a26548beac0b5096e4c70d422205cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bcac21c150929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac000000000:9920000\ndin_child=1:020000000001015757b1a61f00730cd3d31d69d622d215494705966a84c1b392e16d814bbcab5f0000000000fdffffff012054913b00000000225120888888888888888888888888888888888888888888888888888888888888888803409baa08297c2d8661a17907aec8a569fe97af16cd90e88b17e09c6e26b79be6201ab52fa85a127d46cc8ce514ae7310d471f285228e81b6d251fd70a84c95c92122205cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bcac21c150929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac000000000:310000\ndin_child=1:020000000001015757b1a61f00730cd3d31d69d622d215494705966a84c1b392e16d814bbcab5f0000000000fdffffff015023833b000000002251208888888888888888888888888888888888888888888888888888888888888888034041a8034c99db1d66379977ee0db07bfbdbb541a9748b4b158526599f69c91147b511c6259920e04bd9cb986ec5be00b599ab1dac644024248d7c7ef5f890d55c22205cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bcac21c150929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac000000000:1240000\ndin_child=1:020000000001015757b1a61f00730cd3d31d69d622d215494705966a84c1b392e16d814bbcab5f0000000000fdffffff0110604a3b000000002251208888888888888888888888888888888888888888888888888888888888888888034084bfa073a846db3cd2dd28b3bbda3fb70e5f4786585ff4339e1f3b6628eb989dd2bb3b86595a7154ebb4f2c8c1e573438fbc6fa2bda4104dbed70e4e70cb423c22205cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bcac21c150929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac000000000:4960000\ndin_child=1:020000000001015757b1a61f00730cd3d31d69d622d215494705966a84c1b392e16d814bbcab5f0000000000fdffffff011053673a00000000225120888888888888888888888888888888888888888888888888888888888888888803408543c978c69524ac97961bdc456853235c4581bad0ae01ef1decc07f4cb8816feb13bb745cb90bdc1d0a5ce88c6396f808d8386b6e2999de9824ae49218fc82022205cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bcac21c150929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac000000000:19840000\ndin_child=2:020000000001018506f7cd6df4602b720077ffe72f44ebedc1520040ba37e032d6da5f78fb12fd0000000000fdffffff0140de873b0000000022512088888888888888888888888888888888888888888888888888888888888888880340b3b0690ba9256d19751440e230b603fa91f9f12704043ba07e26bc968e04a4389d671ab8d1b4ee3e066e88875bf9b77e0aa68590194eb64fc28f2bec373b380d22205cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bcac21c150929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac000000000:620000\ndin_child=2:020000000001018506f7cd6df4602b720077ffe72f44ebedc1520040ba37e032d6da5f78fb12fd0000000000fdffffff01a07c6b3b000000002251208888888888888888888888888888888888888888888888888888888888888888034019bed08f61fa9d9438ead19d3995465ec9cc60ed1b3c8334176e921bf258b692626a33733e5209f83c8bcdb59db9bf20293891c5a31b7e4ad1e0151b0293a28022205cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bcac21c150929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac000000000:2480000\ndin_child=2:020000000001018506f7cd6df4602b720077ffe72f44ebedc1520040ba37e032d6da5f78fb12fd0000000000fdffffff0120f6f93a0000000022512088888888888888888888888888888888888888888888888888888888888888880340e41dc24b0c73ff90e42bc5697eb7bafd82315e2cff8f4d4cf76ec9efcee3ec6a63aec65ca18950ca38c71a7da95503b71c41df35da152523ccaecf2080de523222205cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bcac21c150929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac000000000:9920000\ndin_child=2:020000000001018506f7cd6df4602b720077ffe72f44ebedc1520040ba37e032d6da5f78fb12fd0000000000fdffffff0120dc33390000000022512088888888888888888888888888888888888888888888888888888888888888880340e42b496f950e39acffd985085121264206c81272703520ac4909d005625bb7e0c69c26e3de78f08e0ba3744ace73fe95ae6842fd0e7f6bf108439345482aac1022205cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bcac21c150929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac000000000:39680000\ndin_child=3:02000000000101f48e6034813d6b3bd426eaa336cca8cdc91267d97040550dd77ed630cea34e4d0000000000fdffffff0180f2743b0000000022512088888888888888888888888888888888888888888888888888888888888888880340b898cc22e7a54567a8431862796bd2b965402abf367af5d41eda184a8adccf0ff07717ad8b3bb0d2e4f3eb6c0df262c75eb8f1e16bbda7ee073110cceecde1e622205cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bcac21c150929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac000000000:1240000\ndin_child=3:02000000000101f48e6034813d6b3bd426eaa336cca8cdc91267d97040550dd77ed630cea34e4d0000000000fdffffff01402f3c3b00000000225120888888888888888888888888888888888888888888888888888888888888888803408beded1116a8dadeca0b59a2d657e5af8c0950b01b19a5d5ac7f14e493dc536b3898c90682795ddcec72dbcbd9bcd38f9500b50daefb9592ad5a783e7d4815dd22205cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bcac21c150929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac000000000:4960000\ndin_child=3:02000000000101f48e6034813d6b3bd426eaa336cca8cdc91267d97040550dd77ed630cea34e4d0000000000fdffffff014022593a00000000225120888888888888888888888888888888888888888888888888888888888888888803404a507286586e5634ec3c0ddb20e3bf4311dbf3a9a7a9b8ecf7932d307afecdb54f1da21839d29fabcb983565df3980a3c0a9ba7dc75a6f75a339ec6dee1b9a1b22205cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bcac21c150929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac000000000:19840000\nbtc_refund=02000000000101bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0000000000fdffffff0120410f0000000000225120999999999999999999999999999999999999999999999999999999999999999903483045022100f53bd50991183a9d6c45489daad4996260120191cb8f603a3347a6c0ceedf1e602205d89301489707ea9888536af40d6f8143b1a118834b8445a66d3bed336253ad60100766382012088a82060bf07c488aad18fda339df07e4fbc47b4f00be71711936f18d04d352ad01890882102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd136704a03f4b6bb1752103fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a146029755668aca03f4b6b:288\nbtc_refund=02000000000101bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0000000000fdffffff0100400f000000000022512099999999999999999999999999999999999999999999999999999999999999990347304402203197accf56affa74b8b469524f80d0d43a2bf2beabf21815f5fd4c810ca8664602207fcf364bb75cc42db96f72362c27efae0536631023b029446016b382f790937f0100766382012088a82060bf07c488aad18fda339df07e4fbc47b4f00be71711936f18d04d352ad01890882102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd136704a03f4b6bb1752103fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a146029755668aca03f4b6b:576\nbtc_refund=02000000000101bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0000000000fdffffff01c03d0f0000000000225120999999999999999999999999999999999999999999999999999999999999999903483045022100f5888719c72c8d471b04be50d7241bbaf42a9ccffbe24b4b9571a082d290cdd40220454925fe29c756a17beb9f88876af54fa8664efe1be1969b5de25526562e3d910100766382012088a82060bf07c488aad18fda339df07e4fbc47b4f00be71711936f18d04d352ad01890882102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd136704a03f4b6bb1752103fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a146029755668aca03f4b6b:1152\nbtc_refund=02000000000101bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0000000000fdffffff0140390f00000000002251209999999999999999999999999999999999999999999999999999999999999999034830450221008b2c567a6f8dd7a7265878bbc7b83948e574e94a2d41cd05acceb4c44fa4011b022044990098abd77ae46c054ab91f67f8c852a2fbe8d8ec6b69d1de17303356fdd40100766382012088a82060bf07c488aad18fda339df07e4fbc47b4f00be71711936f18d04d352ad01890882102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd136704a03f4b6bb1752103fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a146029755668aca03f4b6b:2304\n";
     EXPECT_EQ(EncodeTowerPackage(Package()), kPackage);

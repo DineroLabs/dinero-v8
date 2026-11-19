@@ -135,6 +135,41 @@ void MarkTowerArmed(const std::string& inbox_dir, const std::string& swap_id, co
 bool TowerAckFresh(const std::string& inbox_dir, const std::string& swap_id, const std::string& package_hash,
                    uint32_t now_unix, uint32_t max_age_seconds = 120);
 
+// ---- A tower that anyone may arm over the network ---------------------------
+// (tools/dinero_swap_tower_intake.cpp; design: section 14 of
+// docs/design/din-btc-swaps-without-bitcoin-core.md.) The intake hands the
+// tower's own inbox packages from strangers, so:
+//   - a package is fully verified before it is kept;
+//   - it is kept as <inbox>/<hash>.pkg, its SHA-256: nobody can replace or
+//     block another person's package, whatever swap it names;
+//   - size and number are capped.
+struct TowerIntakeLimits {
+    size_t max_package_bytes{256 * 1024};
+    size_t max_packages{20000};            // .pkg files in the inbox
+    std::optional<SwapNetwork> network;    // packages of another network are refused
+};
+enum class TowerIntakeStatus {
+    Stored,       // new, verified, on disk
+    AlreadyHeld,  // the same package again: nothing written
+    TooLarge,
+    Invalid,      // `reason` says why
+    Full,         // the inbox holds max_packages
+    Failed,       // could not write
+};
+struct TowerIntakeResult {
+    TowerIntakeStatus status{TowerIntakeStatus::Failed};
+    std::string hash;    // of the text, for Stored and AlreadyHeld
+    std::string reason;  // for Invalid and Failed
+};
+TowerIntakeResult TowerIntakeStore(const std::string& inbox_dir, const std::string& package_text,
+                                   const TowerIntakeLimits& limits);
+// 64 lower-case hex digits: the only thing the intake ever puts in a file name.
+bool IsTowerPackageHash(const std::string& text);
+// Seconds since the tower last confirmed it is guarding package `hash`, if
+// that is recent enough for the buyer to rely on (TowerAckFresh's rule).
+std::optional<uint32_t> TowerIntakeArmedAge(const std::string& inbox_dir, const std::string& hash, uint32_t now_unix,
+                                            uint32_t max_age_seconds = 120);
+
 struct TowerConfig {
     uint32_t escalate_after_seconds{30 * 60};
     uint32_t din_relaxed_before_seconds{24 * 60 * 60};  // lowest DIN rung this far from T_din
@@ -156,6 +191,7 @@ size_t IndexByUrgency(size_t count, uint32_t t_din, uint32_t din_mtp, const Towe
 struct TowerReport {
     bool observed{false};
     bool healthy{false};                    // both chains observed and the package's DIN lock on chain
+    bool counter_lock_seen{false};          // the buyer's BTC (or ZEC) lock is on its chain
     std::optional<Bytes32> learned_secret;  // set once, when first learned (the daemon keeps it)
     bool finished{false};  // Bob's outcome is settled on chain (claimed DIN or refunded BTC)
     std::vector<std::string> events;
@@ -188,6 +224,12 @@ private:
     void DinClaimDuty(const DinWatchReport& din, uint32_t now, TowerReport& report);
     void BtcRefundDuty(const BtcWatchReport& btc, uint32_t now, TowerReport& report);
 };
+
+// Nothing left to guard: both chains were observed, the buyer never locked
+// his coins, and the DIN deadline passed `grace_seconds` ago (he cannot lock
+// after it). A public tower drops such packages; they would pile up for ever.
+bool TowerPackageAbandoned(const TowerPackage& package, const TowerReport& report, uint32_t now_unix,
+                           uint32_t grace_seconds);
 
 // One daemon cycle for one armed swap: Tick, then refresh the ack (while
 // healthy) and keep a newly learned secret in the inbox. Never throws: a

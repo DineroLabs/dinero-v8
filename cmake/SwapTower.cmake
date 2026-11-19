@@ -44,4 +44,27 @@ if(NOT WIN32)
     target_link_libraries(dinero-swap-tower PRIVATE dinero_crypto ${DINERO_CURL_TARGET})
   endif()
   install(TARGETS dinero-swap-tower DESTINATION bin COMPONENT swap-tower)
+
+  # The door of a public tower (tools/dinero_swap_tower_intake.cpp): takes
+  # packages over HTTP into the inbox a dinero-swap-tower guards. No key, no
+  # chain access, no libcurl.
+  add_executable(dinero-swap-tower-intake
+    tools/dinero_swap_tower_intake.cpp
+    src/wallet/swap/tower_http.cpp
+    src/wallet/swap/tower.cpp
+    src/wallet/swap/runner.cpp
+    src/wallet/swap/fee_ladder.cpp
+    src/wallet/swap/din_watcher.cpp
+    src/wallet/swap/btc_watcher.cpp
+    src/wallet/swap/btc_tx.cpp
+    src/wallet/swap/engine.cpp
+    src/wallet/swap/offer.cpp
+    src/wallet/swap/htlc.cpp
+  )
+  target_link_libraries(dinero-swap-tower-intake PRIVATE dinero_rpc_client dinero_consensus)
+  link_zstd_if_needed(dinero-swap-tower-intake)
+  target_include_directories(dinero-swap-tower-intake PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
+  target_link_libraries(dinero-swap-tower-intake PRIVATE Boost::beast)
+  install(TARGETS dinero-swap-tower-intake DESTINATION bin COMPONENT swap-tower)
 endif()

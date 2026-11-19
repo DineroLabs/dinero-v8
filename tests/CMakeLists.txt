@@ -17786,6 +17786,35 @@ target_include_directories(test_swap_tower PRIVATE
 add_test(NAME SwapTower COMMAND test_swap_tower)
 set_tests_properties(SwapTower PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
 
+# The public tower's door and the buyer's way through it (tower_http.h), wired
+# to each other without a socket.
+add_executable(test_swap_tower_http
+  tests/wallet/test_swap_tower_http.cpp
+  src/wallet/swap/tower_http.cpp
+  src/wallet/swap/tower.cpp
+  src/wallet/swap/runner.cpp
+  src/wallet/swap/fee_ladder.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_tower_http gtest gtest_main)
+target_link_libraries(test_swap_tower_http PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_tower_http)
+target_compile_definitions(test_swap_tower_http PRIVATE
+  SWAP_TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/wallet/data")
+target_include_directories(test_swap_tower_http PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/external
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapTowerHttp COMMAND test_swap_tower_http)
+set_tests_properties(SwapTowerHttp PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 30)
+
 # Encrypted swap store: AES-256-GCM sealed sessions (wallet-key subkey).
 add_executable(test_swap_encrypted_store
   tests/wallet/test_swap_encrypted_store.cpp
@@ -18071,6 +18100,13 @@ if(DINERO_SWAP_LIGHT_BTC AND DINERO_BITCOIND AND TARGET dinerod)
   add_test(NAME SwapLightBtcBuyRegtest
     COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_light_btc_buy_regtest.sh $<TARGET_FILE:dinerod>)
   set_tests_properties(SwapLightBtcBuyRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900 SKIP_RETURN_CODE 77)
+  # The same swap with a public watchtower: armed over HTTP, it claims the buyer's DIN while he is offline.
+  if(TARGET dinero-swap-tower AND TARGET dinero-swap-tower-intake)
+    add_test(NAME SwapPublicTowerRegtest
+      COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_light_btc_buy_regtest.sh $<TARGET_FILE:dinerod>
+              $<TARGET_FILE:dinero-swap-tower> $<TARGET_FILE:dinero-swap-tower-intake>)
+    set_tests_properties(SwapPublicTowerRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900 SKIP_RETURN_CODE 77)
+  endif()
 endif()
 
 # The same client over real sockets against a real Bitcoin Core (regtest).
