@@ -3123,9 +3123,12 @@ TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles)
             if(run==1) {
                 // Init's retained decoded bytes cannot hide a later missing
                 // live catalog row at the actual Start publication boundary.
+                const auto before_fault=db->startupWriteFence();ASSERT_TRUE(before_fault);
                 const auto state=storage::catalog::State::Decode(*db->getOrchardCatalogState(second_metadata.block_hash));
                 const auto bytes=db->getOrchardCatalogNode(state.transactions);ASSERT_TRUE(bytes.ok());
                 ChainDBTransactionReadTestPeer::SnapshotCatalogFault(*db,source.f.token,state.transactions,{});
+                const auto after_fault=db->startupWriteFence();ASSERT_TRUE(after_fault);
+                EXPECT_NE(*after_fault,*before_fault);
                 EXPECT_FALSE(service->Start());EXPECT_EQ(service->GetActiveTip(),nullptr);
                 ChainDBTransactionReadTestPeer::SnapshotCatalogFault(*db,source.f.token,state.transactions,*bytes);
             }
