@@ -266,6 +266,11 @@ private Q_SLOTS:
         QVERIFY2(Find<QLabel>(tab_, "swapDepositTitle")->text().contains("any Bitcoin wallet or exchange"),
                  qPrintable(Find<QLabel>(tab_, "swapDepositTitle")->text()));
         QCOMPARE(Find<QLabel>(tab_, "swapDepositAddress")->text(), QString("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"));
+        // Exchanges offer several networks and default to the wrong one: the box says which.
+        const QString network = Find<QLabel>(tab_, "swapDepositNetwork")->text();
+        QVERIFY2(network.contains("<b>Bitcoin</b> network only") && network.contains("not Lightning") &&
+                     network.contains("Ethereum") && network.contains("may be lost"),
+                 qPrintable(network));
         QVERIFY2(Find<QLabel>(tab_, "swapDepositDue")->text().startsWith("0.01003000 BTC"), qPrintable(Find<QLabel>(tab_, "swapDepositDue")->text()));
         QVERIFY2(Find<QLabel>(tab_, "swapDepositDue")->text().contains("what is not used comes back"), "the fee allowance is explained");
         QVERIFY2(Find<QLabel>(tab_, "swapDepositHint")->text().contains("pay 0.01003000 BTC"), qPrintable(Find<QLabel>(tab_, "swapDepositHint")->text()));

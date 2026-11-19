@@ -361,8 +361,14 @@ void SwapWidget::setupUi() {
     depositButtons->addWidget(acceptDeposit_);
     depositButtons->addWidget(withdrawDeposit_);
     depositButtons->addStretch();
+    // Exchanges ask which network to send on and do not default to the right one.
+    depositNetwork_ = new QLabel(depositBox_);
+    depositNetwork_->setObjectName("swapDepositNetwork");
+    depositNetwork_->setWordWrap(true);
+    depositNetwork_->setStyleSheet("QLabel { color: #f0b429; background: transparent; }");
     depositText->addWidget(depositTitle);
     depositText->addWidget(depositAddress_);
+    depositText->addWidget(depositNetwork_);
     auto* depositKv = new QGridLayout;
     depositKv->setHorizontalSpacing(12);
     depositKv->addWidget(Muted("Amount due", depositBox_), 0, 0);
@@ -667,6 +673,11 @@ void SwapWidget::showDeposit(const QJsonObject& s) {
     depositCoin_ = v.coin;
     depositTitle_->setText(btc ? "<b>Pay the swap deposit</b> — from any Bitcoin wallet or exchange, in one payment or several"
                                : "<b>Pay the swap deposit</b> — from any Zcash wallet, shielded included");
+    depositNetwork_->setText(
+        btc ? "Send on the <b>Bitcoin</b> network only. If your wallet or exchange asks which network, choose Bitcoin: "
+              "not Lightning, and not Ethereum, Base, Arbitrum, Solana or any other. A payment on another network never "
+              "arrives here and may be lost."
+            : "Send on the <b>Zcash</b> network only, to this address exactly as shown.");
     depositQr_->setToolTip(btc ? "Scan with a Bitcoin wallet" : "Scan with a Zcash wallet (Zashi and other shielded wallets can pay a t-address)");
     depositDue_->setText(SwapFormPolicy::formatUnits(v.dueZat) + " " + v.coin +
                          " <span style='color:#9fb3c8; font-weight:400'>" +

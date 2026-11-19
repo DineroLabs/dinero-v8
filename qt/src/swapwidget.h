@@ -100,6 +100,7 @@ private:
     QLabel* depositReceived_;
     QProgressBar* depositBar_;
     QLabel* depositHint_;
+    QLabel* depositNetwork_{nullptr};  // which network to send on: wallets and exchanges offer several
     QPushButton* copyDeposit_;
     QPushButton* acceptDeposit_;
     QPushButton* withdrawDeposit_;
