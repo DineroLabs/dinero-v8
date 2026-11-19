@@ -17959,6 +17959,24 @@ target_compile_definitions(test_swap_btc_esplora PRIVATE
 add_test(NAME SwapBtcEsplora COMMAND test_swap_btc_esplora)
 set_tests_properties(SwapBtcEsplora PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 60)
 
+# HTTPS transport of the light Bitcoin client: the only part that links libcurl.
+add_library(dinero_swap_light_http STATIC ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_http_curl.cpp)
+target_include_directories(dinero_swap_light_http PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
+target_link_libraries(dinero_swap_light_http PUBLIC ${DINERO_CURL_TARGET})
+add_executable(swap_btc_http_tool
+  tests/wallet/swap_btc_http_tool.cpp
+  src/wallet/swap/btc_esplora.cpp
+  src/wallet/swap/btc_merkle_proof.cpp
+  src/wallet/swap/btc_raw_tx.cpp
+  src/wallet/swap/btc_header_chain.cpp
+  src/wallet/swap/btc_header_store.cpp
+)
+target_link_libraries(swap_btc_http_tool PRIVATE dinero_swap_light_http dinero_consensus)
+link_zstd_if_needed(swap_btc_http_tool)
+target_include_directories(swap_btc_http_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
+add_test(NAME SwapBtcHttp COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_btc_http_test.sh $<TARGET_FILE:swap_btc_http_tool>)
+set_tests_properties(SwapBtcHttp PROPERTIES LABELS "wallet;swap" TIMEOUT 120 SKIP_RETURN_CODE 77)
+
 # The same client over real sockets against a real Bitcoin Core (regtest).
 add_executable(swap_btc_p2p_tool
   tests/wallet/swap_btc_p2p_tool.cpp
