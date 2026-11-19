@@ -664,3 +664,86 @@ TEST(SwapEngine, AnAdverseShallowDinSpendIsNotFinalUntilBuried) {
     o2.din = Spent(Locked(kDin, 60), true, a.offer.n_din_confirmations, kSecret);
     EXPECT_EQ(Step(a, o2).record.state, SwapState::Lost);
 }
+
+// Golden bytes: a persisted swap record ("dinswap1r") must keep decoding and
+// re-encoding byte for byte, so swap files written by older builds still load.
+TEST(SwapEngine, GoldenRecordBytesAreStable) {
+    const char* kRecord = "dinswap1r01000570344a6b035a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a1f0164696e73776170316f3031303230306538373634383137303030303030343034323066303030303030303030303630626630376334383861616431386664613333396466303765346662633437623466303062653731373131393336663138643034643335326164303138393066393330386130313932353863333130343933343466383566383964353232396235333163383435383336663939623038363031663131336263653033366639303265343933646266316331306438306633353831653439303439333062313430346363366331333930306565303735383437346661393461626538633463643133323039313463366261303366346236623165303030303030303230303030303032306565343936623837336435636333d50064696e737761703161303138373364356363336238353537356239363539653563343165636661653737626335313662393061386662346664346335356262636462373531663465656563326638626465346431613037323039333535623461373235306135633531323865383862383462646463363139616237636261386435363962323430656665343033666666393762643537353565656561343230343533613134333535323335643338326636343732663835363861313862326630353761313436303239373535366162313335333366ee6ad1b3";
+    auto r = MakeRecord(Role::DinSeller);
+    r.state = SwapState::BtcClaimBroadcast;
+    r.state_since_unix = kNow + 7 * kHour;
+    r.claim_seen = true;
+    EXPECT_EQ(EncodeRecord(r), kRecord);
+    EXPECT_EQ(EncodeRecord(DecodeRecord(kRecord)), kRecord);
+    EXPECT_EQ(DecodeRecord(kRecord).state, SwapState::BtcClaimBroadcast);
+}
+
+// --- Counter-chain rules (ETH, ZEC, SOL designs) -----------------------------
+
+TEST(SwapEngine, BitcoinRulesAreTheDefault) {
+    auto r = MakeRecord(Role::DinSeller);
+    r.state = SwapState::DinLocked;
+    for (uint32_t before : {7 * kHour, 6 * kHour, kHour}) {
+        auto obs = At(r.offer.t_btc_unix - before);
+        obs.din = Locked(kDin, 40);
+        obs.btc = Locked(kBtc, 5);
+        const auto a = Step(r, obs), b = Step(r, obs, kBitcoinRules);
+        EXPECT_EQ(a.record.state, b.record.state);
+        EXPECT_EQ(Has(a, ActionKind::ClaimBtc), Has(b, ActionKind::ClaimBtc));
+    }
+}
+
+// Solana: the first claim must go out a day before the deadline.
+TEST(SwapEngine, ALongerClaimCutoffIsHonoured) {
+    CounterChainRules sol;
+    sol.exclusive_windows = true;
+    sol.claim_cutoff_seconds = 24 * kHour;
+    auto r = MakeRecord(Role::DinSeller);
+    r.state = SwapState::DinLocked;
+    auto obs = At(r.offer.t_btc_unix - 20 * kHour);  // fine for Bitcoin, too late for Solana
+    obs.din = Locked(kDin, 40);
+    obs.btc = Locked(kBtc, 5);
+    EXPECT_TRUE(Has(Step(r, obs), ActionKind::ClaimBtc));
+    EXPECT_FALSE(Has(Step(r, obs, sol), ActionKind::ClaimBtc));
+    obs = At(r.offer.t_btc_unix - 25 * kHour);
+    obs.din = Locked(kDin, 40);
+    obs.btc = Locked(kBtc, 5);
+    EXPECT_TRUE(Has(Step(r, obs, sol), ActionKind::ClaimBtc));
+}
+
+// Zcash: a refund may confirm up to 90 min early, so Alice's window shrinks.
+TEST(SwapEngine, AnEarlyRefundAllowanceShrinksAlicesWindow) {
+    CounterChainRules zec;
+    zec.early_refund_seconds = 90 * 60;
+    auto r = MakeRecord(Role::DinSeller);
+    r.state = SwapState::DinLocked;
+    auto obs = At(r.offer.t_btc_unix - 7 * kHour);  // 6 h cut-off + 1 h: inside 6 h + 90 min
+    obs.din = Locked(kDin, 40);
+    obs.btc = Locked(kBtc, 5);
+    EXPECT_TRUE(Has(Step(r, obs), ActionKind::ClaimBtc));
+    EXPECT_FALSE(Has(Step(r, obs, zec), ActionKind::ClaimBtc));
+}
+
+// Ethereum/Solana: once sent, a claim may have leaked the secret, so Alice
+// keeps sending it while the contract still takes it, past her cut-off.
+TEST(SwapEngine, ExclusiveWindowsKeepClaimingUntilTheDeadline) {
+    CounterChainRules eth;
+    eth.exclusive_windows = true;
+    auto r = MakeRecord(Role::DinSeller);
+    r.state = SwapState::BtcClaimBroadcast;  // sent, never seen
+    auto obs = At(r.offer.t_btc_unix - kHour);  // inside the cut-off
+    obs.din = Locked(kDin, 40);
+    obs.btc = Locked(kBtc, 5);
+    EXPECT_EQ(Step(r, obs).record.state, SwapState::DinLocked) << "Bitcoin gives an unseen claim up";
+    auto s = Step(r, obs, eth);
+    EXPECT_TRUE(Has(s, ActionKind::ClaimBtc));
+    EXPECT_EQ(s.record.state, SwapState::BtcClaimBroadcast);
+
+    obs.btc_mtp_unix = r.offer.t_btc_unix - 1;  // last second the contract takes it
+    EXPECT_TRUE(Has(Step(r, obs, eth), ActionKind::ClaimBtc));
+
+    obs.btc_mtp_unix = r.offer.t_btc_unix;  // the chain's clock closed the claim window
+    s = Step(r, obs, eth);
+    EXPECT_FALSE(Has(s, ActionKind::ClaimBtc));
+    EXPECT_EQ(s.record.state, SwapState::DinLocked);
+}

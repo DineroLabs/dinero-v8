@@ -1186,6 +1186,7 @@ int main(int argc, char** argv) {
 #include "wallet_v3_native_orchard_spend_checks.h"
 #include "wallet_v3_native_restore_checks.h"
 #include "wallet_v3_native_p2mr_pool_checks.h"
+#include "wallet_v3_native_swap_checks.h"
 #endif
 
 #include "orchard_finish_rpc_checks.h"

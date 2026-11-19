@@ -4051,8 +4051,49 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
         return result;
     }
 
+    // v8.2.5: a completed full-archive v3 recovery (legacy class) or a
+    // native-complete v3 wallet pays through the same receipt-fenced owner as
+    // wallet.sendtoaddress: its coins are the certified inventory and its
+    // change goes to an already-covered address, never a derived one.
+    bool recovered_v3_send = false;
+    bool native_v3_send = false;
+#if DINERO_WALLET_RAW_ORCHARD
+    if (ctx.daemon->chainstate) {
+        auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        if (source && source->HasFullArchiveWalletIndexV3()) {
+            auto use = dinero::WalletService::AcquireWalletUse(wallet_service);
+            auto lease = use->Wallet().AcquireDatabaseLease();
+            recovered_v3_send = lease->TypedTransparentState() ==
+                dinero::WalletManager::LegacyTransparentState::Complete;
+            native_v3_send = recovered_v3_send &&
+                lease->NativeV3TransparentState() == dinero::WalletManager::NativeV3State::Complete;
+        }
+    }
+#endif
+    // True when the wallet cannot pay now (result carries the refusal).
+    const auto spend_refused = [&]() -> bool {
+        if (!recovered_v3_send) return RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result);
+        if (RefuseIfLegacyTransparentTipNotCurrent(ctx, wallet_service, result)) return true;
+        auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        if (!source || !source->RecoveredV3TransparentSendSourceReady()) {
+            result["error"] = "Recovered payment selected source unavailable";
+            result["error_code"] = "wallet_v3_send_source_unavailable";
+            return true;
+        }
+#if DINERO_WALLET_RAW_ORCHARD
+        if (native_v3_send && !wallet_service->get().isWalletLocked() &&
+            !rpc_context_native_v3_ordinary_inventory_ready(ctx, wallet_service->get().getCurrentWalletName())) {
+            result["error"] = dinero::WalletManager::kNativeWalletSendUnavailableOnV3;
+            result["error_code"] = "wallet_native_send_unavailable_on_v3";
+            result["retryable"] = false;
+            return true;
+        }
+#endif
+        return false;
+    };
+
     try {
-        if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
+        if (spend_refused()) return result;
         if(required_identity && (!required_service || required_service!=wallet_service || !requested))
             throw std::runtime_error("Bound payment wallet service or request format changed");
         // Retain the actual manager through all synchronous callbacks. This
@@ -4351,7 +4392,33 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
         // Build transaction using only our pre-filtered candidate UTXOs so that
         // the builder never selects stale/CT/immature inputs we have no key for.
         dinero::TransactionBuilder builder(chainstate_service->utxoIndex());
-        std::string change_address = wallet_service->get().getNewAddress("change", "taproot");
+        // A v3 wallet owns only scripts its sealed receipts proved: change goes
+        // to a pooled change address (native), else to an owned candidate
+        // address whose key this seed resolves (legacy class). Deriving a new
+        // script would invalidate the receipts and leave change unscanned.
+        std::string change_address;
+        if (recovered_v3_send) {
+            auto lease = wallet_use->Wallet().AcquireDatabaseLease();
+            if (lease->Session() != signing_identity.session || lease->WalletName() != signing_identity.name)
+                throw std::runtime_error("Recovered payment wallet selection changed");
+            auto pin = lease->CopyRecoverySeed(signing_identity.session);
+            if (native_v3_send) change_address = lease->NativeV3PooledChangeAddress(*pin);
+            for (const auto& coin : utxos) {
+                if (!change_address.empty()) break;
+                if (coin.address.empty() || coin.script_pubkey.empty()) continue;
+                auto recorded = wallet_use->Wallet().getScriptPubKeyForAddress(coin.address);
+                if (!recorded || *recorded != coin.script_pubkey) continue;
+                auto key = lease->ResolveSigningKey(coin.script_pubkey, *pin);
+                if (key && key->secret.size() == 32) change_address = coin.address;
+            }
+            if (change_address.empty()) {
+                result["error"] = "Recovered transparent wallet has no existing owned change address";
+                result["error_code"] = "wallet_v3_change_owner_unavailable";
+                return result;
+            }
+        } else {
+            change_address = wallet_service->get().getNewAddress("change", "taproot");
+        }
 
         // The builder's vsize estimator can undercount the final serialized size
         // on some wallet states. Start conservatively, then rebuild with a higher
@@ -4394,7 +4461,7 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
             if(intent.request && static_cast<uint64_t>(unsigned_tx.fee)>intent.request->maximum_fee_una) {
                 result["error"]="Payment exceeds explicit request fee limit";return result;
             }
-            if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
+            if (spend_refused()) return result;
             auto signed_result=intent.request
                 ? dinero::SignWalletRequestPreview(wallet_service->get(),signing_identity,unsigned_tx,intent)
                 : dinero::SignWalletTransaction(wallet_service->get(),signing_identity,unsigned_tx);
@@ -4428,7 +4495,7 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
             effective_fee_rate = std::max(effective_fee_rate * 2.0, effective_fee_rate + 1.0);
         }
 
-        if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
+        if (spend_refused()) return result;
         auto retained = chainstate_service->signAndStageWalletPayment(wallet_use->Wallet(), signing_identity, unsigned_tx, intent);
         if (!retained.success) { result["error"] = "Payment retention failed: " + retained.error; return result; }
         build_result.transaction = std::move(retained.signed_tx.tx);

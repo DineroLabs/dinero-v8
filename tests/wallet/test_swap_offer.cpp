@@ -227,3 +227,85 @@ TEST(SwapOffer, TakerRefusesLocksThatLastTooLong) {
     ok.t_din_unix = ok.t_btc_unix + 6 * 24 * kHour;
     EXPECT_NO_THROW(RequireAcceptableNow(ok, kNow));
 }
+
+// Golden bytes: offers and accepts already sent between wallets, and stored in
+// swap files on disk, must keep decoding to the same terms and re-encoding to
+// the same text. Round trips alone would not notice the format drifting.
+TEST(SwapOffer, GoldenOfferAndAcceptBytesAreStable) {
+    const char* kOffer = "dinswap1o010200e876481700000040420f0000000000ababababababababababababababababababababababababababababababababf9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f902e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1320914c6ba03f4b6b1e0000000200000020ee496be5278da7";
+    const char* kAccept = "dinswap1a01e5278da7ee36375c297b632758616a63ffbc3194e677de63b03ee08918c182142f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe403fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a146029755605540993";
+    const auto offer = ValidOffer();
+    EXPECT_EQ(EncodeOffer(offer), kOffer);
+    EXPECT_EQ(EncodeOffer(DecodeOffer(kOffer)), kOffer);
+    EXPECT_EQ(EncodeAccept(ValidAccept(offer)), kAccept);
+    EXPECT_EQ(EncodeAccept(DecodeAccept(kAccept)), kAccept);
+}
+
+// --- v2: Zcash offers (docs/design/din-zec-atomic-swaps.md) -------------------
+
+namespace {
+SwapOffer ValidZecOffer() {
+    SwapOffer o = ValidOffer();
+    o.chain = CounterChain::Zcash;
+    o.n_btc_confirmations = kMinZecConfirmations;
+    return o;
+}
+}  // namespace
+
+TEST(SwapOffer, ZecOfferRoundTripsAsV2) {
+    const auto offer = ValidZecOffer();
+    const auto text = EncodeOffer(offer);
+    EXPECT_EQ(text.rfind(kOffer2Prefix, 0), 0u);
+    const auto back = DecodeOffer(text);
+    EXPECT_EQ(back.chain, CounterChain::Zcash);
+    EXPECT_EQ(EncodeOffer(back), text);
+    // A Bitcoin offer is still v1.
+    EXPECT_EQ(EncodeOffer(ValidOffer()).rfind(kOfferPrefix, 0), 0u);
+    EXPECT_EQ(DecodeOffer(EncodeOffer(ValidOffer())).chain, CounterChain::Bitcoin);
+}
+
+TEST(SwapOffer, OfferIdCommitsToTheChain) {
+    auto btc = ValidOffer();
+    btc.n_btc_confirmations = kMinZecConfirmations;  // otherwise identical terms
+    const auto zec = ValidZecOffer();
+    EXPECT_NE(OfferId(btc), OfferId(zec));
+    // So an accept for one chain's offer never matches the other's.
+    EXPECT_THROW(MakeBtcTerms(btc, ValidAccept(zec)), std::invalid_argument);
+    EXPECT_NO_THROW(MakeBtcTerms(zec, ValidAccept(zec)));
+}
+
+TEST(SwapOffer, ZecOfferRules) {
+    auto o = ValidZecOffer();
+    o.n_btc_confirmations = kMinZecConfirmations - 1;
+    EXPECT_THROW(EncodeOffer(o), std::invalid_argument);
+    o = ValidZecOffer();
+    o.chain = static_cast<CounterChain>(7);
+    EXPECT_THROW(EncodeOffer(o), std::invalid_argument);
+
+    // One encoding per offer: a v2 message naming Bitcoin is refused, as is an
+    // unknown chain id (checksum recomputed so only the rule can refuse it).
+    auto reseal = [](std::string text, uint8_t chain) {
+        const std::string hex = text.substr(sizeof(kOffer2Prefix) - 1);
+        std::vector<uint8_t> b;
+        for (size_t i = 0; i + 8 < hex.size(); i += 2) b.push_back(uint8_t(std::stoi(hex.substr(i, 2), nullptr, 16)));
+        b[2] = chain;
+        Bytes32 sum{};
+        crypto::CSHA256().Write(b.data(), b.size()).Finalize(sum.data());
+        static const char* d = "0123456789abcdef";
+        std::string out = kOffer2Prefix;
+        for (auto x : b) { out += d[x >> 4]; out += d[x & 15]; }
+        for (int i = 0; i < 4; ++i) { out += d[sum[i] >> 4]; out += d[sum[i] & 15]; }
+        return out;
+    };
+    const auto text = EncodeOffer(ValidZecOffer());
+    EXPECT_NO_THROW(DecodeOffer(reseal(text, 1)));
+    EXPECT_THROW(DecodeOffer(reseal(text, 0)), std::invalid_argument);
+    EXPECT_THROW(DecodeOffer(reseal(text, 2)), std::invalid_argument);
+}
+
+TEST(SwapOffer, GoldenZecOfferBytesAreStable) {
+    EXPECT_EQ(EncodeOffer(ValidZecOffer()), "dinswap2o02020100e876481700000040420f0000000000ababababababababababababababababababababababababa"
+              "babababababababf9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f902e493dbf1c10d80f"
+              "3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1320914c6ba03f4b6b1e0000002800000020ee496b13a08d1"
+              "b");
+}

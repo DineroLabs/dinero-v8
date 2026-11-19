@@ -1,0 +1,31 @@
+[package]
+name = "dinero-zcash-swap"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[features]
+# dzs_verify_input, for tests only: the script interpreter with signature
+# checks. (The Rust secp256k1 crate is linked either way, through
+# zcash_transparent; its C symbols carry a rustsecp256k1_ prefix, so they cannot
+# clash with libsecp256k1. The wallet signs with libsecp256k1 in C++.)
+script-verify = ["zcash_script/signature-validation"]
+
+# zcash_primitives 0.31 / zcash_transparent 0.11 (released 2026-10-21) is the
+# only line that shares orchard 0.16, incrementalmerkletree 0.9 and zip32 0.3
+# with rust/orchard_backend on v8.2.0, so this crate can later fold into that
+# one as a dependency and ship as a single static library.
+[dependencies]
+orchard = { version = "=0.16.0", default-features = false }
+sapling = { package = "sapling-crypto", version = "=0.9.0", default-features = false }
+zcash_address = { version = "=0.14.0", default-features = false, features = ["std"] }
+zcash_primitives = { version = "=0.31.0", default-features = false, features = ["std"] }
+zcash_protocol = { version = "=0.11.0", default-features = false, features = ["std"] }
+zcash_script = { version = "=0.6.0", default-features = false, features = ["std"] }
+zcash_transparent = { version = "=0.11.0", default-features = false, features = ["std"] }
+
+[profile.release]
+panic = "unwind"  # every C entry point catches panics; abort would take the wallet down
