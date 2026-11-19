@@ -310,8 +310,12 @@ Still the owner's:
 
 ## 11. Not verified
 
-- Real rate limits of mempool.space and blockstream.info, and that `outspend` reports unconfirmed
-  spends on both. To be measured in step 1.
+- Real rate limits of mempool.space and blockstream.info over hours. Measured once (2026-11-19,
+  `swap_btc_http_tool deposit`): the deposit watcher on a mining pool's mainnet payout script made
+  402 requests to the two servers in 59 seconds with none refused, and proved 23 unspent coins
+  (68.03 BTC) into a chain synced over P2P; the unproven recovery view gave the same 23. A swap's
+  own addresses need a handful of requests per round.
+- That `outspend` reports unconfirmed spends on both servers (the regtest test server does).
 - How many reachable Bitcoin peers a home connection gets when port 8333 is filtered.
 - That static Linux release builds take libcurl cleanly.
 - Whether the encrypted swap store tolerates new fields on downgrade (no format version was found

@@ -18049,6 +18049,7 @@ target_link_libraries(dinero_swap_light_http PUBLIC ${DINERO_CURL_TARGET})
 add_executable(swap_btc_http_tool
   tests/wallet/swap_btc_http_tool.cpp
   src/wallet/swap/btc_esplora.cpp
+  src/wallet/swap/btc_light_deposit.cpp
   src/wallet/swap/btc_merkle_proof.cpp
   src/wallet/swap/btc_raw_tx.cpp
   src/wallet/swap/btc_header_chain.cpp
