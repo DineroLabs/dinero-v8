@@ -1126,17 +1126,19 @@ void P2PService::StartSchedulerTickLoop() {
                         // Snapshot-born wallets need the independently verified
                         // Orchard activation prefix before they can issue an
                         // account. The peer receive loop also handles backfill
-                        // bodies, so continuous backfill can starve the one-page
-                        // catalog and one-body history flights. Give the
-                        // requested transfer one bounded window, then resume
-                        // validation even if no peer can serve it. The local
+                        // bodies, so continuous backfill can starve the catalog
+                        // transfer before the history worker can request its
+                        // first body. Give either active transfer one bounded
+                        // window, then resume validation if it cannot finish. The local
                         // history cache can be reverified after restart without
                         // receiving a new catalog manifest in this process.
                         if (validating && wants_history) {
+                            const auto catalog = CatalogDownload();
                             const auto history = PhoneHistoryDownload();
-                            if (history) {
-                                const auto progress=history->Observe();
-                                if (progress.requested && !progress.ready) {
+                            const auto progress = history ? history->Observe() :
+                                p2p::OrchardPhoneHistoryDownload::Progress{};
+                            if ((catalog && catalog->InFlight()) ||
+                                (progress.requested && !progress.ready)) {
                                     const auto now = std::chrono::steady_clock::now();
                                     if (!orchard_history_priority_since) {
                                         orchard_history_priority_since = now;
@@ -1145,7 +1147,6 @@ void P2PService::StartSchedulerTickLoop() {
                                     }
                                     prioritize_orchard_history =
                                         now - *orchard_history_priority_since < std::chrono::minutes(15);
-                                }
                             }
                         }
 #endif

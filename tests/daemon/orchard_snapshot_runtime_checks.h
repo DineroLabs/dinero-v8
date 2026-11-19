@@ -1992,13 +1992,15 @@ TEST(OrchardCatalogDownload, IngressIsBoundedAndStopJoinsWithoutPublishing){
             cv.wait_for(lock,std::chrono::seconds(10),[&]{return release;});return false;
         });
     {std::unique_lock lock(mutex);ASSERT_TRUE(cv.wait_for(lock,std::chrono::seconds(5),[&]{return entered;}));}
+    EXPECT_TRUE(host.InFlight()); // scheduler can prioritize the catalog before history requests begin
     std::vector<uint8_t> bytes(195);
     EXPECT_FALSE(host.Enqueue({"archive",52,0},Transfer::ManifestCommand,bytes));
     auto oversized=bytes;oversized.push_back(0);EXPECT_FALSE(host.Enqueue({"archive",51,0},Transfer::ManifestCommand,oversized));
     for(unsigned i=0;i<Download::MaximumQueue;++i)EXPECT_TRUE(host.Enqueue({"archive",51,0},Transfer::ManifestCommand,bytes));
     EXPECT_FALSE(host.Enqueue({"archive",51,0},Transfer::ManifestCommand,bytes));
     {std::lock_guard lock(mutex);release=true;cv.notify_all();}host.Stop();
-    EXPECT_EQ(sends,1u);EXPECT_FALSE(host.ReadyProof());EXPECT_FALSE(host.Enqueue({"archive",51,0},Transfer::ManifestCommand,bytes));
+    EXPECT_EQ(sends,1u);EXPECT_FALSE(host.InFlight());EXPECT_FALSE(host.ReadyProof());
+    EXPECT_FALSE(host.Enqueue({"archive",51,0},Transfer::ManifestCommand,bytes));
 }
 TEST(OrchardActivationOrigin, FirstBlockIsVerifiedFromEmptyAndStreamingStateMatchesCanonical){
     using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;

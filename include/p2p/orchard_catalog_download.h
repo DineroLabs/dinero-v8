@@ -50,6 +50,7 @@ public:
     static constexpr std::chrono::milliseconds IdleWait{1000},ActiveWait{50};
     uint64_t Iterations()const{return iterations_.load();}
     uint64_t ExpectedBytes()const{return expected_bytes_.load();}
+    bool InFlight()const{std::lock_guard lock(mutex_);return !stop_&&flight_.has_value();}
 
     void Stop(){
         std::lock_guard joining(join_mutex_);
