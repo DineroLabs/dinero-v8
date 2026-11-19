@@ -73,7 +73,7 @@ private:
     void requestHistory(quint64 offset,quint64 revision=0);
     void showHistory();
     void handle(const QString& shortName, const QJsonValue& result);
-    void showStatus(const QString& text, bool error);
+    void showStatus(const QString& text, bool error, bool operationsError = false);
 
     RpcClient* rpc_;
     QString wallet_;
@@ -124,5 +124,6 @@ private:
     QTableWidget* operations_;
     QLabel* operationsEmpty_;
     QLabel* status_;
+    bool operationsErrorVisible_ = false;
     QTimer* poll_;
 };

@@ -413,6 +413,7 @@ void OrchardWidget::onAccountChanged(int index) {
         for(int i=0;i<accountsSnapshot_->accounts.size();++i)if(accountsSnapshot_->accounts[i].account==account_)previous=i;
         accountSelector_->setCurrentIndex(previous);return;
     }
+    if(operationsErrorVisible_)showStatus({},false);
     ++generation_; // Late balances, errors and effects belong to the old account selection.
     account_=next.account;accountSelected_=true;accountsInFlight_=false;activationInFlight_=false;
     payment_.reset();clearAccountView();revision_=next.revision;
@@ -848,11 +849,12 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
             operationsSnapshot_.reset();
             const QString e = OC::InBandError(result).value_or("Unexpected reply");
             if (revision_ == 0) accountStatus_->setText(FriendlyError(e));
-            else showStatus(FriendlyError(e), true);  // keep the known account state
+            else showStatus(FriendlyError(e), true, true);  // keep the known account state
             updateForm();
             return;
         }
         if(r->accountRevision<revision_)return;
+        if(operationsErrorVisible_)showStatus({},false);
         if(r->accountRevision>balanceRevision_){balance_->setText(kUnknown);balance_->setToolTip("Waiting for the current account balance.");}
         revision_ = r->accountRevision;
         operationsSnapshot_=*r;
@@ -886,7 +888,8 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
     }
 }
 
-void OrchardWidget::showStatus(const QString& text, bool error) {
+void OrchardWidget::showStatus(const QString& text, bool error, bool operationsError) {
+    operationsErrorVisible_=operationsError;
     status_->setText(text);
     status_->setStyleSheet(PayCollectPolicy::pillStyle(error ? Tone::Bad : Tone::Good));
     status_->setVisible(!text.isEmpty());

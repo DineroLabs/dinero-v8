@@ -158,6 +158,20 @@ private Q_SLOTS:
     }
     void cleanup() { delete tab_; tab_ = nullptr; }
 
+    void transientOperationsErrorClearsAfterRecovery() {
+        ready();
+        QMetaObject::invokeMethod(tab_, "onPoll");
+        rawReply(last("wallet.orchard.listoperations"),
+                 QJsonObject{{"error", "Wallet recovery seed unavailable"}});
+        auto* status = Find<QLabel>(tab_, "orchardStatus");
+        QCOMPARE(status->text(), QString("Wallet recovery seed unavailable"));
+        QVERIFY(status->isVisible());
+
+        QMetaObject::invokeMethod(tab_, "onPoll");
+        rawReply(last("wallet.orchard.listoperations"), storedSnapshot());
+        QVERIFY(!status->isVisible());
+    }
+
 
     void structuredEnvelopeKeepsProofProgressAndBindingRefusal() {
         ready();fillSend();confirmNextDialog();Find<QPushButton>(tab_,"orchardReview")->click();
