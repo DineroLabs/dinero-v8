@@ -2105,15 +2105,31 @@ void RuntimeIndexDelivery::RetireReceiptForNativePoolExtensionV3(WalletManager& 
       const int rc=sqlite3_step(table.value);
       if(rc==SQLITE_DONE){wallet_read.Commit();return;} // first enrollment
       if(rc!=SQLITE_ROW)Fail("Native pool extension schema unavailable"); }
+    // v8.2.4: the P2MR pool shares the generation sequence; its rows of the
+    // newest generation are part of the grown domain too.
+    bool p2mr=false;
+    { Statement table(db,"SELECT 1 FROM sqlite_master WHERE type='table' AND name='native_v3_p2mr_pool'");
+      const int rc=sqlite3_step(table.value);
+      if(rc!=SQLITE_ROW && rc!=SQLITE_DONE)Fail("Native pool extension schema unavailable");
+      p2mr=rc==SQLITE_ROW; }
     int64_t newest=0;
-    { Statement q(db,"SELECT COALESCE(MAX(generation),0) FROM native_v3_address_pool");
-      if(sqlite3_step(q.value)!=SQLITE_ROW)Fail("Native pool extension generation unavailable");
-      newest=CoverageInt(q.value,0); }
+    for(const char* sql:{"SELECT COALESCE(MAX(generation),0) FROM native_v3_address_pool",
+                         "SELECT COALESCE(MAX(generation),0) FROM native_v3_p2mr_pool"}) {
+        if(!p2mr && std::string_view(sql).find("p2mr")!=std::string_view::npos)continue;
+        Statement q(db,sql);
+        if(sqlite3_step(q.value)!=SQLITE_ROW)Fail("Native pool extension generation unavailable");
+        newest=std::max(newest,CoverageInt(q.value,0));
+    }
     if(newest<=0){wallet_read.Commit();return;} // first enrollment: no prior receipt to retire
     std::set<std::vector<uint8_t>> grown;
-    { Statement q(db,"SELECT script_pubkey FROM native_v3_address_pool WHERE generation=?");q.Int(1,newest);int rc;
-      while((rc=sqlite3_step(q.value))==SQLITE_ROW)grown.insert(Unhex(CoverageText(q.value,0)));
-      if(rc!=SQLITE_DONE || grown.empty())Fail("Native pool extension generation incomplete"); }
+    for(const char* sql:{"SELECT script_pubkey FROM native_v3_address_pool WHERE generation=?",
+                         "SELECT script_pubkey FROM native_v3_p2mr_pool WHERE generation=?"}) {
+        if(!p2mr && std::string_view(sql).find("p2mr")!=std::string_view::npos)continue;
+        Statement q(db,sql);q.Int(1,newest);int rc;
+        while((rc=sqlite3_step(q.value))==SQLITE_ROW)grown.insert(Unhex(CoverageText(q.value,0)));
+        if(rc!=SQLITE_DONE)Fail("Native pool extension generation unavailable");
+    }
+    if(grown.empty())Fail("Native pool extension generation incomplete");
     const auto domain=OrdinaryScripts(*lease);
     const auto paths=V3RecordedPaths(*lease);
     auto before=paths;
@@ -2176,6 +2192,9 @@ void RuntimeOrdinaryDelivery::ReconcileNativeTransparentCoverageV3(WalletManager
     {
         auto lease=wallet.AcquireDatabaseLease();
         if(!native_pending(*lease))Fail("Native coverage v3 pending wallet owner changed");
+        // v8.2.4: an owed P2MR pool fill would grow this domain; no receipt
+        // may be sealed before it completes.
+        if(!lease->NativeP2MRTargetMissing().empty())Fail("Native coverage v3 owes P2MR pool scripts");
         auto* db=lease->Database();CoverageDurability(db);OrdinaryTransaction read(db);
         if(ExistingIdentity(db)!=origin.identity_)Fail("Native coverage v3 identity changed");
         auto pin=lease->CopyRecoverySeed(origin.session_);
