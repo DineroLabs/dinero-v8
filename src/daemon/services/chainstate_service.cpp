@@ -30094,6 +30094,14 @@ bool ChainstateService::TrySnapshotBootstrap(const std::filesystem::path& snapsh
 }
 
 void ChainstateService::TryDeferredSnapshotBootstrap() {
+    // A compact bootstrap installs its genesis owner and runtime consumers in
+    // StartCompactSnapshotBootstrap before importing the snapshot. Header
+    // callbacks can run during DaemonApp::Init when a retained header store
+    // already contains the buried base. Importing then publishes an active
+    // tip before StartOrchardSnapshotStorage's unpublished-tip audit, causing
+    // the first launch to refuse even though a second launch would succeed.
+    // StartCompactSnapshotBootstrap drives this pending load after it starts.
+    if(orchard_compact_bootstrap_pending_.load() && !IsStarted())return;
     // FIX 2 (issue #186) + rc24.1 single-flight guard. Driven concurrently from
     // the header-processing path AND the periodic daemon thread. Only ONE thread
     // may transition Pending -> Loading and call the loader; all others return.
