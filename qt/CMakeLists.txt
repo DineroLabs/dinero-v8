@@ -69,7 +69,19 @@ include(CTest)
 find_package(Git QUIET)
 
 function(resolve_git_identity REPO_PATH PREFIX)
-  if(GIT_FOUND AND EXISTS "${REPO_PATH}/.git")
+  # A monorepo subdirectory has no .git entry of its own, and a linked
+  # worktree uses a .git file. Ask Git whether the path belongs to a checkout.
+  set(_inside_worktree "")
+  if(GIT_FOUND AND IS_DIRECTORY "${REPO_PATH}")
+    execute_process(
+      COMMAND ${GIT_EXECUTABLE} rev-parse --is-inside-work-tree
+      WORKING_DIRECTORY ${REPO_PATH}
+      OUTPUT_VARIABLE _inside_worktree
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+    )
+  endif()
+  if(_inside_worktree STREQUAL "true")
     execute_process(
       COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
       WORKING_DIRECTORY ${REPO_PATH}
@@ -131,6 +143,13 @@ endif()
 
 set(DINERO_SOURCE_ROOT "${_DEFAULT_DINERO_SOURCE_ROOT}" CACHE PATH "Source checkout for bundled dinerod/gpu miner")
 set(DINERO_SOLO_MINER_SOURCE_ROOT "${_DEFAULT_DINERO_SOLO_MINER_SOURCE_ROOT}" CACHE PATH "Source checkout for embedded solo miner")
+if(PROJECT_IS_TOP_LEVEL)
+  file(REAL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/.." _DINERO_QT_PARENT)
+  file(REAL_PATH "${DINERO_SOURCE_ROOT}" _DINERO_CORE_ROOT)
+  if(_DINERO_QT_PARENT STREQUAL _DINERO_CORE_ROOT)
+    set(DINERO_QT_RELEASE_REPO "dinero-v8")
+  endif()
+endif()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PRE-v8.0.0 RELEASE BLOCKER (logged 2026-05-12, consolidation Phase 2)
