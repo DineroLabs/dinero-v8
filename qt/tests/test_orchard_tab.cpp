@@ -229,6 +229,24 @@ private Q_SLOTS:
         b["account"]=17;rawReply(last("wallet.orchard.getbalance"),b);
         QCOMPARE(Find<QLabel>(tab_,"orchardBalance")->text(),QString("0.00000000 DIN confirmed"));
     }
+    void originalOrchardAddressAppearsFromAccountDiscovery() {
+        tab_->setWalletScope("Hotel");tab_->setWalletUnlocked(true);
+        rawReply(last("getblockchaininfo"),QJsonObject{{"chain","regtest"}});
+        rawReply(last("wallet.orchard.getwalletbinding"),QJsonObject{
+            {"wallet_name","Hotel"},{"wallet_binding",QString(64,'a')}});
+        auto catalog=accountsFixture();
+        auto accounts=catalog["accounts"].toArray();
+        auto account=accounts[0].toObject();
+        account["first_receive_address"]="rdinorch1originalreceiver";
+        accounts[0]=account;catalog["accounts"]=accounts;
+        rawReply(last("wallet.orchard.listaccounts"),catalog);
+        auto* address=Find<QLineEdit>(tab_,"orchardReceiveAddress");
+        QCOMPARE(address->text(),QString("rdinorch1originalreceiver"));
+        QVERIFY(address->isVisible());
+        QCOMPARE(std::count_if(sent_.begin(),sent_.end(),[](const Sent& call) {
+            return call.method=="wallet.orchard.getnewaddress";
+        }),0);
+    }
     void failedAccountDiscoveryNeverEnablesCreationOrUsesOldBalance() {
         ready();rawReply(last("wallet.orchard.listaccounts"),QJsonObject{{"error","catalog missing"}});
         QVERIFY(Find<QPushButton>(tab_,"orchardCreateAccount")->isVisible());
