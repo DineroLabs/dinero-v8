@@ -3273,6 +3273,34 @@ TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles)
             pool->Stop();context.mempool.reset();pool.reset();
             service->Stop();context.chainstate.reset();service.reset();
         }
+        if(!stateless) {
+            // A quiet cold start must reuse Init's authenticated publication.
+            // The earlier run intentionally wrote a catalog row between Init
+            // and Start, exercising the full-Restore fallback instead.
+            auto db=std::make_shared<ChainDB>();ASSERT_EQ(db->init(path),Status::Ok);
+            DaemonContext context;context.config=std::make_shared<ConfigService>();
+            context.config->Set("datadir",directory.path.string());
+            context.config->Set("assumeutxo_compact_bootstrap","0");
+            context.logger=std::make_shared<LoggerService>("");
+            context.block_storage=std::make_shared<BlockStorage>();
+            ASSERT_EQ(context.block_storage->init(directory.path/"files"),Status::Ok);
+            auto service=std::make_shared<ChainstateService>();context.chainstate=service;
+            struct ContextGuard {DaemonContext* prior=DaemonContext::instance();
+                ~ContextGuard(){BlockAcceptor::SetContext(prior);DaemonContext::setInstance(prior);}} guard;
+            DaemonContext::setInstance(&context);service->setOwnedChainDB(db);
+            ASSERT_TRUE(service->Init(context));
+            const auto fence=db->startupWriteFence();ASSERT_TRUE(fence);
+            service->setHeaderChainSelector(headers);
+            service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
+            ASSERT_EQ(db->startupWriteFence(),fence);
+            testing::internal::CaptureStdout();
+            const bool started=service->Start();
+            const auto startup_log=testing::internal::GetCapturedStdout();
+            ASSERT_TRUE(started);
+            EXPECT_NE(startup_log.find("Reused authenticated Init publication"),std::string::npos);
+            EXPECT_NE(service->GetActiveTip(),nullptr);
+            service->Stop();context.chainstate.reset();service.reset();
+        }
     }
 }
 TEST(OrchardSnapshotRuntime, IndependentLaterRegtestGatePreservesRoot1ThenExportsRoot2) {
