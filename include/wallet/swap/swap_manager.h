@@ -69,6 +69,10 @@ SwapKeyMaterial SwapKeysForIndex(const KeyDeriver& derive, SwapNetwork network, 
 // Witness-program payout script from a bech32/bech32m address with the given
 // HRP: P2WPKH, P2WSH (v0, bech32) or P2TR (v1, bech32m). Throws std::invalid_argument.
 std::vector<uint8_t> PayoutScriptFromAddress(const std::string& address, const std::string& hrp);
+// A Bitcoin payout: the segwit forms above, or a legacy P2PKH / P2SH address
+// (1… / 3… on mainnet, m… n… / 2… elsewhere) of the network `hrp` names.
+// Exchanges and older wallets still hand those out. Throws std::invalid_argument.
+std::vector<uint8_t> BtcPayoutScriptFromAddress(const std::string& address, const std::string& hrp);
 
 struct OfferRequest {
     uint64_t din_amount_una{};

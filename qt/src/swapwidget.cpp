@@ -34,6 +34,7 @@ const QString kAccept = "swaptab.accept";
 const QString kStart = "swaptab.start";
 const QString kCancel = "swaptab.cancel";
 const QString kChain = "swaptab.chain";
+const QString kFee = "swaptab.fee";
 
 // The app's layout: form and its review side by side at 3:2, 12 px apart.
 constexpr int kFormStretch = 3;
@@ -144,6 +145,7 @@ SwapWidget::SwapWidget(RpcClient* rpc, QWidget* parent) : QWidget(parent), rpc_(
     connect(timer_, &QTimer::timeout, this, &SwapWidget::refresh);
     timer_->start(10000);
     rpc_->callNamedAs("getblockchaininfo", QJsonObject{}, kChain);
+    rpc_->callAs("wallet.estimatefee", QJsonArray{6}, kFee);  // the rate offered for the DIN lock
     refresh();
 }
 
@@ -178,8 +180,9 @@ void SwapWidget::setupUi() {
     btcAmount_->setToolTip("How much BTC you want for it (up to 8 decimals)");
     btcAddress_ = new QLineEdit(sell);
     btcAddress_->setObjectName("btcAddress");
-    btcAddress_->setPlaceholderText("Your Bitcoin address");
-    btcAddress_->setToolTip("The BTC is paid to this address of yours when you claim it");
+    btcAddress_->setPlaceholderText("Paste the Receive address from your Bitcoin app or exchange");
+    btcAddress_->setToolTip("Open your Bitcoin app or exchange, choose Receive (or Deposit) Bitcoin, copy the address "
+                            "and paste it here. Your BTC is paid to it.");
     sellGrid->addWidget(Plain("DIN you sell:", sell), 0, 0);
     sellGrid->addWidget(dinAmount_, 0, 1);
     sellGrid->addWidget(Plain("BTC you want:", sell), 1, 0);
@@ -244,8 +247,9 @@ void SwapWidget::setupUi() {
     pasteIn_->setToolTip("An offer starts a purchase; a reply to your offer starts your sale");
     btcRefundAddress_ = new QLineEdit(paste);
     btcRefundAddress_->setObjectName("btcRefundAddress");
-    btcRefundAddress_->setPlaceholderText("Your Bitcoin address (buying DIN only)");
-    btcRefundAddress_->setToolTip("If the swap does not complete, your BTC comes back to this address");
+    btcRefundAddress_->setPlaceholderText("Paste the Receive address from your Bitcoin app or exchange (buying DIN only)");
+    btcRefundAddress_->setToolTip("Open your Bitcoin app or exchange, choose Receive (or Deposit) Bitcoin, copy the "
+                                  "address and paste it here. If the swap does not complete, your BTC comes back to it.");
     pasteGrid->addWidget(pasteIn_, 0, 0, 1, 2);
     pasteGrid->addWidget(Plain("BTC refund address:", paste), 1, 0);
     pasteGrid->addWidget(btcRefundAddress_, 1, 1);
@@ -371,8 +375,8 @@ void SwapWidget::updatePasteReview() {
         blocker = "paste an offer you received, or the buyer's reply to your offer";
     } else if (kind.isEmpty()) {
         blocker = "this is not a swap offer or reply; paste the full text you received";
-    } else if (kind == "offer" && !btcRefundAddress_->text().trimmed().toLower().startsWith(hrp + "1")) {
-        blocker = "enter your Bitcoin refund address (" + hrp + "1…)";
+    } else if (kind == "offer" && !SwapFormPolicy::looksLikeBtcAddress(btcRefundAddress_->text(), hrp)) {
+        blocker = "enter your Bitcoin refund address (it starts with " + SwapFormPolicy::btcAddressStarts(hrp) + ")";
     }
     SetHint(pasteHint_, blocker,
             kind == "offer" ? "Ready. Review shows the offer's terms before you accept."
@@ -400,13 +404,17 @@ void SwapWidget::onCreateOffer() {
                 "<tr><td><b>Rate:</b></td><td>%1</td></tr>"
                 "<tr><td><b>Claim the BTC by:</b></td><td>%2 (minus a 6 h safety margin)</td></tr>"
                 "<tr><td><b>DIN back if unanswered:</b></td><td>after %3</td></tr>"
+                "<tr><td><b>Network fee to lock your DIN:</b></td><td>at most %4 DIN</td></tr>"
                 "</table><br>"
                 "Your DIN is locked as soon as the buyer accepts. It goes to the buyer only when you claim the BTC.<br>"
                 "<b>Keep this node online and the wallet unlocked until the swap finishes.</b>")
             .arg(SwapFormPolicy::rate(r.dinUna, r.btcSat), SwapFormPolicy::localTime(now + 48 * 3600),
-                 SwapFormPolicy::localTime(now + 96 * 3600));
+                 SwapFormPolicy::localTime(now + 96 * 3600),
+                 SwapFormPolicy::formatUnits(SwapFormPolicy::kDinFundingMaximumFeeUna));
     if (!Confirm(this, "Review your offer", heading, details, "Create offer")) return;
-    QJsonObject p{{"din_amount_una", r.dinUna}, {"btc_amount_sat", r.btcSat}, {"btc_address", btcAddress_->text().trimmed()}};
+    QJsonObject p{{"din_amount_una", r.dinUna}, {"btc_amount_sat", r.btcSat}, {"btc_address", btcAddress_->text().trimmed()},
+                  {"din_funding_fee_rate_hint", SwapFormPolicy::dinFundingFeeRateHint(dinFeeEstimate_)},
+                  {"din_funding_maximum_fee_una", SwapFormPolicy::kDinFundingMaximumFeeUna}};
     rpc_->callNamedAs("swap.offer", p, kOffer);
     showStatus("Creating offer…", false);
 }
@@ -424,8 +432,9 @@ void SwapWidget::acceptOffer(const QString& offerText, const QJsonObject& decode
                                                            QDateTime::currentSecsSinceEpoch());
     if (!review.blocker.isEmpty()) return showStatus(review.blocker, true);
     const QString refund = btcRefundAddress_->text().trimmed();
-    if (!refund.toLower().startsWith(SwapFormPolicy::btcHrpForChain(chain_) + "1")) {
-        return showStatus("Enter your Bitcoin refund address (" + SwapFormPolicy::btcHrpForChain(chain_) + "1…)", true);
+    if (!SwapFormPolicy::looksLikeBtcAddress(refund, SwapFormPolicy::btcHrpForChain(chain_))) {
+        return showStatus("Enter your Bitcoin refund address (it starts with " +
+                              SwapFormPolicy::btcAddressStarts(SwapFormPolicy::btcHrpForChain(chain_)) + ")", true);
     }
     const QString first = review.text.section('\n', 0, 0);
     const QString rest = review.text.section('\n', 1);
@@ -474,6 +483,10 @@ void SwapWidget::onSelectionChanged() {
 
 void SwapWidget::onRpcResult(const QString& method, const QJsonValue& result) {
     if (!method.startsWith("swaptab.")) return;
+    if (method == kFee) {  // no estimate: the floor in SwapFormPolicy stands
+        dinFeeEstimate_ = result.toObject().value("feerate").toDouble(0);
+        return;
+    }
     // swap.* report refusals in-band as {"error": "..."}.
     if (result.isObject() && result.toObject().contains("error") && !result.toObject().value("error").isNull()) {
         const QString message = result.toObject().value("error").toVariant().toString();
@@ -561,7 +574,7 @@ void SwapWidget::onRpcResult(const QString& method, const QJsonValue& result) {
 }
 
 void SwapWidget::onRpcError(const QString& method, int code, const QString& message) {
-    if (!method.startsWith("swaptab.") || method == kChain) return;
+    if (!method.startsWith("swaptab.") || method == kChain || method == kFee) return;
     if (method == kList && code == -32601) {
         table_->setRowCount(0);
         table_->setVisible(false);

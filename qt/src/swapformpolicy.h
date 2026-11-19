@@ -5,6 +5,7 @@
 // review text a user sees before money is committed.
 #include "shieldedtransferpolicy.h"
 
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QJsonObject>
 #include <QString>
@@ -21,6 +22,56 @@ inline QString btcHrpForChain(const QString& chain) {
     if (c == "main" || c == "mainnet") return "bc";
     if (c == "test" || c == "testnet") return "tb";
     return "bcrt";
+}
+
+// How this network's Bitcoin addresses start, for messages.
+inline QString btcAddressStarts(const QString& btcHrp) {
+    return btcHrp + (btcHrp == "bc" ? "1, 1 or 3" : "1, m, n or 2");
+}
+
+// A legacy Bitcoin address (P2PKH / P2SH) of this network with a good checksum.
+// Exchanges and older wallets still hand these out.
+inline bool isLegacyBtcAddress(const QString& address, const QString& btcHrp) {
+    static const QByteArray alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    const QByteArray text = address.toLatin1();
+    if (text.size() < 26 || text.size() > 35 || address != QString::fromLatin1(text)) return false;
+    QByteArray bytes(25, '\0');  // version + 20-byte hash + 4-byte checksum, big-endian
+    for (char c : text) {
+        int carry = alphabet.indexOf(c);
+        if (carry < 0) return false;
+        for (int i = bytes.size() - 1; i >= 0; --i) {
+            carry += 58 * static_cast<unsigned char>(bytes[i]);
+            bytes[i] = static_cast<char>(carry & 0xff);
+            carry >>= 8;
+        }
+        if (carry) return false;  // longer than an address
+    }
+    int zeros = 0, ones = 0;
+    while (zeros < bytes.size() && bytes[zeros] == '\0') ++zeros;
+    while (ones < text.size() && text[ones] == '1') ++ones;
+    if (zeros != ones) return false;  // each leading 1 is exactly one leading zero byte
+    const auto sha = [](const QByteArray& d) { return QCryptographicHash::hash(d, QCryptographicHash::Sha256); };
+    if (sha(sha(bytes.left(21))).left(4) != bytes.right(4)) return false;
+    const int version = static_cast<unsigned char>(bytes[0]);
+    return btcHrp == "bc" ? (version == 0x00 || version == 0x05) : (version == 0x6f || version == 0xc4);
+}
+
+// Mirrors what the node accepts as a Bitcoin payout address: segwit (bc1…) by
+// its prefix, legacy (1… / 3…) checked in full so a typo is caught here.
+inline bool looksLikeBtcAddress(const QString& address, const QString& btcHrp) {
+    const QString a = address.trimmed();
+    return a.toLower().startsWith(btcHrp + "1") || isLegacyBtcAddress(a, btcHrp);
+}
+
+// Selling DIN: the wallet pays the network fee of the DIN lock, and swap.offer
+// refuses an offer that does not authorize it. The rate follows the node's
+// estimate (never below 2 una/vB, so the lock is not stuck behind an idle
+// estimate); the total is capped, and the review shows the cap.
+constexpr qint64 kDinFundingMaximumFeeUna = 5000000;  // 0.05 DIN
+inline qint64 dinFundingFeeRateHint(double estimateUnaPerVb) {
+    if (!(estimateUnaPerVb > 2.0)) return 2;  // also NaN and "no estimate yet"
+    if (estimateUnaPerVb >= 1000.0) return 1000;
+    return static_cast<qint64>(estimateUnaPerVb) + (estimateUnaPerVb > static_cast<qint64>(estimateUnaPerVb) ? 1 : 0);
 }
 
 struct OfferReview {
@@ -44,10 +95,9 @@ inline OfferReview reviewOffer(const QString& dinText, const QString& btcText, c
         return r;
     }
     if (r.btcSat < 10000) { r.blocker = "BTC amount is too small (at least 0.00010000 BTC)"; return r; }
-    const QString addr = btcAddress.trimmed().toLower();
-    if (addr.isEmpty()) { r.blocker = "Enter your Bitcoin address (where you receive the BTC)"; return r; }
-    if (!addr.startsWith(btcHrp + "1")) {
-        r.blocker = QString("Enter a Bitcoin %1… address (P2WPKH, P2WSH or Taproot)").arg(btcHrp + "1");
+    if (btcAddress.trimmed().isEmpty()) { r.blocker = "Enter your Bitcoin address (where you receive the BTC)"; return r; }
+    if (!looksLikeBtcAddress(btcAddress, btcHrp)) {
+        r.blocker = "That is not a Bitcoin address of this network (it starts with " + btcAddressStarts(btcHrp) + ")";
         return r;
     }
     return r;
