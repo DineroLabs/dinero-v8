@@ -13,9 +13,15 @@ inline QString enabledKey() { return QStringLiteral("swap/enabled_v1"); }
 // swap.optional: a setting this node refuses leaves swaps off and the wallet's
 // node still starts. Bitcoin is reached without Bitcoin Core; on mainnet swaps
 // are a beta with small caps, which the user accepts when turning the switch on.
+// The public watchtower run by Dinero Labs (design section 14.2). A buyer's
+// node sends it pre-signed transactions only; it guards the swap while Dinero
+// is closed.
+inline QString publicTowerUrl() { return QStringLiteral("https://swaptower.dinerolabs.org"); }
+
 inline QStringList daemonArgs(bool enabled) {
     if (!enabled) return {};
-    return {"--swap.enable=1", "--swap.optional=1", "--swap.btc_backend=light", "--swap.mainnet_beta=1"};
+    return {"--swap.enable=1", "--swap.optional=1", "--swap.btc_backend=light", "--swap.mainnet_beta=1",
+            "--swap.tower_url=" + publicTowerUrl()};
 }
 
 // The node's own reason after "swaps are disabled: " when it refused the
@@ -77,6 +83,8 @@ inline QString enableQuestion() {
     return "Swaps are a beta. Use small amounts only.\n\n"
            "While a swap is running, keep Dinero open and the wallet unlocked until it finishes. If you stop part "
            "way, your coins come back to you only after the swap's deadline.\n\n"
+           "When you buy DIN, your node sends the swap's terms and pre-signed transactions to the Dinero Labs "
+           "watchtower, which finishes the swap for you if Dinero is closed. It cannot take your coins.\n\n"
            "Swaps start the next time Dinero starts. Turn them on?";
 }
 

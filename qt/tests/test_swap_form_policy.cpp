@@ -218,6 +218,9 @@ private Q_SLOTS:
         QVERIFY(args.contains("--swap.optional=1"));
         QVERIFY(args.contains("--swap.btc_backend=light"));  // no Bitcoin Core to install
         QVERIFY(args.contains("--swap.mainnet_beta=1"));     // accepted in the switch's question
+        // A buyer is guarded by the public watchtower, reached over https only.
+        QVERIFY(args.contains("--swap.tower_url=https://swaptower.dinerolabs.org"));
+        QVERIFY(SwapLaunchPolicy::enableQuestion().contains("watchtower"));  // and is told so before agreeing
         // The mainnet gate for swaps without Bitcoin Core is the node's to lift, not the switch's.
         for (const auto& a : args) QVERIFY2(!a.contains("rehearsal"), qPrintable(a));
     }

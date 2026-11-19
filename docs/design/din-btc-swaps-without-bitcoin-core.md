@@ -415,7 +415,7 @@ a public watchtower (on the existing `dinerotx` server).
 
 The Swap tab has one line saying where swaps stand and one button. The choice is a stored setting;
 both node launchers add `--swap.enable=1 --swap.optional=1 --swap.btc_backend=light
---swap.mainnet_beta=1` when it is on, and it takes effect the next time Dinero starts.
+--swap.mainnet_beta=1 --swap.tower_url=https://swaptower.dinerolabs.org` when it is on, and it takes effect the next time Dinero starts.
 
 - **The wallet's node always starts.** `swap.optional=1` turns a refused swap setting into "swaps
   are off, and here is why" instead of a node that does not start. The reason reaches the tab
@@ -464,6 +464,9 @@ Proved on regtest (`SwapPublicTowerRegtest`): neither node has Bitcoin Core; the
 the tower over HTTP and locks only after its confirmation; the buyer goes offline with his BTC
 locked; the tower, itself without Bitcoin Core, claims his DIN and sees it buried.
 
-Not done: the deployment on `dinerotx` (docs/swaps/PUBLIC_TOWER_RUNBOOK.md), and the address of the
-public tower in the switch's arguments, which is added once that tower is up and has been used in
-the testnet rehearsal.
+**Running since 2026-11-19: `https://swaptower.dinerolabs.org`** (mainnet), on `dinerotx`, set up
+as in docs/swaps/PUBLIC_TOWER_RUNBOOK.md: the door behind nginx with a Let's Encrypt certificate, the
+tower without Bitcoin Core against that machine's Dinero node, both under their own unprivileged
+user. It was the first build of this code on Linux. The switch passes this address
+(`--swap.tower_url`), and its question says so. No real swap has used it yet: that is the
+rehearsal's job (section 7, step 6).
