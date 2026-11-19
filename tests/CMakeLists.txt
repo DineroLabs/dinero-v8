@@ -17959,6 +17959,29 @@ target_compile_definitions(test_swap_btc_esplora PRIVATE
 add_test(NAME SwapBtcEsplora COMMAND test_swap_btc_esplora)
 set_tests_properties(SwapBtcEsplora PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 60)
 
+# The light Bitcoin watcher against a simulated Bitcoin with lying and hiding servers.
+add_executable(test_swap_btc_light_watcher
+  tests/wallet/test_swap_btc_light_watcher.cpp
+  src/wallet/swap/btc_light_watcher.cpp
+  src/wallet/swap/btc_esplora.cpp
+  src/wallet/swap/btc_merkle_proof.cpp
+  src/wallet/swap/btc_raw_tx.cpp
+  src/wallet/swap/btc_header_chain.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_btc_light_watcher gtest gtest_main)
+target_link_libraries(test_swap_btc_light_watcher PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_btc_light_watcher)
+target_include_directories(test_swap_btc_light_watcher PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/external
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapBtcLightWatcher COMMAND test_swap_btc_light_watcher)
+set_tests_properties(SwapBtcLightWatcher PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 60)
+
 # HTTPS transport of the light Bitcoin client: the only part that links libcurl.
 add_library(dinero_swap_light_http STATIC ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_http_curl.cpp)
 target_include_directories(dinero_swap_light_http PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
