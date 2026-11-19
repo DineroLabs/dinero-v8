@@ -264,12 +264,17 @@ BtcBlockHeader CheckpointHeader(const char* raw_hex) {
     }
     return *ParseBtcBlockHeader(raw);
 }
+
+// Bitcoin's proof-of-work limit (mainnet and testnet4), and the bits of its
+// genesis block. Nothing to do with Dinero's own difficulty: this file only
+// follows Bitcoin's header chain.
+constexpr uint32_t kBitcoinPowLimitBits = 0x1d00ffff;  // Bitcoin level
 }  // namespace
 
 BtcChainParams BtcChainParams::Mainnet() {
     BtcChainParams p;
     p.name = "main";
-    p.pow_limit_bits = 0x1d00ffff;
+    p.pow_limit_bits = kBitcoinPowLimitBits;
     p.retargets = true;
     p.checkpoint_height = 971712;  // 00000000000000000000c185f0906690a08d62d6fe842682a888d5560217e467
     p.checkpoint = CheckpointHeader(
@@ -281,17 +286,17 @@ BtcChainParams BtcChainParams::Mainnet() {
 BtcChainParams BtcChainParams::MainnetFromGenesis() {
     BtcChainParams p;
     p.name = "main";
-    p.pow_limit_bits = 0x1d00ffff;
+    p.pow_limit_bits = kBitcoinPowLimitBits;
     p.retargets = true;
     p.checkpoint_height = 0;
-    p.checkpoint = GenesisHeader(1231006505, 0x1d00ffff, 2083236893);
+    p.checkpoint = GenesisHeader(1231006505, kBitcoinPowLimitBits, 2083236893);
     return p;
 }
 
 BtcChainParams BtcChainParams::Testnet4() {
     BtcChainParams p;
     p.name = "testnet4";
-    p.pow_limit_bits = 0x1d00ffff;
+    p.pow_limit_bits = kBitcoinPowLimitBits;
     p.retargets = true;
     p.allows_min_difficulty = true;
     p.checkpoint_height = 157248;  // 000000000000000311e5891b569e988c5c35da1cf4e59d8a7ead8fc8d322e384
