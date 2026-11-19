@@ -17878,9 +17878,6 @@ CBlockIndex* ChainstateService::AddBlockIndex(const BlockHeader& header, uint32_
     // - pprev linking
     // - Chainwork calculation
     // - Storage in g_block_index
-    std::cout << "[CS::AddBlockIndex] ENTRY: height=" << height << std::endl;
-    std::cout << std::flush;
-
     CBlockIndex* result = dinero::AddBlockIndex(header, height);
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -17894,19 +17891,6 @@ CBlockIndex* ChainstateService::AddBlockIndex(const BlockHeader& header, uint32_
         assert(lookup == result && "ONE BlockIndex per hash invariant violated!");
     }
 #endif
-
-    std::cout << "[CS::AddBlockIndex] global returned: " << (result ? "OK" : "NULL") << std::endl;
-    std::cout << std::flush;
-
-    if (result && logger_) {
-        // Note: logger_ may be null during early genesis init (before Init() is called)
-        logger_->info("[BlockIndex] Added block (global): height=" + std::to_string(height) +
-                     " hash=" + header.GetHash().GetHex().substr(0, 16) + "... pprev=" +
-                     (result->pprev ? "SET" : "NULL"));
-    }
-
-    std::cout << "[CS::AddBlockIndex] EXIT: returning " << (result ? "OK" : "NULL") << std::endl;
-    std::cout << std::flush;
 
     return result;
 }
