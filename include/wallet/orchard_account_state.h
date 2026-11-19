@@ -39,6 +39,12 @@ public:
   [[nodiscard]] static OrchardAccountState
   Begin(orchard::SigningDomain, const orchard::FullViewingKeyBytes &,
         uint32_t activation, const uint256 &parent);
+  // Only for a newly generated wallet with an authenticated selected-source
+  // checkpoint. Never substitute this for restoring an existing seed.
+  [[nodiscard]] static OrchardAccountState
+  BeginFreshAtCheckpoint(orchard::SigningDomain,
+      const orchard::FullViewingKeyBytes &,uint32_t activation,
+      const storage::OrchardStoredState &checkpoint);
   [[nodiscard]] std::pair<OrchardAccountState, orchard::WalletReceiver>
       IssueReceiver(orchard::WalletScope) const;
   [[nodiscard]] OrchardAccountState

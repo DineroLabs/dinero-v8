@@ -1350,6 +1350,7 @@ OrchardAccountDelivery::IssuedReceiver OrchardAccountDelivery::IssueCatalogWithR
     std::unique_ptr<Owner::CapturedCatalog> captured;
     std::unique_ptr<Owner::ViewingKey> viewing;
     orchard::WalletStorageIdentity identity;
+    std::optional<uint32_t> fresh_birth;
     {
         auto lease=w.AcquireDatabaseLease();
         Check(lease->Session()==session&&lease->Database()&&w.database_leases_==1);
@@ -1358,6 +1359,7 @@ OrchardAccountDelivery::IssuedReceiver OrchardAccountDelivery::IssueCatalogWithR
         // Derive only viewing authority while the existing seed is pinned.
         // No first-account schema or new identity is initialized by capture.
         auto seed=lease->CopyRecoverySeed(session);
+        fresh_birth=lease->SealedFreshBirthHeight(session);
         const auto keys=orchard::WalletKeys::FromSeed(seed->Bytes(),p.account);
         viewing=std::make_unique<Owner::ViewingKey>(keys);
         identity=ExistingIdentity(lease->Database(),p,false);tx.Commit();
@@ -1378,8 +1380,30 @@ OrchardAccountDelivery::IssuedReceiver OrchardAccountDelivery::IssueCatalogWithR
     auto account=[&]{
         if(!creating)return found->state.account;
         const auto origin=points({});
-        const auto initial=OrchardAccountState::Begin(p.domain,viewing->bytes,p.activation,origin.checkpoint.block_hash);
-        return OrchardAccountState::Restore(initial.Encode(),p.domain,viewing->bytes,p.activation,origin.checkpoint,origin.lookups);
+        const bool post_activation=origin.checkpoint.height>=p.activation;
+        // A generated catalog alone does not prove the seed was born after a
+        // late snapshot: an older generated seed may already own Orchard notes.
+        // Only the seed- and wallet-identity-sealed creation height permits an
+        // empty scan at the authenticated snapshot frontier. Every other seed
+        // scans the complete verified activation prefix before issuance.
+        const bool new_after_origin=post_activation&&inventory.catalog.generated&&
+            fresh_birth&&*fresh_birth>=origin.checkpoint.height;
+        auto initial=[&]{
+            if(new_after_origin)return OrchardAccountState::BeginFreshAtCheckpoint(
+                p.domain,viewing->bytes,p.activation,origin.checkpoint);
+            const auto activation=view.ActivationOrigin().checkpoint;
+            Check(activation.height+1==p.activation);
+            auto state=OrchardAccountState::Begin(
+                p.domain,viewing->bytes,p.activation,activation.block_hash);
+            for(uint32_t height=p.activation;height<=view.ActivationPrefixHeight();++height){
+                const auto step=view.PrefixStep(height);
+                state=state.Advance(step.context,*step.block,*step.state,*step.authorizations);
+            }
+            return state;
+        }();
+        Check(initial.Scan().Checkpoint()==origin.checkpoint);
+        return OrchardAccountState::Restore(initial.Encode(),p.domain,viewing->bytes,
+            p.activation,origin.checkpoint,origin.lookups);
     }();
     auto issued=account.IssueReceiver(scope);auto encoded=issued.first.Encode();
     const auto expected_revision=creating?0:found->state.revision;

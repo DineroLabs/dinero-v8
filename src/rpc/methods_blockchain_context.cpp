@@ -27,6 +27,9 @@
 #include "daemon/daemon_context.h"  // Full DaemonContext definition (replaces forward decl)
 #include "daemon/services/chainstate_service.h"
 #include "daemon/services/p2p_service.h"
+#if DINERO_WALLET_RAW_ORCHARD
+#include "p2p/orchard_phone_history.h"
+#endif
 #include "daemon/services/wallet_service.h"  // Phase W.1.1: For WalletService access
 #include "daemon/services/config_service.h"
 #include "daemon/services/prune_service.h"   // Phase P.2: For PruneService RPC wiring
@@ -2190,6 +2193,23 @@ static din::Json rpc_context_getsnapshotbootstrapstatus(const ExecutionContext& 
         result["services_ready"] = ibd.services_ready;
         result["snapshot_bootstrap"] = buildSnapshotBootstrapDiagnostics(ctx, chainstate);
         result["sync_stats"] = BuildSyncStatsJson(chainstate);
+#if DINERO_WALLET_RAW_ORCHARD
+        if (const auto peers = std::dynamic_pointer_cast<dinero::P2PService>(ctx.daemon->p2p)) {
+            result["orchard_catalog"]["ready"] = static_cast<bool>(peers->ReadyActivationCatalog());
+            result["orchard_catalog"]["expected_bytes"] = static_cast<Json::UInt64>(peers->OrchardCatalogExpectedBytes());
+            if (const auto history = peers->PhoneHistoryDownload()) {
+                const auto progress = history->Observe();
+                auto& orchard = result["orchard_history"];
+                orchard["source_target_available"] = chainstate->PhoneHistoryTarget(false).has_value();
+                orchard["requested"] = progress.requested;
+                orchard["ready"] = progress.ready;
+                orchard["verified_height"] = progress.verified_height;
+                orchard["target_height"] = progress.target_height;
+                orchard["iterations"] = static_cast<Json::UInt64>(history->Iterations());
+                if (!progress.error.empty()) orchard["error"] = progress.error;
+            }
+        }
+#endif
     } catch (const std::exception& e) {
         result["error"]["code"] = -32603;
         result["error"]["message"] = std::string("getsnapshotbootstrapstatus failed: ") + e.what();

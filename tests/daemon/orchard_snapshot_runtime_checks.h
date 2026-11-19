@@ -3171,6 +3171,17 @@ TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles)
             const auto accumulator=service->getUtreexoRpcSnapshot();ASSERT_TRUE(accumulator.ok());
             EXPECT_EQ(accumulator->block_hash,selected.block_hash);EXPECT_EQ(accumulator->height,selected.block_height);
             EXPECT_EQ(accumulator->compact,stateless);
+            // A late full-v6 snapshot needs the same independently verified
+            // activation-prefix source as the compact snapshot. The full coin
+            // owner alone cannot prove an Orchard wallet's earlier history.
+            EXPECT_FALSE(service->PhoneHistoryTarget().has_value());
+            service->RequestRetainedPhoneHistoryData();
+            const auto history_target=service->PhoneHistoryTarget();
+            ASSERT_TRUE(history_target.has_value());
+            EXPECT_EQ(history_target->activation,Params().orchard_activation_height);
+            EXPECT_EQ(history_target->base,metadata.block_hash);
+            EXPECT_EQ(history_target->height,selected.block_height);
+            EXPECT_EQ(history_target->hash,selected.block_hash);
             if(!stateless) {
                 GetConfig().utreexo_stateless=true;
                 EXPECT_FALSE(service->getUtreexoRpcSnapshot().ok()); // no legacy fallback in Orchard

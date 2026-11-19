@@ -8009,8 +8009,27 @@ din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Js
         return result;
     }
 
-    auto creation_owner = wallet_service->AcquireCreationOwner();
     const uint32_t birth_height = ctx.daemon->chainstate ? ctx.daemon->chainstate->getBlockHeight() : 0;
+#if DINERO_WALLET_RAW_ORCHARD
+    // Creating a post-activation wallet promises a usable Orchard receiver.
+    // A late snapshot can expose the selected tip before its independently
+    // verified Orchard history is available. Refuse before creating any wallet
+    // instead of returning a partial wallet with a silently missing address.
+    if (birth_height >= dinero::Params().orchard_activation_height) {
+        const auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        const auto replay = source ? source->getRuntimeAccountReplay() :
+            dinero::StatusOr<std::shared_ptr<const dinero::RuntimeAccountReplay>>(dinero::Status::Invalid);
+        if (!replay.ok()) {
+            result["error"] = "Orchard history is not ready; wallet was not created. Retry after history sync.";
+            result["error_code"] = "orchard_history_pending";
+            result["retryable"] = replay.status()==dinero::Status::NotFound ||
+                replay.status()==dinero::Status::Invalid;
+            result["source_status"] = dinero::StatusToString(replay.status());
+            return result;
+        }
+    }
+#endif
+    auto creation_owner = wallet_service->AcquireCreationOwner();
     result = dinero::rpc::RpcCreateHDWallet(params, &wallet_service->get(), birth_height);
     if (!result.isMember("error")) {
         wallet_service->EnsureRuntimeWalletBindings();

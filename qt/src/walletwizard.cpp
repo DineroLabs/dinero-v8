@@ -722,9 +722,11 @@ CreateSeedPage::CreateSeedPage(ConnectionManager* connMgr, QWidget* parent)
     , connMgr_(connMgr)
     , rpcTimeout_(new QTimer(this))
     , seedGenerated_(false)
-    , seedVisible_(false) {
+    , seedVisible_(false)
+    , rpcPending_(false) {
 
-  // Configure timeout timer (30 seconds)
+  // A verified Orchard replay can outlast this status timer. It must never
+  // cancel the in-flight creation request or encourage a duplicate request.
   rpcTimeout_->setSingleShot(true);
   rpcTimeout_->setInterval(30000);
   setTitle("Your Seed Phrase");
@@ -764,6 +766,10 @@ CreateSeedPage::CreateSeedPage(ConnectionManager* connMgr, QWidget* parent)
   btnReveal_->setEnabled(false);
   connect(btnReveal_, &QPushButton::clicked, this, &CreateSeedPage::onRevealClicked);
   layout->addWidget(btnReveal_);
+  btnRetry_ = new QPushButton("Retry wallet creation", this);
+  btnRetry_->setVisible(false);
+  connect(btnRetry_, &QPushButton::clicked, this, &CreateSeedPage::onGenerateSeed);
+  layout->addWidget(btnRetry_);
   
   // Compatibility info
   auto* compatGroup = new QGroupBox("📱 Seed & Address Compatibility");
@@ -807,6 +813,7 @@ void CreateSeedPage::initializePage() {
 
 void CreateSeedPage::onGenerateSeed() {
   // 🛡️ Bulletproof wallet creation via ConnectionManager
+  if (rpcPending_) return;
   if (!connMgr_) {
     lblSeed_->setText("❌ Error: Connection manager not available");
     return;
@@ -818,6 +825,7 @@ void CreateSeedPage::onGenerateSeed() {
   lblSeed_->setProperty("actualSeed", QString());
   btnReveal_->setEnabled(false);
   btnReveal_->setText("👁️ Reveal Seed");
+  btnRetry_->setVisible(false);
 
   const QString walletName = currentWizardWalletName(wizard());
   if (walletName.isEmpty()) {
@@ -827,7 +835,7 @@ void CreateSeedPage::onGenerateSeed() {
   }
 
   // Show generating status
-  lblSeed_->setText(QString("🔄 Generating secure seed phrase for wallet '%1'...").arg(walletName));
+  lblSeed_->setText(QString("🔄 Preparing wallet '%1' and verifying Orchard history. This can take a few minutes...").arg(walletName));
   lblSeed_->setStyleSheet(
     "QLabel { "
     "  background: #2b2b2b; "
@@ -850,25 +858,22 @@ void CreateSeedPage::onGenerateSeed() {
     walletWizard->setProperty("provisionedMode", QString());
   }
 
-  // Start timeout timer (30 seconds)
+  // This timer only changes the status text; the RPC remains in flight.
   rpcTimeout_->start();
   connect(rpcTimeout_, &QTimer::timeout, this, [this]() {
-    lblSeed_->setText("⏱️ Request timed out after 30 seconds.\n\n"
-                      "Please check that:\n"
-                      "• Daemon is running\n"
-                      "• ConnectionManager is connected\n\n"
-                      "Click 'Generate Seed' to try again.");
-    lblSeed_->setStyleSheet("QLabel { color: #ff6b6b; background: #ffe3e3; padding: 20px; }");
-    btnReveal_->setEnabled(false);
-    qWarning() << "CreateSeedPage: RPC call timed out after 30 seconds";
+    if (!rpcPending_) return;
+    lblSeed_->setText("Still verifying Orchard history. Keep this window open; the wallet creation request is still running.");
+    lblSeed_->setStyleSheet("QLabel { color: #f59f00; background: #2b2b2b; padding: 20px; }");
   }, Qt::SingleShotConnection);
 
   // Call via ConnectionManager (automatically queued if daemon not ready)
+  rpcPending_ = true;
   connMgr_->callNamed("wallet.createhd", params,
     // Success callback
     [this, walletName](QJsonObject result) {
       // Stop timeout timer
       rpcTimeout_->stop();
+      rpcPending_ = false;
 
       QJsonObject payload = result;
       if (payload.contains("result") && payload.value("result").isObject()) {
@@ -889,12 +894,16 @@ void CreateSeedPage::onGenerateSeed() {
           wizard()->setProperty("walletRollbackCandidateName", QString());
         QString rollbackError;
         rollbackProvisionedWallet(wizard(), &rollbackError);
-        lblSeed_->setText("❌ Error generating seed: " + errorText +
-                          (rollbackError.isEmpty()
-                            ? QString()
-                            : "\n\nRollback warning:\n" + rollbackError));
-        lblSeed_->setStyleSheet("QLabel { color: #ff6b6b; background: #ffe3e3; padding: 20px; }");
+        const bool historyPending = payload.value("error_code").toString() == "orchard_history_pending";
+        lblSeed_->setText(historyPending
+            ? "Orchard history is still downloading and verifying. No wallet was created. Retry after sync progresses."
+            : "❌ Error generating seed: " + errorText +
+                (rollbackError.isEmpty() ? QString() : "\n\nRollback warning:\n" + rollbackError));
+        lblSeed_->setStyleSheet(historyPending
+            ? "QLabel { color: #f59f00; background: #2b2b2b; padding: 20px; }"
+            : "QLabel { color: #ff6b6b; background: #ffe3e3; padding: 20px; }");
         btnReveal_->setEnabled(false);
+        btnRetry_->setVisible(historyPending);
         qWarning() << "CreateSeedPage: wallet.createhd returned application error:"
                    << QJsonDocument(payload).toJson(QJsonDocument::Compact);
         return;
@@ -1019,6 +1028,7 @@ void CreateSeedPage::onGenerateSeed() {
     [this](QString error) {
       // Stop timeout timer
       rpcTimeout_->stop();
+      rpcPending_ = false;
 
       // A name collision means the node created nothing under this name: keep
       // the existing wallet. Transport failures keep the name for cleanup.
@@ -1804,7 +1814,7 @@ void CompletionPage::initializePage() {
         }
 
         if (!creationAddressesReady) {
-          lblStatus_->setText(QString("⚠️ Wallet %1 and unlocked, but one or more receive addresses could not be prepared. Check the Wallet tab before sharing an address.").arg(walletAction));
+          lblStatus_->setText(QString("⚠️ Wallet %1 and unlocked, but a receive address is still missing. Check Wallet for Taproot and P2MR, then open Shielded → Orchard → Set up Orchard account after history verification finishes.").arg(walletAction));
         } else {
           lblStatus_->setText(QString("✅ Wallet %1, encrypted, and unlocked.").arg(walletAction));
         }

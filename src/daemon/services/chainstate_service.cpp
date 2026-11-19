@@ -7995,7 +7995,11 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             auto* self=const_cast<ChainstateService*>(this);
             std::unique_lock<std::mutex> snapshot(self->snapshot_load_mutex_);
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
-            if(assumeutxo_active_&&!compact_startup_&&!IsBackgroundValidationComplete()){
+            // Only the pre-Orchard stateless imported parent has an empty
+            // activation replay. A full-v6 snapshot already has Orchard state
+            // and must use the separately authenticated activation prefix.
+            if(assumeutxo_active_&&!compact_startup_&&!orchard_snapshot_startup_&&
+               GetConfig().utreexo_stateless&&!IsBackgroundValidationComplete()){
                 auto imported=self->CaptureImportedWalletSourceUnderLock(snapshot,*expected_index);
                 if(!imported.ok())return imported.status();
                 return RuntimeAccountReplay::EmptyActivationParent((*imported)->next);
@@ -10141,6 +10145,17 @@ consensus::ConnectBlockResult ChainstateService::ProcessIncomingStoredBlock(cons
 
         // P2 Fix: Reset stall tracking when blocks from a better chain arrive.
         ResetTrackedStallForBlock(hash_hex, "tracked stored block received");
+
+        // A v6 snapshot fixes the selected branch at and below its authenticated
+        // base. Background validation still consumes these bodies. The acceptor
+        // has already considered activation; avoid this wrapper's second
+        // ActivateBestChain pass for historical bodies that cannot change the
+        // selected snapshot tip. Above the floor, keep the ordinary path.
+        {
+            std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+            if (orchard_snapshot_startup_ && result.height <= orchard_snapshot_startup_->base.height)
+                return consensus::ConnectBlockResult::ACCEPTED_NOT_ACTIVE;
+        }
 
         // P2 Fix: Trigger ActivateBestChain after every accepted stored block.
         // Fork blocks from the scheduler-drain path need immediate reorg
@@ -20864,16 +20879,21 @@ std::optional<p2p::OrchardPhoneHistoryTarget> ChainstateService::PhoneHistoryTar
     if(activation_mutex_.HeldByCurrentThread()||(require_request&&!orchard_phone_history_requested_.load()))return {};
     try{
         std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+        const bool compact_snapshot=compact_startup_&&compact_startup_->owner&&
+            !consensus_utxo_set_&&GetConfig().utreexo_stateless;
+        const bool full_snapshot=!compact_startup_&&consensus_utxo_set_&&
+            !GetConfig().utreexo_stateless;
         if(!IsStarted()||safe_mode_active_||!selected_read_accepting_||!chain_db_||!active_tip_||
-            !compact_startup_||!compact_startup_->owner||!orchard_snapshot_startup_||
-            !header_chain_selector_||consensus_utxo_set_||!GetConfig().utreexo_stateless||
+            !orchard_snapshot_startup_||!header_chain_selector_||
+            (!compact_snapshot&&!full_snapshot)||
             !consensus::OrchardProfileConfigurationValid(Params()))return {};
         const auto activation=Params().orchard_activation_height;
         if(!activation||activation==UINT32_MAX||Params().orchard_catalog_commitment_activation_height!=activation||
             orchard_snapshot_startup_->base.height<activation||active_tip_->height<activation||
             active_tip_->height>=uint32_t(INT32_MAX))return {};
         const auto selected=UtreexoRpcSnapshotUnderLock();const auto sync=GetSyncSnapshot();
-        if(!selected.ok()||!selected->compact||selected->height!=active_tip_->height||selected->block_hash!=active_tip_->hash)return {};
+        if(!selected.ok()||selected->compact!=compact_snapshot||
+            selected->height!=active_tip_->height||selected->block_hash!=active_tip_->hash)return {};
         // The initial explicit wallet request requires convergence. Ongoing
         // DATA acquisition must not discard its authenticated prefix whenever
         // a new header briefly leads the canonical tip. Final wallet adoption
@@ -20887,6 +20907,11 @@ std::optional<p2p::OrchardPhoneHistoryTarget> ChainstateService::PhoneHistoryTar
 #else
     (void)require_request;return {};
 #endif
+}
+
+bool ChainstateService::HasOrchardSnapshotHistorySource() {
+    std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+    return bool(orchard_snapshot_startup_);
 }
 
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
