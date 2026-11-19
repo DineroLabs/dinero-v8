@@ -1073,6 +1073,61 @@ std::string SwapManager::Refund(const std::string& id, uint32_t now) {
     throw std::runtime_error("unknown swap " + id);
 }
 
+SwapManager::RecoveredDeposits SwapManager::RecoverBtcDeposits(const std::string& btc_address, uint32_t extra_indexes) {
+    std::lock_guard<std::mutex> lock(mu_);
+    const Bytes32 store_key = StoreKey();
+    const DepositOps ops = DepositOpsFor(CounterChain::Bitcoin);  // refuses a node that has no Bitcoin deposits
+    const auto to_script = BtcPayoutScriptFromAddress(btc_address, config_.runner.btc_hrp);
+    if (extra_indexes > 1000) throw std::invalid_argument("at most 1000 indexes beyond the ones in use");
+
+    // Indexes whose deposit is still spoken for.
+    std::map<uint32_t, std::string> busy;
+    for (const auto& [index, path] : ScanDir(".deposit")) busy[index] = "its deposit is waiting for you to accept or cancel";
+    uint32_t highest = 0;
+    bool any = false;
+    for (const char* ext : {".swap", ".offer", ".deposit"}) {
+        const auto files = ScanDir(ext);
+        if (!files.empty()) {
+            highest = std::max(highest, files.rbegin()->first);
+            any = true;
+        }
+    }
+    for (const auto& [index, path] : ScanDir(".swap")) {
+        try {
+            const SwapSession s = live_.count(index) ? live_[index].runner->session() : LoadSession(index, store_key);
+            if (s.record.role != Role::BtcSeller || s.record.offer.chain != CounterChain::Bitcoin) continue;
+            // Until the lock is in a block its inputs are only spent in mempools: a
+            // sweep now could compete with our own lock. From BtcLocked on it is confirmed.
+            if (s.record.state == SwapState::Accepted || s.record.state == SwapState::BtcLockBroadcast) {
+                busy[index] = "its swap has not locked yet";
+            }
+        } catch (const std::exception&) {
+            busy[index] = "its swap record cannot be read";
+        }
+    }
+
+    RecoveredDeposits out;
+    const uint32_t last = (any ? highest : 0) + extra_indexes;
+    for (uint32_t index = 0; index <= last; ++index) {
+        ++out.indexes_checked;
+        if (const auto it = busy.find(index); it != busy.end()) {
+            out.skipped.push_back("index " + std::to_string(index) + ": " + it->second);
+            continue;
+        }
+        const Bytes32 key = BoundZecDepositKey(derive_, config_.network, index, store_key, ops.key_branch);
+        const ZecDepositStatus status = ops.status(key);  // throws if no server answers: nothing is half done silently
+        if (status.seen_zat == 0) continue;
+        try {
+            const std::string txid = ops.sweep(key, to_script);
+            out.sweeps.push_back({index, status.seen_zat, txid});
+        } catch (const std::exception& e) {
+            out.skipped.push_back("index " + std::to_string(index) + ": " + std::to_string(status.seen_zat) +
+                                  " sat found but not sent (" + e.what() + ")");
+        }
+    }
+    return out;
+}
+
 bool SwapManager::TickAll(uint32_t now) {
     std::lock_guard<std::mutex> lock(mu_);
     Bytes32 store_key;

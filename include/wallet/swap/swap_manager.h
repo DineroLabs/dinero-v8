@@ -215,6 +215,26 @@ public:
     // SwapRunner::ForceRefund). Returns the txid; throws with the node's reason.
     std::string Refund(const std::string& id, uint32_t now_unix);
 
+    // Bitcoin deposit addresses of this wallet that still hold coins, sent to
+    // `btc_address`: a payment that arrived after its swap's lock was built or
+    // after the swap ended, and everything after a restore from the seed
+    // (the addresses are derived from the seed, so no swap record is needed).
+    // Looks at every swap index used on this node and `extra_indexes` beyond
+    // (a restored wallet has no records: the caller says how far to look).
+    // Indexes whose deposit may still fund a swap are left alone and named in
+    // `skipped`. Needs the light Bitcoin support with deposits.
+    struct RecoveredDeposits {
+        struct Sweep {
+            uint32_t index{};
+            uint64_t amount_sat{};  // what the address held (the network fee comes out of it)
+            std::string txid;
+        };
+        std::vector<Sweep> sweeps;
+        std::vector<std::string> skipped;   // "index 4: its swap has not locked yet", …
+        uint32_t indexes_checked{};
+    };
+    RecoveredDeposits RecoverBtcDeposits(const std::string& btc_address, uint32_t extra_indexes);
+
     // One tick of every unfinished swap. Returns false (and does nothing) when
     // the wallet is locked: swaps are paused, not failed.
     bool TickAll(uint32_t now_unix);

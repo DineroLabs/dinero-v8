@@ -63,6 +63,7 @@ static const std::unordered_set<std::string> ADMIN_METHODS = {
     "wallet.orchard.queuespend",
     "wallet.orchard.finishspend",
     "swap.deposit",  // allocates a swap and its deposit address
+    "swap.recoverdeposits",  // sends BTC left on deposit addresses to an address of the user's
     "wallet.importprivkey",
     "wallet.importmnemonic",
     "wallet.exportmnemonic",

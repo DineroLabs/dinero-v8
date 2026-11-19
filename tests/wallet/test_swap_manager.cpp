@@ -1078,6 +1078,127 @@ TEST(SwapManager, AnUnusedBitcoinDepositIsWithdrawn) {
     EXPECT_TRUE(bob.List().empty());
 }
 
+// BTC that reaches a deposit address late, or sits there after a restore from
+// the seed, is sent to an address of the user's. A deposit that may still fund
+// a swap is left alone.
+TEST(SwapManager, StrayBitcoinDepositsAreRecovered) {
+    TempDir da("light_rec_alice"), db("light_rec_bob");
+    FakeWallet wa{0xf8}, wb{0xf9};
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    const std::string home = P2trAddress("bcrt", 0x66);
+
+    // What each deposit address holds, by the key asked about.
+    std::map<Bytes32, uint64_t> held;
+    std::vector<std::pair<Bytes32, std::vector<uint8_t>>> sweeps;
+    bool reachable = true;
+    LightBtcSupport light;
+    light.make_io = [](const SwapSession& s, const RunnerConfig& rc, const Bytes32&) {
+        return std::make_unique<RpcSwapChainIo>(kNoDin, kNoBtc, s, rc);
+    };
+    light.tip_height = [] { return uint32_t{800}; };
+    light.deposit_address = [](const Bytes32&) { return std::string("bcrt1qdeposit"); };
+    light.deposit_status = [&](const Bytes32& key) {
+        if (!reachable) throw std::runtime_error("cannot reach any Bitcoin server to read the deposit");
+        ZecDepositStatus st;
+        st.seen_zat = st.confirmed_zat = held.count(key) ? held[key] : 0;
+        st.confirmations = st.seen_zat ? 6 : 0;
+        return st;
+    };
+    light.sweep_deposit = [&](const Bytes32& key, const std::vector<uint8_t>& to) {
+        sweeps.emplace_back(key, to);
+        held.erase(key);
+        return std::string(64, 'a' + static_cast<char>(sweeps.size()));
+    };
+    auto key_of = [&](uint32_t index) { return KeyAt(wb.Deriver(), {kSwapKeyPurpose, 2, 7, index}); };
+
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    bob.SetLightBitcoin(light);
+    // Index 0: a deposit still waiting. Index 1: a swap accepted, not locked yet. Both are spoken for.
+    const std::string offer0 = alice.MakeOffer(Request(), kNow);
+    bob.PrepareDeposit(offer0, home, kNow + 1);
+    OfferRequest second = Request();
+    second.din_amount_una += 1;  // another offer
+    const std::string offer1 = alice.MakeOffer(second, kNow);
+    bob.PrepareDeposit(offer1, home, kNow + 2);
+    held[key_of(0)] = 500'000;
+    held[key_of(1)] = 1'003'000;
+    ASSERT_TRUE(bob.Accept(offer1, P2trAddress("rdin", 0x31), "", kNow + 3).accept_text.has_value());
+    // A stray payment far beyond the indexes in use: what a restored wallet would hold.
+    held[key_of(9)] = 70'000;
+
+    auto r = bob.RecoverBtcDeposits(home, /*extra_indexes=*/5);  // looks at 0..6
+    EXPECT_EQ(r.indexes_checked, 7u);
+    EXPECT_TRUE(r.sweeps.empty());
+    ASSERT_EQ(r.skipped.size(), 2u);
+    EXPECT_EQ(r.skipped[0], "index 0: its deposit is waiting for you to accept or cancel");
+    EXPECT_EQ(r.skipped[1], "index 1: its swap has not locked yet");
+    EXPECT_TRUE(sweeps.empty());  // nothing that may still fund a swap was touched
+
+    r = bob.RecoverBtcDeposits(home, 20);  // far enough to reach index 9
+    ASSERT_EQ(r.sweeps.size(), 1u);
+    EXPECT_EQ(r.sweeps[0].index, 9u);
+    EXPECT_EQ(r.sweeps[0].amount_sat, 70'000u);
+    EXPECT_EQ(r.sweeps[0].txid.size(), 64u);
+    ASSERT_EQ(sweeps.size(), 1u);
+    EXPECT_EQ(sweeps[0].first, key_of(9));
+    EXPECT_EQ(sweeps[0].second, PayoutScriptFromAddress(home, "bcrt"));
+    EXPECT_TRUE(bob.RecoverBtcDeposits(home, 20).sweeps.empty());  // nothing left the second time
+
+    // The swap at index 1 has locked: a payment that reaches its address now is a stray.
+    {
+        const auto key = SwapStoreKeyFromSeed(wb.Deriver(), SwapNetwork::Regtest);
+        const std::string path = db.path + "/swap-1.swap";
+        auto s = EncryptedFileSwapStore::Load(path, key);
+        s.record.state = SwapState::BtcLocked;
+        EncryptedFileSwapStore(path, key).Save(s);
+    }
+    SwapManager later(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    later.SetLightBitcoin(light);
+    held[key_of(1)] = 25'000;  // the late payment
+    r = later.RecoverBtcDeposits(home, 0);
+    ASSERT_EQ(r.sweeps.size(), 1u);
+    EXPECT_EQ(r.sweeps[0].index, 1u);
+    EXPECT_EQ(r.sweeps[0].amount_sat, 25'000u);
+    ASSERT_EQ(r.skipped.size(), 1u);  // index 0 is still waiting
+    EXPECT_EQ(held.count(key_of(0)), 1u);
+
+    // A wallet restored from its seed on a new machine: no records at all, the coins are still found.
+    TempDir fresh("light_rec_restored");
+    SwapManager restored(Config(fresh.path), wb.Deriver(), kNoDin, kNoBtc);
+    restored.SetLightBitcoin(light);
+    held[key_of(3)] = 111'000;
+    r = restored.RecoverBtcDeposits(home, 10);
+    ASSERT_EQ(r.sweeps.size(), 2u);  // index 0 (no record here says it is waiting) and index 3
+    EXPECT_EQ(r.sweeps[0].index, 0u);
+    EXPECT_EQ(r.sweeps[1].index, 3u);
+    EXPECT_TRUE(r.skipped.empty());
+
+    // Refusals: a bad or foreign address, no server, an absurd range, a node that cannot pay BTC.
+    EXPECT_THROW(restored.RecoverBtcDeposits("nonsense", 5), std::invalid_argument);
+    EXPECT_THROW(restored.RecoverBtcDeposits("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2", 5), std::invalid_argument);
+    EXPECT_THROW(restored.RecoverBtcDeposits(home, 1001), std::invalid_argument);
+    reachable = false;
+    EXPECT_THROW(restored.RecoverBtcDeposits(home, 5), std::runtime_error);  // said, not reported as "nothing found"
+    reachable = true;
+    EXPECT_THROW(alice.RecoverBtcDeposits(home, 5), std::runtime_error);     // a Bitcoin Core node has no deposits
+    // A sweep the network refuses is reported for that address; the others still go.
+    light.sweep_deposit = [&](const Bytes32& key, const std::vector<uint8_t>&) -> std::string {
+        if (key == key_of(2)) throw std::runtime_error("Bitcoin transaction refused: dust");
+        held.erase(key);
+        return std::string(64, 'b');
+    };
+    TempDir other("light_rec_partial");
+    SwapManager partial(Config(other.path), wb.Deriver(), kNoDin, kNoBtc);
+    partial.SetLightBitcoin(light);
+    held[key_of(2)] = 3'000;
+    held[key_of(4)] = 40'000;
+    r = partial.RecoverBtcDeposits(home, 6);
+    ASSERT_EQ(r.sweeps.size(), 1u);
+    EXPECT_EQ(r.sweeps[0].index, 4u);
+    ASSERT_EQ(r.skipped.size(), 1u);
+    EXPECT_EQ(r.skipped[0], "index 2: 3000 sat found but not sent (Bitcoin transaction refused: dust)");
+}
+
 TEST(SwapManager, DepositsBelongToTheNodesThatCanUseThem) {
     TempDir da("light_who_alice"), db("light_who_core"), dc("light_who_sell");
     FakeWallet wa{0xf5}, wb{0xf6}, wc{0xf7};

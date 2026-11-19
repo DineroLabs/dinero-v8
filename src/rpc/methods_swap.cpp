@@ -334,6 +334,39 @@ din::Json RpcRefund(const ExecutionContext& ctx, const din::Json& params) {
     }
 }
 
+// Sends what is left on this wallet's Bitcoin deposit addresses to an address
+// of the user's: late payments, and everything after a restore from the seed.
+din::Json RpcRecoverDeposits(const ExecutionContext& ctx, const din::Json& params) {
+    if (auto e = Refuse(ctx, true)) return *e;
+    if (!Arg(params, "btc_address").isString()) {
+        return Error("usage: swap.recoverdeposits {btc_address, [extra_indexes]}: where to send BTC found on this "
+                     "wallet's swap deposit addresses; extra_indexes (default 20) looks beyond the swaps this node "
+                     "knows, for a wallet restored from its seed");
+    }
+    try {
+        const uint32_t extra = Arg(params, "extra_indexes").isUInt() ? Arg(params, "extra_indexes").asUInt() : 20;
+        const auto r = SwapService::Active()->manager()->RecoverBtcDeposits(Arg(params, "btc_address").asString(), extra);
+        din::Json out(Json::objectValue);
+        out["indexes_checked"] = r.indexes_checked;
+        out["sweeps"] = Json::Value(Json::arrayValue);
+        uint64_t total = 0;
+        for (const auto& s : r.sweeps) {
+            din::Json j(Json::objectValue);
+            j["index"] = s.index;
+            j["amount_sat"] = Json::UInt64(s.amount_sat);
+            j["txid"] = s.txid;
+            out["sweeps"].append(j);
+            total += s.amount_sat;
+        }
+        out["found_sat"] = Json::UInt64(total);
+        out["skipped"] = Json::Value(Json::arrayValue);
+        for (const auto& why : r.skipped) out["skipped"].append(why);
+        return out;
+    } catch (const std::exception& e) {
+        return Error(e.what());
+    }
+}
+
 din::Json RpcCancel(const ExecutionContext& ctx, const din::Json& params) {
     if (auto e = Refuse(ctx, false)) return *e;
     const din::Json& id = params.isArray() && params.size() == 1 && params[0].isString() ? params[0] : Arg(params, "id");
@@ -358,6 +391,7 @@ void registerSwapMethods() {
     g_rpcRegistry.registerHandler("swap.status", RpcStatus, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.cancel", RpcCancel, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.refund", RpcRefund, RegisterMode::Overwrite, "context-aware");
+    g_rpcRegistry.registerHandler("swap.recoverdeposits", RpcRecoverDeposits, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.deposit", RpcDeposit, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.capabilities", RpcCapabilities, RegisterMode::Overwrite, "context-aware");
 }

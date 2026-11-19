@@ -151,4 +151,22 @@ d=json.loads(sys.argv[1]); t=d["total"]
 print(int(t) if isinstance(t,int) and t > 10**6 else int(round(float(t)*1e8)))' "$BAL")
 check "bob's wallet received the DIN ($BOB_DIN una)" '[[ $BOB_DIN -ge 999000000 && $BOB_DIN -le 1000000000 ]]'
 
+echo "=== BTC that reaches a deposit address late is recovered ==="
+# A second withdrawal from an exchange arrives after the swap is over, and something lands on the first, cancelled address.
+"${BCLI[@]}" sendtoaddress "$ADDR" 0.0006 >/dev/null
+"${BCLI[@]}" sendtoaddress "$ADDR0" 0.0002 >/dev/null
+mine_btc 1; sleep 3
+HOME_ADDR=$("${BCLI[@]}" getnewaddress "" bech32m)
+REC=$(rpc $BPORT swap.recoverdeposits "{\"btc_address\":\"$HOME_ADDR\"}")
+echo "  $REC" | cut -c1-240
+check "both stray payments are found (80,000 sat)" '[[ "$(field "$REC" found_sat)" == 80000 ]]'
+mine_btc 1
+GOT=$(sats "$HOME_ADDR")
+check "and arrive at the address given, less two network fees ($GOT sat)" '(( GOT > 79000 && GOT < 80000 ))'
+check "the deposit addresses are empty again" '[[ "$(sats "$ADDR")" == 0 && "$(sats "$ADDR0")" == 0 ]]'
+REC2=$(rpc $BPORT swap.recoverdeposits "{\"btc_address\":\"$HOME_ADDR\"}")
+check "a second look finds nothing" '[[ "$(field "$REC2" found_sat)" == 0 ]]'
+out=$(rpc $BPORT swap.recoverdeposits '{"btc_address":"not-an-address"}' 2>&1 || true)
+check "a bad address is refused (${out:0:60})" '[[ "$out" == *"not a Bitcoin address"* ]]'
+
 [[ $fail -eq 0 ]] && echo "SWAP LIGHT BTC BUY REGTEST: PASS" || { echo "SWAP LIGHT BTC BUY REGTEST: FAIL"; grep -h "\[Swap\]" "$DIR"/*.log | tail -8; exit 1; }
