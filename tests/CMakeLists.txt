@@ -17959,6 +17959,42 @@ target_compile_definitions(test_swap_btc_esplora PRIVATE
 add_test(NAME SwapBtcEsplora COMMAND test_swap_btc_esplora)
 set_tests_properties(SwapBtcEsplora PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 60)
 
+# A swap's lock built from a deposit address (no Bitcoin wallet): coins, change, fees, signatures.
+add_executable(test_swap_btc_deposit
+  tests/wallet/test_swap_btc_deposit.cpp
+  src/wallet/swap/btc_deposit.cpp
+  src/wallet/swap/btc_raw_tx.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_btc_deposit gtest gtest_main)
+target_link_libraries(test_swap_btc_deposit PRIVATE dinero_consensus dinero_crypto gtest gtest_main)
+link_zstd_if_needed(test_swap_btc_deposit)
+target_include_directories(test_swap_btc_deposit PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/external
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapBtcDeposit COMMAND test_swap_btc_deposit)
+set_tests_properties(SwapBtcDeposit PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 60)
+
+add_executable(swap_btc_deposit_tool
+  tests/wallet/swap_btc_deposit_tool.cpp
+  src/wallet/swap/btc_deposit.cpp
+  src/wallet/swap/btc_header_chain.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/htlc.cpp
+)
+target_link_libraries(swap_btc_deposit_tool PRIVATE dinero_consensus dinero_crypto)
+link_zstd_if_needed(swap_btc_deposit_tool)
+target_include_directories(swap_btc_deposit_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
+if(DINERO_BITCOIND)
+  add_test(NAME SwapBtcDepositRegtest
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_btc_deposit_regtest.sh $<TARGET_FILE:swap_btc_deposit_tool>)
+  set_tests_properties(SwapBtcDepositRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 300 SKIP_RETURN_CODE 77)
+endif()
+
 # The light Bitcoin watcher against a simulated Bitcoin with lying and hiding servers.
 add_executable(test_swap_btc_light_watcher
   tests/wallet/test_swap_btc_light_watcher.cpp
