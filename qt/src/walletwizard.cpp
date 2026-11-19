@@ -1030,13 +1030,12 @@ void CreateSeedPage::onGenerateSeed() {
       rpcTimeout_->stop();
       rpcPending_ = false;
 
-      // The HTTP RPC envelope promotes handler errors to this callback. Both
-      // a name collision and the Orchard history preflight mean the node
-      // created no wallet. Never let rollback delete an existing wallet that
-      // happens to have the requested name.
+      // The HTTP RPC envelope promotes handler errors to this callback. A
+      // transport error can also leave creation's outcome unknown. Neither
+      // proves that this wizard owns a wallet with the requested name.
       const bool historyPending = error.contains(
           "Orchard history is not ready; wallet was not created", Qt::CaseInsensitive);
-      if (wizard() && (historyPending || classifyRestoreError(error) == RestoreErrorKind::NameExists))
+      if (wizard())
         wizard()->setProperty("walletRollbackCandidateName", QString());
       QString rollbackError;
       rollbackProvisionedWallet(wizard(), &rollbackError);
