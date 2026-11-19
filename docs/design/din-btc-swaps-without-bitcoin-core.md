@@ -1,7 +1,7 @@
 # DIN <-> BTC swaps without Bitcoin Core ("light Bitcoin")
 
 **Status:** design, revised 2026-11-18 after three independent reviews (security, code feasibility,
-architecture; section 12). Steps 0 to 4 are built on `claude/swaps-light-base` (section 13): on
+architecture; section 12). Steps 0 to 5 are built on `claude/swaps-light-base` (section 13): on
 regtest a whole swap completes with no Bitcoin Core on either side. Not offered to users: off by
 default at build time, refused on mainnet. Target: after v8.2.5.
 **Owner:** Claude. **Depends on:** `claude/swaps-multichain` landing in `dinero-main` first (section 8).
@@ -382,13 +382,22 @@ Differences from the plan above, each found while building:
 - **The fee buffer is `swap.btc_funding_fee_sat` (default 3,000 sat)**, added to the amount due; the
   lock pays the median of the servers' estimates, never below 1 sat/vB, and what the fee does not
   use returns with the change.
-- **Withdraw is not yet "in every state"** as section 3.3 asks. An unused deposit, and a swap that
-  has locked nothing, are swept on cancel. A payment that arrives after the lock was sent, or after
-  the swap finished, has no sweep path yet: the key is recoverable from the seed, but nothing in the
-  node moves those coins.
-- **Buying on mainnet still needs the watchtower**, and the tower still needs Bitcoin Core (step 5).
+- **Withdraw in every state is `swap.recoverdeposits {btc_address, [extra_indexes]}`.** An unused
+  deposit, and a swap that has locked nothing, are swept on cancel. Everything else (a payment that
+  arrives after the lock was built or after the swap ended, and all of it after a restore from the
+  seed) is sent to an address the user names. A deposit that may still fund a swap is left alone.
+- **Giving coins back does not need a proof.** A payment in a block below the header chain's
+  checkpoint cannot be proven (a stray deposit found a year later, with a newer release), yet it is
+  the user's money; and a coin a server invents only makes a sweep the network refuses. Sweeps
+  therefore take every unspent output the servers report whose transaction hashes right and pays the
+  deposit script. Funding a swap still needs the proof.
+- **The watchtower runs without Bitcoin Core** (`--btc-backend light`, step 5). A buyer on mainnet
+  still needs one, on a machine that stays on.
+- **Testnet4 tips disagree for blocks at a time.** Observed live: a peer and mempool.space were on
+  different, equally valid branches of minimum-difficulty blocks three deep, and the server's own
+  tip changed between two requests. A testnet rehearsal has to wait for more confirmations than
+  mainnet would; a payment in a block our chain is not on is simply "not yet", never accepted.
 
-Not built: late-payment sweep and seed-restore scan of deposit addresses (the rest of section 3.3),
-the fee-ceiling check in the Swap tab (section 4), the tower in light mode (step 5), the testnet4 and
-mainnet rehearsals (step 6), a CA bundle for Windows, fuzz targets beyond the in-test random-damage
+Not built: a button for `swap.recoverdeposits` in the Swap tab, the fee-ceiling check in the Swap
+tab (section 4), the testnet4 and mainnet rehearsals (step 6), a CA bundle for Windows, fuzz targets beyond the in-test random-damage
 loops. The Windows socket code is written and has never been compiled.

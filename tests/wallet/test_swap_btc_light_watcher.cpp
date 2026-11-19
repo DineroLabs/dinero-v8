@@ -814,6 +814,53 @@ TEST(BtcDepositWatcher, ServersCannotInflateOrHideADeposit) {
     EXPECT_THROW(BtcDepositWatcher(node.chain, {&honest.api}, {}), std::invalid_argument);
 }
 
+// Giving coins back does not need proof: a payment below the chain's checkpoint
+// cannot be proven, and an invented one only makes a sweep the network refuses.
+TEST(BtcDepositWatcher, RecoveryAlsoSeesWhatCannotBeProven) {
+    World world;
+    world.MineEmpty(12);
+    const Bytes old_payment = PayTo(kDepositScript, 300'000, 0x78);
+    world.Mine({old_payment});
+    world.MineEmpty(1);
+    const Bytes spent_payment = PayTo(kDepositScript, 90'000, 0x79);
+    world.Mine({spent_payment});
+    world.Broadcast(SpendOf(spent_payment, 0x7a));
+    const Bytes unconfirmed = PayTo(kDepositScript, 50'000, 0x7b);
+    world.Broadcast(unconfirmed);
+    Server server(world);
+
+    // A node whose header chain does not reach those blocks (it starts later, or is behind).
+    Node behind;  // knows only the genesis block
+    BtcDepositWatcher watcher(behind.chain, {&server.api}, kDepositScript);
+    auto proven = watcher.Observe();
+    EXPECT_TRUE(proven.ok);
+    EXPECT_EQ(proven.seen_sat, 0u);  // nothing provable: nothing a swap may be funded from
+
+    auto recovery = watcher.ObserveForRecovery();
+    EXPECT_TRUE(recovery.ok);
+    EXPECT_EQ(recovery.seen_sat, 300'000u);  // the unspent, confirmed payment; not the spent one, not the unconfirmed one
+    ASSERT_EQ(recovery.coins.size(), 1u);
+    EXPECT_EQ(recovery.coins[0].txid, TxidOf(old_payment));
+    EXPECT_TRUE(recovery.deep_coins.empty());  // never offered as funding
+    EXPECT_EQ(recovery.confirmed_sat, 0u);
+
+    // The bytes must still be the transaction named, and must pay our script.
+    Server liar(world, "liar");
+    liar.lie = [&](const std::string& path) -> std::optional<BtcHttpResponse> {
+        if (path == "/tx/" + BtcHashToHex(TxidOf(old_payment)) + "/hex") return BtcHttpResponse{200, Hex(PayTo(kDepositScript, 9'000'000, 0x7c))};
+        return std::nullopt;
+    };
+    BtcDepositWatcher fooled(behind.chain, {&liar.api}, kDepositScript);
+    EXPECT_EQ(fooled.ObserveForRecovery().seen_sat, 0u);
+    BtcDepositWatcher with_honest(behind.chain, {&liar.api, &server.api}, kDepositScript);
+    EXPECT_EQ(with_honest.ObserveForRecovery().seen_sat, 300'000u);
+
+    Server down(world, "down");
+    down.lie = [](const std::string&) { return std::optional<BtcHttpResponse>(BtcHttpResponse{0, ""}); };
+    BtcDepositWatcher silent(behind.chain, {&down.api}, kDepositScript);
+    EXPECT_FALSE(silent.ObserveForRecovery().ok);
+}
+
 TEST(BtcDepositWatcher, AReorgUncountsAPayment) {
     World world;
     world.MineEmpty(12);

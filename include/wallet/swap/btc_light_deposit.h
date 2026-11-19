@@ -43,6 +43,15 @@ public:
 
     BtcDepositView Observe();
 
+    // For sending coins BACK only (cancel, recovery): every unspent output a
+    // server reports as confirmed, proven or not. The raw transaction is still
+    // hashed here and must pay our script. A payment in a block below the
+    // header chain's checkpoint cannot be proven, yet it is the user's money;
+    // and a coin a server makes up costs nothing, since the sweep that tries
+    // to spend it is refused by the network. Never use this to decide that a
+    // deposit can fund a swap. `deep_coins` and `confirmed_sat` are left empty.
+    BtcDepositView ObserveForRecovery();
+
 private:
     struct Payment {
         Bytes32 block_hash{};

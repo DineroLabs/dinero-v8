@@ -118,6 +118,17 @@ std::function<void(uint32_t)> InstallLightBitcoin(swap::SwapManager& manager, co
         if (!view.ok) throw std::runtime_error("cannot reach any Bitcoin server to read the deposit");
         return view;
     };
+    // For giving coins back: also what cannot be proven (BtcDepositWatcher::ObserveForRecovery).
+    auto observe_for_recovery = [backend, deposits](const swap::Bytes32& key) {
+        std::lock_guard<std::mutex> one(deposits->mu);
+        const auto chain_lock = backend->Lock();
+        swap::BtcDepositWatcher watcher(backend->chain(), backend->servers(),
+                                        swap::BtcP2wpkhScript(swap::detail::CompressedOf(key)));
+        const swap::BtcDepositView view = watcher.ObserveForRecovery();
+        if (!view.ok) throw std::runtime_error("cannot reach any Bitcoin server to read the deposit");
+        return view;
+    };
+    support.recoverable_sat = [observe_for_recovery](const swap::Bytes32& key) { return observe_for_recovery(key).seen_sat; };
     support.deposit_address = [hrp](const swap::Bytes32& key) {
         return swap::BtcP2wpkhAddress(swap::detail::CompressedOf(key), hrp);
     };
@@ -129,8 +140,9 @@ std::function<void(uint32_t)> InstallLightBitcoin(swap::SwapManager& manager, co
         status.confirmations = view.newest_confirmations;
         return status;
     };
-    support.sweep_deposit = [backend, observe, funding_fee](const swap::Bytes32& key, const std::vector<uint8_t>& to) {
-        const swap::BtcDepositView view = observe(key);
+    support.sweep_deposit = [backend, observe_for_recovery, funding_fee](const swap::Bytes32& key,
+                                                                         const std::vector<uint8_t>& to) {
+        const swap::BtcDepositView view = observe_for_recovery(key);
         const auto feerate = backend->FeeRate(6);
         if (!feerate) throw std::runtime_error("cannot reach any Bitcoin server for the network fee");
         const auto sweep = swap::BuildBtcDepositSweep(view.coins, key, to, *feerate, funding_fee);

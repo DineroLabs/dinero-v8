@@ -29,6 +29,43 @@ bool BtcDepositWatcher::Spent(const Bytes32& txid, uint32_t vout) {
     return false;
 }
 
+BtcDepositView BtcDepositWatcher::ObserveForRecovery() {
+    BtcDepositView view;
+    std::vector<Bytes32> listed;
+    for (EsploraServer* server : servers_) {
+        const auto history = server->ScriptHistory(script_pubkey_);
+        if (!history) continue;
+        view.ok = true;
+        for (const EsploraScriptTx& entry : *history) {
+            if (!entry.status.confirmed) continue;
+            if (std::find(listed.begin(), listed.end(), entry.txid) == listed.end()) listed.push_back(entry.txid);
+        }
+    }
+    if (!view.ok) return view;
+    if (listed.size() > 50) listed.resize(50);
+    for (const Bytes32& txid : listed) {
+        std::optional<BtcRawTx> tx;
+        for (EsploraServer* server : servers_) {
+            const auto raw = server->RawTx(txid);
+            tx = raw ? ParseBtcRawTx(*raw) : std::nullopt;
+            if (tx && tx->txid == txid) break;  // these bytes are that transaction, whoever sent them
+            tx.reset();
+        }
+        if (!tx) continue;
+        for (size_t i = 0; i < tx->vout.size(); ++i) {
+            if (tx->vout[i].script_pubkey != script_pubkey_) continue;
+            if (Spent(txid, static_cast<uint32_t>(i))) continue;
+            BtcDepositCoin coin;
+            coin.txid = txid;
+            coin.vout = static_cast<uint32_t>(i);
+            coin.value_sat = tx->vout[i].value_sat;
+            view.coins.push_back(coin);
+            view.seen_sat += coin.value_sat;
+        }
+    }
+    return view;
+}
+
 BtcDepositView BtcDepositWatcher::Observe() {
     BtcDepositView view;
     // Payments proven earlier stand while their block is on our chain.

@@ -1173,6 +1173,23 @@ TEST(SwapManager, StrayBitcoinDepositsAreRecovered) {
     EXPECT_EQ(r.sweeps[1].index, 3u);
     EXPECT_TRUE(r.skipped.empty());
 
+    // What cannot be proven (a payment older than the header chain's start) is still found, when the
+    // support can say so: recovery asks what could be sent back, not what could fund a swap.
+    TempDir old("light_rec_old");
+    LightBtcSupport with_recovery = light;
+    std::map<Bytes32, uint64_t> unprovable{{key_of(5), 64'000}};
+    with_recovery.recoverable_sat = [&](const Bytes32& key) { return unprovable.count(key) ? unprovable[key] : uint64_t{0}; };
+    with_recovery.sweep_deposit = [&](const Bytes32& key, const std::vector<uint8_t>&) {
+        unprovable.erase(key);
+        return std::string(64, 'c');
+    };
+    SwapManager aged(Config(old.path), wb.Deriver(), kNoDin, kNoBtc);
+    aged.SetLightBitcoin(with_recovery);
+    r = aged.RecoverBtcDeposits(home, 8);
+    ASSERT_EQ(r.sweeps.size(), 1u);  // deposit_status shows nothing for it: recoverable_sat does
+    EXPECT_EQ(r.sweeps[0].index, 5u);
+    EXPECT_EQ(r.sweeps[0].amount_sat, 64'000u);
+
     // Refusals: a bad or foreign address, no server, an absurd range, a node that cannot pay BTC.
     EXPECT_THROW(restored.RecoverBtcDeposits("nonsense", 5), std::invalid_argument);
     EXPECT_THROW(restored.RecoverBtcDeposits("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2", 5), std::invalid_argument);

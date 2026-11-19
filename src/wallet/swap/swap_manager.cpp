@@ -1115,13 +1115,14 @@ SwapManager::RecoveredDeposits SwapManager::RecoverBtcDeposits(const std::string
             continue;
         }
         const Bytes32 key = BoundZecDepositKey(derive_, config_.network, index, store_key, ops.key_branch);
-        const ZecDepositStatus status = ops.status(key);  // throws if no server answers: nothing is half done silently
-        if (status.seen_zat == 0) continue;
+        // Throws if no server answers: nothing is half done silently.
+        const uint64_t found = light_btc_->recoverable_sat ? light_btc_->recoverable_sat(key) : ops.status(key).seen_zat;
+        if (found == 0) continue;
         try {
             const std::string txid = ops.sweep(key, to_script);
-            out.sweeps.push_back({index, status.seen_zat, txid});
+            out.sweeps.push_back({index, found, txid});
         } catch (const std::exception& e) {
-            out.skipped.push_back("index " + std::to_string(index) + ": " + std::to_string(status.seen_zat) +
+            out.skipped.push_back("index " + std::to_string(index) + ": " + std::to_string(found) +
                                   " sat found but not sent (" + e.what() + ")");
         }
     }

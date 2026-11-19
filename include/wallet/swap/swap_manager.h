@@ -91,6 +91,11 @@ struct LightBtcSupport {
     std::function<ZecDepositStatus(const Bytes32& deposit_key)> deposit_status;  // throws if no server answers
     // Sends every usable deposit coin to `to_script`; returns the txid, throws if none or refused.
     std::function<std::string(const Bytes32& deposit_key, const std::vector<uint8_t>& to_script)> sweep_deposit;
+    // What sweep_deposit would send: unlike deposit_status this also counts
+    // payments that cannot be proven (older than the header chain's
+    // checkpoint), which is right for giving coins back and for nothing else.
+    // Optional: without it deposit_status is used.
+    std::function<uint64_t(const Bytes32& deposit_key)> recoverable_sat;
     uint64_t funding_fee_sat{3000};  // part of the deposit: the most the lock's network fee may be
     bool CanPay() const { return deposit_address && deposit_status && sweep_deposit; }
 };
