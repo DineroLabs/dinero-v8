@@ -387,15 +387,24 @@ jobs:
             throw 'dinero-qt.exe does not import the CUDA driver and NVRTC runtime'
           }
 
-      - name: Verify Qt safety and header ancestor parity
+      - name: Verify Qt, header ancestor, and Orchard cache safety
         shell: powershell
         run: |
-          cmake --build build-msvc-native --config Release --parallel 2 --target test_daemon_output test_wallet_backup_lock test_header_skip_pointers
-          if ($LASTEXITCODE -ne 0) { throw 'Qt or header safety test build failed' }
+          cmake --build build-msvc-native --config Release --parallel 2 --target test_daemon_output test_wallet_backup_lock test_header_skip_pointers test_assumeutxo_replay
+          if ($LASTEXITCODE -ne 0) { throw 'Qt, header, or Orchard cache test build failed' }
           ctest --test-dir build-msvc-native\qt -C Release -R '^(DaemonOutputBeforeEventLoop|WalletBackupLock)$' --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw 'Qt safety test failed' }
           ctest --test-dir build-msvc-native -C Release -R '^HeaderSkipPointers$' --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw 'header ancestor parity test failed' }
+          $cacheTests = @(Get-ChildItem -Path 'build-msvc-native' -Filter 'test_assumeutxo_replay.exe' -Recurse -File)
+          if ($cacheTests.Count -ne 1) { throw 'expected one Orchard cache test executable' }
+          $cases = (& $cacheTests[0].FullName --gtest_list_tests) -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $cases -notmatch 'OrchardHistoryCache\.' -or
+              $cases -notmatch 'WindowsRetainsExactPublicBytesAndRefusesReplacement') {
+            throw 'Windows Orchard cache test case is absent'
+          }
+          ctest --test-dir build-msvc-native -C Release -R '^OrchardHistoryCache$' --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'Windows Orchard cache test failed' }
 
       - name: Build Windows server release and installer
         shell: powershell

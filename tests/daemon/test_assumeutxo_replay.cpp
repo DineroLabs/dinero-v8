@@ -1233,6 +1233,9 @@ int main(int argc, char** argv) {
 // separate task, not a build fix.
 #include "orchard_snapshot_runtime_checks.h"
 #endif
+#ifdef _WIN32
+#include "orchard_history_cache_windows_checks.h"
+#endif
 #include "orchard_compact_service_checks.h"
 #include "orchard_compact_handoff_checks.h"
 #include "orchard_compact_undo_handoff_checks.h"
