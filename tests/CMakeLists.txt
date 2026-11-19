@@ -17982,6 +17982,29 @@ target_include_directories(test_swap_btc_light_watcher PRIVATE
 add_test(NAME SwapBtcLightWatcher COMMAND test_swap_btc_light_watcher)
 set_tests_properties(SwapBtcLightWatcher PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 60)
 
+# The shared light Bitcoin backend: header sync (peers, then servers), the header file, broadcast.
+add_executable(test_swap_btc_light_backend
+  tests/wallet/test_swap_btc_light_backend.cpp
+  src/wallet/swap/btc_light_backend.cpp
+  src/wallet/swap/btc_p2p.cpp
+  src/wallet/swap/btc_header_store.cpp
+  src/wallet/swap/btc_esplora.cpp
+  src/wallet/swap/btc_merkle_proof.cpp
+  src/wallet/swap/btc_raw_tx.cpp
+  src/wallet/swap/btc_header_chain.cpp
+)
+add_dependencies(test_swap_btc_light_backend gtest gtest_main)
+target_link_libraries(test_swap_btc_light_backend PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_btc_light_backend)
+target_include_directories(test_swap_btc_light_backend PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/external
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapBtcLightBackend COMMAND test_swap_btc_light_backend)
+set_tests_properties(SwapBtcLightBackend PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 60)
+
 # HTTPS transport of the light Bitcoin client: the only part that links libcurl.
 add_library(dinero_swap_light_http STATIC ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_http_curl.cpp)
 target_include_directories(dinero_swap_light_http PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
