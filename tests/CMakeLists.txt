@@ -17937,6 +17937,28 @@ target_include_directories(test_swap_btc_p2p PRIVATE
 add_test(NAME SwapBtcP2p COMMAND test_swap_btc_p2p)
 set_tests_properties(SwapBtcP2p PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 120)
 
+# Public-server (Esplora) client: a real mainnet transaction proven into our chain, lying servers.
+add_executable(test_swap_btc_esplora
+  tests/wallet/test_swap_btc_esplora.cpp
+  src/wallet/swap/btc_esplora.cpp
+  src/wallet/swap/btc_merkle_proof.cpp
+  src/wallet/swap/btc_raw_tx.cpp
+  src/wallet/swap/btc_header_chain.cpp
+)
+add_dependencies(test_swap_btc_esplora gtest gtest_main)
+target_link_libraries(test_swap_btc_esplora PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_btc_esplora)
+target_include_directories(test_swap_btc_esplora PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/external
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+target_compile_definitions(test_swap_btc_esplora PRIVATE
+  DINERO_SWAP_FIXTURES="${CMAKE_SOURCE_DIR}/tests/wallet/fixtures")
+add_test(NAME SwapBtcEsplora COMMAND test_swap_btc_esplora)
+set_tests_properties(SwapBtcEsplora PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 60)
+
 # The same client over real sockets against a real Bitcoin Core (regtest).
 add_executable(swap_btc_p2p_tool
   tests/wallet/swap_btc_p2p_tool.cpp
