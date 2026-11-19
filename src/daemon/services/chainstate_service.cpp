@@ -7584,7 +7584,9 @@ void FillNativeP2MRTargetsV3(WalletManager& wallet,uint64_t session) {
 
 StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
 ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,UTXOIndex& metadata_index,
-        uint64_t expected_session,size_t material_limit_bytes,size_t orchard_events_per_pass) {
+        uint64_t expected_session,size_t material_limit_bytes,size_t orchard_events_per_pass,
+        bool* advanced_partial) {
+    if(advanced_partial)*advanced_partial=false;
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     if(activation_mutex_.HeldByCurrentThread() || !material_limit_bytes ||
        material_limit_bytes>128*1024*1024)return Status::Invalid;
@@ -7714,7 +7716,10 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 const auto orchard=resumeRuntimeOrchardDeliveryV3(
                     wallet,metadata_index,session,orchard_events_per_pass);
                 if(!orchard.ok())return orchard.status();
-                if(!*orchard)return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
+                if(!*orchard){
+                    if(advanced_partial)*advanced_partial=true;
+                    return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
+                }
                 continue_restored_account0();
             }
             return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
@@ -7775,13 +7780,18 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
         // available ordinary page before beginning an expensive Orchard
         // account step, so mining rewards cannot wait behind old account
         // history when this page already proves transparent backlog.
-        if(orchard_events_per_pass && applied.cursor!=(*page)->head)
+        if(orchard_events_per_pass && applied.cursor!=(*page)->head) {
+            if(advanced_partial)*advanced_partial=true;
             return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
+        }
         if(native) {
             const auto orchard=resumeRuntimeOrchardDeliveryV3(
                 wallet,metadata_index,session,orchard_events_per_pass);
             if(!orchard.ok())return orchard.status();
-            if(!*orchard)return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
+            if(!*orchard){
+                if(advanced_partial)*advanced_partial=true;
+                return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
+            }
         }
         return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
             RuntimeEnrolledWalletRecoveryResult{applied,{},(*page)->head,std::nullopt});
@@ -7790,7 +7800,7 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
       catch(...) { return Status::Internal; }
 #else
     (void)wallet;(void)metadata_index;(void)expected_session;(void)material_limit_bytes;
-    (void)orchard_events_per_pass;
+    (void)orchard_events_per_pass;(void)advanced_partial;
     return Status::Internal;
 #endif
 }

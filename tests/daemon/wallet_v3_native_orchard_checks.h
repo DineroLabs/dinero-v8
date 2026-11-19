@@ -170,10 +170,12 @@ TEST(WalletV3NativeOrchard, TransparentMiningRewardsAdvanceDuringOrchardReplay) 
     auto use=WalletService::AcquireWalletUse(f.wallet);
     auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
     const auto session=use->Wallet().AcquireDatabaseLease()->Session();
+    bool advanced_partial=false;
     const auto first=f.f.service->resumeRuntimeWalletRecoveryV3IfNeeded(
-        use->Wallet(),index->Index(),session,128*1024*1024,1);
+        use->Wallet(),index->Index(),session,128*1024*1024,1,&advanced_partial);
     ASSERT_TRUE(first.ok());
     EXPECT_FALSE(*first) << "one Orchard event is not the captured head";
+    EXPECT_TRUE(advanced_partial);
     EXPECT_LT(f.Account(0).account.Delivery().sequence,source_head);
     EXPECT_EQ(use->Wallet().getBlockchainHeight(),f.f.service->GetActiveTip()->height);
     auto request=f.RequestContext();
@@ -184,10 +186,12 @@ TEST(WalletV3NativeOrchard, TransparentMiningRewardsAdvanceDuringOrchardReplay) 
     // A newly mined block must be credited on the very next pass while the
     // independent Orchard account is still replaying older events.
     mined+=f.MineToWallet();
+    advanced_partial=false;
     const auto second=f.f.service->resumeRuntimeWalletRecoveryV3IfNeeded(
-        use->Wallet(),index->Index(),session,128*1024*1024,1);
+        use->Wallet(),index->Index(),session,128*1024*1024,1,&advanced_partial);
     ASSERT_TRUE(second.ok());
     EXPECT_FALSE(*second);
+    EXPECT_TRUE(advanced_partial);
     EXPECT_LT(f.Account(0).account.Delivery().sequence,NativeOrchardHead(f));
     const auto advanced=rpc_context_wallet_getbalance(request,din::obj());
     ASSERT_FALSE(advanced.isMember("error")) << advanced.toStyledString();
@@ -202,6 +206,29 @@ TEST(WalletV3NativeOrchard, TransparentMiningRewardsAdvanceDuringOrchardReplay) 
     }
     EXPECT_TRUE(complete);
     EXPECT_EQ(f.Account(0).account.Delivery().sequence,NativeOrchardHead(f));
+}
+
+TEST(WalletV3NativeOrchard, WorkerRevisitsPartialReplayBeforeNormalRetry) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-orchard-fast-revisit-index");
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ASSERT_FALSE(f.Call(0).isMember("error"));
+    for(int i=0;i<3;++i)(void)f.MineEmpty();
+    RuntimeDeliveryWorker worker(f.f.service,f.wallet,
+        RuntimeDeliveryWorker::Limits{1,std::chrono::seconds(30)});
+    worker.Start();
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(12);
+    RuntimeDeliveryWorker::Report report;
+    do {
+        report=worker.Snapshot();
+        if(report.wallet==RuntimeDeliveryWorker::WalletOutcome::AppliedPrefix)break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    } while(std::chrono::steady_clock::now()<deadline);
+    worker.Stop();
+    EXPECT_EQ(report.wallet,RuntimeDeliveryWorker::WalletOutcome::AppliedPrefix);
+    EXPECT_GT(report.wallet_recovery_attempts,1u);
 }
 
 TEST(WalletV3NativeOrchard, OrdinaryBacklogPreemptsOrchardReplay) {

@@ -1208,10 +1208,12 @@ public:
     // Enrolls one authenticated named wallet, restores its transparent history
     // from a checked source prefix, then resumes both owner-scoped stores.
     // A captured prefix is progress only; it is not whole-wallet readiness.
+    // advanced_partial is set only when this call durably advanced a bounded
+    // ordinary or Orchard prefix but did not complete the captured head.
     StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
         resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager&, UTXOIndex& metadata_index,
             uint64_t expected_session = 0, size_t material_limit_bytes = 128*1024*1024,
-            size_t orchard_events_per_pass = 0);
+            size_t orchard_events_per_pass = 0, bool* advanced_partial = nullptr);
     // Distinct automatic Orchard-only delivery for the authenticated completed
     // imported owner. Null success means NOT this source composition; failure
     // never falls back to mixed replay or earns missing transparent baselines.
