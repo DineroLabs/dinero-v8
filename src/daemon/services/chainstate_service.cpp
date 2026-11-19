@@ -15416,8 +15416,10 @@ bool ChainstateService::StartOrchardSnapshotStorage() {
                 consensus::HeaderIndexEntry best;
                 if(chain_db_->startupWriteFence()!=orchard_snapshot_startup_->authenticated_db_fence ||
                     header_chain_selector_->GetEligibilityGeneration()!=bound_eligibility ||
-                    !header_chain_selector_->GetBestHeaderCopy(best) || best.hash!=bound_best_hash)
+                    !header_chain_selector_->GetBestHeaderCopy(best) || best.hash!=bound_best_hash) {
+                    if(logger_)logger_->error("[v6 start] Authenticated Init selection changed after tip audit; refusing startup");
                     return false;
+                }
             }
             BlockAcceptor::SetContext(DaemonContext::instance());p2p_orphan_pool_=std::move(orphans);
             orchard_snapshot_startup_->reads={}; // Startup-only DATA, never a running-state certificate.
