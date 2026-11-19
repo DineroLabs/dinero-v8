@@ -140,7 +140,7 @@ inline bool ValidHash32(const QJsonValue& value) {
 }
 struct CatalogAccount {
     quint64 account=0, revision=0, sequence=0, height=0;
-    QString digest, blockHash;
+    QString digest, blockHash, firstReceiveAddress;
 };
 struct AccountsReply {
     quint64 sourceSequence=0;
@@ -161,8 +161,15 @@ inline std::optional<AccountsReply> ParseAccounts(const QJsonValue& v) {
            !checkpoint || *checkpoint>*sequence || !height || *height>0xffffffffULL ||
            !ValidHash32(a.value("account_digest")) || !ValidHash32(a.value("checkpoint_hash")) ||
            (*checkpoint==*sequence && a.value("account_digest")!=o.value("captured_source_digest")))return {};
+        QString first;
+        if(a.contains("first_receive_address")) {
+            if(!a.value("first_receive_address").isString())return {};
+            first=a.value("first_receive_address").toString();
+            if(!first.startsWith("dinorch1") && !first.startsWith("tdinorch1") &&
+               !first.startsWith("rdinorch1"))return {};
+        }
         ids.insert(*id);result.accounts.push_back({*id,*revision,*checkpoint,*height,
-            a.value("account_digest").toString(),a.value("checkpoint_hash").toString()});
+            a.value("account_digest").toString(),a.value("checkpoint_hash").toString(),first});
     }
     return result;
 }

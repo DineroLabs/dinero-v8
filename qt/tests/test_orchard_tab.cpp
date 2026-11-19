@@ -17,6 +17,7 @@
 #include "orchardwidget.h"
 #include "rpcclient.h"
 #include "rpc_reply_test_access.h"
+#include <algorithm>
 #include <memory>
 
 namespace {
@@ -236,7 +237,17 @@ private Q_SLOTS:
         rawReply(last("wallet.orchard.getbalance"),balanceFixture());
         QCOMPARE(Find<QLabel>(tab_,"orchardBalance")->text(),QString("Unknown"));
         const auto count=sent_.size();QMetaObject::invokeMethod(tab_,"onCreateAccount");QCOMPARE(sent_.size(),count);
-        QMetaObject::invokeMethod(tab_,"onPoll");rawReply(last("wallet.orchard.listaccounts"),accountsFixture({}));
+        const auto catalogCalls=[&] {
+            return std::count_if(sent_.begin(),sent_.end(),[](const Sent& call) {
+                return call.method=="wallet.orchard.listaccounts";
+            });
+        };
+        const auto catalogCount=catalogCalls();
+        QMetaObject::invokeMethod(tab_,"onPoll");
+        QCOMPARE(catalogCalls(),catalogCount);
+        tab_->setWalletUnlocked(false);tab_->setWalletUnlocked(true);
+        QCOMPARE(catalogCalls(),catalogCount+1);
+        rawReply(last("wallet.orchard.listaccounts"),accountsFixture({}));
         QVERIFY(Find<QPushButton>(tab_,"orchardCreateAccount")->isEnabled());
         QCOMPARE(Find<QComboBox>(tab_,"orchardAccountSelector")->count(),0);
     }
@@ -253,6 +264,7 @@ private Q_SLOTS:
         QVERIFY(setup->isVisible());QVERIFY(!setup->isEnabled());
         QVERIFY(Find<QLabel>(tab_,"orchardAccountStatus")->text().contains("Waiting for verified Orchard history"));
         QMetaObject::invokeMethod(tab_,"onPoll");
+        tab_->setWalletUnlocked(false);tab_->setWalletUnlocked(true);
         rawReply(last("wallet.orchard.listaccounts"),accountsFixture({}));
         QVERIFY(setup->isVisible());QVERIFY(setup->isEnabled());
     }
@@ -305,6 +317,21 @@ private Q_SLOTS:
         ready();const auto before=sent_.size();QMetaObject::invokeMethod(tab_,"onPoll");
         const auto first=sent_.size();QVERIFY(first>before);
         QMetaObject::invokeMethod(tab_,"onPoll");QCOMPARE(sent_.size(),first);
+    }
+    void accountDiscoveryIsNotRepeatedOnEveryPollOrUnchangedUnlock() {
+        ready();rawReply(last("wallet.orchard.listaccounts"),accountsFixture());
+        const auto catalogCalls=[&] {
+            return std::count_if(sent_.begin(),sent_.end(),[](const Sent& call) {
+                return call.method=="wallet.orchard.listaccounts";
+            });
+        };
+        const auto before=catalogCalls();
+        tab_->setWalletUnlocked(true);
+        QMetaObject::invokeMethod(tab_,"onPoll");
+        QMetaObject::invokeMethod(tab_,"onPoll");
+        QCOMPARE(catalogCalls(),before);
+        tab_->setWalletUnlocked(false);tab_->setWalletUnlocked(true);
+        QCOMPARE(catalogCalls(),before+1);
     }
     void malformedOperationsDoNotEstablishAnAccount() {
         tab_->setChain("regtest");tab_->setWalletScope("alice");bind("alice");tab_->setWalletUnlocked(true);
