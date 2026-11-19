@@ -8622,22 +8622,25 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
     utxoRequestPending_ = false;
     if (result.isArray()) {
       const QJsonArray incoming = result.toArray();
-      const bool changed = incoming != cachedUtxos_;
       cachedUtxos_ = incoming;
-      if (isUtxoTabActive() && (changed || (tblUTXOs_ && tblUTXOs_->rowCount() == 0))) {
+      if (isUtxoTabActive()) {
         updateUTXOTable(cachedUtxos_);
       }
     } else {
       qWarning() << "listunspent returned non-array result";
+      cachedUtxos_ = {};
+      cachedUtxoCount_ = 0;
       auto *tblUTXOs = tblUTXOs_;
       if (tblUTXOs && isUtxoTabActive()) {
         tblUTXOs->setRowCount(0);
         tblUTXOs->insertRow(0);
-        auto *item = new QTableWidgetItem("No UTXOs found");
+        auto *item = new QTableWidgetItem("UTXO data is unavailable");
         item->setForeground(QBrush(QColor("#868e96")));
         item->setTextAlignment(Qt::AlignCenter);
         tblUTXOs->setItem(0, 0, item);
-        tblUTXOs->setSpan(0, 0, 1, 6);
+        tblUTXOs->setSpan(0, 0, 1, 7);
+        if (lblUtxoPage_) lblUtxoPage_->setText("UTXOs unavailable");
+        if (btnConsolidate_) btnConsolidate_->setVisible(false);
       }
     }
   } else if (method == "wallet.listaddresses") {
@@ -8898,6 +8901,22 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
 
   if (method == "wallet.listunspent") {
     utxoRequestPending_ = false;
+    cachedUtxos_ = {};
+    cachedUtxoCount_ = 0;
+    if (btnConsolidate_) btnConsolidate_->setVisible(false);
+    if (isUtxoTabActive() && tblUTXOs_) {
+      const bool catchingUp = code == -32603 && isWalletBalancePendingRefusal(message);
+      tblUTXOs_->setRowCount(0);
+      tblUTXOs_->setRowCount(1);
+      auto* item = new QTableWidgetItem(catchingUp
+          ? "Wallet is catching up. UTXOs are temporarily unavailable."
+          : "UTXO data is unavailable. Refresh to try again.");
+      item->setForeground(QBrush(QColor(catchingUp ? "#fab005" : "#868e96")));
+      item->setTextAlignment(Qt::AlignCenter);
+      tblUTXOs_->setItem(0, 0, item);
+      tblUTXOs_->setSpan(0, 0, 1, 7);
+      if (lblUtxoPage_) lblUtxoPage_->setText("UTXOs unavailable");
+    }
   }
 
   if (method == "network.setonionservice" || method == "network.setrelayservice" ||
@@ -12378,7 +12397,8 @@ void MainWindow::updateUTXOTable(const QJsonArray& utxos) {
   // If no UTXOs, show helpful message
   if (page.total_rows == 0) {
     tblUTXOs->setRowCount(1);
-    auto *item = new QTableWidgetItem("No UTXOs found. Start mining or receive DIN to see unspent outputs!");
+    auto *item = new QTableWidgetItem(
+        "No mature UTXOs yet. Mined rewards appear here after 100 confirmations.");
     item->setForeground(QBrush(QColor("#868e96")));
     item->setTextAlignment(Qt::AlignCenter);
     tblUTXOs->setItem(0, 0, item);
