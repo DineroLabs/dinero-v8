@@ -1,5 +1,6 @@
 #pragma once
 #include <chrono>
+#include "wallet/orchard_ownership_inventory.h"
 #include <cstdio>
 #include <cstdlib>
 // #939 phase 3: Orchard delivery for native wallets on a full-archive v3 node.
@@ -311,4 +312,196 @@ TEST(WalletV3NativeOrchard, RetainedHistoryDoesNotReproveViewingKeyPerRevision) 
     std::printf("[retained-bench] passes=%zu early_ms=%.2f late_ms=%.2f late_proofs=%llu revision=%llu\n",
         pass_ms.size(),mean(4,14),mean(pass_ms.size()-11,pass_ms.size()-1),
         (unsigned long long)pass_proofs[late],(unsigned long long)f.Account(0).revision);
+}
+
+namespace {
+void NativeTestExec(WalletManager& wallet,const std::string& sql) {
+    auto lease=wallet.AcquireDatabaseLease();
+    OrchardAdmissionFixture::Require(sqlite3_exec(lease->Database(),sql.c_str(),nullptr,nullptr,nullptr)==SQLITE_OK);
+}
+// Deliver every pending event one Orchard event per pass, as the worker does.
+// Returns false (without asserting) when a pass refuses.
+bool DeliverAllOrchard(OrchardCreationFixture& f,int max_passes) {
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+    const auto session=use->Wallet().AcquireDatabaseLease()->Session();
+    for(int i=0;i<max_passes;++i) {
+        const auto next=f.f.service->resumeRuntimeWalletRecoveryV3IfNeeded(
+            use->Wallet(),index->Index(),session,128*1024*1024,1);
+        if(!next.ok())return false;
+        if(*next)return true;
+    }
+    return false;
+}
+int RetainedRows(OrchardCreationFixture& f,uint32_t account) {
+    return NativeTestCount(WalletService::AcquireWalletUse(f.wallet)->Wallet(),
+        "SELECT count(*) FROM orchard_wallet_retained WHERE account="+std::to_string(account));
+}
+constexpr int kWindow=int(wallet::OrchardAccountDelivery::kRetainedWindow);
+constexpr int kSlack=int(wallet::OrchardAccountDelivery::kRetainedSlack); // 1-2 accounts
+} // namespace
+
+// Active retained history stays within the 256-parent window plus slack (the
+// global 65,536-row inventory cap would otherwise freeze the wallet). The
+// pruned wallet keeps delivering, survives a restart, rewinds a shallow reorg
+// inside the window, and refuses a rewind deeper than the window.
+TEST(WalletV3NativeOrchard, ActiveRetainedHistoryIsBoundedAndStillRewinds) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-orchard-bounded-retention-index");
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ASSERT_FALSE(f.Call(0).isMember("error"));
+    const int blocks=kWindow+kSlack+20;
+    for(int i=0;i<blocks;++i)(void)f.MineEmpty();
+    ASSERT_TRUE(DeliverAllOrchard(f,blocks*2+8));
+    const int rows=RetainedRows(f,0);
+    EXPECT_GE(rows,kWindow) << "window kept";
+    EXPECT_LE(rows,kWindow+kSlack) << "retained history was not bounded";
+    EXPECT_EQ(f.Account(0).account.Delivery().sequence,NativeOrchardHead(f));
+
+    // Restart: the pruned inventory authenticates and keeps delivering.
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    for(int i=0;i<3;++i)(void)f.MineEmpty();
+    ASSERT_TRUE(DeliverAllOrchard(f,16)) << "delivery after restart";
+    EXPECT_EQ(f.Account(0).account.Delivery().sequence,NativeOrchardHead(f));
+
+    // Shallow reorg inside the window rewinds through retained parents.
+    for(int i=0;i<3;++i)
+        ASSERT_TRUE(ShieldedStateStartupTestAccess::DisconnectBoundary(*f.f.service,f.f.service->GetActiveTip()));
+    ASSERT_TRUE(DeliverAllOrchard(f,32)) << "shallow rewind inside the window";
+    EXPECT_EQ(f.Account(0).account.Delivery().sequence,NativeOrchardHead(f));
+    EXPECT_LE(RetainedRows(f,0),kWindow+kSlack);
+
+    // A reorg deeper than every retained parent refuses instead of inventing
+    // a missing parent; the account receipt is unchanged by the refusal.
+    const int kept=RetainedRows(f,0);
+    const auto before=f.Account(0).account.Delivery().sequence;
+    for(int i=0;i<kept+2;++i)
+        ASSERT_TRUE(ShieldedStateStartupTestAccess::DisconnectBoundary(*f.f.service,f.f.service->GetActiveTip()));
+    EXPECT_FALSE(DeliverAllOrchard(f,kept*2+8)) << "rewind past the retained window must refuse";
+    // Disconnects are outbox events, so the receipt advances while rewinding
+    // inside the window, then stops at the cut: it never reaches the head.
+    EXPECT_GT(f.Account(0).account.Delivery().sequence,before);
+    EXPECT_LT(f.Account(0).account.Delivery().sequence,NativeOrchardHead(f));
+    // The refusal is the typed window reason, not an arbitrary failure.
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        const auto session=use->Wallet().AcquireDatabaseLease()->Session();
+        const auto view=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(view.ok());
+        const auto next=f.Account(0).account.Delivery().sequence+1;
+        try {
+            (void)wallet::OrchardAccountDelivery::PrepareCatalogRecovery(use->Wallet(),session,**view,
+                wallet::OrchardAccountDelivery::CatalogRecoveryAction::Apply,next);
+            ADD_FAILURE() << "rewind beyond the window was not refused";
+        } catch(const std::exception& e) {
+            EXPECT_STREQ(e.what(),wallet::OrchardAccountDelivery::kRewindBeyondWindow);
+        }
+    }
+}
+
+// The prune transaction itself authenticates every retained row of the owner
+// before deleting: a tampered old ciphertext OUTSIDE the kept window refuses
+// (and nothing is deleted) instead of being silently erased. Driven directly
+// through BoundRetainedHistory so ordinary capture cannot refuse first.
+TEST(WalletV3NativeOrchard, RetainedPruneRefusesTamperedOldRow) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-orchard-retention-tamper-index");
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ASSERT_FALSE(f.Call(0).isMember("error"));
+    for(int i=0;i<40;++i)(void)f.MineEmpty();
+    ASSERT_TRUE(DeliverAllOrchard(f,96));
+    const int before=RetainedRows(f,0);
+    ASSERT_GE(before,40);ASSERT_LE(before,kWindow) << "below the production threshold";
+    const auto view=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(view.ok());
+    auto use=WalletService::AcquireWalletUse(f.wallet);auto& wallet=use->Wallet();
+    const auto session=wallet.AcquireDatabaseLease()->Session();
+    const std::string oldest="(SELECT min(revision) FROM orchard_wallet_retained WHERE account=0)";
+    const auto saved_hex=[&]{
+        auto lease=wallet.AcquireDatabaseLease();sqlite3_stmt* q=nullptr;
+        OrchardAdmissionFixture::Require(sqlite3_prepare_v2(lease->Database(),
+            ("SELECT hex(sealed) FROM orchard_wallet_retained WHERE account=0 AND revision="+oldest).c_str(),
+            -1,&q,nullptr)==SQLITE_OK&&sqlite3_step(q)==SQLITE_ROW);
+        std::string hex(reinterpret_cast<const char*>(sqlite3_column_text(q,0)));sqlite3_finalize(q);return hex;
+    }();
+    // Corrupt only the GCM tag of the oldest row: it would be deleted by a
+    // 16-row window, so only pre-delete authentication can notice it.
+    NativeTestExec(wallet,"UPDATE orchard_wallet_retained SET sealed=substr(sealed,1,length(sealed)-16)||"
+        "zeroblob(16) WHERE account=0 AND revision="+oldest);
+    EXPECT_ANY_THROW((void)wallet::OrchardAccountDelivery::BoundRetainedHistory(wallet,session,**view,16))
+        << "tampered row outside the window was pruned away silently";
+    EXPECT_EQ(RetainedRows(f,0),before) << "refused prune deleted rows";
+    NativeTestExec(wallet,"UPDATE orchard_wallet_retained SET sealed=x'"+saved_hex+
+        "' WHERE account=0 AND revision="+oldest);
+    EXPECT_EQ(wallet::OrchardAccountDelivery::BoundRetainedHistory(wallet,session,**view,16),size_t(before-16));
+    EXPECT_EQ(RetainedRows(f,0),16);
+    // The pruned, cut history still authenticates and keeps delivering.
+    for(int i=0;i<3;++i)(void)f.MineEmpty();
+    ASSERT_TRUE(DeliverAllOrchard(f,16));
+    EXPECT_EQ(f.Account(0).account.Delivery().sequence,NativeOrchardHead(f));
+}
+
+// A current snapshot with no parent link (an undelivered account that issued
+// receivers) can still hold retained rows. They are unreachable from current,
+// so the bound authenticates and deletes all of them instead of skipping.
+TEST(WalletV3NativeOrchard, RetainedPruneClearsRowsUnreachableFromCurrent) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-orchard-retention-unlinked-index");
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ASSERT_FALSE(f.Call(0).isMember("error"));
+    for(int i=0;i<20;++i)ASSERT_FALSE(f.Issue(0).isMember("error")) << i;
+    ASSERT_EQ(f.Account(0).account.ParentSnapshotRevision(),0u) << "fixture must be undelivered";
+    const int before=RetainedRows(f,0);
+    ASSERT_GE(before,20);
+    const auto view=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(view.ok());
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    const auto session=use->Wallet().AcquireDatabaseLease()->Session();
+    EXPECT_EQ(wallet::OrchardAccountDelivery::BoundRetainedHistory(use->Wallet(),session,**view,4),size_t(before));
+    EXPECT_EQ(RetainedRows(f,0),0) << "unreachable retained rows left above the bound";
+    // Issued receivers survive in the current state, and delivery proceeds.
+    ASSERT_FALSE(f.Issue(0).isMember("error"));
+    for(int i=0;i<3;++i)(void)f.MineEmpty();
+    ASSERT_TRUE(DeliverAllOrchard(f,16));
+    EXPECT_EQ(f.Account(0).account.Delivery().sequence,NativeOrchardHead(f));
+}
+
+// Two accounts share the global row budget; each is pruned independently to
+// its own window, and the per-wallet window shrinks as accounts are added.
+TEST(WalletV3NativeOrchard, RetainedHistoryBoundIsPerAccountWithinWalletBudget) {
+    using D=wallet::OrchardAccountDelivery;
+    EXPECT_EQ(D::RetainedWindowFor(1),D::kRetainedWindow);
+    EXPECT_EQ(D::RetainedWindowFor(2),D::kRetainedWindow);
+    EXPECT_LT(D::RetainedWindowFor(256),D::kRetainedWindow);
+    // Every catalog this release can create keeps the full 256-parent window.
+    for(size_t n=1;n<=D::kMaxRetainedAccounts;++n)
+        ASSERT_EQ(D::RetainedWindowFor(n),D::kRetainedWindow) << n;
+    EXPECT_EQ(D::RetainedWindowFor(1024),24u);
+    EXPECT_LT(D::kRetainedBudget,wallet::OrchardOwnershipInventory::kMaxRows);
+    // The bound holds for EVERY catalog size the format allows, including
+    // pre-cap catalogs above kMaxRetainedAccounts.
+    for(size_t n=1;n<=wallet::OrchardAccountCatalog::kMaxAccounts;++n){
+        ASSERT_GT(D::RetainedWindowFor(n),0u) << n;
+        ASSERT_LE(n*(D::RetainedWindowFor(n)+D::RetainedSlackFor(n)),D::kRetainedBudget) << n;
+    }
+
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-orchard-retention-two-accounts-index");
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ASSERT_FALSE(f.Call(0).isMember("error"));
+    ASSERT_FALSE(f.Call(1).isMember("error"));
+    const int blocks=kWindow+kSlack+12;
+    for(int i=0;i<blocks;++i)(void)f.MineEmpty();
+    ASSERT_TRUE(DeliverAllOrchard(f,blocks*2+8));
+    for(const uint32_t account:{0u,1u}) {
+        EXPECT_GE(RetainedRows(f,account),kWindow) << account;
+        EXPECT_LE(RetainedRows(f,account),kWindow+kSlack) << account;
+        EXPECT_EQ(f.Account(account).account.Delivery().sequence,NativeOrchardHead(f)) << account;
+    }
 }

@@ -177,6 +177,8 @@ RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumeAccounts(
             Require(account_cursor(entry)==event.cursor&&account.account.Scan().Checkpoint()==view.Point(event.cursor).checkpoint,
                 "Wallet recovery account applied position mismatch");
         }
+        // Every account committed this event: bound retained history (v8.2.4).
+        (void)Account::BoundRetainedHistory(wallet,session,view);
     }
     Require(current.indexed.cursor==target&&current.ordinary.cursor==target&&Same(current.indexed,current.ordinary),
         "Wallet recovery captured head mismatch");
@@ -261,6 +263,8 @@ RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumePreparedCatalog
         // advance only by this plan's exact retained/non-retained snapshot steps.
         for(size_t i=0;i<current.catalog.accounts.size();++i)if(cursor(current.catalog.accounts[i]).sequence<sequence)
             current.catalog.accounts[i].state=Account::CommitCatalogRecoveryAccount(wallet,session,*prepared.second,i);
+        // After this event's plan fully committed, never inside it (v8.2.4).
+        (void)Account::BoundRetainedHistory(wallet,session,view);
     }
     Require(current.indexed.cursor==target&&current.ordinary.cursor==target&&Same(current.indexed,current.ordinary),"Wallet recovery captured head mismatch");
     for(const auto& entry:current.catalog.accounts)Require(cursor(entry)==target,"Wallet recovery captured head mismatch");
@@ -349,6 +353,9 @@ std::optional<RuntimeOrchardCatalogRecoveryResult> RuntimeWalletRecovery::Resume
                     "Orchard recovery applied position mismatch");
             }
         });
+        // After this event's plan fully committed, under the same selected
+        // fence, bound retained history (v8.2.4). Never inside the plan.
+        bind([&](const auto& fence){(void)Account::BoundRetainedHistory(wallet,session,view);fence();});
         ++advanced;
     }
     // Each applied event is a real, independently fenced durable account
