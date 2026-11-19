@@ -7,6 +7,10 @@
 # spend, and the 60-second-block rules activate at height 130 (mid-swap).
 # Bob's watchtower runs as its own process (dinero-swap-tower) on an inbox dir.
 #   usage: swap_e2e_regtest.sh <dinerod> <swap_e2e_tool> <dinero-swap-tower>
+# SWAP_TOWER_LIGHT=1 runs the watchtower without Bitcoin Core (a tower built with
+# DINERO_SWAP_LIGHT_BTC): Bitcoin headers and broadcasts over Bitcoin P2P, lookups
+# to an Esplora server. For scenarios that keep Bitcoin's clock at the wall clock
+# (tower-claim): a header days ahead of the tower's own clock is, rightly, refused.
 set -euo pipefail
 . "$(cd "$(dirname "$0")" && pwd)/swap_regtest_lib.sh"
 DINEROD=${1:?dinerod}; TOOL=${2:?swap_e2e_tool}; TOWER=${3:?dinero-swap-tower}
@@ -32,9 +36,11 @@ DIR=$(mktemp -d)
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../integration/lib" && pwd)/port_alloc.sh"
 DPORT=$(alloc_port_base 24); DP2P=$((DPORT + 7)); BPORT=$((DPORT + 13))
 CPORT=$((DPORT + 21)); CP2P=$((DPORT + 23))
+BP2P=$((DPORT + 15)); EPORT=$((DPORT + 17))   # light tower only: bitcoind's P2P port, the Esplora test server
 CONSENSUS=(--consensus-contextual-locks-height=1 --consensus-sixty-second-height=130)
 BCLI=(bitcoin-cli -regtest -datadir="$DIR/btc" -rpcport=$BPORT -rpcuser=test -rpcpassword=test)
 cleanup() { [[ -n "${TPID:-}" ]] && kill "$TPID" 2>/dev/null || true
+            [[ -n "${EPID:-}" ]] && kill "$EPID" 2>/dev/null || true
             "${BCLI[@]}" stop >/dev/null 2>&1 || true
             [[ -n "${CPID:-}" ]] && kill "$CPID" 2>/dev/null || true
             [[ -n "${NPID:-}" ]] && kill "$NPID" 2>/dev/null || true; sleep 1; [[ -n "${KEEP_LOGS:-}" ]] && cp "$DIR"/*.log "$KEEP_LOGS"/ 2>/dev/null; rm -rf "$DIR"; }
@@ -52,7 +58,9 @@ mkdir -p "$DIR/din" "$DIR/csn" "$DIR/btc" "$DIR/swaps" "$DIR/inbox"; chmod 700 "
 "$DINEROD" -regtest -daemon=0 -server -rpcuser=test -rpcpassword=test -rpcport=$DPORT -port=$DP2P \
   -datadir="$DIR/din" -listenonion=0 -discover=0 -dnsseed=0 -fixedseeds=0 \
   --utreexo=1 --utreexo-bridge=1 "${CONSENSUS[@]}" >"$DIR/din.log" 2>&1 & NPID=$!
-bitcoind -regtest -datadir="$DIR/btc" -listen=0 -rpcport=$BPORT -rpcuser=test -rpcpassword=test \
+BTC_NET=(-listen=0)
+[[ -n "${SWAP_TOWER_LIGHT:-}" ]] && BTC_NET=(-listen=1 -bind=127.0.0.1 -port=$BP2P -txindex=1 -dnsseed=0 -fixedseeds=0)
+bitcoind -regtest -datadir="$DIR/btc" "${BTC_NET[@]}" -rpcport=$BPORT -rpcuser=test -rpcpassword=test \
   -daemon -fallbackfee=0.0002 >/dev/null
 for _ in $(seq 1 90); do dcall getblockcount '[]' >/dev/null 2>&1 && break; sleep 1; done
 swap_require_regtest dinerod "$(dcall getblockchaininfo '[]')"
@@ -86,8 +94,15 @@ BADDR=$("${BCLI[@]}" getnewaddress)
 ccall() { DPORT=$CPORT dcall "$@"; }
 
 # Bob's watchtower: its own process, its own RPC connections, no keys.
+if [[ -n "${SWAP_TOWER_LIGHT:-}" ]]; then
+  python3 "$(cd "$(dirname "$0")" && pwd)/esplora_regtest_shim.py" $EPORT $BPORT test test >"$DIR/esplora.log" 2>&1 & EPID=$!
+  for _ in $(seq 1 50); do curl -s -m 5 "http://127.0.0.1:$EPORT/blocks/tip/height" | grep -q '^[0-9]' && break; sleep 0.2; done
+  TOWER_BTC=(--btc-backend light --btc-servers "http://127.0.0.1:$EPORT" --btc-peers 127.0.0.1 --btc-peer-port $BP2P)
+else
+  TOWER_BTC=(--btc-rpc 127.0.0.1:$BPORT --btc-auth test:test)
+fi
 "$TOWER" --inbox "$DIR/inbox" --din-rpc 127.0.0.1:$DPORT --din-auth test:test \
-  --btc-rpc 127.0.0.1:$BPORT --btc-auth test:test --din-hrp rdin --btc-chain regtest --interval 1 --escalate-after 5 \
+  "${TOWER_BTC[@]}" --din-hrp rdin --btc-chain regtest --interval 1 --escalate-after 5 \
   >"$DIR/tower.log" 2>&1 & TPID=$!
 
 rc=0

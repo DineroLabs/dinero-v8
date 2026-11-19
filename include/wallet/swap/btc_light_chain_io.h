@@ -28,6 +28,9 @@ public:
     LightBtcChainIo(DinRpc din, BtcLightBackend& backend, const SwapSession& session, const RunnerConfig& config,
                     std::function<uint32_t()> clock = {}, Bytes32 deposit_key = {}, uint64_t max_funding_fee_sat = 0);
 
+    // For a watcher that has no session, only what to watch: the watchtower.
+    LightBtcChainIo(DinRpc din, BtcLightBackend& backend, SwapWatchSpec spec, std::function<uint32_t()> clock = {});
+
     BtcWatchReport ObserveBtc() override;
     std::string BroadcastBtc(const std::vector<uint8_t>& raw_tx) override;
     std::string FundBtc(const std::string& address, uint64_t amount_sat) override;

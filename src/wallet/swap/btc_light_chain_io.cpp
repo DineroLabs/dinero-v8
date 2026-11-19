@@ -27,6 +27,14 @@ LightBtcChainIo::LightBtcChainIo(DinRpc din, BtcLightBackend& backend, const Swa
     RebuildLightWatcher();
 }
 
+LightBtcChainIo::LightBtcChainIo(DinRpc din, BtcLightBackend& backend, SwapWatchSpec spec, std::function<uint32_t()> clock)
+    : RpcSwapChainIo(std::move(din),
+                     [](const std::string&, const Json::Value&) { return std::optional<Json::Value>{}; }, spec),
+      backend_(backend), light_spec_(std::move(spec)), clock_(std::move(clock)) {
+    if (!clock_) clock_ = [] { return static_cast<uint32_t>(std::time(nullptr)); };
+    RebuildLightWatcher();
+}
+
 void LightBtcChainIo::RebuildLightWatcher() {
     BtcWatchTarget target;
     target.terms = MakeBtcTerms(light_spec_.offer, light_spec_.accept);

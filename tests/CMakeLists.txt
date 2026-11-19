@@ -18371,6 +18371,15 @@ if(TARGET dinerod AND TARGET dinero-swap-tower AND DINERO_BITCOIND)
   # The twelve scenarios launch independent Bitcoin, bridge, CSN and tower
   # processes; run them clear of other daemon topologies in the full CTest run.
   set_tests_properties(SwapE2ERegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900 RUN_SERIAL TRUE)
+  # The same watchtower without Bitcoin Core: the buyer's node is offline, the seller claims the
+  # BTC, and the tower learns the secret through the light backend and claims the DIN.
+  if(DINERO_SWAP_LIGHT_BTC)
+    add_test(NAME SwapE2ETowerLightRegtest
+      COMMAND ${CMAKE_COMMAND} -E env SWAP_TOWER_LIGHT=1
+              ${CMAKE_SOURCE_DIR}/tests/wallet/swap_e2e_regtest.sh $<TARGET_FILE:swap_e2e_fixture_daemon>
+              $<TARGET_FILE:swap_e2e_tool> $<TARGET_FILE:dinero-swap-tower> tower-claim)
+    set_tests_properties(SwapE2ETowerLightRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 600 RUN_SERIAL TRUE)
+  endif()
   add_test(NAME SwapE2EPortCollision
     COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/wallet/test_swap_e2e_port_collision.py
             ${CMAKE_SOURCE_DIR}/tests/wallet/swap_e2e_regtest.sh)
