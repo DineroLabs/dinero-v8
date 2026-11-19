@@ -29,6 +29,8 @@
 #include "wallet/swap/fee_ladder.h"
 #include "wallet/swap/runner.h"
 
+#include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -54,6 +56,17 @@ struct BtcRefundRung {
     uint64_t fee_sat{};
 };
 
+// A Zcash refund rung (docs/design/din-zec-atomic-swaps.md): one, at 4 x the
+// conventional fee, nExpiryHeight 0, nLockTime T_zec. The package carries its
+// parts; the Zcash module rebuilds the exact transaction to verify and send
+// it, so this file needs no Zcash parser.
+struct ZecRefundRung {
+    uint64_t fee_zat{};
+    uint32_t branch_id{};                // the consensus branch it was signed for
+    std::vector<uint8_t> payout_script;  // Bob's
+    std::vector<uint8_t> signature;      // DER + SIGHASH_ALL, Bob's ZEC refund key
+};
+
 struct TowerPackage {
     SwapOffer offer;
     SwapAccept accept;
@@ -61,8 +74,19 @@ struct TowerPackage {
     uint32_t din_scan_from_height{};
     Bytes32 din_sweep_pubkey{};                // zero: claims pay Bob's wallet directly (no CPFP)
     std::vector<DinClaimRung> din_claims;    // ascending fee
-    std::vector<BtcRefundRung> btc_refunds;  // ascending fee
+    std::vector<BtcRefundRung> btc_refunds;  // ascending fee (Bitcoin swaps)
+    std::optional<BtcFunding> zec_funding;   // Zcash swaps: the ZEC lock (zatoshi)
+    std::vector<ZecRefundRung> zec_refunds;  // Zcash swaps
 };
+
+// What the Zcash module provides to the tower (installed by ZecSwapChainIo):
+// verify the Zcash rungs (throws std::invalid_argument) and serialize rung i.
+// Without them a Zcash package is refused.
+struct ZecTowerHooks {
+    std::function<void(const TowerPackage&)> verify;
+    std::function<std::vector<uint8_t>(const TowerPackage&, size_t)> rung_raw;
+};
+void InstallZecTowerHooks(ZecTowerHooks hooks);
 
 // The outpoints the package's rungs spend are the locks the tower watches,
 // exactly (payments to the same scripts are ignored).
@@ -84,6 +108,12 @@ struct BtcFeeLadderPolicy {
 TowerPackage BuildTowerPackage(const SwapSession& s, const SwapKeys& keys, const FundingOutput& din_funding,
                                const BtcFunding& btc_funding, const FeeLadderPolicy& din_policy,
                                const BtcFeeLadderPolicy& btc_policy);
+// The two halves of BuildTowerPackage (neither verifies the package): the
+// terms and DIN claim rungs, then the Bitcoin refund rungs.
+TowerPackage BuildTowerPackageDin(const SwapSession& s, const SwapKeys& keys, const FundingOutput& din_funding,
+                                  const FeeLadderPolicy& din_policy);
+void AddBtcRefundRungs(TowerPackage& p, const SwapSession& s, const SwapKeys& keys, const BtcFunding& btc_funding,
+                       const BtcFeeLadderPolicy& btc_policy);
 
 // Throws std::invalid_argument naming the first problem: wrong outpoint, a rung
 // paying anywhere but Bob's payout, fees not strictly rising, a refund whose
@@ -158,5 +188,13 @@ private:
     void DinClaimDuty(const DinWatchReport& din, uint32_t now, TowerReport& report);
     void BtcRefundDuty(const BtcWatchReport& btc, uint32_t now, TowerReport& report);
 };
+
+// One daemon cycle for one armed swap: Tick, then refresh the ack (while
+// healthy) and keep a newly learned secret in the inbox. Never throws: a
+// failed tick or write is an ALERT event, because the daemon ticks every swap
+// in one loop and one swap's disk or chain trouble must not stop the others.
+// Without a fresh ack Bob does not fund, so a failed ack write is safe.
+TowerReport TickAndRecord(Watchtower& tower, const std::string& inbox_dir, const std::string& swap_id,
+                          const std::string& package_hash, uint32_t now_unix);
 
 }  // namespace dinero::swap

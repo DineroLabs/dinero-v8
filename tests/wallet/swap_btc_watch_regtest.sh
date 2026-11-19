@@ -4,15 +4,17 @@
 # block, and a refund spend — all observed by one long-lived watcher.
 #   usage: swap_btc_watch_regtest.sh <swap_btc_watch_tool> <swap_btc_regtest_tool>
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/swap_regtest_lib.sh"
 WATCH=${1:?watch tool}; TOOL=${2:?tx tool}
 LOCK=1800000000
-DIR=$(mktemp -d); RPCPORT=$((20000 + RANDOM % 20000)); U=swap; P=swappass
+DIR=$(mktemp -d); RPCPORT=$(swap_free_base 0); U=swap; P=swappass
 CLI=(bitcoin-cli -regtest -datadir="$DIR" -rpcport=$RPCPORT -rpcuser=$U -rpcpassword=$P)
 cleanup() { exec 3>&- 4<&- 2>/dev/null || true; [[ -n "${WPID:-}" ]] && kill "$WPID" 2>/dev/null || true; "${CLI[@]}" stop >/dev/null 2>&1 || true; sleep 1; rm -rf "$DIR"; }
 trap cleanup EXIT
 bitcoind -regtest -datadir="$DIR" -listen=0 -rpcport=$RPCPORT -rpcuser=$U -rpcpassword=$P -daemon \
   -fallbackfee=0.0002 -txindex=1 >/dev/null
 for _ in $(seq 1 60); do "${CLI[@]}" getblockchaininfo >/dev/null 2>&1 && break; sleep 0.5; done
+swap_require_regtest bitcoind "$("${CLI[@]}" getblockchaininfo)"
 "${CLI[@]}" createwallet test >/dev/null
 MINER=$("${CLI[@]}" getnewaddress)
 mine() { "${CLI[@]}" generatetoaddress "${1:-1}" "$MINER" >/dev/null; }

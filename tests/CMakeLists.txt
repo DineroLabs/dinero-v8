@@ -17939,10 +17939,170 @@ if(NOT WIN32)
   set_tests_properties(SwapTowerInstalls PROPERTIES LABELS "wallet;swap" TIMEOUT 120)
 endif()
 
+# DIN<->ZEC swap transactions (rust/zcash_swap over librustzcash): ZIP 244
+# vectors, and the HTLC spends run through the zcash_script interpreter. The
+# crate is linked into this test only until it folds into rust/orchard_backend.
+if(CARGO_EXECUTABLE AND NOT WIN32)
+  set(ZCASH_SWAP_DIR ${CMAKE_SOURCE_DIR}/rust/zcash_swap)
+  set(ZCASH_SWAP_TARGET_DIR ${CMAKE_BINARY_DIR}/zcash_swap-target)
+  set(ZCASH_SWAP_LIB ${ZCASH_SWAP_TARGET_DIR}/release/libdinero_zcash_swap.a)
+  set(ZCASH_SWAP_ENV CARGO_TARGET_DIR=${ZCASH_SWAP_TARGET_DIR})
+  if(APPLE AND CMAKE_OSX_DEPLOYMENT_TARGET)
+    # For the C that secp256k1-sys compiles through the cc crate. Not
+    # MACOSX_DEPLOYMENT_TARGET: that also reaches rustc's proc-macro links and
+    # breaks them (see the Bulletproofs FFI note in the top-level CMakeLists).
+    list(APPEND ZCASH_SWAP_ENV CFLAGS=-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET})
+  endif()
+  add_custom_command(
+    OUTPUT ${ZCASH_SWAP_LIB}
+    COMMAND ${CMAKE_COMMAND} -E env ${ZCASH_SWAP_ENV}
+            ${CARGO_EXECUTABLE} build --release --locked --features script-verify
+    WORKING_DIRECTORY ${ZCASH_SWAP_DIR}
+    DEPENDS ${ZCASH_SWAP_DIR}/src/lib.rs ${ZCASH_SWAP_DIR}/Cargo.toml ${ZCASH_SWAP_DIR}/Cargo.lock
+    COMMENT "Building rust/zcash_swap (test build, script-verify)")
+  add_custom_target(build_zcash_swap DEPENDS ${ZCASH_SWAP_LIB})
+  add_library(dinero_zcash_swap STATIC IMPORTED)
+  set_target_properties(dinero_zcash_swap PROPERTIES IMPORTED_LOCATION ${ZCASH_SWAP_LIB})
+  add_dependencies(dinero_zcash_swap build_zcash_swap)
+
+  add_executable(test_swap_zec_tx
+    tests/wallet/test_swap_zec_tx.cpp
+    src/wallet/swap/zec_tx.cpp
+    src/wallet/swap/zec_watcher.cpp
+    src/wallet/swap/htlc.cpp
+  )
+  add_dependencies(test_swap_zec_tx gtest gtest_main build_zcash_swap)
+  target_link_libraries(test_swap_zec_tx PRIVATE dinero_consensus dinero_zcash_swap gtest gtest_main)
+  if(NOT APPLE)
+    target_link_libraries(test_swap_zec_tx PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
+  endif()
+  link_zstd_if_needed(test_swap_zec_tx)
+  target_include_directories(test_swap_zec_tx PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${ZCASH_SWAP_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party  # nlohmann/json.hpp
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  )
+  target_compile_definitions(test_swap_zec_tx PRIVATE
+    DINERO_ZIP244_JSON="${CMAKE_SOURCE_DIR}/tests/vectors/zip_0244.json")
+  add_test(NAME SwapZecTx COMMAND test_swap_zec_tx)
+  set_tests_properties(SwapZecTx PROPERTIES LABELS "wallet;swap" TIMEOUT 60)
+
+  # The Zcash counter chain behind the swap runner (ZecSwapChainIo).
+  add_executable(test_swap_zec_chain_io
+    tests/wallet/test_swap_zec_chain_io.cpp
+    src/wallet/swap/zec_chain_io.cpp
+    src/wallet/swap/swap_manager_zec.cpp
+    src/wallet/swap/zec_tx.cpp
+    src/wallet/swap/zec_watcher.cpp
+    src/wallet/swap/runner.cpp
+    src/wallet/swap/tower.cpp
+    src/wallet/swap/fee_ladder.cpp
+    src/wallet/swap/din_watcher.cpp
+    src/wallet/swap/btc_watcher.cpp
+    src/wallet/swap/btc_tx.cpp
+    src/wallet/swap/engine.cpp
+    src/wallet/swap/offer.cpp
+    src/wallet/swap/htlc.cpp
+  )
+  add_dependencies(test_swap_zec_chain_io gtest gtest_main build_zcash_swap)
+  target_link_libraries(test_swap_zec_chain_io PRIVATE dinero_consensus dinero_zcash_swap gtest gtest_main)
+  if(NOT APPLE)
+    target_link_libraries(test_swap_zec_chain_io PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
+  endif()
+  link_zstd_if_needed(test_swap_zec_chain_io)
+  target_include_directories(test_swap_zec_chain_io PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${ZCASH_SWAP_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include)
+  add_test(NAME SwapZecChainIo COMMAND test_swap_zec_chain_io)
+  set_tests_properties(SwapZecChainIo PROPERTIES LABELS "wallet;swap" TIMEOUT 60)
+
+  # The same code against a real Zebra regtest node (deposit, claim, refund,
+  # tower rung, reorg, network upgrade), where zebrad is installed.
+  add_executable(swap_zec_regtest_tool
+    tests/wallet/swap_zec_regtest_tool.cpp
+    src/wallet/swap/zec_tx.cpp
+    src/wallet/swap/zec_watcher.cpp
+    src/wallet/swap/htlc.cpp
+  )
+  add_dependencies(swap_zec_regtest_tool build_zcash_swap)
+  target_link_libraries(swap_zec_regtest_tool PRIVATE dinero_rpc_client dinero_consensus dinero_zcash_swap)
+  if(NOT APPLE)
+    target_link_libraries(swap_zec_regtest_tool PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
+  endif()
+  link_zstd_if_needed(swap_zec_regtest_tool)
+  target_include_directories(swap_zec_regtest_tool PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${ZCASH_SWAP_DIR}/include)
+  find_program(DINERO_ZEBRAD zebrad HINTS "$ENV{HOME}/.local/zebra-7.0.0/bin")
+  if(DINERO_ZEBRAD)
+    add_test(NAME SwapZecRegtest
+      COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_zec_regtest.sh
+              $<TARGET_FILE:swap_zec_regtest_tool> ${DINERO_ZEBRAD})
+    set_tests_properties(SwapZecRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900)
+  endif()
+
+  # Two-chain DIN <-> ZEC swap: dinerod + Zebra regtest, both runners, Bob's tower in-process.
+  add_executable(swap_zec_e2e_tool
+    tests/wallet/swap_zec_e2e_tool.cpp
+    src/wallet/swap/zec_chain_io.cpp
+    src/wallet/swap/zec_tx.cpp
+    src/wallet/swap/zec_watcher.cpp
+    src/wallet/swap/encrypted_store.cpp
+    src/crypto/wallet_crypto.cpp
+    src/wallet/swap/runner.cpp
+    src/wallet/swap/tower.cpp
+    src/wallet/swap/fee_ladder.cpp
+    src/wallet/swap/din_watcher.cpp
+    src/wallet/swap/btc_watcher.cpp
+    src/wallet/swap/btc_tx.cpp
+    src/wallet/swap/engine.cpp
+    src/wallet/swap/offer.cpp
+    src/wallet/swap/htlc.cpp
+  )
+  add_dependencies(swap_zec_e2e_tool build_zcash_swap)
+  target_link_libraries(swap_zec_e2e_tool PRIVATE dinero_rpc_client dinero_consensus argon2 OpenSSL::Crypto dinero_zcash_swap)
+  if(NOT APPLE)
+    target_link_libraries(swap_zec_e2e_tool PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
+  endif()
+  link_zstd_if_needed(swap_zec_e2e_tool)
+  target_include_directories(swap_zec_e2e_tool PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external ${ZCASH_SWAP_DIR}/include)
+  # Runs against the fixture daemon (defined below): Alice's DIN lock goes
+  # through the wallet's retained funding owner, which only it exposes to a tool.
+  if(DINERO_ZEBRAD AND TARGET dinerod AND TARGET dinero-swap-tower AND DINERO_BITCOIND)
+    add_test(NAME SwapZecE2ERegtest
+      COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_zec_e2e_regtest.sh
+              $<TARGET_FILE:swap_e2e_fixture_daemon> $<TARGET_FILE:swap_zec_e2e_tool> ${DINERO_ZEBRAD})
+    set_tests_properties(SwapZecE2ERegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 1800)
+  endif()
+  # swap.* for ZEC through real daemons: only with a dinerod built with DINERO_SWAP_ZEC.
+  if(DINERO_SWAP_ZEC AND DINERO_ZEBRAD AND TARGET dinerod)
+    add_test(NAME SwapZecRpcRegtest
+      COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_zec_rpc_regtest.sh
+              $<TARGET_FILE:dinerod> $<TARGET_FILE:swap_zec_regtest_tool> ${DINERO_ZEBRAD})
+    set_tests_properties(SwapZecRpcRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900)
+  endif()
+endif()
+
+# DIN<->ETH swap contract (contracts/swap-htlc): Foundry unit, fuzz and invariant
+# tests, where forge is installed.
+find_program(DINERO_FORGE forge)
+if(DINERO_FORGE)
+  add_test(NAME SwapEvmContract
+    COMMAND ${DINERO_FORGE} test --root ${CMAKE_SOURCE_DIR}/contracts/swap-htlc)
+  set_tests_properties(SwapEvmContract PROPERTIES LABELS "wallet;swap" TIMEOUT 600)
+endif()
+
 # swap.* RPCs end to end: two dinerods + bitcoind, SIGKILL/restart, clean stop (milestone 6).
 if(TARGET dinerod AND DINERO_BITCOIND)
+  # A dinerod built with DINERO_SWAP_ZEC also gets a Zebra: the BTC swap then runs on two-chain daemons.
+  set(_swap_rpc_zebrad "")
+  if(DINERO_SWAP_ZEC AND DINERO_ZEBRAD)
+    set(_swap_rpc_zebrad ${DINERO_ZEBRAD})
+  endif()
   add_test(NAME SwapRpcRegtest
-    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_rpc_regtest.sh $<TARGET_FILE:dinerod>)
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_rpc_regtest.sh $<TARGET_FILE:dinerod> ${_swap_rpc_zebrad})
   set_tests_properties(SwapRpcRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900)
 endif()
 
@@ -17964,6 +18124,25 @@ add_executable(swap_e2e_tool
 target_link_libraries(swap_e2e_tool PRIVATE dinero_rpc_client dinero_consensus argon2 OpenSSL::Crypto)
 link_zstd_if_needed(swap_e2e_tool)
 target_include_directories(swap_e2e_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
+# Manual rehearsal against the public Bitcoin testnet4 (not a ctest: it needs
+# a synced, funded testnet4 node): tests/wallet/swap_testnet4_rehearsal.sh.
+add_executable(swap_testnet4_tool
+  tests/wallet/swap_testnet4_tool.cpp
+  src/wallet/swap/encrypted_store.cpp
+  src/crypto/wallet_crypto.cpp
+  src/wallet/swap/runner.cpp
+  src/wallet/swap/tower.cpp
+  src/wallet/swap/fee_ladder.cpp
+  src/wallet/swap/din_watcher.cpp
+  src/wallet/swap/btc_watcher.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/engine.cpp
+  src/wallet/swap/offer.cpp
+  src/wallet/swap/htlc.cpp
+)
+target_link_libraries(swap_testnet4_tool PRIVATE dinero_rpc_client dinero_consensus argon2 OpenSSL::Crypto)
+link_zstd_if_needed(swap_testnet4_tool)
+target_include_directories(swap_testnet4_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external)
 if(TARGET dinerod AND TARGET dinero-swap-tower AND DINERO_BITCOIND)
   add_executable(swap_e2e_fixture_daemon tests/wallet/swap_e2e_fixture_daemon.cpp ${_release_sources})
   foreach(_property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS)

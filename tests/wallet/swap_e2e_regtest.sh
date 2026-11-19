@@ -8,6 +8,7 @@
 # Bob's watchtower runs as its own process (dinero-swap-tower) on an inbox dir.
 #   usage: swap_e2e_regtest.sh <dinerod> <swap_e2e_tool> <dinero-swap-tower>
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/swap_regtest_lib.sh"
 DINEROD=${1:?dinerod}; TOOL=${2:?swap_e2e_tool}; TOWER=${3:?dinero-swap-tower}
 # Each scenario owns fresh chains. Timestamp-refund scenarios advance Bitcoin
 # MTP; sharing that clock eventually puts a later offer beyond the real payer
@@ -54,7 +55,9 @@ mkdir -p "$DIR/din" "$DIR/csn" "$DIR/btc" "$DIR/swaps" "$DIR/inbox"; chmod 700 "
 bitcoind -regtest -datadir="$DIR/btc" -listen=0 -rpcport=$BPORT -rpcuser=test -rpcpassword=test \
   -daemon -fallbackfee=0.0002 >/dev/null
 for _ in $(seq 1 90); do dcall getblockcount '[]' >/dev/null 2>&1 && break; sleep 1; done
+swap_require_regtest dinerod "$(dcall getblockchaininfo '[]')"
 for _ in $(seq 1 60); do "${BCLI[@]}" getblockchaininfo >/dev/null 2>&1 && break; sleep 0.5; done
+swap_require_regtest bitcoind "$("${BCLI[@]}" getblockchaininfo)"
 
 # Alice's Dinero wallet (funds the DIN lock).
 dcall wallet.createhd '["alice"]' >/dev/null

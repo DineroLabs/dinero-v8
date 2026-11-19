@@ -1,5 +1,5 @@
 #pragma once
-// Pure rules behind the Swap tab (DIN <-> BTC atomic swaps), kept out of the
+// Pure rules behind the Swap tab (DIN <-> BTC / ZEC atomic swaps), kept out of the
 // widget so they are unit-tested: exact amount parsing (no floating point),
 // what blocks an offer, how swap states read, when cancel is allowed, and the
 // review text a user sees before money is committed.
@@ -9,6 +9,7 @@
 #include <QDateTime>
 #include <QJsonObject>
 #include <QString>
+#include <QStringList>
 
 namespace SwapFormPolicy {
 
@@ -92,11 +93,89 @@ inline OfferReview reviewOffer(const QString& dinText, const QString& btcText, c
     return r;
 }
 
-// Price in sat per DIN, rounded down; "" if undefined.
-inline QString rate(qint64 dinUna, qint64 btcSat) {
+// Price in sat per DIN (zat per DIN for Zcash), rounded down; "" if undefined.
+inline QString rate(qint64 dinUna, qint64 btcSat, const QString& unit = "sat") {
     if (dinUna <= 0 || btcSat < 0) return {};
     const long double satPerDin = static_cast<long double>(btcSat) * 100000000.0L / dinUna;
-    return QString::number(static_cast<qint64>(satPerDin)) + " sat per DIN";
+    return QString::number(static_cast<qint64>(satPerDin)) + " " + unit + " per DIN";
+}
+
+// --- Zcash (docs/design/din-zec-atomic-swaps.md) ---------------------------------
+// Mirrors what dinerod refuses: an amount covering 20 claim fees, a
+// transparent address of the node's network.
+inline constexpr qint64 kZecSpendFeeZat = 20000;
+inline constexpr qint64 kZecMinZat = 20 * kZecSpendFeeZat;  // 0.004 ZEC
+inline constexpr int kZecDepositConfirmations = 10;
+
+inline QStringList zecAddressPrefixes(const QString& chain) {
+    const QString c = chain.toLower();
+    if (c == "main" || c == "mainnet") return {"t1", "t3"};
+    return {"tm", "t2"};  // testnet and regtest
+}
+
+inline bool looksLikeZecAddress(const QString& address, const QString& chain) {
+    const QString a = address.trimmed();
+    static const QString base58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    if (a.size() != 35) return false;
+    for (const QChar ch : a) {
+        if (!base58.contains(ch)) return false;
+    }
+    for (const auto& p : zecAddressPrefixes(chain)) {
+        if (a.startsWith(p)) return true;
+    }
+    return false;
+}
+
+inline OfferReview reviewZecOffer(const QString& dinText, const QString& zecText, const QString& zecAddress,
+                                  const QString& chain) {
+    OfferReview r;
+    if (dinText.trimmed().isEmpty()) { r.blocker = "Enter the DIN amount you sell"; return r; }
+    if (!ShieldedTransferPolicy::parseDinToUna(dinText, &r.dinUna) || r.dinUna <= 0) {
+        r.blocker = "Enter a valid DIN amount (up to 8 decimals)";
+        return r;
+    }
+    if (zecText.trimmed().isEmpty()) { r.blocker = "Enter the ZEC amount you want"; return r; }
+    if (!ShieldedTransferPolicy::parseDinToUna(zecText, &r.btcSat) || r.btcSat <= 0) {
+        r.blocker = "Enter a valid ZEC amount (up to 8 decimals)";
+        return r;
+    }
+    if (r.btcSat < kZecMinZat) { r.blocker = "ZEC amount is too small (at least 0.004 ZEC)"; return r; }
+    if (zecAddress.trimmed().isEmpty()) { r.blocker = "Enter your Zcash address (where you receive the ZEC)"; return r; }
+    if (!looksLikeZecAddress(zecAddress, chain)) {
+        r.blocker = "Enter a transparent Zcash address (" + zecAddressPrefixes(chain).join("… or ") + "…)";
+        return r;
+    }
+    return r;
+}
+
+inline bool isZecOffer(const QString& text) { return text.trimmed().startsWith("dinswap2o"); }
+
+// Bob's deposit as swap.status / swap.list report it.
+struct DepositView {
+    qint64 dueZat = 0;
+    qint64 seenZat = 0;       // at least 1 confirmation
+    qint64 confirmedZat = 0;  // at least kZecDepositConfirmations
+    int confirmations = 0;    // of the newest payment
+    bool reachable = true;
+    bool ready = false;       // covered at kZecDepositConfirmations: the reply can be sent
+    QString hint;
+};
+
+inline DepositView depositView(const QJsonObject& s) {
+    DepositView v;
+    v.dueZat = s.value("deposit_due_zat").toVariant().toLongLong();
+    v.reachable = !s.contains("deposit_status");
+    v.seenZat = s.value("deposit_seen_zat").toVariant().toLongLong();
+    v.confirmedZat = s.value("deposit_confirmed_zat").toVariant().toLongLong();
+    v.confirmations = s.value("deposit_confirmations").toInt();
+    v.ready = v.reachable && v.dueZat > 0 && v.confirmedZat >= v.dueZat;
+    if (!v.reachable) v.hint = "your node cannot reach its Zcash node; the deposit address still stands";
+    else if (v.ready) v.hint = {};
+    else if (v.seenZat == 0) v.hint = "pay " + formatUnits(v.dueZat) + " ZEC to the deposit address";
+    else if (v.seenZat < v.dueZat) v.hint = formatUnits(v.dueZat - v.seenZat) + " ZEC still due";
+    else v.hint = QString("wait for %1 more Zcash confirmations of the deposit")
+                      .arg(qMax(1, kZecDepositConfirmations - v.confirmations));
+    return v;
 }
 
 inline QString timeLeft(qint64 seconds) {
@@ -109,19 +188,21 @@ inline QString timeLeft(qint64 seconds) {
 
 inline QString kindOfText(const QString& text) {
     const QString t = text.trimmed();
-    if (t.startsWith("dinswap1o")) return "offer";
+    if (t.startsWith("dinswap1o") || t.startsWith("dinswap2o")) return "offer";
     if (t.startsWith("dinswap1a")) return "accept";
     return {};
 }
 
 // Only before this side has locked anything (mirrors swap.cancel).
-inline bool canCancel(const QString& state) { return state == "accepted" || state == "offer-sent"; }
+inline bool canCancel(const QString& state) {
+    return state == "accepted" || state == "offer-sent" || state == "awaiting-deposit" || state == "deposit-confirmed";
+}
 
 inline bool finished(const QString& state) {
     return state == "done" || state == "refunded" || state == "aborted" || state == "lost";
 }
 
-inline QString stateLabel(const QString& state, const QString& role) {
+inline QString stateLabelBtc(const QString& state, const QString& role) {
     const bool alice = role == "din-seller";
     if (state == "offer-sent") return "Offer sent — waiting for the buyer's accept";
     if (state == "accepted") return alice ? "Starting — locking your DIN" : "Waiting for the seller's DIN lock";
@@ -140,6 +221,15 @@ inline QString stateLabel(const QString& state, const QString& role) {
     if (state == "lost") return "ATTENTION: the swap went wrong — see events";
     if (state.startsWith("paused")) return "Paused — unlock the wallet to continue";
     return state;
+}
+
+// The same states read for the swap's counter chain ("zec": ZEC in place of BTC).
+inline QString stateLabel(const QString& state, const QString& role, const QString& chain = QString()) {
+    if (state == "awaiting-deposit") return "Waiting for your ZEC deposit";
+    if (state == "deposit-confirmed") return "Deposit confirmed — accept the offer to start";
+    QString label = stateLabelBtc(state, role);
+    if (chain == "zec") label.replace("BTC", "ZEC");
+    return label;
 }
 
 inline QString localTime(qint64 unix) {
@@ -167,6 +257,20 @@ inline AcceptReview reviewDecodedOffer(const QJsonObject& d, const QString& expe
     const qint64 btc = d.value("btc_amount_sat").toVariant().toLongLong();
     const qint64 tBtc = d.value("t_btc_unix").toVariant().toLongLong();
     const qint64 tDin = d.value("t_din_unix").toVariant().toLongLong();
+    if (d.value("chain").toString() == "zec") {
+        r.text = QString(
+                     "You send %1 ZEC and receive %2 DIN (%3).\n\n"
+                     "First you pay %4 ZEC (the amount plus a 0.0002 ZEC funding fee) into a deposit address of "
+                     "your node, from any Zcash wallet. You can withdraw it until the seller locks DIN.\n"
+                     "Your node locks the ZEC from the deposit after the DIN lock has %5 confirmations; it comes "
+                     "back to you after %6 (in %7) if the seller never claims it.\n"
+                     "The seller's DIN is locked until %8.\n\n"
+                     "Your node must stay online and unlocked until the swap finishes.")
+                     .arg(formatUnits(btc), formatUnits(din), rate(din, btc, "zat"), formatUnits(btc + 20000))
+                     .arg(d.value("n_din").toInt())
+                     .arg(localTime(tBtc), timeLeft(tBtc - now), localTime(tDin));
+        return r;
+    }
     r.text = QString(
                  "You send %1 BTC and receive %2 DIN (%3).\n\n"
                  "Your BTC is locked until the seller claims it, or until %4 (in %5) — then it comes back to you.\n"

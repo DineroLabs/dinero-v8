@@ -18,6 +18,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -26,6 +27,7 @@ struct DaemonContext;
 
 namespace dinero {
 
+class ConfigService;
 // Typed component shared by the service and serialized adapter qualification.
 // The context must outlive the callback; each call retains its wallet service.
 swap::DinFundingOwner MakeRetainedSwapFundingOwner(DaemonContext& ctx);
@@ -43,6 +45,14 @@ public:
 
     // The running instance (for the swap.* RPCs); nullptr when disabled.
     static SwapService* Active();
+
+    // Zcash swaps (dinerod built with DINERO_SWAP_ZEC): swap_zec_install.cpp,
+    // linked only into that dinerod, registers this at start-up; Init calls it
+    // when swap.zec_rpc is set. Returns false (after printing why) on a bad
+    // config. Without it, swap.zec_rpc is refused.
+    using ZecInstaller = std::function<bool(swap::SwapManager& manager, const ConfigService& config,
+                                            swap::SwapNetwork network, swap::DinRpc din)>;
+    static void SetZecInstaller(ZecInstaller installer);
 
 private:
     void Loop();

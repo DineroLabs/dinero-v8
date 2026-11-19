@@ -43,11 +43,17 @@ BTC_MINER=$("${BCLI[@]}" getnewaddress)
 ALICE_BTC=$("${BCLI[@]}" getnewaddress "" bech32m)
 BOB_BTC_REFUND=$("${BCLI[@]}" getnewaddress "" bech32m)
 
-APID=$(start_node alice $APORT $AP2P "${SWAPCFG[@]}"); wait_rpc $APORT
-BPID=$(start_node bob $BPORT $BP2P "${SWAPCFG[@]}" --connect=127.0.0.1:$AP2P); wait_rpc $BPORT
+# Establish each intended payer before SwapService captures its durable owner.
+APID=$(start_node alice $APORT $AP2P); wait_rpc $APORT
+BPID=$(start_node bob $BPORT $BP2P --connect=127.0.0.1:$AP2P); wait_rpc $BPORT
 for port in $APORT $BPORT; do
   rpc $port wallet.createhd '["w"]' >/dev/null
   rpc $port wallet.encrypt '["pw-swap-qt"]' >/dev/null
+done
+kill "$APID" "$BPID"; while kill -0 "$APID" 2>/dev/null || kill -0 "$BPID" 2>/dev/null; do sleep 0.2; done; APID=; BPID=
+APID=$(start_node alice $APORT $AP2P "${SWAPCFG[@]}"); wait_rpc $APORT
+BPID=$(start_node bob $BPORT $BP2P "${SWAPCFG[@]}" --connect=127.0.0.1:$AP2P); wait_rpc $BPORT
+for port in $APORT $BPORT; do
   rpc $port wallet.unlock '["pw-swap-qt", 7200]' >/dev/null
 done
 ALICE_DIN=$(rpc $APORT wallet.getnewaddress '["taproot","mine"]' | python3 -c 'import sys,json

@@ -4,7 +4,13 @@
 // offer and accept between the two tabs.
 //   SWAP_QT_MODE=setup  : offer -> accept -> start, until both tables list the swap
 //   SWAP_QT_MODE=verify : both tables show the swap as Done
-// Env: SWAP_QT_{ALICE,BOB}_{PORT,DIR}, SWAP_QT_ALICE_BTC, SWAP_QT_BOB_BTC_REFUND.
+// DIN <-> ZEC (tests/swap_widget_zec_regtest.sh, daemons built with DINERO_SWAP_ZEC):
+//   SWAP_QT_MODE=zec-offer  : Alice picks ZEC and offers; Bob pastes it and gets
+//                             the deposit panel (prints "offer: …" and "deposit: …")
+//   SWAP_QT_MODE=zec-accept : a fresh tab restores Bob's deposit panel from his
+//                             node; once confirmed he accepts and Alice starts
+// Env: SWAP_QT_{ALICE,BOB}_{PORT,DIR}, SWAP_QT_ALICE_BTC, SWAP_QT_BOB_BTC_REFUND
+//      (ZEC: SWAP_QT_ALICE_ZEC, SWAP_QT_BOB_ZEC, SWAP_QT_DEPOSIT).
 #include <QtTest/QtTest>
 
 #include <QApplication>
@@ -80,7 +86,65 @@ private Q_SLOTS:
         dialogs_.start(50);
     }
 
+private:
+    // Alice pastes Bob's accept and starts the swap; both tables then list it.
+    void startFromBobsAccept() {
+        auto* acceptOut = Find<QPlainTextEdit>(bob_, "acceptOut");
+        Find<QPlainTextEdit>(alice_, "pasteIn")->setPlainText(acceptOut->toPlainText());
+        Find<QPushButton>(alice_, "reviewPasted")->click();
+        QTRY_VERIFY_WITH_TIMEOUT(Find<QLabel>(alice_, "swapStatus")->text().startsWith("Swap started"), 15000);
+        QVERIFY(answered_.last().contains("Starting now locks your DIN"));
+        for (auto* w : {alice_, bob_}) Find<QPushButton>(w, "refreshSwaps")->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!RowState(alice_).isEmpty() && !RowState(bob_).isEmpty(), 15000);
+    }
+
+    void zecOffer() {
+        // The ZEC switch appears once the tab learns the node serves Zcash.
+        QTRY_VERIFY_WITH_TIMEOUT(Find<QPushButton>(alice_, "chainZec")->isVisible(), 15000);
+        Find<QPushButton>(alice_, "chainZec")->click();
+        Find<QLineEdit>(alice_, "dinAmount")->setText("10");
+        Find<QLineEdit>(alice_, "btcAmount")->setText("0.025");
+        Find<QLineEdit>(alice_, "btcAddress")->setText(Env("SWAP_QT_ALICE_ZEC"));
+        QTRY_VERIFY_WITH_TIMEOUT(Find<QPushButton>(alice_, "createOffer")->isEnabled(), 15000);
+        Find<QPushButton>(alice_, "createOffer")->click();
+        auto* offerOut = Find<QPlainTextEdit>(alice_, "offerOut");
+        QTRY_VERIFY_WITH_TIMEOUT(offerOut->toPlainText().startsWith("dinswap2o"), 15000);
+        QVERIFY(!answered_.isEmpty() && answered_.last().contains("You sell 10.00000000 DIN for 0.02500000 ZEC"));
+
+        // Bob pastes it with his Zcash refund address and gets the deposit panel.
+        Find<QPlainTextEdit>(bob_, "pasteIn")->setPlainText(offerOut->toPlainText());
+        Find<QLineEdit>(bob_, "btcRefundAddress")->setText(Env("SWAP_QT_BOB_ZEC"));
+        Find<QPushButton>(bob_, "reviewPasted")->click();
+        auto* deposit = Find<QLabel>(bob_, "swapDepositAddress");
+        QTRY_VERIFY_WITH_TIMEOUT(deposit->text().startsWith("tm"), 15000);
+        QVERIFY(Find<QWidget>(bob_, "swapDeposit")->isVisible());
+        QVERIFY(Find<QLabel>(bob_, "swapDepositDue")->text().startsWith("0.02520000 ZEC"));
+        QVERIFY(!Find<QPushButton>(bob_, "acceptDeposit")->isEnabled());  // nothing paid yet
+        Shot(bob_, "bob-deposit");
+        qInfo().noquote() << "offer:" << offerOut->toPlainText();
+        qInfo().noquote() << "deposit:" << deposit->text();
+    }
+
+    void zecAccept() {
+        // A fresh tab: the panel comes back from Bob's node, and unlocks once the
+        // deposit has its 10 confirmations.
+        Find<QPushButton>(bob_, "refreshSwaps")->click();
+        auto* deposit = Find<QLabel>(bob_, "swapDepositAddress");
+        QTRY_COMPARE_WITH_TIMEOUT(deposit->text(), Env("SWAP_QT_DEPOSIT"), 20000);
+        QTRY_VERIFY_WITH_TIMEOUT(Find<QPushButton>(bob_, "acceptDeposit")->isEnabled(), 30000);
+        Shot(bob_, "bob-deposit-confirmed");
+        Find<QPushButton>(bob_, "acceptDeposit")->click();
+        QTRY_VERIFY_WITH_TIMEOUT(Find<QPlainTextEdit>(bob_, "acceptOut")->toPlainText().startsWith("dinswap1a"), 15000);
+        QVERIFY(answered_.last().contains("Your deposit is confirmed"));
+        QVERIFY(!Find<QWidget>(bob_, "swapDeposit")->isVisible());  // the deposit became the swap
+        startFromBobsAccept();
+        qInfo() << "alice:" << RowState(alice_) << "| bob:" << RowState(bob_);
+    }
+
+private Q_SLOTS:
     void run() {
+        if (Env("SWAP_QT_MODE") == "zec-offer") return zecOffer();
+        if (Env("SWAP_QT_MODE") == "zec-accept") return zecAccept();
         if (Env("SWAP_QT_MODE") == "verify") {
             for (auto* w : {alice_, bob_}) Find<QPushButton>(w, "refreshSwaps")->click();
             QTRY_COMPARE_WITH_TIMEOUT(RowState(alice_), QString("Done"), 20000);

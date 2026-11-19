@@ -50,7 +50,7 @@ thread_local const HttpRpcServer* rpc_connection_owner = nullptr;
 // These are rejected when the server runs in read-only mode (--rpc-readonly).
 static const std::unordered_set<std::string> ADMIN_METHODS = {
     "stop",
-    // DIN <-> BTC swaps: lock and move funds from this wallet.
+    // DIN <-> BTC / ZEC swaps: lock and move funds from this wallet.
     "swap.offer",
     "swap.accept",
     "swap.cancel",
@@ -62,6 +62,7 @@ static const std::unordered_set<std::string> ADMIN_METHODS = {
     "wallet.orchard.finishshield",
     "wallet.orchard.queuespend",
     "wallet.orchard.finishspend",
+    "swap.deposit",  // allocates a swap and its deposit address
     "wallet.importprivkey",
     "wallet.importmnemonic",
     "wallet.exportmnemonic",
