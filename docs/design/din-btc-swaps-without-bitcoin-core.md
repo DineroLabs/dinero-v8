@@ -1,9 +1,9 @@
 # DIN <-> BTC swaps without Bitcoin Core ("light Bitcoin")
 
 **Status:** design, revised 2026-11-18 after three independent reviews (security, code feasibility,
-architecture; section 12). Steps 0 to 2 are built on `claude/swaps-light-base` (section 13): a seller
-of DIN swaps with no Bitcoin Core on regtest. Not offered to users: off by default at build time,
-refused on mainnet. Target: after v8.2.5.
+architecture; section 12). Steps 0 to 4 are built on `claude/swaps-light-base` (section 13): on
+regtest a whole swap completes with no Bitcoin Core on either side. Not offered to users: off by
+default at build time, refused on mainnet. Target: after v8.2.5.
 **Owner:** Claude. **Depends on:** `claude/swaps-multichain` landing in `dinero-main` first (section 8).
 **Builds on:** `din-btc-atomic-swaps.md`, `din-btc-atomic-swaps-v1-plan.md`, `din-zec-atomic-swaps.md`.
 
@@ -353,12 +353,20 @@ the config `swap.btc_backend=light`. Mainnet additionally needs `swap.btc_light_
 | Watcher: the engine's view | `btc_light_watcher` | A simulated Bitcoin with lying and hiding servers |
 | Shared backend: sync (peers, then servers), broadcast | `btc_light_backend`, `btc_light_transport` | A scripted network |
 | Runner and daemon wiring | `btc_light_chain_io`, `src/daemon/swap_light_btc_install.cpp` | `SwapLightBtcRegtest` |
+| Deposit address, lock and sweep builders | `btc_deposit` | BIP173's address vector; real Bitcoin Core accepts the lock and the sweep (`SwapBtcDepositRegtest`) |
+| Deposit watcher | `btc_light_deposit` | The simulated Bitcoin: depth, spent coins, invented payments and spends |
+| Buying: manager deposit flow for Bitcoin, RPC, Swap tab deposit box | `swap_manager`, `methods_swap`, `qt/src/swapwidget` | `SwapLightBtcBuyRegtest`; manager and Swap tab tests |
 
 `SwapLightBtcRegtest` is the end-to-end proof: Alice's `dinerod` has no Bitcoin RPC. It syncs
 headers and broadcasts over Bitcoin P2P and asks two Esplora servers, one of which hides
 everything. She sells DIN to Bob (an ordinary Bitcoin Core swap node), is killed and restarted
 mid-swap, and is paid at a legacy address. Run with both servers hiding, or with every proof wrong,
 she never sees the lock and never claims.
+
+`SwapLightBtcBuyRegtest` is the same for buying, with neither `dinerod` having a Bitcoin RPC: Bob is
+given a deposit address, pays it in two payments from an outside wallet, is refused at one
+confirmation and accepted at two; his node builds and sends the lock; the swap completes; the excess
+returns to his refund address. A first, part-paid deposit is cancelled and comes back.
 
 Differences from the plan above, each found while building:
 
@@ -370,9 +378,17 @@ Differences from the plan above, each found while building:
   one observation.
 - **An unknown transaction's status is `{"confirmed":false}` with HTTP 200** on both real servers,
   so existence is taken from the raw transaction, never from the status.
-- **Buying DIN is refused in light mode** (`swap.accept` says why), until steps 3 and 5.
+- **A Bitcoin deposit key is the wallet's 7' key** for the swap index (5' and 6' are Zcash's).
+- **The fee buffer is `swap.btc_funding_fee_sat` (default 3,000 sat)**, added to the amount due; the
+  lock pays the median of the servers' estimates, never below 1 sat/vB, and what the fee does not
+  use returns with the change.
+- **Withdraw is not yet "in every state"** as section 3.3 asks. An unused deposit, and a swap that
+  has locked nothing, are swept on cancel. A payment that arrives after the lock was sent, or after
+  the swap finished, has no sweep path yet: the key is recoverable from the seed, but nothing in the
+  node moves those coins.
+- **Buying on mainnet still needs the watchtower**, and the tower still needs Bitcoin Core (step 5).
 
-Not built: deposit funding (step 3), the Swap tab's light-mode wording and deposit box (step 4),
-the tower in light mode (step 5), the testnet4 and mainnet rehearsals (step 6), a CA bundle for
-Windows, fuzz targets beyond the in-test random-damage loops. The Windows socket code is written
-and has never been compiled.
+Not built: late-payment sweep and seed-restore scan of deposit addresses (the rest of section 3.3),
+the fee-ceiling check in the Swap tab (section 4), the tower in light mode (step 5), the testnet4 and
+mainnet rehearsals (step 6), a CA bundle for Windows, fuzz targets beyond the in-test random-damage
+loops. The Windows socket code is written and has never been compiled.
