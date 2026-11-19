@@ -274,7 +274,11 @@ din::Json RpcCapabilities(const ExecutionContext& ctx, const din::Json&) {
     if (auto e = Refuse(ctx, false)) return *e;
     din::Json out(Json::objectValue);
     out["chains"] = Json::Value(Json::arrayValue);
-    if (SwapService::Active()->manager()->SupportsBtc()) out["chains"].append("btc");
+    if (SwapService::Active()->manager()->SupportsBtc()) {
+        out["chains"].append("btc");
+        // "light": Bitcoin without Bitcoin Core. The node can sell DIN for BTC but not buy DIN with BTC.
+        out["btc_backend"] = SwapService::Active()->manager()->LightBitcoin() ? "light" : "core";
+    }
     if (SwapService::Active()->manager()->SupportsZec()) out["chains"].append("zec");
     return out;
 }

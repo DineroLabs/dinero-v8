@@ -89,6 +89,8 @@ start_node bob $BPORT $BP2P "${BOBCFG[@]}" --connect=127.0.0.1:$AP2P; BPID=$STAR
 for port in $APORT $BPORT; do rpc $port wallet.unlock '["pw-swap-light", 7200]' >/dev/null; done
 check "alice's daemon says how it reaches Bitcoin" 'grep -q "Bitcoin without Bitcoin Core: 2 server(s), 1 peer seed(s)" "$DIR/alice.log"'
 check "alice offers BTC swaps without any Bitcoin RPC" '[[ "$(rpc $APORT swap.capabilities "[]")" == *btc* ]]'
+check "alice reports the light backend, bob Bitcoin Core" \
+  '[[ "$(field "$(rpc $APORT swap.capabilities "[]")" btc_backend)" == light && "$(field "$(rpc $BPORT swap.capabilities "[]")" btc_backend)" == core ]]'
 
 ALICE_DIN=$(rpc $APORT wallet.getnewaddress '["taproot","mine"]' | python3 -c 'import sys,json
 s=sys.stdin.read().strip()

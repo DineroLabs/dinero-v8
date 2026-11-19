@@ -178,6 +178,14 @@ void SwapWidget::setupUi() {
                          "swaps you can follow through. Buying DIN? A watchtower (dinero-swap-tower) can stand in "
                          "while you are offline.",
                          "swapDuties", this));
+    // Shown only when the node reaches Bitcoin without Bitcoin Core (swap.capabilities).
+    lightNotice_ = Pill(Tone::Info,
+                        "This node reaches Bitcoin through public servers and Bitcoin's own network, without Bitcoin "
+                        "Core. Here you can sell DIN for BTC. Buying DIN with BTC still needs Bitcoin Core. The servers "
+                        "can see which Bitcoin addresses your swaps use; your own Bitcoin Core is more private.",
+                        "swapLightNotice", this);
+    lightNotice_->setVisible(false);
+    root->addWidget(lightNotice_);
 
     // --- Row 1: sell DIN (make an offer) | its live review ---
     auto* sell = new QGroupBox("Sell DIN for BTC", this);
@@ -500,6 +508,8 @@ void SwapWidget::updatePasteReview() {
         blocker = "paste an offer you received, or the buyer's reply to your offer";
     } else if (kind.isEmpty()) {
         blocker = "this is not a swap offer or reply; paste the full text you received";
+    } else if (kind == "offer" && !SwapFormPolicy::isZecOffer(text) && lightBtc_) {
+        blocker = "this node cannot buy DIN with BTC yet: it has no Bitcoin Core to pay from (it can sell DIN for BTC)";
     } else if (SwapFormPolicy::isZecOffer(text) && !zecSupported_) {
         blocker = "this node cannot swap ZEC (dinerod built without Zcash swaps, or mainnet)";
     } else if (SwapFormPolicy::isZecOffer(text) &&
@@ -744,6 +754,9 @@ void SwapWidget::onRpcResult(const QString& method, const QJsonValue& result) {
         const QJsonArray chains = result.toObject().value("chains").toArray();
         zecSupported_ = chains.contains(QJsonValue("zec"));
         const bool btc = chains.contains(QJsonValue("btc"));
+        lightBtc_ = btc && result.toObject().value("btc_backend").toString() == "light";
+        lightNotice_->setVisible(lightBtc_);
+        updatePasteReview();
         chainLabel_->setVisible(zecSupported_);
         chainPick_->setVisible(zecSupported_);
         chainBtc_->setVisible(btc);  // a Zcash-only node (no swap.btc_rpc) cannot run BTC swaps

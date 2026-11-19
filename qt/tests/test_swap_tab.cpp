@@ -231,6 +231,39 @@ private Q_SLOTS:
         QVERIFY(Find<QLabel>(tab_, "swapIntro")->text().contains("BTC or ZEC"));
     }
 
+    // A node that reaches Bitcoin without Bitcoin Core sells DIN for BTC and says it cannot buy.
+    void lightBitcoinNodeSellsButDoesNotBuy() {
+        auto* notice = Find<QLabel>(tab_, "swapLightNotice");
+        auto* review = Find<QPushButton>(tab_, "reviewPasted");
+        auto* hint = Find<QLabel>(tab_, "swapPasteHint");
+        QVERIFY(!notice->isVisible());  // unknown, or Bitcoin Core: nothing to say
+        Q_EMIT rpc_->rpcResult("swaptab.caps", QJsonObject{{"chains", QJsonArray{"btc"}}, {"btc_backend", "core"}});
+        QVERIFY(!notice->isVisible());
+        Find<QPlainTextEdit>(tab_, "pasteIn")->setPlainText("dinswap1o00");
+        Find<QLineEdit>(tab_, "btcRefundAddress")->setText(kBtcAddress);
+        QVERIFY(review->isEnabled());
+
+        Q_EMIT rpc_->rpcResult("swaptab.caps", QJsonObject{{"chains", QJsonArray{"btc"}}, {"btc_backend", "light"}});
+        QVERIFY(notice->isVisible());
+        QVERIFY2(notice->text().contains("without Bitcoin Core") && notice->text().contains("sell DIN for BTC"), qPrintable(notice->text()));
+        QVERIFY2(notice->text().contains("more private"), qPrintable(notice->text()));
+        QVERIFY(!review->isEnabled());  // the pasted offer would make this node pay BTC
+        QVERIFY2(hint->text().contains("cannot buy DIN with BTC"), qPrintable(hint->text()));
+        // The buyer's reply to this node's own offer is still welcome: that is selling.
+        Find<QPlainTextEdit>(tab_, "pasteIn")->setPlainText("dinswap1a00");
+        QVERIFY(review->isEnabled());
+        // Selling is untouched.
+        Find<QLineEdit>(tab_, "dinAmount")->setText("10");
+        Find<QLineEdit>(tab_, "btcAmount")->setText("0.001");
+        Find<QLineEdit>(tab_, "btcAddress")->setText("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2");
+        QVERIFY(Find<QPushButton>(tab_, "createOffer")->isEnabled());
+
+        Q_EMIT rpc_->rpcResult("swaptab.caps", QJsonObject{{"chains", QJsonArray{"btc"}}, {"btc_backend", "core"}});
+        QVERIFY(!notice->isVisible());
+        Find<QPlainTextEdit>(tab_, "pasteIn")->setPlainText("dinswap1o00");
+        QVERIFY(review->isEnabled());
+    }
+
     void sellingForZec() {
         Q_EMIT rpc_->rpcResult("swaptab.caps", QJsonObject{{"chains", QJsonArray{"btc", "zec"}}});
         Find<QPushButton>(tab_, "chainZec")->click();

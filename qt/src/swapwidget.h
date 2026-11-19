@@ -53,6 +53,8 @@ private:
 
     double dinFeeEstimate_{0};  // una/vB from wallet.estimatefee (0: none yet)
     bool zecSupported_{false};  // the node reports "zec" in swap.capabilities
+    bool lightBtc_{false};      // the node reports btc_backend "light": it sells DIN for BTC, it cannot buy
+    QLabel* lightNotice_{nullptr};
     bool sellZec_{false};       // the sell form makes a ZEC offer
     QLabel* intro_;
     QGroupBox* sellBox_;
