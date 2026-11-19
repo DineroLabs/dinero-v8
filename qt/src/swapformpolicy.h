@@ -63,6 +63,17 @@ inline bool looksLikeBtcAddress(const QString& address, const QString& btcHrp) {
     return a.toLower().startsWith(btcHrp + "1") || isLegacyBtcAddress(a, btcHrp);
 }
 
+// Selling DIN: the wallet pays the network fee of the DIN lock, and swap.offer
+// refuses an offer that does not authorize it. The rate follows the node's
+// estimate (never below 2 una/vB, so the lock is not stuck behind an idle
+// estimate); the total is capped, and the review shows the cap.
+constexpr qint64 kDinFundingMaximumFeeUna = 5000000;  // 0.05 DIN
+inline qint64 dinFundingFeeRateHint(double estimateUnaPerVb) {
+    if (!(estimateUnaPerVb > 2.0)) return 2;  // also NaN and "no estimate yet"
+    if (estimateUnaPerVb >= 1000.0) return 1000;
+    return static_cast<qint64>(estimateUnaPerVb) + (estimateUnaPerVb > static_cast<qint64>(estimateUnaPerVb) ? 1 : 0);
+}
+
 struct OfferReview {
     QString blocker;  // first thing to fix; empty when the offer can be created
     qint64 dinUna = 0;

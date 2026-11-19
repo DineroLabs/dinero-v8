@@ -40,6 +40,7 @@ private:
     QString chain_{"mainnet"};
     QJsonObject lastDecoded_;
     QString pastedText_;
+    double dinFeeEstimate_{0};  // una/vB from wallet.estimatefee (0: none yet)
 
     QLineEdit* dinAmount_;
     QLineEdit* btcAmount_;

@@ -52,6 +52,18 @@ private Q_SLOTS:
         QCOMPARE(SwapFormPolicy::btcAddressStarts("bc"), QString("bc1, 1 or 3"));
         QCOMPARE(SwapFormPolicy::btcAddressStarts("tb"), QString("tb1, m, n or 2"));
     }
+    void dinFundingFeeAuthorization() {
+        using SwapFormPolicy::dinFundingFeeRateHint;
+        QCOMPARE(dinFundingFeeRateHint(0), qint64(2));      // no estimate yet
+        QCOMPARE(dinFundingFeeRateHint(1.0), qint64(2));    // an idle node's floor
+        QCOMPARE(dinFundingFeeRateHint(qQNaN()), qint64(2));
+        QCOMPARE(dinFundingFeeRateHint(-5), qint64(2));
+        QCOMPARE(dinFundingFeeRateHint(2.0), qint64(2));
+        QCOMPARE(dinFundingFeeRateHint(2.01), qint64(3));   // rounded up, never below the estimate
+        QCOMPARE(dinFundingFeeRateHint(17), qint64(17));
+        QCOMPARE(dinFundingFeeRateHint(1e12), qint64(1000));
+        QCOMPARE(SwapFormPolicy::formatUnits(SwapFormPolicy::kDinFundingMaximumFeeUna), QString("0.05000000"));
+    }
     void networkHrp() {
         QCOMPARE(SwapFormPolicy::btcHrpForChain("mainnet"), QString("bc"));
         QCOMPARE(SwapFormPolicy::btcHrpForChain("main"), QString("bc"));
