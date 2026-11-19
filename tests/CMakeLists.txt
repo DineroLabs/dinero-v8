@@ -17937,6 +17937,24 @@ target_include_directories(test_swap_btc_p2p PRIVATE
 add_test(NAME SwapBtcP2p COMMAND test_swap_btc_p2p)
 set_tests_properties(SwapBtcP2p PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 120)
 
+# The same client over real sockets against a real Bitcoin Core (regtest).
+add_executable(swap_btc_p2p_tool
+  tests/wallet/swap_btc_p2p_tool.cpp
+  src/wallet/swap/btc_p2p_client.cpp
+  src/wallet/swap/btc_p2p.cpp
+  src/wallet/swap/btc_raw_tx.cpp
+  src/wallet/swap/btc_header_chain.cpp
+  src/wallet/swap/btc_header_store.cpp
+)
+target_link_libraries(swap_btc_p2p_tool PRIVATE dinero_consensus)
+link_zstd_if_needed(swap_btc_p2p_tool)
+target_include_directories(swap_btc_p2p_tool PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+if(DINERO_BITCOIND)
+  add_test(NAME SwapBtcP2pRegtest
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_btc_p2p_regtest.sh $<TARGET_FILE:swap_btc_p2p_tool>)
+  set_tests_properties(SwapBtcP2pRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 300 SKIP_RETURN_CODE 77)
+endif()
+
 # Bitcoin Core regtest check of the swap's BTC side (needs bitcoind/bitcoin-cli on PATH).
 add_executable(swap_btc_regtest_tool
   tests/wallet/swap_btc_regtest_tool.cpp

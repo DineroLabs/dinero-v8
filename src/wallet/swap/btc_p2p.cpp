@@ -46,6 +46,7 @@ uint32_t WantedLimit(const std::string& command) {
     if (command == "version") return 2000;
     if (command == "verack") return 0xffffffff;  // must be empty: checked when handled
     if (command == "ping") return 64;
+    if (command == "pong") return 64;
     if (command == "headers") return 9 + kBtcP2pMaxHeaders * 81;
     if (command == "getdata") return 9 + 1000 * 36;
     return 0;
@@ -105,6 +106,7 @@ void BtcPeerSession::Close(std::string why) {
     header_.clear();
     payload_.clear();
     queued_.clear();
+    receipts_.clear();
     awaiting_headers_ = false;
 }
 
@@ -207,6 +209,7 @@ void BtcPeerSession::OnMessage(const std::string& command, const std::vector<uin
     if (!handshake_complete()) return Close(command + " before the handshake finished");
     if (command == "headers") return OnHeaders(payload, now_unix, step);
     if (command == "getdata") return OnGetData(payload, step);
+    if (command == "pong") return OnPong(payload, step);
 }
 
 void BtcPeerSession::OnHeaders(const std::vector<uint8_t>& payload, uint32_t now_unix, Step& step) {
@@ -251,9 +254,26 @@ void BtcPeerSession::OnGetData(const std::vector<uint8_t>& payload, Step& step) 
         if (type != kInvTx && type != kInvWitnessTx) continue;
         for (const QueuedTx& tx : queued_) {
             if (!std::equal(tx.txid.begin(), tx.txid.end(), payload.begin() + pos + 4)) continue;
+            if (receipts_.size() >= 4 * kBtcP2pMaxQueuedTxs) continue;  // a peer asking over and over gets no more
             Send(step, "tx", tx.raw);
-            step.txs_sent.push_back(tx.txid);
+            // The receipt: the peer answers this ping only after it has handled the transaction.
+            const uint64_t ping = nonce_ ^ (0x9e3779b97f4a7c15ULL * ++next_ping_);
+            std::vector<uint8_t> payload8;
+            PutLe(payload8, ping, 8);
+            Send(step, "ping", payload8);
+            receipts_.emplace_back(ping, tx.txid);
         }
+    }
+}
+
+void BtcPeerSession::OnPong(const std::vector<uint8_t>& payload, Step& step) {
+    if (payload.size() != 8) return;
+    const uint64_t ping = GetLe(payload.data(), 8);
+    for (auto it = receipts_.begin(); it != receipts_.end(); ++it) {
+        if (it->first != ping) continue;
+        step.txs_sent.push_back(it->second);
+        receipts_.erase(it);
+        return;
     }
 }
 

@@ -11,12 +11,19 @@
 // so every rule can be tested against any byte sequence.
 //
 // A peer is untrusted. The session
-//   - buffers only the few messages it uses (version, verack, ping, headers,
-//     getdata), each under a small size limit; every other message is skipped
+//   - buffers only the few messages it uses (version, verack, ping, pong,
+//     headers, getdata), each under a small size limit; every other message is skipped
 //     as it streams past, without being stored;
 //   - closes on a wrong network magic, an oversized frame, a bad checksum, a
 //     malformed message, or a header its chain refuses;
 //   - never sends a transaction it was not asked to queue.
+//
+// A transaction counts as handed over only once the peer has processed it: a
+// node drops what a peer sent if that peer hangs up first. So each transaction
+// is followed by a `ping`, and the matching `pong` (a node answers one peer's
+// messages in order) is the receipt. The receipt says the node looked at
+// the transaction, not that it accepted it: whether it is in mempools or in a
+// block is established separately, from proofs.
 // What a peer says about headers is checked by BtcHeaderChain, not here.
 
 #include "wallet/swap/btc_header_chain.h"
@@ -25,6 +32,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace dinero::swap {
@@ -60,7 +68,7 @@ public:
     struct Step {
         std::vector<uint8_t> send;         // bytes to write to the peer (may be empty)
         size_t headers_accepted{0};        // new headers this step
-        std::vector<Bytes32> txs_sent;     // transactions the peer asked for and was given (txid, wire order)
+        std::vector<Bytes32> txs_sent;     // transactions the peer fetched and has processed (txid, wire order)
     };
     // Feed bytes received from the peer. After a fault the session is closed:
     // further input is ignored and the caller should drop the connection.
@@ -92,6 +100,7 @@ private:
     void OnMessage(const std::string& command, const std::vector<uint8_t>& payload, uint32_t now_unix, Step& step);
     void OnHeaders(const std::vector<uint8_t>& payload, uint32_t now_unix, Step& step);
     void OnGetData(const std::vector<uint8_t>& payload, Step& step);
+    void OnPong(const std::vector<uint8_t>& payload, Step& step);
     void Send(Step& step, const std::string& command, const std::vector<uint8_t>& payload);
 
     BtcP2pNetwork net_;
@@ -122,6 +131,9 @@ private:
         std::vector<uint8_t> raw;
     };
     std::vector<QueuedTx> queued_;
+    // Pings sent after a transaction, waiting for their pong: nonce -> txid.
+    std::vector<std::pair<uint64_t, Bytes32>> receipts_;
+    uint64_t next_ping_{0};
 };
 
 }  // namespace dinero::swap

@@ -308,18 +308,32 @@ TEST(BtcP2p, HandsOverATransactionOnlyWhenAsked) {
     EXPECT_TRUE(c.Feed(GetData(1, other)).send.empty());       // another transaction
     EXPECT_TRUE(c.Feed(GetData(2, txid)).send.empty());        // asked for as a block
     for (uint32_t type : {1u, 0x40000001u}) {                  // plain and witness requests
-        const auto step = c.Feed(GetData(type, txid));
+        auto step = c.Feed(GetData(type, txid));
         const auto sent = Parse(step.send);
-        ASSERT_EQ(sent.size(), 1u);
+        ASSERT_EQ(sent.size(), 2u);
         EXPECT_EQ(sent[0].command, "tx");
         EXPECT_EQ(sent[0].payload, tx);                        // byte for byte what we were given
+        // Written is not delivered: a node drops what a peer sent if the peer hangs up first.
+        EXPECT_TRUE(step.txs_sent.empty());
+        EXPECT_EQ(sent[1].command, "ping");
+        ASSERT_EQ(sent[1].payload.size(), 8u);
+        Bytes wrong = sent[1].payload;
+        wrong[0] ^= 1;
+        EXPECT_TRUE(c.Feed(BtcP2pMessage(kNet, "pong", wrong)).txs_sent.empty());   // not our ping's answer
+        step = c.Feed(BtcP2pMessage(kNet, "pong", sent[1].payload));                // the receipt
         EXPECT_EQ(step.txs_sent, std::vector<Bytes32>{txid});
+        EXPECT_TRUE(c.Feed(BtcP2pMessage(kNet, "pong", sent[1].payload)).txs_sent.empty());  // counted once
     }
     // Announcing the same one again does not queue it twice; the queue is bounded.
     EXPECT_FALSE(c.session.AnnounceTx(tx).empty());
     for (uint8_t i = 1; i < kBtcP2pMaxQueuedTxs; ++i) EXPECT_FALSE(c.session.AnnounceTx(LegacyTx(0x40 + i)).empty()) << int(i);
     EXPECT_TRUE(c.session.AnnounceTx(LegacyTx(0x90)).empty());
-    EXPECT_EQ(Parse(c.Feed(GetData(1, txid)).send).size(), 1u);
+    EXPECT_EQ(Parse(c.Feed(GetData(1, txid)).send).size(), 2u);
+    // A peer that keeps asking without ever answering is not fed for ever.
+    size_t served = 0;
+    for (int i = 0; i < 200; ++i) served += Parse(c.Feed(GetData(1, txid)).send).size() / 2;
+    EXPECT_LT(served, 4 * kBtcP2pMaxQueuedTxs);
+    EXPECT_FALSE(c.session.fault().has_value());
 }
 
 TEST(BtcP2p, ClosesOnAnythingMalformed) {
