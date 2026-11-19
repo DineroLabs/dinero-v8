@@ -173,7 +173,7 @@ void RuntimeDeliveryWorker::RecoverWallet(Report& report,
 #endif
         const auto recovered=full_archive_v3 ?
             source_->resumeRuntimeWalletRecoveryV3IfNeeded(use->Wallet(),index->Index(),session,
-                limits_.legacy_material_limit_bytes) :
+                limits_.legacy_material_limit_bytes,1) :
             source_->resumeRuntimeWalletRecoveryIfNeeded(use->Wallet(),index->Index(),session,
                 limits_.legacy_material_limit_bytes);
         if (!recovered.ok()){refuse_resource_limit(recovered.status());return;}

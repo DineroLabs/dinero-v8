@@ -7453,8 +7453,8 @@ ChainstateService::resumeRuntimeWalletRecoveryIfNeededImpl(WalletManager& wallet
       catch (...) { return Status::Internal; }
 }
 
-Status ChainstateService::resumeRuntimeOrchardDeliveryV3(WalletManager& wallet,UTXOIndex& metadata_index,
-        uint64_t session) {
+StatusOr<bool> ChainstateService::resumeRuntimeOrchardDeliveryV3(WalletManager& wallet,UTXOIndex& metadata_index,
+        uint64_t session,size_t max_events) {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     // #939 phase 3: deliver a native-complete wallet's Orchard accounts on a
     // full-archive v3 source. Orchard account state only: no transparent,
@@ -7474,25 +7474,25 @@ Status ChainstateService::resumeRuntimeOrchardDeliveryV3(WalletManager& wallet,U
             return Status::Invalid;
         std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> table(raw,sqlite3_finalize);
         int rc=sqlite3_step(raw);
-        if(rc==SQLITE_DONE)return Status::Ok; // No Orchard account: nothing to deliver.
+        if(rc==SQLITE_DONE)return true; // No Orchard account: nothing to deliver.
         if(rc!=SQLITE_ROW)return Status::Invalid;
         raw=nullptr;
         if(sqlite3_prepare_v2(lease->Database(),"SELECT 1 FROM orchard_wallet_snapshots LIMIT 1",-1,&raw,nullptr)!=SQLITE_OK)
             return Status::Invalid;
         std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> rows(raw,sqlite3_finalize);
         rc=sqlite3_step(raw);
-        if(rc==SQLITE_DONE)return Status::Ok;
+        if(rc==SQLITE_DONE)return true;
         if(rc!=SQLITE_ROW)return Status::Invalid;
     }
     // Orchard catalog/account restoration needs the seed. A locked wallet
     // keeps its transparent delivery; its Orchard accounts catch up on unlock.
-    if(wallet.isWalletLocked())return Status::Ok;
+    if(wallet.isWalletLocked())return true;
     try {
         const auto captured=getRuntimeAccountReplayForWallet(wallet,session);
         if(!captured.ok())return captured.status();
         const auto& replay=**captured;
         const auto head=replay.Head();
-        if(!head.sequence)return Status::Ok;
+        if(!head.sequence)return true;
         const auto point=replay.Point(head).checkpoint;
         const RuntimeWalletRecovery::OrchardSourceOwner bind=[&](const auto& write){
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
@@ -7513,8 +7513,11 @@ Status ChainstateService::resumeRuntimeOrchardDeliveryV3(WalletManager& wallet,U
             fence();write(fence);
         };
         const ChainstateRuntimeRecoverySource recovery_source(*this);
-        (void)RuntimeWalletRecovery::ResumePreparedOrchardCatalogStores(replay,recovery_source,wallet,session,bind);
-        return Status::Ok;
+        if(max_events) return RuntimeWalletRecovery::AdvancePreparedOrchardCatalogStores(
+            replay,recovery_source,wallet,session,bind,max_events).has_value();
+        (void)RuntimeWalletRecovery::ResumePreparedOrchardCatalogStores(
+            replay,recovery_source,wallet,session,bind);
+        return true;
     } catch(const consensus::OrchardStateLookupError& e) { return e.SourceStatus(); }
       catch(...) { return Status::Internal; }
 #else
@@ -7581,7 +7584,7 @@ void FillNativeP2MRTargetsV3(WalletManager& wallet,uint64_t session) {
 
 StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
 ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,UTXOIndex& metadata_index,
-        uint64_t expected_session,size_t material_limit_bytes) {
+        uint64_t expected_session,size_t material_limit_bytes,size_t orchard_events_per_pass) {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     if(activation_mutex_.HeldByCurrentThread() || !material_limit_bytes ||
        material_limit_bytes>128*1024*1024)return Status::Invalid;
@@ -7708,8 +7711,10 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 source.TipHash(),source.Origin().OriginHeight(),source.TipHeight()};
             wallet.PublishRecoveredBlockchainHeight(wallet.getBlockchainHeight(),applied.tip_height,session);
             if(native) {
-                const auto orchard=resumeRuntimeOrchardDeliveryV3(wallet,metadata_index,session);
-                if(orchard!=Status::Ok)return orchard;
+                const auto orchard=resumeRuntimeOrchardDeliveryV3(
+                    wallet,metadata_index,session,orchard_events_per_pass);
+                if(!orchard.ok())return orchard.status();
+                if(!*orchard)return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
                 continue_restored_account0();
             }
             return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
@@ -7766,9 +7771,17 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 return Status::Invalid;
         }
         wallet.PublishRecoveredBlockchainHeight(wallet.getBlockchainHeight(),applied.tip_height,session);
+        // A worker pass carries at most 32 ordinary events. Finish every
+        // available ordinary page before beginning an expensive Orchard
+        // account step, so mining rewards cannot wait behind old account
+        // history when this page already proves transparent backlog.
+        if(orchard_events_per_pass && applied.cursor!=(*page)->head)
+            return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
         if(native) {
-            const auto orchard=resumeRuntimeOrchardDeliveryV3(wallet,metadata_index,session);
-            if(orchard!=Status::Ok)return orchard;
+            const auto orchard=resumeRuntimeOrchardDeliveryV3(
+                wallet,metadata_index,session,orchard_events_per_pass);
+            if(!orchard.ok())return orchard.status();
+            if(!*orchard)return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
         }
         return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
             RuntimeEnrolledWalletRecoveryResult{applied,{},(*page)->head,std::nullopt});
@@ -7777,6 +7790,7 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
       catch(...) { return Status::Internal; }
 #else
     (void)wallet;(void)metadata_index;(void)expected_session;(void)material_limit_bytes;
+    (void)orchard_events_per_pass;
     return Status::Internal;
 #endif
 }

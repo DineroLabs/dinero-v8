@@ -4,6 +4,7 @@
 #include "wallet/runtime_origin_projection.h"
 #include "wallet/wallet_manager.h"
 #include <algorithm>
+#include <limits>
 #include <stdexcept>
 #include <sqlite3.h>
 
@@ -275,11 +276,11 @@ RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumePreparedCatalog
     for(const auto& entry:current.catalog.accounts)revisions.emplace_back(entry.number,entry.state.revision);
     return {current.indexed,std::move(revisions),final.head,current.catalog.catalog.revision};
 }
-RuntimeOrchardCatalogRecoveryResult RuntimeWalletRecovery::ResumePreparedOrchardCatalog(
+std::optional<RuntimeOrchardCatalogRecoveryResult> RuntimeWalletRecovery::ResumePreparedOrchardCatalog(
         const RuntimeAccountReplay& view,const Source& source,WalletManager& wallet,uint64_t session,
-        const OrchardSourceOwner& bind){
+        const OrchardSourceOwner& bind,size_t max_events){
     using Account=wallet::OrchardAccountDelivery;using Action=Account::CatalogRecoveryAction;
-    Require(bool(bind),"Orchard recovery source owner unavailable");
+    Require(bool(bind)&&max_events,"Orchard recovery source owner or slice limit unavailable");
     {const auto lease=wallet.AcquireDatabaseLease();Require(wallet.database_leases_==1,
         "Orchard recovery requires released caller lease");}
     const auto target=view.Head();Require(target.sequence,"Orchard recovery requires genuine first delivery");
@@ -333,7 +334,8 @@ RuntimeOrchardCatalogRecoveryResult RuntimeWalletRecovery::ResumePreparedOrchard
         Require(position.sequence<=target.sequence,"Orchard recovery account exceeds captured head");
         sequence=std::min(sequence,position.sequence);
     }
-    while(sequence<target.sequence){
+    size_t advanced=0;
+    while(sequence<target.sequence && advanced<max_events){
         ++sequence;const auto event=view.Event(sequence);auto prepared=prepare(Action::Apply,sequence);
         Require(equal(current,prepared.first),"Orchard recovery catalog changed during preparation");
         bind([&](const auto& fence){
@@ -347,7 +349,12 @@ RuntimeOrchardCatalogRecoveryResult RuntimeWalletRecovery::ResumePreparedOrchard
                     "Orchard recovery applied position mismatch");
             }
         });
+        ++advanced;
     }
+    // Each applied event is a real, independently fenced durable account
+    // commit. Preserve its receipt for the next pass, but never reconcile or
+    // report the captured head until every account actually reaches it.
+    if(sequence<target.sequence)return std::nullopt;
     for(const auto& entry:current.accounts)Require(cursor(entry)==target,"Orchard recovery captured head mismatch");
     auto reconciled=prepare(Action::Reconcile,0);
     Require(equal(current,reconciled.first),"Orchard recovery catalog changed before reconciliation");
@@ -365,7 +372,8 @@ RuntimeOrchardCatalogRecoveryResult RuntimeWalletRecovery::ResumePreparedOrchard
     for(const auto& entry:current.accounts)revisions.emplace_back(entry.number,entry.state.revision);
     // No ReadStores/coverage/baseline adoption or transparent/index write occurs
     // on this distinct route. Even success is ONLY this captured Orchard prefix.
-    return {target,std::move(revisions),final.head,current.catalog.revision};
+    return RuntimeOrchardCatalogRecoveryResult{target,std::move(revisions),final.head,
+        current.catalog.revision};
 }
 
 // ---------------------------------------------------------------------------
@@ -438,11 +446,21 @@ RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumeCatalogWalletSt
 RuntimeOrchardCatalogRecoveryResult RuntimeWalletRecovery::ResumePreparedOrchardCatalogStores(
         const RuntimeAccountReplay& replay,const wallet::IRuntimeRecoverySource& chain,
         WalletManager& wallet,uint64_t session,const OrchardSourceOwner& owner) {
+    auto result=AdvancePreparedOrchardCatalogStores(replay,chain,wallet,session,owner,
+        std::numeric_limits<size_t>::max());
+    Require(result.has_value(),"Orchard recovery did not reach captured head");
+    return std::move(*result);
+}
+
+std::optional<RuntimeOrchardCatalogRecoveryResult>
+RuntimeWalletRecovery::AdvancePreparedOrchardCatalogStores(
+        const RuntimeAccountReplay& replay,const wallet::IRuntimeRecoverySource& chain,
+        WalletManager& wallet,uint64_t session,const OrchardSourceOwner& owner,size_t max_events) {
     return ResumePreparedOrchardCatalog(replay,[&chain](RuntimeOutboxCursor cursor,size_t count){
         const auto page=chain.GetDeliveryPage(cursor,count);
         if(!page.ok())throw std::runtime_error("Imported Orchard delivery page unavailable");
         return **page;
-    },wallet,session,owner);
+    },wallet,session,owner,max_events);
 }
 
 } // namespace dinero

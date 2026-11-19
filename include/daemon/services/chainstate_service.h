@@ -1205,7 +1205,8 @@ public:
     // A captured prefix is progress only; it is not whole-wallet readiness.
     StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
         resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager&, UTXOIndex& metadata_index,
-            uint64_t expected_session = 0, size_t material_limit_bytes = 128*1024*1024);
+            uint64_t expected_session = 0, size_t material_limit_bytes = 128*1024*1024,
+            size_t orchard_events_per_pass = 0);
     // Distinct automatic Orchard-only delivery for the authenticated completed
     // imported owner. Null success means NOT this source composition; failure
     // never falls back to mixed replay or earns missing transparent baselines.
@@ -1838,7 +1839,10 @@ private:
         bool fresh_empty_prefix = false) const;
     // #939 phase 3: Orchard account delivery for a native-complete wallet on a
     // full-archive v3 source. Writes Orchard account state only.
-    Status resumeRuntimeOrchardDeliveryV3(WalletManager&,UTXOIndex& metadata_index,uint64_t session);
+    // False success means a bounded, durable Orchard prefix was applied and
+    // the worker should revisit it after serving the transparent wallet.
+    StatusOr<bool> resumeRuntimeOrchardDeliveryV3(WalletManager&,UTXOIndex& metadata_index,
+        uint64_t session,size_t max_events);
     StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> captureRuntimeWalletCoverage(
         WalletManager&,uint64_t,UTXOIndex&,bool public_history,bool& body_data_pending,
         bool retained_history = false,size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes) const;

@@ -115,4 +115,93 @@ TEST(WalletV3NativeOrchard, NativeWalletReceivesOrchardNoteThroughV3Delivery) {
     f.wallet->Stop();
 }
 
+// A late full-archive wallet can have thousands of Orchard events to inspect
+// after creation. The background worker must publish each transparent mining
+// reward at the selected tip before it continues that independent replay.
+// A partial Orchard slice must not claim an account-ready result.
+TEST(WalletV3NativeOrchard, TransparentMiningRewardsAdvanceDuringOrchardReplay) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-orchard-sliced-index");
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    const auto created=f.Call(0);
+    ASSERT_FALSE(created.isMember("error")) << created.toStyledString();
+    int64_t mined=0;
+    for(int i=0;i<4;++i)mined+=f.MineToWallet();
+    const auto source_head=NativeOrchardHead(f);
+    ASSERT_GT(source_head,1u);
+
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+    const auto session=use->Wallet().AcquireDatabaseLease()->Session();
+    const auto first=f.f.service->resumeRuntimeWalletRecoveryV3IfNeeded(
+        use->Wallet(),index->Index(),session,128*1024*1024,1);
+    ASSERT_TRUE(first.ok());
+    EXPECT_FALSE(*first) << "one Orchard event is not the captured head";
+    EXPECT_LT(f.Account(0).account.Delivery().sequence,source_head);
+    EXPECT_EQ(use->Wallet().getBlockchainHeight(),f.f.service->GetActiveTip()->height);
+    auto request=f.RequestContext();
+    const auto balance=rpc_context_wallet_getbalance(request,din::obj());
+    ASSERT_FALSE(balance.isMember("error")) << balance.toStyledString();
+    EXPECT_NEAR(balance["total"].asDouble(),double(mined)/1e8,1e-8);
+
+    // A newly mined block must be credited on the very next pass while the
+    // independent Orchard account is still replaying older events.
+    mined+=f.MineToWallet();
+    const auto second=f.f.service->resumeRuntimeWalletRecoveryV3IfNeeded(
+        use->Wallet(),index->Index(),session,128*1024*1024,1);
+    ASSERT_TRUE(second.ok());
+    EXPECT_FALSE(*second);
+    EXPECT_LT(f.Account(0).account.Delivery().sequence,NativeOrchardHead(f));
+    const auto advanced=rpc_context_wallet_getbalance(request,din::obj());
+    ASSERT_FALSE(advanced.isMember("error")) << advanced.toStyledString();
+    EXPECT_NEAR(advanced["total"].asDouble(),double(mined)/1e8,1e-8);
+
+    bool complete=false;
+    for(uint64_t i=0;i<NativeOrchardHead(f)+1 && !complete;++i) {
+        const auto next=f.f.service->resumeRuntimeWalletRecoveryV3IfNeeded(
+            use->Wallet(),index->Index(),session,128*1024*1024,1);
+        ASSERT_TRUE(next.ok());
+        complete=bool(*next);
+    }
+    EXPECT_TRUE(complete);
+    EXPECT_EQ(f.Account(0).account.Delivery().sequence,NativeOrchardHead(f));
+}
+
+TEST(WalletV3NativeOrchard, OrdinaryBacklogPreemptsOrchardReplay) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-orchard-ordinary-priority-index");
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ASSERT_FALSE(f.Call(0).isMember("error"));
+    const auto orchard_before=f.Account(0).account.Delivery().sequence;
+    int64_t mined=0;
+    for(int i=0;i<33;++i)mined+=f.MineToWallet();
+    const auto tip=f.f.service->GetActiveTip()->height;
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+    const auto session=use->Wallet().AcquireDatabaseLease()->Session();
+
+    // A 32-event ordinary page is still behind the selected source. The
+    // worker must return without spending this pass on Orchard history.
+    const auto first=f.f.service->resumeRuntimeWalletRecoveryV3IfNeeded(
+        use->Wallet(),index->Index(),session,128*1024*1024,1);
+    ASSERT_TRUE(first.ok());
+    EXPECT_FALSE(*first);
+    EXPECT_LT(use->Wallet().getBlockchainHeight(),tip);
+    EXPECT_EQ(f.Account(0).account.Delivery().sequence,orchard_before);
+
+    const auto second=f.f.service->resumeRuntimeWalletRecoveryV3IfNeeded(
+        use->Wallet(),index->Index(),session,128*1024*1024,1);
+    ASSERT_TRUE(second.ok());
+    EXPECT_FALSE(*second); // Orchard is still a partial account replay.
+    EXPECT_EQ(use->Wallet().getBlockchainHeight(),tip);
+    EXPECT_GT(f.Account(0).account.Delivery().sequence,orchard_before);
+    const auto balance=rpc_context_wallet_getbalance(f.RequestContext(),din::obj());
+    ASSERT_FALSE(balance.isMember("error")) << balance.toStyledString();
+    EXPECT_NEAR(balance["total"].asDouble(),double(mined)/1e8,1e-8);
+}
+
 } // namespace dinero
