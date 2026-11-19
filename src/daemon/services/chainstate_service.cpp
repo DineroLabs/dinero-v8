@@ -27980,8 +27980,11 @@ void ChainstateService::BackgroundValidationWorker() {
                 if(!db||db.get()!=chain_db_||!headers||compact_startup_)
                     throw std::runtime_error("v6 archival replay owner unavailable");
             }
+            if(bg_validation_should_stop_.load())throw std::runtime_error("Validation stopped by user");
             const auto baseline=OrchardSnapshotStore::ReadBaseline(*db);
+            if(bg_validation_should_stop_.load())throw std::runtime_error("Validation stopped by user");
             OrchardSnapshotStore::Authenticate(baseline,*headers,0);
+            if(bg_validation_should_stop_.load())throw std::runtime_error("Validation stopped by user");
             const auto activation=Params().orchard_activation_height;
             const auto parent_height=activation-1;
             const auto selected_header=[&](const uint256& hash,uint32_t height) {
@@ -27994,6 +27997,7 @@ void ChainstateService::BackgroundValidationWorker() {
             std::vector<OrchardHistoryCapture::Header> suffix(baseline.state.height-parent_height);
             auto previous=baseline.state.block_hash;
             for(size_t remaining=suffix.size();remaining;--remaining) {
+                if(bg_validation_should_stop_.load())throw std::runtime_error("Validation stopped by user");
                 const auto h=uint32_t(parent_height+remaining);
                 suffix[remaining-1]=selected_header(previous,h);previous=suffix[remaining-1].header.prev_block_hash;
             }
@@ -28001,6 +28005,7 @@ void ChainstateService::BackgroundValidationWorker() {
             OrchardHistoryCapture history(parent_height,previous);
             std::vector<OrchardHistoryCapture::Header> page;page.reserve(OrchardHistoryCapture::HeaderBatchLimit);
             for(uint64_t remaining=uint64_t(parent_height)+1;remaining;--remaining) {
+                if(bg_validation_should_stop_.load())throw std::runtime_error("Validation stopped by user");
                 const auto row=selected_header(previous,uint32_t(remaining-1));page.push_back(row);previous=row.header.prev_block_hash;
                 if(page.size()==OrchardHistoryCapture::HeaderBatchLimit||remaining==1){history.CaptureReverse(page);page.clear();}
             }
