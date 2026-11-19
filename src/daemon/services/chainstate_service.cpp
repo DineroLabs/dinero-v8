@@ -10151,11 +10151,13 @@ consensus::ConnectBlockResult ChainstateService::ProcessIncomingStoredBlock(cons
         // has already considered activation; avoid this wrapper's second
         // ActivateBestChain pass for historical bodies that cannot change the
         // selected snapshot tip. Above the floor, keep the ordinary path.
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
         {
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
             if (orchard_snapshot_startup_ && result.height <= orchard_snapshot_startup_->base.height)
                 return consensus::ConnectBlockResult::ACCEPTED_NOT_ACTIVE;
         }
+#endif
 
         // P2 Fix: Trigger ActivateBestChain after every accepted stored block.
         // Fork blocks from the scheduler-drain path need immediate reorg
