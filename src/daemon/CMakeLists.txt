@@ -200,6 +200,8 @@ if(DINERO_SWAP_LIGHT_BTC)
     ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_light_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_light_transport.cpp
     ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_light_watcher.cpp
+    ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_light_deposit.cpp
+    ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_deposit.cpp
     ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_esplora.cpp
     ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_http_curl.cpp
     ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_merkle_proof.cpp

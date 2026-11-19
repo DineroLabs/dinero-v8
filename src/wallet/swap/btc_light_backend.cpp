@@ -163,6 +163,18 @@ void BtcLightBackend::Sync(uint32_t now_unix, bool force) {
     problem_ = problem;
 }
 
+std::optional<double> BtcLightBackend::FeeRate(uint32_t target_blocks) {
+    std::vector<double> rates;
+    for (auto& server : servers_) {
+        if (const auto rate = server->FeeRate(target_blocks)) rates.push_back(*rate);
+    }
+    if (rates.empty()) return std::nullopt;
+    // The median: one server cannot push the fee up or down on its own (of
+    // two, the higher, so a transaction is not left stuck).
+    std::sort(rates.begin(), rates.end());
+    return std::max(1.0, rates[rates.size() / 2]);
+}
+
 std::string BtcLightBackend::Broadcast(const std::vector<uint8_t>& raw_tx) {
     const auto tx = ParseBtcRawTx(raw_tx);
     if (!tx) throw std::runtime_error("Bitcoin transaction refused: not a transaction");

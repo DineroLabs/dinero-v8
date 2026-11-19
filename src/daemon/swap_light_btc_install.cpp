@@ -14,17 +14,25 @@
 //   swap.btc_sync_seconds=N       least time between header syncs (default 45)
 //   swap.btc_light_mainnet_rehearsal=1   required on mainnet until the mainnet rehearsal has passed
 //
-// With it the node sells DIN for BTC. Buying DIN pays BTC and still needs
-// Bitcoin Core.
+//   swap.btc_funding_fee_sat=N    the most a lock's network fee may be; part of
+//                                 every deposit asked for (default 3000)
+//
+// With it the node sells DIN for BTC, and buys DIN by paying BTC to a per-swap
+// deposit address from any wallet or exchange.
 #include "daemon/services/config_service.h"
 #include "daemon/services/swap_service.h"
 #include "wallet/swap/btc_light_backend.h"
+#include "wallet/swap/btc_deposit.h"
 #include "wallet/swap/btc_light_chain_io.h"
+#include "wallet/swap/btc_light_deposit.h"
+#include "wallet/swap/swap_crypto.h"
 
 #include <algorithm>
 #include <filesystem>
 #include <iostream>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <sstream>
 
 namespace dinero {
@@ -84,8 +92,49 @@ std::function<void(uint32_t)> InstallLightBitcoin(swap::SwapManager& manager, co
     }
 
     swap::LightBtcSupport support;
-    support.make_io = [backend, din](const swap::SwapSession& session, const swap::RunnerConfig& rc, const swap::Bytes32&) {
-        return std::unique_ptr<swap::RpcSwapChainIo>(new swap::LightBtcChainIo(din, *backend, session, rc));
+    const uint64_t funding_fee = static_cast<uint64_t>(std::max(500, config.GetInt("swap.btc_funding_fee_sat", 3000)));
+    const std::string hrp = network == swap::SwapNetwork::Mainnet ? "bc" : network == swap::SwapNetwork::Testnet ? "tb" : "bcrt";
+    support.funding_fee_sat = funding_fee;
+    support.make_io = [backend, din, funding_fee](const swap::SwapSession& session, const swap::RunnerConfig& rc,
+                                                  const swap::Bytes32& deposit_key) {
+        return std::unique_ptr<swap::RpcSwapChainIo>(
+            new swap::LightBtcChainIo(din, *backend, session, rc, {}, deposit_key, funding_fee));
+    };
+    // One watcher per deposit address, kept: what it has proven is not fetched again.
+    struct Deposits {
+        std::mutex mu;
+        std::map<swap::Bytes32, std::unique_ptr<swap::BtcDepositWatcher>> watchers;
+    };
+    auto deposits = std::make_shared<Deposits>();
+    auto observe = [backend, deposits](const swap::Bytes32& key) {
+        std::lock_guard<std::mutex> one(deposits->mu);
+        const auto chain_lock = backend->Lock();
+        auto& watcher = deposits->watchers[key];
+        if (!watcher) {
+            watcher = std::make_unique<swap::BtcDepositWatcher>(
+                backend->chain(), backend->servers(), swap::BtcP2wpkhScript(swap::detail::CompressedOf(key)));
+        }
+        const swap::BtcDepositView view = watcher->Observe();
+        if (!view.ok) throw std::runtime_error("cannot reach any Bitcoin server to read the deposit");
+        return view;
+    };
+    support.deposit_address = [hrp](const swap::Bytes32& key) {
+        return swap::BtcP2wpkhAddress(swap::detail::CompressedOf(key), hrp);
+    };
+    support.deposit_status = [observe](const swap::Bytes32& key) {
+        const swap::BtcDepositView view = observe(key);
+        swap::ZecDepositStatus status;
+        status.seen_zat = view.seen_sat;
+        status.confirmed_zat = view.confirmed_sat;
+        status.confirmations = view.newest_confirmations;
+        return status;
+    };
+    support.sweep_deposit = [backend, observe, funding_fee](const swap::Bytes32& key, const std::vector<uint8_t>& to) {
+        const swap::BtcDepositView view = observe(key);
+        const auto feerate = backend->FeeRate(6);
+        if (!feerate) throw std::runtime_error("cannot reach any Bitcoin server for the network fee");
+        const auto sweep = swap::BuildBtcDepositSweep(view.coins, key, to, *feerate, funding_fee);
+        return backend->Broadcast(sweep.raw);
     };
     const uint32_t checkpoint = c.params.checkpoint_height;
     support.tip_height = [backend, checkpoint] {
@@ -97,7 +146,7 @@ std::function<void(uint32_t)> InstallLightBitcoin(swap::SwapManager& manager, co
     manager.SetLightBitcoin(std::move(support));
     std::cout << "[Swap] Bitcoin without Bitcoin Core: " << c.server_urls.size() << " server(s), "
               << (c.peer_hosts.empty() ? std::string("no peers (servers only)") : std::to_string(c.peer_hosts.size()) + " peer seed(s)")
-              << "; this node sells DIN for BTC (buying DIN needs Bitcoin Core)" << std::endl;
+              << "; it sells DIN for BTC and buys DIN from a BTC deposit address" << std::endl;
     return [backend](uint32_t now) { backend->Sync(now); };
 }
 

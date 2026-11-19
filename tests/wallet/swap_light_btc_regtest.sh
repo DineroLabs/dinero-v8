@@ -6,7 +6,7 @@
 # hides everything it is asked. She has no Bitcoin RPC at all. Bob's dinerod is
 # an ordinary swap node with Bitcoin Core. The swap is driven through RPCs
 # only; Alice's daemon is killed and restarted mid-swap; her BTC is paid to a
-# legacy (1…-style) address.
+# legacy (1…-style) address. (Buying without Bitcoin Core: swap_light_btc_buy_regtest.sh.)
 #   usage: swap_light_btc_regtest.sh <dinerod built with DINERO_SWAP_LIGHT_BTC>
 # To see the test fail when the servers cannot be trusted (it must):
 #   LIGHT_SERVER_FLAGS=--hide        the second server hides everything too
@@ -105,8 +105,8 @@ check "101 headers of 80 bytes after a short label" '(( $(wc -c <"$DIR/alice/swa
 OFFER_JSON=$(rpc $APORT swap.offer "{\"din_amount_una\":1000000000,\"btc_amount_sat\":1000000,\"btc_address\":\"$ALICE_BTC\",\"din_funding_fee_rate_hint\":2,\"din_funding_maximum_fee_una\":5000000}")
 OFFER=$(field "$OFFER_JSON" offer); ID=$(field "$OFFER_JSON" id)
 echo "  offer $ID to be paid at $ALICE_BTC"
-out=$(rpc $APORT swap.accept "{\"text\":\"$OFFER\",\"btc_refund_address\":\"$BOB_BTC_REFUND\"}" 2>&1 || true)
-check "a light node refuses to BUY DIN (it cannot pay BTC yet) (${out:0:70})" '[[ "$out" == *"buying DIN with BTC still needs Bitcoin Core"* ]]'
+out=$(rpc $APORT swap.accept "{\"text\":\"$OFFER\"}" 2>&1 || true)
+check "a light node that has paid no deposit cannot accept an offer (${out:0:70})" '[[ "$out" == *"pay the deposit first"* ]]'
 ACCEPT_JSON=$(rpc $BPORT swap.accept "{\"text\":\"$OFFER\",\"btc_refund_address\":\"$BOB_BTC_REFUND\"}")
 ACCEPT=$(field "$ACCEPT_JSON" accept)
 check "bob accepted the offer" '[[ "$ACCEPT" == dinswap1a* ]]'

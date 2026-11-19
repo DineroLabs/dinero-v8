@@ -2,6 +2,7 @@
 // Merkle trees, a mempool, and several servers, some of which lie or hide
 // things. What reaches the swap engine must be true whatever they say.
 
+#include "wallet/swap/btc_light_deposit.h"
 #include "wallet/swap/btc_light_watcher.h"
 #include "wallet/swap/btc_tx.h"
 
@@ -310,6 +311,11 @@ struct Node {
 };
 
 bool Contains(const std::string& path, const char* part) { return path.find(part) != std::string::npos; }
+std::string Compact(const Json::Value& v) {
+    Json::StreamWriterBuilder w;
+    w["indentation"] = "";
+    return Json::writeString(w, v);
+}
 
 }  // namespace
 
@@ -674,4 +680,153 @@ TEST(BtcLightWatcher, RefusesAnotherNetworksChain) {
     BtcWatchTarget bad = Target();
     bad.expected_funding_txid = "xyz";
     EXPECT_THROW(BtcLightWatcher(node.chain, {&server.api}, bad), std::invalid_argument);
+}
+
+// ---- The deposit address a buyer pays ------------------------------------------
+
+namespace {
+const Bytes kDepositScript{0x00, 0x14, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7};
+
+// Spends output 0 of `payment` (some coin of the deposit) to elsewhere.
+Bytes SpendOf(const Bytes& payment, uint8_t salt) {
+    BtcTx tx;
+    BtcTxIn in;
+    in.prev_txid = TxidOf(payment);
+    in.prev_vout = 0;
+    in.witness = {{0x30, salt}, {0x02, salt}};
+    tx.vin.push_back(in);
+    tx.vout.push_back({1000, kPayout});
+    return SerializeBtcTx(tx, true);
+}
+}  // namespace
+
+TEST(BtcDepositWatcher, CountsOnlyProvenUnspentPayments) {
+    World world;
+    world.MineEmpty(12);
+    Node node;
+    node.Sync(world);
+    Server server(world);
+    BtcDepositWatcher watcher(node.chain, {&server.api}, kDepositScript);
+
+    auto v = watcher.Observe();
+    EXPECT_TRUE(v.ok);
+    EXPECT_EQ(v.seen_sat, 0u);
+    EXPECT_TRUE(v.coins.empty());
+
+    // In the mempool: not counted. One confirmation: seen. Two: usable for the lock.
+    const Bytes first = PayTo(kDepositScript, 700'000, 0x71);
+    world.Broadcast(first);
+    EXPECT_EQ(watcher.Observe().seen_sat, 0u);
+    world.Mine({first});
+    node.Sync(world);
+    v = watcher.Observe();
+    EXPECT_EQ(v.seen_sat, 700'000u);
+    EXPECT_EQ(v.confirmed_sat, 0u);
+    EXPECT_EQ(v.newest_confirmations, 1u);
+    ASSERT_EQ(v.coins.size(), 1u);
+    EXPECT_EQ(v.coins[0].txid, TxidOf(first));
+    EXPECT_EQ(v.coins[0].vout, 0u);
+    EXPECT_TRUE(v.deep_coins.empty());
+
+    const Bytes second = PayTo(kDepositScript, 450'000, 0x72);
+    world.Mine({second});
+    node.Sync(world);
+    v = watcher.Observe();
+    EXPECT_EQ(v.seen_sat, 1'150'000u);
+    EXPECT_EQ(v.confirmed_sat, 700'000u);   // the first is two deep, the second one
+    EXPECT_EQ(v.newest_confirmations, 1u);
+    world.MineEmpty(1);
+    node.Sync(world);
+    const size_t before = server.requests;
+    v = watcher.Observe();
+    EXPECT_EQ(v.confirmed_sat, 1'150'000u);
+    EXPECT_EQ(v.deep_coins.size(), 2u);
+    EXPECT_EQ(server.requests - before, 3u);  // the list and "spent?" for each coin: nothing is proven twice
+
+    // A coin that is spent (even unconfirmed) is no longer ours to spend.
+    world.Broadcast(SpendOf(first, 0x73));
+    v = watcher.Observe();
+    EXPECT_EQ(v.seen_sat, 450'000u);
+    ASSERT_EQ(v.coins.size(), 1u);
+    EXPECT_EQ(v.coins[0].txid, TxidOf(second));
+}
+
+TEST(BtcDepositWatcher, ServersCannotInflateOrHideADeposit) {
+    World world;
+    world.MineEmpty(12);
+    const Bytes real = PayTo(kDepositScript, 500'000, 0x74);
+    world.Mine({real});
+    world.MineEmpty(1);
+    Node node;
+    node.Sync(world);
+    const Bytes32 block5 = BtcBlockHash(*world.truth.AtHeight(5));
+
+    // A payment that was never mined, "confirmed" by the server's word and a made-up proof.
+    const Bytes fake = PayTo(kDepositScript, 9'000'000, 0x75);
+    Server inflater(world, "inflater");
+    inflater.lie = [&](const std::string& path) -> std::optional<BtcHttpResponse> {
+        const std::string id = BtcHashToHex(TxidOf(fake)), real_id = BtcHashToHex(TxidOf(real));
+        const std::string status = R"({"confirmed":true,"block_height":5,"block_hash":")" + BtcHashToHex(block5) + "\"}";
+        if (Contains(path, "/scripthash/")) {
+            return BtcHttpResponse{200, R"([{"txid":")" + id + R"(","status":)" + status + R"(},{"txid":")" + real_id +
+                                            R"(","status":)" + Compact(world.Status(TxidOf(real))) + "}]"};
+        }
+        if (path == "/tx/" + id + "/hex") return BtcHttpResponse{200, Hex(fake)};
+        if (path == "/tx/" + id + "/status") return BtcHttpResponse{200, status};
+        if (path == "/tx/" + id + "/merkle-proof") return BtcHttpResponse{200, R"({"block_height":5,"pos":1,"merkle":[")" + std::string(64, '7') + "\"]}"};
+        return std::nullopt;
+    };
+    BtcDepositWatcher watcher(node.chain, {&inflater.api}, kDepositScript);
+    auto v = watcher.Observe();
+    EXPECT_TRUE(v.ok);
+    EXPECT_EQ(v.seen_sat, 500'000u);  // the real payment only
+
+    // "Spent", with no transaction to show for it, or one that spends something else.
+    Server spoiler(world, "spoiler");
+    const Bytes unrelated = PayTo(kPayout, 1000, 0x76);
+    world.Broadcast(unrelated);
+    spoiler.lie = [&](const std::string& path) -> std::optional<BtcHttpResponse> {
+        if (Contains(path, "/outspend/")) {
+            return BtcHttpResponse{200, R"({"spent":true,"txid":")" + BtcHashToHex(TxidOf(unrelated)) + R"(","vin":0,"status":{"confirmed":false}})"};
+        }
+        return std::nullopt;
+    };
+    BtcDepositWatcher spoiled(node.chain, {&spoiler.api}, kDepositScript);
+    EXPECT_EQ(spoiled.Observe().seen_sat, 500'000u);
+
+    // A server that hides the deposit, next to one that does not.
+    Server hider(world, "hider"), honest(world, "honest");
+    hider.lie = [](const std::string& path) -> std::optional<BtcHttpResponse> {
+        if (Contains(path, "/scripthash/")) return BtcHttpResponse{200, "[]"};
+        return std::nullopt;
+    };
+    BtcDepositWatcher blind(node.chain, {&hider.api}, kDepositScript);
+    EXPECT_EQ(blind.Observe().seen_sat, 0u);
+    BtcDepositWatcher both(node.chain, {&hider.api, &honest.api}, kDepositScript);
+    EXPECT_EQ(both.Observe().seen_sat, 500'000u);
+
+    // Nobody answers: nothing is known, and that is said.
+    Server down(world, "down");
+    down.lie = [](const std::string&) { return std::optional<BtcHttpResponse>(BtcHttpResponse{0, ""}); };
+    BtcDepositWatcher silent(node.chain, {&down.api}, kDepositScript);
+    EXPECT_FALSE(silent.Observe().ok);
+    EXPECT_THROW(BtcDepositWatcher(node.chain, {}, kDepositScript), std::invalid_argument);
+    EXPECT_THROW(BtcDepositWatcher(node.chain, {&honest.api}, {}), std::invalid_argument);
+}
+
+TEST(BtcDepositWatcher, AReorgUncountsAPayment) {
+    World world;
+    world.MineEmpty(12);
+    const Bytes32 fork_point = world.truth.TipHash();
+    const Bytes payment = PayTo(kDepositScript, 300'000, 0x77);
+    world.Mine({payment});
+    Node node;
+    node.Sync(world);
+    Server server(world);
+    BtcDepositWatcher watcher(node.chain, {&server.api}, kDepositScript);
+    EXPECT_EQ(watcher.Observe().seen_sat, 300'000u);
+    Bytes32 tip = world.Mine({}, fork_point);
+    world.Mine({}, tip);
+    node.Sync(world);
+    EXPECT_EQ(watcher.Observe().seen_sat, 0u);
 }

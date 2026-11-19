@@ -28,6 +28,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -74,6 +75,10 @@ public:
     std::string Broadcast(const std::vector<uint8_t>& raw_tx);
 
     // The header chain. Hold Lock() while using it.
+    // sat/vB to confirm within `target_blocks`: the median of what the servers
+    // say, never below 1. nullopt if none answers.
+    std::optional<double> FeeRate(uint32_t target_blocks);
+
     const BtcHeaderChain& chain() const { return chain_; }
     std::unique_lock<std::mutex> Lock() const { return std::unique_lock<std::mutex>(chain_mu_); }
     std::vector<EsploraServer*> servers();

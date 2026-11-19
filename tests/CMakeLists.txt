@@ -17999,6 +17999,7 @@ endif()
 add_executable(test_swap_btc_light_watcher
   tests/wallet/test_swap_btc_light_watcher.cpp
   src/wallet/swap/btc_light_watcher.cpp
+  src/wallet/swap/btc_light_deposit.cpp
   src/wallet/swap/btc_esplora.cpp
   src/wallet/swap/btc_merkle_proof.cpp
   src/wallet/swap/btc_raw_tx.cpp
@@ -18065,6 +18066,10 @@ if(DINERO_SWAP_LIGHT_BTC AND DINERO_BITCOIND AND TARGET dinerod)
   add_test(NAME SwapLightBtcRegtest
     COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_light_btc_regtest.sh $<TARGET_FILE:dinerod>)
   set_tests_properties(SwapLightBtcRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900 SKIP_RETURN_CODE 77)
+  # Neither dinerod has Bitcoin Core: the buyer pays a deposit address and his node builds the lock.
+  add_test(NAME SwapLightBtcBuyRegtest
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_light_btc_buy_regtest.sh $<TARGET_FILE:dinerod>)
+  set_tests_properties(SwapLightBtcBuyRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900 SKIP_RETURN_CODE 77)
 endif()
 
 # The same client over real sockets against a real Bitcoin Core (regtest).

@@ -331,6 +331,30 @@ TEST(BtcLightBackend, ARefusalIsToldApartFromSilence) {
     EXPECT_TRUE(net.handed_to_peers.empty());
 }
 
+// One server cannot move the fee on its own.
+TEST(BtcLightBackend, FeeRateIsTheMedianOfTheServers) {
+    std::map<std::string, std::string> fees{{"a", R"({"2":4.0})"}, {"b", R"({"2":9.0})"}, {"c", R"({"2":400.0})"}};
+    BtcLightTransport t;
+    t.http.get = [&](const std::string& url) -> BtcHttpResponse {
+        const std::string host = url.substr(8, 1);
+        return fees[host].empty() ? BtcHttpResponse{0, ""} : BtcHttpResponse{200, fees[host]};
+    };
+    t.http.post = [](const std::string&, const std::string&) { return BtcHttpResponse{500, ""}; };
+    BtcLightBackendConfig c = Config(/*with_peers=*/false);
+    c.server_urls = {"https://a.example/api", "https://b.example/api", "https://c.example/api"};
+    BtcLightBackend backend(c, t);
+    EXPECT_EQ(backend.FeeRate(2), 9.0);    // not the 400 one server asks for
+    fees["c"] = R"({"2":0.01})";
+    EXPECT_EQ(backend.FeeRate(2), 4.0);    // nor the 0.01 one offers
+    fees["b"].clear();                     // two left: the higher, so nothing is left stuck
+    EXPECT_EQ(backend.FeeRate(2), 4.0);
+    fees["a"] = R"({"2":0.122})";          // the real servers' sub-1 rates: never below 1
+    EXPECT_EQ(backend.FeeRate(2), 1.0);
+    fees["a"].clear();
+    fees["c"].clear();
+    EXPECT_FALSE(backend.FeeRate(2).has_value());
+}
+
 TEST(BtcLightBackend, RefusesAConfigurationThatCannotWork) {
     Net net;
     BtcLightBackendConfig none = Config();

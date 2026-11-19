@@ -49,10 +49,13 @@ din::Json ToJson(const SwapSummary& s) {
     j["role"] = RoleName(s.role);
     j["chain"] = s.chain == CounterChain::Zcash ? "zec" : "btc";
     if (s.pending_deposit) {
-        // Bob's Zcash deposit, before his accept (docs/design/din-zec-atomic-swaps.md).
+        // Bob's deposit, before his accept: a Zcash offer, or a BTC offer on a node without Bitcoin Core.
+        const bool zec_deposit = s.chain == CounterChain::Zcash;
         const bool covered = s.deposit && s.deposit->confirmed_zat >= s.deposit_due_zat;
         j["state"] = covered ? "deposit-confirmed" : "awaiting-deposit";
         j["deposit_address"] = s.deposit_address;
+        j["deposit_coin"] = zec_deposit ? "ZEC" : "BTC";
+        j["confirmations_needed"] = zec_deposit ? 10 : 2;
         j["offer"] = s.deposit_offer;
         j["deposit_due_zat"] = Json::UInt64(s.deposit_due_zat);
         if (s.deposit) {
@@ -60,7 +63,7 @@ din::Json ToJson(const SwapSummary& s) {
             j["deposit_confirmed_zat"] = Json::UInt64(s.deposit->confirmed_zat);
             j["deposit_confirmations"] = s.deposit->confirmations;
         } else {
-            j["deposit_status"] = "Zcash node unreachable";
+            j["deposit_status"] = zec_deposit ? "Zcash node unreachable" : "no Bitcoin server reachable";
         }
     } else {
         j["state"] = s.pending_accept ? "offer-sent" : s.sweep_pending ? "sweeping" : StateName(s.state);
@@ -170,7 +173,10 @@ din::Json RpcAccept(const ExecutionContext& ctx, const din::Json& params) {
         if (!Arg(params, "text").isString()) return Error("usage: swap.accept {text, [btc_refund_address]}");
         const std::string text = Arg(params, "text").asString();
         std::string din_payout, btc_refund;
-        if (text.rfind(kOfferPrefix, 0) == 0) {  // Bob
+        if (text.rfind(kOfferPrefix, 0) == 0 && SwapService::Active()->manager()->LightBitcoin()) {
+            // Bob, without Bitcoin Core: the refund address was given with swap.deposit.
+            din_payout = NewWalletAddress(ctx);
+        } else if (text.rfind(kOfferPrefix, 0) == 0) {  // Bob
             if (!Arg(params, "btc_refund_address").isString()) {
                 return Error("accepting an offer needs btc_refund_address (where your BTC returns on refund)");
             }
@@ -243,25 +249,37 @@ din::Json RpcDecode(const ExecutionContext& ctx, const din::Json& params) {
     }
 }
 
-// Bob, Zcash: the per-swap deposit to pay before accepting (and its state).
+// Bob, paying from a deposit (a Zcash offer, or a BTC offer on a node without
+// Bitcoin Core): the per-swap deposit to pay before accepting, and its state.
+// Amounts are in the counter chain's smallest unit; the *_zat names are kept
+// for Zcash wallets, and a BTC deposit carries the same values as *_sat too.
 din::Json RpcDeposit(const ExecutionContext& ctx, const din::Json& params) {
     if (auto e = Refuse(ctx, true)) return *e;
-    if (!Arg(params, "text").isString() || !Arg(params, "zec_refund_address").isString()) {
-        return Error("usage: swap.deposit {text: <dinswap2o offer>, zec_refund_address}");
+    const bool zec_offer = Arg(params, "text").isString() && Arg(params, "text").asString().rfind(kOffer2Prefix, 0) == 0;
+    const char* refund_name = zec_offer ? "zec_refund_address" : "btc_refund_address";
+    if (!Arg(params, "text").isString() || !Arg(params, refund_name).isString()) {
+        return Error("usage: swap.deposit {text: <offer>, zec_refund_address | btc_refund_address}: where the deposit "
+                     "returns if the swap does not happen");
     }
     try {
         const auto d = SwapService::Active()->manager()->PrepareDeposit(
-            Arg(params, "text").asString(), Arg(params, "zec_refund_address").asString(),
+            Arg(params, "text").asString(), Arg(params, refund_name).asString(),
             static_cast<uint32_t>(std::time(nullptr)));
         din::Json out(Json::objectValue);
         out["id"] = d.id;
         out["deposit_address"] = d.address;
+        out["deposit_coin"] = zec_offer ? "ZEC" : "BTC";
         out["deposit_due_zat"] = Json::UInt64(d.amount_due_zat);
-        out["confirmations_needed"] = 10;
+        out["confirmations_needed"] = zec_offer ? 10 : 2;
+        if (!zec_offer) out["deposit_due_sat"] = Json::UInt64(d.amount_due_zat);
         if (d.status) {
             out["deposit_seen_zat"] = Json::UInt64(d.status->seen_zat);
             out["deposit_confirmed_zat"] = Json::UInt64(d.status->confirmed_zat);
             out["deposit_confirmations"] = d.status->confirmations;
+            if (!zec_offer) {
+                out["deposit_seen_sat"] = Json::UInt64(d.status->seen_zat);
+                out["deposit_confirmed_sat"] = Json::UInt64(d.status->confirmed_zat);
+            }
         }
         return out;
     } catch (const std::exception& e) {
