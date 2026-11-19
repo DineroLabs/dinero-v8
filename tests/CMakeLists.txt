@@ -17919,6 +17919,24 @@ target_include_directories(test_swap_btc_merkle_proof PRIVATE
 add_test(NAME SwapBtcMerkleProof COMMAND test_swap_btc_merkle_proof)
 set_tests_properties(SwapBtcMerkleProof PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 60)
 
+# Bitcoin peer protocol (headers, handing over a transaction) against a scripted peer.
+add_executable(test_swap_btc_p2p
+  tests/wallet/test_swap_btc_p2p.cpp
+  src/wallet/swap/btc_p2p.cpp
+  src/wallet/swap/btc_raw_tx.cpp
+  src/wallet/swap/btc_header_chain.cpp
+)
+add_dependencies(test_swap_btc_p2p gtest gtest_main)
+target_link_libraries(test_swap_btc_p2p PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_btc_p2p)
+target_include_directories(test_swap_btc_p2p PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapBtcP2p COMMAND test_swap_btc_p2p)
+set_tests_properties(SwapBtcP2p PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 120)
+
 # Bitcoin Core regtest check of the swap's BTC side (needs bitcoind/bitcoin-cli on PATH).
 add_executable(swap_btc_regtest_tool
   tests/wallet/swap_btc_regtest_tool.cpp
