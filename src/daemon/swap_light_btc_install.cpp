@@ -84,7 +84,7 @@ std::function<void(uint32_t)> InstallLightBitcoin(swap::SwapManager& manager, co
     }
 
     swap::LightBtcSupport support;
-    support.make_io = [backend, din](const swap::SwapSession& session, const swap::RunnerConfig& rc) {
+    support.make_io = [backend, din](const swap::SwapSession& session, const swap::RunnerConfig& rc, const swap::Bytes32&) {
         return std::unique_ptr<swap::RpcSwapChainIo>(new swap::LightBtcChainIo(din, *backend, session, rc));
     };
     const uint32_t checkpoint = c.params.checkpoint_height;

@@ -59,10 +59,14 @@ SwapKeyMaterial BoundSwapKeysForIndex(const KeyDeriver& derive, SwapNetwork netw
 
 // Bob's Zcash deposit key, derived in one batch with the store key so it is
 // never taken from another wallet than the one that owns this manager's swaps.
-Bytes32 BoundZecDepositKey(const KeyDeriver& derive, SwapNetwork network, uint32_t index, const Bytes32& store_key) {
+// `branch`: 6' for Zcash, 7' for Bitcoin (kBtcDepositBranch).
+constexpr uint32_t kZecDepositBranch = 6;
+constexpr uint32_t kBtcDepositBranch = 7;
+Bytes32 BoundZecDepositKey(const KeyDeriver& derive, SwapNetwork network, uint32_t index, const Bytes32& store_key,
+                           uint32_t branch = kZecDepositBranch) {
     if (index >= 0x80000000U) throw std::invalid_argument("swap index out of range");
     const auto batch = Derive(derive, {{kSwapKeyPurpose, uint32_t(network), 0},
-                                       {kSwapKeyPurpose, uint32_t(network), 6, index}});
+                                       {kSwapKeyPurpose, uint32_t(network), branch, index}});
     struct Scoped {
         Bytes32 value{};
         ~Scoped() { OPENSSL_cleanse(value.data(), value.size()); }
@@ -338,6 +342,52 @@ void SwapManager::SetLightBitcoin(LightBtcSupport light) {
 
 bool SwapManager::SupportsZec() const { return zec_.has_value() && config_.network != SwapNetwork::Mainnet; }
 
+struct SwapManager::DepositOps {
+    std::function<std::string(const Bytes32&)> address;
+    std::function<ZecDepositStatus(const Bytes32&)> status;
+    std::function<std::string(const Bytes32&, const std::vector<uint8_t>&)> sweep;
+    uint64_t funding_fee{};       // added to the swap amount: what the deposit must hold
+    uint32_t key_branch{};
+    uint32_t confirmations{};     // a payment this deep counts towards the lock
+    const char* coin{""};         // "ZEC" / "BTC", for messages
+};
+
+SwapManager::DepositOps SwapManager::DepositOpsFor(CounterChain chain) const {
+    DepositOps ops;
+    if (chain == CounterChain::Zcash) {
+        RequireZec();
+        ops.address = zec_->deposit_address;
+        ops.status = zec_->deposit_status;
+        ops.sweep = zec_->sweep_deposit;
+        ops.funding_fee = zec_->funding_fee_zat;
+        ops.key_branch = kZecDepositBranch;
+        ops.confirmations = 10;
+        ops.coin = "ZEC";
+        return ops;
+    }
+    if (!light_btc_) {
+        throw std::runtime_error("this node pays BTC from Bitcoin Core: accept the offer directly (swap.accept)");
+    }
+    if (!light_btc_->CanPay()) {
+        throw std::runtime_error("this node uses Bitcoin without Bitcoin Core: it can sell DIN for BTC, but buying "
+                                 "DIN with BTC still needs Bitcoin Core (swap.btc_rpc)");
+    }
+    ops.address = light_btc_->deposit_address;
+    ops.status = light_btc_->deposit_status;
+    ops.sweep = light_btc_->sweep_deposit;
+    ops.funding_fee = light_btc_->funding_fee_sat;
+    ops.key_branch = kBtcDepositBranch;
+    ops.confirmations = 2;
+    ops.coin = "BTC";
+    return ops;
+}
+
+bool SwapManager::PaysFromDeposit(const SwapSession& s) const {
+    if (s.record.role != Role::BtcSeller) return false;
+    if (s.record.offer.chain == CounterChain::Zcash) return true;
+    return light_btc_ && light_btc_->CanPay();
+}
+
 void SwapManager::RequireZec() const {
     if (!zec_) throw std::runtime_error("this dinerod was built without Zcash swaps (DINERO_SWAP_ZEC)");
     if (config_.network == SwapNetwork::Mainnet) {
@@ -443,7 +493,14 @@ void SwapManager::StartSession(uint32_t index, SwapSession session, const Bytes3
                                         : Bytes32{};
         live.io = zec_->make_io(session, rc, deposit_key);
     } else {
-        live.io = light_btc_ ? light_btc_->make_io(session, rc) : std::make_unique<RpcSwapChainIo>(din_, btc_, session, rc);
+        if (light_btc_) {
+            const Bytes32 deposit_key = PaysFromDeposit(session)
+                                            ? BoundZecDepositKey(derive_, config_.network, index, store_key, kBtcDepositBranch)
+                                            : Bytes32{};
+            live.io = light_btc_->make_io(session, rc, deposit_key);
+        } else {
+            live.io = std::make_unique<RpcSwapChainIo>(din_, btc_, session, rc);
+        }
         if (tower_sink_) live.io->SetTowerSink(tower_sink_);
         if (tower_ack_) live.io->SetTowerAck(tower_ack_);
     }
@@ -554,14 +611,11 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
         return false;
     };
 
-    if (text.rfind(kOfferPrefix, 0) == 0) {  // Bob accepts Alice's offer
+    // Without Bitcoin Core a BTC offer is paid from a deposit, like a Zcash one.
+    const bool btc_from_deposit = text.rfind(kOfferPrefix, 0) == 0 && light_btc_.has_value();
+    if (text.rfind(kOfferPrefix, 0) == 0 && !btc_from_deposit) {  // Bob accepts Alice's offer, paying from Bitcoin Core
         const SwapOffer offer = DecodeOffer(text);
         if (offer.network != config_.network) throw std::invalid_argument("offer is for another network");
-        if (light_btc_) {
-            // Buying DIN pays BTC, and a light node has no Bitcoin wallet to pay from yet.
-            throw std::runtime_error("this node uses Bitcoin without Bitcoin Core: it can sell DIN for BTC, but buying "
-                                     "DIN with BTC still needs Bitcoin Core (swap.btc_rpc)");
-        }
         RequireAcceptableNow(offer, now);
         if (config_.require_tower_for_bob && (!tower_sink_ || !tower_ack_)) {
             throw std::runtime_error("mainnet beta: buying DIN needs a watchtower (set swap.tower_inbox and run "
@@ -593,14 +647,24 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
         StartSession(index, std::move(s), store_key);
         return {id, accept_text};
     }
-    if (zec_text) {  // Bob accepts Alice's Zcash offer, from the deposit he paid (PrepareDeposit)
+    if (zec_text || btc_from_deposit) {  // Bob accepts from the deposit he paid (PrepareDeposit)
         const SwapOffer offer = DecodeOffer(text);
         if (offer.network != config_.network) throw std::invalid_argument("offer is for another network");
-        RequireZec();
+        const bool zec = offer.chain == CounterChain::Zcash;
+        const DepositOps ops = DepositOpsFor(offer.chain);
         RequireAcceptableNow(offer, now);
-        zec_->require_no_upgrade(offer, now);
-        RequireSaneZec(offer.btc_amount_sat, zec_->spend_fee_zat);
-        RequireSane(config_, offer.din_amount_una, 20 * config_.runner.btc_fee_sat, offer.n_btc_confirmations);
+        if (zec) {
+            zec_->require_no_upgrade(offer, now);
+            RequireSaneZec(offer.btc_amount_sat, zec_->spend_fee_zat);
+            RequireSane(config_, offer.din_amount_una, 20 * config_.runner.btc_fee_sat, offer.n_btc_confirmations);
+        } else {
+            if (config_.require_tower_for_bob && (!tower_sink_ || !tower_ack_)) {
+                throw std::runtime_error("mainnet beta: buying DIN needs a watchtower (set swap.tower_inbox and run "
+                                         "dinero-swap-tower)");
+            }
+            RequireWithinCaps(config_, offer.din_amount_una, offer.btc_amount_sat);
+            RequireSane(config_, offer.din_amount_una, offer.btc_amount_sat, offer.n_btc_confirmations);
+        }
         const std::string id = SwapId(offer);
         if (already_started(id)) throw std::runtime_error("swap " + id + " already exists");
         std::optional<uint32_t> index;
@@ -613,14 +677,15 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
         auto kv = ParseKeyValues(OpenSealedFile(DepositPath(*index), store_key));
         const auto refund = FromHex(kv["refund"]);
         if (refund.empty()) throw std::runtime_error("deposit file has no refund address");
-        const auto status = zec_->deposit_status(BoundZecDepositKey(derive_, config_.network, *index, store_key));
-        const uint64_t due = offer.btc_amount_sat + zec_->funding_fee_zat;
+        const auto status =
+            ops.status(BoundZecDepositKey(derive_, config_.network, *index, store_key, ops.key_branch));
+        const uint64_t due = offer.btc_amount_sat + ops.funding_fee;
         if (status.confirmed_zat < due) {
-            throw std::runtime_error("deposit is short by " + ZecAmount(due - status.confirmed_zat) + " ZEC (" +
-                                     ZecAmount(status.confirmed_zat) + " of " + ZecAmount(due) +
-                                     " ZEC has 10 confirmations)");
+            throw std::runtime_error("deposit is short by " + ZecAmount(due - status.confirmed_zat) + " " + ops.coin + " (" +
+                                     ZecAmount(status.confirmed_zat) + " of " + ZecAmount(due) + " " + ops.coin + " has " +
+                                     std::to_string(ops.confirmations) + " confirmations)");
         }
-        const auto mat = BoundSwapKeysForIndex(derive_, config_.network, *index, store_key, false, CounterChain::Zcash);
+        const auto mat = BoundSwapKeysForIndex(derive_, config_.network, *index, store_key, false, offer.chain);
         SwapSession s;
         s.din_payout_script = PayoutScriptFromAddress(din_payout_address, config_.runner.din_hrp);
         s.btc_payout_script = refund;
@@ -632,7 +697,7 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
         s.din_sweep_pubkey = XOnlyOf(mat.keys.din_sweep_secret_key);
         s.record.state = SwapState::Accepted;
         s.record.state_since_unix = now;
-        s.btc_scan_from_height = counter_scan_from(CounterChain::Zcash);
+        s.btc_scan_from_height = counter_scan_from(offer.chain);
         s.din_scan_from_height = din_scan_from;
         const std::string accept_text = EncodeAccept(s.record.accept);
         EncryptedFileSwapStore(SwapPath(*index), store_key).Save(s);
@@ -697,13 +762,14 @@ DepositInfo SwapManager::DepositOf(uint32_t index, const SwapOffer& offer, const
     DepositInfo d;
     d.id = SwapId(offer);
     d.index = index;
-    const Bytes32 key = BoundZecDepositKey(derive_, config_.network, index, store_key);
-    d.address = zec_->deposit_address(key);
-    d.amount_due_zat = offer.btc_amount_sat + zec_->funding_fee_zat;
+    const DepositOps ops = DepositOpsFor(offer.chain);
+    const Bytes32 key = BoundZecDepositKey(derive_, config_.network, index, store_key, ops.key_branch);
+    d.address = ops.address(key);
+    d.amount_due_zat = offer.btc_amount_sat + ops.funding_fee;
     try {
-        d.status = zec_->deposit_status(key);
+        d.status = ops.status(key);
     } catch (const std::exception&) {
-        // Zebra unreachable: the address and amount still stand
+        // the counter chain is unreachable: the address and amount still stand
     }
     return d;
 }
@@ -712,10 +778,10 @@ DepositInfo SwapManager::PrepareDeposit(const std::string& offer_text, const std
                                         uint32_t now) {
     std::lock_guard<std::mutex> lock(mu_);
     const Bytes32 store_key = StoreKey();
-    RequireZec();
     const SwapOffer offer = DecodeOffer(offer_text);
-    if (offer.chain != CounterChain::Zcash) throw std::invalid_argument("not a Zcash offer");
     if (offer.network != config_.network) throw std::invalid_argument("offer is for another network");
+    const bool zec = offer.chain == CounterChain::Zcash;
+    DepositOpsFor(offer.chain);  // refuses a chain this node has no deposit flow for
     const std::string id = SwapId(offer);
     for (const auto& [i, path] : ScanDir(".deposit")) {  // the same offer again: the same deposit
         std::string did;
@@ -723,21 +789,33 @@ DepositInfo SwapManager::PrepareDeposit(const std::string& offer_text, const std
         if (did == id) return DepositOf(i, offer, store_key);
     }
     RequireAcceptableNow(offer, now);
-    zec_->require_no_upgrade(offer, now);
-    RequireSaneZec(offer.btc_amount_sat, zec_->spend_fee_zat);
-    RequireSane(config_, offer.din_amount_una, 20 * config_.runner.btc_fee_sat, offer.n_btc_confirmations);
+    if (zec) {
+        zec_->require_no_upgrade(offer, now);
+        RequireSaneZec(offer.btc_amount_sat, zec_->spend_fee_zat);
+        RequireSane(config_, offer.din_amount_una, 20 * config_.runner.btc_fee_sat, offer.n_btc_confirmations);
+    } else {
+        // The same rules as accepting a BTC offer: nobody is asked to pay a deposit for a swap that cannot start.
+        if (config_.require_tower_for_bob && (!tower_sink_ || !tower_ack_)) {
+            throw std::runtime_error("mainnet beta: buying DIN needs a watchtower (set swap.tower_inbox and run "
+                                     "dinero-swap-tower)");
+        }
+        RequireWithinCaps(config_, offer.din_amount_una, offer.btc_amount_sat);
+        RequireSane(config_, offer.din_amount_una, offer.btc_amount_sat, offer.n_btc_confirmations);
+    }
     for (const auto& [i, path] : ScanDir(".swap")) {
         std::string sid;
         if (std::ifstream in(path + ".id"); in) in >> sid;
         if (sid == id) throw std::runtime_error("swap " + id + " already exists");
     }
-    const auto refund = zec_->payout_script(zec_refund_address);
+    const auto refund = zec ? zec_->payout_script(zec_refund_address)
+                            : BtcPayoutScriptFromAddress(zec_refund_address, config_.runner.btc_hrp);
     SwapStoreKeyFromSeed(derive_, config_.network);  // a relocked wallet: refused before an index is used
     const uint32_t index = AllocateIndex();
     std::ostringstream f;
     f << "offer=" << offer_text << "\nrefund=" << ToHex(refund) << "\n";
     SealToFile(DepositPath(index), store_key, f.str());
-    WriteFileAtomically(DepositPath(index) + ".id", id + "\n");  // public: readable while locked
+    // Public, readable while locked: the swap id, then the chain the deposit is on.
+    WriteFileAtomically(DepositPath(index) + ".id", id + "\n" + (zec ? "zec" : "btc") + "\n");
     return DepositOf(index, offer, store_key);
 }
 
@@ -834,8 +912,11 @@ std::vector<SwapSummary> SwapManager::List() {
         m.chain = CounterChain::Zcash;
         m.pending_deposit = true;
         m.id = "deposit-" + std::to_string(index);
-        if (std::ifstream in(path + ".id"); in) in >> m.id;
-        if (!store_key || !zec_) {
+        std::string deposit_chain;  // absent in files written before Bitcoin deposits: Zcash
+        if (std::ifstream in(path + ".id"); in) in >> m.id >> deposit_chain;
+        if (deposit_chain == "btc") m.chain = CounterChain::Bitcoin;
+        const bool supported = m.chain == CounterChain::Zcash ? zec_.has_value() : light_btc_ && light_btc_->CanPay();
+        if (!store_key || !supported) {
             m.wallet_locked = !store_key;
             out.push_back(m);
             continue;
@@ -910,12 +991,12 @@ void SwapManager::Cancel(const std::string& id) {
         if (std::ifstream in(path + ".id"); in) in >> did;
         if (did != id) continue;
         // Bob's unused deposit: send it back to his refund address.
-        RequireZec();
         const Bytes32 deposit_store_key = StoreKey();
         const auto kv = ParseKeyValues(OpenSealedFile(path, deposit_store_key));
-        const Bytes32 key = BoundZecDepositKey(derive_, config_.network, index, deposit_store_key);
-        const auto status = zec_->deposit_status(key);
-        if (status.seen_zat > 0) zec_->sweep_deposit(key, FromHex(kv.at("refund")));  // throws: nothing removed
+        const DepositOps ops = DepositOpsFor(DecodeOffer(kv.at("offer")).chain);
+        const Bytes32 key = BoundZecDepositKey(derive_, config_.network, index, deposit_store_key, ops.key_branch);
+        const auto status = ops.status(key);
+        if (status.seen_zat > 0) ops.sweep(key, FromHex(kv.at("refund")));  // throws: nothing removed
         fs::remove(path);
         fs::remove(path + ".id");
         return;
@@ -940,9 +1021,12 @@ void SwapManager::Cancel(const std::string& id) {
             if (zec) {
                 RequireZec();
                 zio = zec_->make_io(s, config_.runner, BoundZecDepositKey(derive_, config_.network, index, store_key));
+            } else if (light_btc_) {
+                zio = light_btc_->make_io(s, config_.runner,
+                                          BoundZecDepositKey(derive_, config_.network, index, store_key, kBtcDepositBranch));
             }
             RpcSwapChainIo bio(din_, btc_, s, config_.runner);
-            RpcSwapChainIo& io = zec ? *zio : bio;
+            RpcSwapChainIo& io = zio ? *zio : bio;
             const auto never_sent = io.PreparedFundingUnsent(raw);
             if (!never_sent || !*never_sent) {
                 throw std::runtime_error(never_sent ? "the prepared BTC funding may have been sent; not cancelling — "
@@ -957,11 +1041,11 @@ void SwapManager::Cancel(const std::string& id) {
             }
             s.btc_funding_raw.clear();
         }
-        if (zec && s.record.role == Role::BtcSeller) {
+        if (PaysFromDeposit(s)) {
             // Nothing locked: Bob's deposit goes back to his refund address.
-            RequireZec();
-            const Bytes32 key = BoundZecDepositKey(derive_, config_.network, index, store_key);
-            if (zec_->deposit_status(key).seen_zat > 0) zec_->sweep_deposit(key, s.btc_payout_script);
+            const DepositOps ops = DepositOpsFor(s.record.offer.chain);
+            const Bytes32 key = BoundZecDepositKey(derive_, config_.network, index, store_key, ops.key_branch);
+            if (ops.status(key).seen_zat > 0) ops.sweep(key, s.btc_payout_script);
         }
         s.record.state = SwapState::Aborted;
         EncryptedFileSwapStore(SwapPath(index), store_key).Save(s);

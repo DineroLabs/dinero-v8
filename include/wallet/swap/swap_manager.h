@@ -77,15 +77,28 @@ Bytes32 ZecDepositKey(const KeyDeriver& derive, SwapNetwork network, uint32_t in
 // Zcash support (docs/design/din-zec-atomic-swaps.md), installed by
 // swap_manager_zec.cpp in dinerod builds with DINERO_SWAP_ZEC. Without it the
 // manager refuses Zcash offers; this file links no Zcash code.
+struct ZecDepositStatus;
 struct LightBtcSupport {
-    // The Bitcoin side of one swap, from the node's light backend.
-    std::function<std::unique_ptr<RpcSwapChainIo>(const SwapSession&, const RunnerConfig&)> make_io;
+    // The Bitcoin side of one swap, from the node's light backend. deposit_key
+    // is the buyer's per-swap deposit key (zero for a seller).
+    std::function<std::unique_ptr<RpcSwapChainIo>(const SwapSession&, const RunnerConfig&, const Bytes32& deposit_key)>
+        make_io;
     // The verified header chain's height; throws std::runtime_error while it is not synced.
     std::function<uint32_t()> tip_height;
+    // Paying BTC in from a deposit address, to buy DIN (section 3.3 of the
+    // design). All three, or none: without them this node only sells DIN.
+    std::function<std::string(const Bytes32& deposit_key)> deposit_address;
+    std::function<ZecDepositStatus(const Bytes32& deposit_key)> deposit_status;  // throws if no server answers
+    // Sends every usable deposit coin to `to_script`; returns the txid, throws if none or refused.
+    std::function<std::string(const Bytes32& deposit_key, const std::vector<uint8_t>& to_script)> sweep_deposit;
+    uint64_t funding_fee_sat{3000};  // part of the deposit: the most the lock's network fee may be
+    bool CanPay() const { return deposit_address && deposit_status && sweep_deposit; }
 };
+// A deposit's state, in the counter chain's smallest unit (zatoshi, or satoshi
+// for a Bitcoin deposit: the field names are Zcash's, where deposits began).
 struct ZecDepositStatus {
     uint64_t seen_zat{};       // paid to the deposit address, at least 1 confirmation
-    uint64_t confirmed_zat{};  // at least kZecDepositConfirmations (10)
+    uint64_t confirmed_zat{};  // deep enough to lock from (Zcash: 10 confirmations; Bitcoin: 2)
     uint32_t confirmations{};  // of the newest payment (0: none yet)
 };
 struct ZecSupport {
@@ -237,6 +250,10 @@ private:
     std::string DepositPath(uint32_t index) const;
     void RequireZec() const;
     DepositInfo DepositOf(uint32_t index, const SwapOffer& offer, const Bytes32& store_key);
+    // What a chain's deposit flow needs, from ZecSupport or LightBtcSupport.
+    struct DepositOps;
+    DepositOps DepositOpsFor(CounterChain chain) const;  // throws when this node has no deposit flow for it
+    bool PaysFromDeposit(const SwapSession& s) const;    // Bob, with a lock built from his deposit
     uint32_t AllocateIndex();
     std::map<uint32_t, std::string> ScanDir(const std::string& ext) const;  // index -> path
     SwapSession LoadSession(uint32_t index, const Bytes32& store_key) const;
