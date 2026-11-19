@@ -58,5 +58,29 @@ TEST(OrchardHistoryCache, WindowsRetainsExactPublicBytesAndRefusesReplacement){
         }
     }
 }
+TEST(OrchardHistoryCache, WindowsLongDatadirPublishesAndColdReads){
+    using Cache=p2p::OrchardHistoryCache;
+    const auto parent=std::filesystem::temp_directory_path()/
+        ("ol-"+std::to_string(::GetCurrentProcessId())+"-"+
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    ASSERT_TRUE(std::filesystem::create_directory(parent));
+    const auto root=parent/std::string(70,'r');
+    ASSERT_TRUE(std::filesystem::create_directory(root));
+    std::string error;uint256 id;id.data[0]=89;
+    const std::vector<uint8_t> bytes(8193,27);
+    {
+        daemon::DatadirGuard guard;ASSERT_TRUE(guard.Acquire(root,error))<<error;Cache cache(guard);
+        EXPECT_FALSE(cache.Has('b',id));
+        cache.Put('b',id,bytes.size(),bytes.size(),[&](const Cache::Sink& sink){sink(bytes);});
+        EXPECT_TRUE(cache.Has('b',id));
+    }
+    {
+        daemon::DatadirGuard guard;ASSERT_TRUE(guard.Acquire(root,error))<<error;Cache cache(guard);
+        std::vector<uint8_t> actual;
+        cache.Read('b',id,bytes.size(),[&](uint64_t size,const Cache::Source& source){
+            actual.resize(size);source(actual);});
+        EXPECT_EQ(actual,bytes);
+    }
+}
 } // namespace dinero
 #endif

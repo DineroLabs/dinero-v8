@@ -227,9 +227,20 @@ private:
         Need(!(info.dwFileAttributes&(FILE_ATTRIBUTE_DIRECTORY|FILE_ATTRIBUTE_REPARSE_POINT))&&
             (info.dwFileAttributes&FILE_ATTRIBUTE_READONLY)&&info.nNumberOfLinks==1&&
             ((uint64_t(info.nFileSizeHigh)<<32)|info.nFileSizeLow)>=HeaderBytes+32);}
+    static std::wstring NativePath(const std::filesystem::path& path){
+        // The immutable cell name is long enough to cross MAX_PATH under an
+        // ordinary Windows profile. Keep all cache API calls in the extended
+        // namespace so publication and the subsequent identity read agree.
+        std::wstring name=path.wstring();std::replace(name.begin(),name.end(),L'/',L'\\');
+        if(name.rfind(L"\\\\?\\",0)==0)return name;
+        if(name.rfind(L"\\\\",0)==0)return L"\\\\?\\UNC\\"+name.substr(2);
+        Need(name.size()>2&&name[1]==L':'&&name[2]==L'\\');
+        return L"\\\\?\\"+name;
+    }
     static HANDLE OpenPath(const std::filesystem::path& path,bool directory,DWORD share=0){
         if(!share)share=directory?FILE_SHARE_READ|FILE_SHARE_WRITE:FILE_SHARE_READ;
-        return ::CreateFileW(path.wstring().c_str(),GENERIC_READ,share,
+        const auto native=NativePath(path);
+        return ::CreateFileW(native.c_str(),GENERIC_READ,share,
             nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT|
                 (directory?FILE_FLAG_BACKUP_SEMANTICS:0),nullptr);}
     HANDLE OpenRoot()const{
@@ -248,11 +259,12 @@ private:
     }
     WinHandle OpenDirectory(bool create)const{
         const auto path=DirectoryPath();
-        const auto attributes=::GetFileAttributesW(path.wstring().c_str());
+        const auto native=NativePath(path);
+        const auto attributes=::GetFileAttributesW(native.c_str());
         if(attributes==INVALID_FILE_ATTRIBUTES){
             const auto reason=::GetLastError();Need((reason==ERROR_FILE_NOT_FOUND||reason==ERROR_PATH_NOT_FOUND)&&!directory_identity_);
             if(!create)return WinHandle(INVALID_HANDLE_VALUE,true);
-            Need(::CreateDirectoryW(path.wstring().c_str(),nullptr));
+            Need(::CreateDirectoryW(native.c_str(),nullptr));
         }
         WinHandle directory(OpenPath(path,true));DirectoryCheck(directory.handle);return directory;
     }
@@ -320,13 +332,15 @@ private:
         }
         std::lock_guard lock(mutex_);Check();auto dir=OpenDirectory(true);
         ULARGE_INTEGER available{},total{},free{};
-        Need(::GetDiskFreeSpaceExW(DirectoryPath().wstring().c_str(),&available,&total,&free)&&
+        const auto nativeDirectory=NativePath(DirectoryPath());
+        Need(::GetDiskFreeSpaceExW(nativeDirectory.c_str(),&available,&total,&free)&&
             length<=UINT64_MAX-(uint64_t(512)<<20)-HeaderBytes-32&&
             available.QuadPart>=length+HeaderBytes+32+(uint64_t(512)<<20));
         const auto nonce=secure_random_bytes(16);std::string partial="partial-";
         for(auto b:nonce){partial.push_back("0123456789abcdef"[b>>4]);partial.push_back("0123456789abcdef"[b&15]);}
         const auto temporary=DirectoryPath()/partial;
-        WinHandle file(::CreateFileW(temporary.wstring().c_str(),GENERIC_READ|GENERIC_WRITE|DELETE,
+        const auto nativeTemporary=NativePath(temporary);
+        WinHandle file(::CreateFileW(nativeTemporary.c_str(),GENERIC_READ|GENERIC_WRITE|DELETE,
             FILE_SHARE_READ|FILE_SHARE_DELETE,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL|FILE_FLAG_OPEN_REPARSE_POINT,nullptr));
         const auto opened=Info(file.handle);Need(!(opened.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT)&&opened.nNumberOfLinks==1);
         const auto header=Header(kind,id,length);crypto::CSHA256 hash;hash.Write(header.data(),header.size());
@@ -340,12 +354,13 @@ private:
         Need(Same(opened,Info(file.handle)));DirectoryCheck(dir.handle);
         // Atomic publication from the open handle with ReplaceIfExists=false:
         // a competing final cell is never overwritten or silently adopted.
-        const auto target=path.wstring();const auto size=offsetof(FILE_RENAME_INFO,FileName)+target.size()*sizeof(wchar_t);
+        const auto target=NativePath(path);
+        const auto size=offsetof(FILE_RENAME_INFO,FileName)+(target.size()+1)*sizeof(wchar_t);
         auto* raw=static_cast<FILE_RENAME_INFO*>(std::malloc(size));Need(raw!=nullptr);
         std::unique_ptr<FILE_RENAME_INFO,decltype(&std::free)> rename(raw,&std::free);
         std::memset(raw,0,size);raw->ReplaceIfExists=FALSE;raw->RootDirectory=nullptr;
         raw->FileNameLength=DWORD(target.size()*sizeof(wchar_t));
-        std::memcpy(raw->FileName,target.data(),raw->FileNameLength);
+        std::memcpy(raw->FileName,target.c_str(),raw->FileNameLength+sizeof(wchar_t));
         Need(::SetFileInformationByHandle(file.handle,FileRenameInfo,raw,DWORD(size)));
         WinHandle named(OpenPath(path,false,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE));
         const auto final=Info(file.handle);File(final);
