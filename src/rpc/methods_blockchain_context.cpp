@@ -1311,7 +1311,7 @@ din::Json rpc_context_getarchivalstatus(const ExecutionContext& ctx, const din::
 /**
  * blockchain.getinfo - Simplified blockchain info for GUI
  * 
- * Returns: { "blocks": N, "headers": N }
+ * Returns the active block height and the highest known header height.
  * Used by GUI for sync progress display
  */
 din::Json rpc_context_getinfo(const ExecutionContext& ctx, const din::Json& params) {
@@ -1330,10 +1330,25 @@ din::Json rpc_context_getinfo(const ExecutionContext& ctx, const din::Json& para
 
     uint32_t height = chainstate->getBlockHeight();
 
-    // For now, blocks == headers (no headers-first sync yet)
-    // When we add headers-first sync, query chain_db->getHeaderCount()
+    // Match getblockchaininfo's header target. The GUI uses this value to
+    // decide whether its active chain has caught up; equating it to the active
+    // height made a node with downloaded headers look fully synced.
+    uint32_t header_height = height;
+    if (ctx.daemon->header_chain) {
+        dinero::consensus::HeaderIndexEntry best{};
+        if (ctx.daemon->header_chain->GetBestHeaderCopy(best)) {
+            header_height = std::max(header_height, best.height);
+        }
+    }
+    if (ctx.daemon->header_sync) {
+        const auto stats = ctx.daemon->header_sync->GetStats();
+        const auto peer_sync = CollectPeerSyncTelemetry(ctx);
+        header_height = std::max(
+            header_height,
+            std::max(stats.peer_best_height, peer_sync.advertised_best_height));
+    }
     result["blocks"] = static_cast<int>(height);
-    result["headers"] = static_cast<int>(height);
+    result["headers"] = static_cast<int>(header_height);
 
     // Add chain type for GUI network display (mainnet/testnet/regtest)
     if (ctx.daemon->config) {
