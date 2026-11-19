@@ -15,6 +15,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QTableWidget>
 
@@ -231,37 +232,79 @@ private Q_SLOTS:
         QVERIFY(Find<QLabel>(tab_, "swapIntro")->text().contains("BTC or ZEC"));
     }
 
-    // A node that reaches Bitcoin without Bitcoin Core sells DIN for BTC and says it cannot buy.
-    void lightBitcoinNodeSellsButDoesNotBuy() {
+    // A node that reaches Bitcoin without Bitcoin Core says so, and buys through a deposit address.
+    void lightBitcoinNodePaysFromADeposit() {
         auto* notice = Find<QLabel>(tab_, "swapLightNotice");
         auto* review = Find<QPushButton>(tab_, "reviewPasted");
         auto* hint = Find<QLabel>(tab_, "swapPasteHint");
+        auto* box = Find<QFrame>(tab_, "swapDeposit");
         QVERIFY(!notice->isVisible());  // unknown, or Bitcoin Core: nothing to say
         Q_EMIT rpc_->rpcResult("swaptab.caps", QJsonObject{{"chains", QJsonArray{"btc"}}, {"btc_backend", "core"}});
         QVERIFY(!notice->isVisible());
         Find<QPlainTextEdit>(tab_, "pasteIn")->setPlainText("dinswap1o00");
         Find<QLineEdit>(tab_, "btcRefundAddress")->setText(kBtcAddress);
         QVERIFY(review->isEnabled());
+        QVERIFY2(hint->text().contains("before you accept"), qPrintable(hint->text()));  // Bitcoin Core pays directly
 
         Q_EMIT rpc_->rpcResult("swaptab.caps", QJsonObject{{"chains", QJsonArray{"btc"}}, {"btc_backend", "light"}});
         QVERIFY(notice->isVisible());
-        QVERIFY2(notice->text().contains("without Bitcoin Core") && notice->text().contains("sell DIN for BTC"), qPrintable(notice->text()));
+        QVERIFY2(notice->text().contains("without Bitcoin Core") && notice->text().contains("deposit address"), qPrintable(notice->text()));
         QVERIFY2(notice->text().contains("more private"), qPrintable(notice->text()));
-        QVERIFY(!review->isEnabled());  // the pasted offer would make this node pay BTC
-        QVERIFY2(hint->text().contains("cannot buy DIN with BTC"), qPrintable(hint->text()));
-        // The buyer's reply to this node's own offer is still welcome: that is selling.
-        Find<QPlainTextEdit>(tab_, "pasteIn")->setPlainText("dinswap1a00");
-        QVERIFY(review->isEnabled());
-        // Selling is untouched.
+        QVERIFY(review->isEnabled());  // buying works here too, by another road
+        QVERIFY2(hint->text().contains("then the deposit to pay"), qPrintable(hint->text()));
+        Find<QLineEdit>(tab_, "btcRefundAddress")->clear();
+        QVERIFY(!review->isEnabled());  // the refund address is where an unused deposit returns
+        QVERIFY2(hint->text().contains("refund address"), qPrintable(hint->text()));
+
+        // The node's answer to swap.deposit: the box, in Bitcoin's terms.
+        QVERIFY(!box->isVisible());
+        QJsonObject d{{"id", "ab12"}, {"deposit_address", "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"}, {"deposit_coin", "BTC"},
+                      {"confirmations_needed", 2}, {"deposit_due_zat", 1003000}, {"deposit_seen_zat", 0},
+                      {"deposit_confirmed_zat", 0}, {"deposit_confirmations", 0}};
+        Q_EMIT rpc_->rpcResult("swaptab.deposit", d);
+        QVERIFY(box->isVisible());
+        QVERIFY2(Find<QLabel>(tab_, "swapDepositTitle")->text().contains("any Bitcoin wallet or exchange"),
+                 qPrintable(Find<QLabel>(tab_, "swapDepositTitle")->text()));
+        QCOMPARE(Find<QLabel>(tab_, "swapDepositAddress")->text(), QString("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"));
+        QVERIFY2(Find<QLabel>(tab_, "swapDepositDue")->text().startsWith("0.01003000 BTC"), qPrintable(Find<QLabel>(tab_, "swapDepositDue")->text()));
+        QVERIFY2(Find<QLabel>(tab_, "swapDepositDue")->text().contains("what is not used comes back"), "the fee allowance is explained");
+        QVERIFY2(Find<QLabel>(tab_, "swapDepositHint")->text().contains("pay 0.01003000 BTC"), qPrintable(Find<QLabel>(tab_, "swapDepositHint")->text()));
+        QVERIFY(!Find<QPushButton>(tab_, "acceptDeposit")->isEnabled());
+        QVERIFY(!Find<QPushButton>(tab_, "withdrawDeposit")->isEnabled());
+        QVERIFY2(Find<QLabel>(tab_, "swapStatus")->text().contains("2 confirmations"), qPrintable(Find<QLabel>(tab_, "swapStatus")->text()));
+
+        // Part paid, then all of it one confirmation deep, then two.
+        d["deposit_seen_zat"] = 400000;
+        d["deposit_confirmations"] = 1;
+        Q_EMIT rpc_->rpcResult("swaptab.deposit", d);
+        QVERIFY2(Find<QLabel>(tab_, "swapDepositHint")->text().contains("0.00603000 BTC still due"), qPrintable(Find<QLabel>(tab_, "swapDepositHint")->text()));
+        QVERIFY(Find<QPushButton>(tab_, "withdrawDeposit")->isEnabled());
+        d["deposit_seen_zat"] = 1150000;
+        Q_EMIT rpc_->rpcResult("swaptab.deposit", d);
+        QVERIFY2(Find<QLabel>(tab_, "swapDepositReceived")->text().contains("1.15000000 BTC") ||
+                     Find<QLabel>(tab_, "swapDepositReceived")->text().contains("0.01150000 BTC"),
+                 qPrintable(Find<QLabel>(tab_, "swapDepositReceived")->text()));
+        QVERIFY2(Find<QLabel>(tab_, "swapDepositReceived")->text().contains("1 of 2 confirmations"), qPrintable(Find<QLabel>(tab_, "swapDepositReceived")->text()));
+        QVERIFY2(Find<QLabel>(tab_, "swapDepositHint")->text().contains("1 more Bitcoin confirmation"), qPrintable(Find<QLabel>(tab_, "swapDepositHint")->text()));
+        QVERIFY(!Find<QPushButton>(tab_, "acceptDeposit")->isEnabled());
+        d["deposit_confirmed_zat"] = 1150000;
+        d["deposit_confirmations"] = 2;
+        Q_EMIT rpc_->rpcResult("swaptab.deposit", d);
+        QVERIFY(Find<QPushButton>(tab_, "acceptDeposit")->isEnabled());
+        QCOMPARE(Find<QProgressBar>(tab_, "swapDepositBar")->maximum(), 2);  // two confirmations fill it, not Zcash's ten
+        QCOMPARE(Find<QProgressBar>(tab_, "swapDepositBar")->value(), 2);
+
+        // No server reachable: the address still stands, nothing can be accepted on a guess.
+        d["deposit_status"] = "no Bitcoin server reachable";
+        Q_EMIT rpc_->rpcResult("swaptab.deposit", d);
+        QVERIFY(!Find<QPushButton>(tab_, "acceptDeposit")->isEnabled());
+        QVERIFY2(Find<QLabel>(tab_, "swapDepositHint")->text().contains("cannot reach any Bitcoin server"), qPrintable(Find<QLabel>(tab_, "swapDepositHint")->text()));
+
+        // Selling is untouched, to a legacy address too.
         Find<QLineEdit>(tab_, "dinAmount")->setText("10");
         Find<QLineEdit>(tab_, "btcAmount")->setText("0.001");
         Find<QLineEdit>(tab_, "btcAddress")->setText("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2");
         QVERIFY(Find<QPushButton>(tab_, "createOffer")->isEnabled());
-
-        Q_EMIT rpc_->rpcResult("swaptab.caps", QJsonObject{{"chains", QJsonArray{"btc"}}, {"btc_backend", "core"}});
-        QVERIFY(!notice->isVisible());
-        Find<QPlainTextEdit>(tab_, "pasteIn")->setPlainText("dinswap1o00");
-        QVERIFY(review->isEnabled());
     }
 
     void sellingForZec() {

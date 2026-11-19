@@ -181,8 +181,9 @@ void SwapWidget::setupUi() {
     // Shown only when the node reaches Bitcoin without Bitcoin Core (swap.capabilities).
     lightNotice_ = Pill(Tone::Info,
                         "This node reaches Bitcoin through public servers and Bitcoin's own network, without Bitcoin "
-                        "Core. Here you can sell DIN for BTC. Buying DIN with BTC still needs Bitcoin Core. The servers "
-                        "can see which Bitcoin addresses your swaps use; your own Bitcoin Core is more private.",
+                        "Core. You can sell DIN for BTC, and buy DIN by paying BTC to a deposit address this node gives "
+                        "you, from any wallet or exchange. The servers can see which Bitcoin addresses your swaps use; "
+                        "your own Bitcoin Core is more private.",
                         "swapLightNotice", this);
     lightNotice_->setVisible(false);
     root->addWidget(lightNotice_);
@@ -333,6 +334,8 @@ void SwapWidget::setupUi() {
     auto* depositText = new QVBoxLayout;
     depositText->setSpacing(6);
     auto* depositTitle = new QLabel("<b>Pay the swap deposit</b> — from any Zcash wallet, shielded included", depositBox_);
+    depositTitle->setObjectName("swapDepositTitle");
+    depositTitle_ = depositTitle;
     depositTitle->setWordWrap(true);
     depositAddress_ = new QLabel(depositBox_);
     depositAddress_->setObjectName("swapDepositAddress");
@@ -508,8 +511,6 @@ void SwapWidget::updatePasteReview() {
         blocker = "paste an offer you received, or the buyer's reply to your offer";
     } else if (kind.isEmpty()) {
         blocker = "this is not a swap offer or reply; paste the full text you received";
-    } else if (kind == "offer" && !SwapFormPolicy::isZecOffer(text) && lightBtc_) {
-        blocker = "this node cannot buy DIN with BTC yet: it has no Bitcoin Core to pay from (it can sell DIN for BTC)";
     } else if (SwapFormPolicy::isZecOffer(text) && !zecSupported_) {
         blocker = "this node cannot swap ZEC (dinerod built without Zcash swaps, or mainnet)";
     } else if (SwapFormPolicy::isZecOffer(text) &&
@@ -524,7 +525,7 @@ void SwapWidget::updatePasteReview() {
     btcRefundAddress_->setPlaceholderText(zec ? "Your Zcash t-address (buying DIN with ZEC)"
                                               : kBtcRefundPlaceholder);
     SetHint(pasteHint_, blocker,
-            zec               ? "Ready. Review shows the offer's terms, then the deposit to pay."
+            zec || (kind == "offer" && lightBtc_) ? "Ready. Review shows the offer's terms, then the deposit to pay."
             : kind == "offer" ? "Ready. Review shows the offer's terms before you accept."
                               : "Ready. Review asks before your DIN is locked.");
     reviewPasted_->setEnabled(blocker.isEmpty());
@@ -624,6 +625,19 @@ void SwapWidget::acceptOffer(const QString& offerText, const QJsonObject& decode
     }
     const QString first = review.text.section('\n', 0, 0);
     const QString rest = review.text.section('\n', 1);
+    if (lightBtc_) {
+        // No Bitcoin Core to pay from: the BTC is paid to a deposit address, as for Zcash.
+        if (!Confirm(this, "Review the offer", first,
+                     HtmlLines(rest.trimmed()) +
+                         "<br><br>Next you are given a Bitcoin address to pay, from any wallet or exchange. If the swap "
+                         "does not happen, the BTC goes back to your refund address.",
+                     "Get the deposit address")) {
+            return;
+        }
+        depositOffer_ = offerText;
+        rpc_->callNamedAs("swap.deposit", QJsonObject{{"text", offerText}, {"btc_refund_address", refund}}, kDeposit);
+        return showStatus("Preparing your deposit address…", false);
+    }
     if (!Confirm(this, "Review the offer", first, HtmlLines(rest.trimmed()), "Accept offer")) return;
     rpc_->callNamedAs("swap.accept", QJsonObject{{"text", offerText}, {"btc_refund_address", refund}}, kAccept);
     showStatus("Accepting…", false);
@@ -642,21 +656,28 @@ void SwapWidget::startFromAccept(const QString& acceptText) {
 
 void SwapWidget::showDeposit(const QJsonObject& s) {
     const auto v = SwapFormPolicy::depositView(s);
+    const bool btc = v.coin == "BTC";
     const QString address = s.value("deposit_address").toString();
     if (!address.isEmpty() && address != depositAddressText_) {
         depositAddressText_ = address;
         depositAddress_->setText(address);
-        const QString uri = "zcash:" + address + "?amount=" + SwapFormPolicy::formatUnits(v.dueZat);
+        const QString uri = QString(btc ? "bitcoin:" : "zcash:") + address + "?amount=" + SwapFormPolicy::formatUnits(v.dueZat);
         depositQr_->setPixmap(QPixmap::fromImage(QrUtil::makeQr(uri, 140, 2)));
     }
-    depositDue_->setText(SwapFormPolicy::formatUnits(v.dueZat) + " ZEC <span style='color:#9fb3c8; font-weight:400'>"
-                         "(the amount + 0.0002 ZEC funding fee)</span>");
-    depositReceived_->setText(v.reachable ? SwapFormPolicy::formatUnits(v.seenZat) + " ZEC · " +
-                                                QString("%1 of %2 confirmations")
-                                                    .arg(qMin(v.confirmations, SwapFormPolicy::kZecDepositConfirmations))
-                                                    .arg(SwapFormPolicy::kZecDepositConfirmations)
+    depositCoin_ = v.coin;
+    depositTitle_->setText(btc ? "<b>Pay the swap deposit</b> — from any Bitcoin wallet or exchange, in one payment or several"
+                               : "<b>Pay the swap deposit</b> — from any Zcash wallet, shielded included");
+    depositQr_->setToolTip(btc ? "Scan with a Bitcoin wallet" : "Scan with a Zcash wallet (Zashi and other shielded wallets can pay a t-address)");
+    depositDue_->setText(SwapFormPolicy::formatUnits(v.dueZat) + " " + v.coin +
+                         " <span style='color:#9fb3c8; font-weight:400'>" +
+                         (btc ? "(the amount + an allowance for the network fee; what is not used comes back)"
+                              : "(the amount + 0.0002 ZEC funding fee)") +
+                         "</span>");
+    depositReceived_->setText(v.reachable ? SwapFormPolicy::formatUnits(v.seenZat) + " " + v.coin + " · " +
+                                                QString("%1 of %2 confirmations").arg(qMin(v.confirmations, v.needed)).arg(v.needed)
                                           : kDash);
-    depositBar_->setValue(v.seenZat >= v.dueZat ? qMin(v.confirmations, SwapFormPolicy::kZecDepositConfirmations) : 0);
+    depositBar_->setMaximum(v.needed);
+    depositBar_->setValue(v.seenZat >= v.dueZat ? qMin(v.confirmations, v.needed) : 0);
     SetHint(depositHint_, v.hint, "Ready. The deposit is confirmed: accept the offer to send your reply.");
     acceptDeposit_->setEnabled(v.ready);
     withdrawDeposit_->setEnabled(v.seenZat > 0);
@@ -673,8 +694,9 @@ void SwapWidget::hideDeposit() {
 void SwapWidget::onAcceptDeposit() {
     if (depositOffer_.isEmpty()) return;
     if (!Confirm(this, "Accept the offer", "Your deposit is confirmed.",
-                 "Your reply goes to the seller. Your node locks the ZEC from the deposit once the seller's DIN lock "
-                 "is deep enough.<br><b>Keep this node online and the wallet unlocked until the swap finishes.</b>",
+                 "Your reply goes to the seller. Your node locks the " + depositCoin_ +
+                     " from the deposit once the seller's DIN lock "
+                     "is deep enough.<br><b>Keep this node online and the wallet unlocked until the swap finishes.</b>",
                  "Accept offer")) {
         return;
     }
@@ -782,7 +804,10 @@ void SwapWidget::onRpcResult(const QString& method, const QJsonValue& result) {
         const QJsonObject d = result.toObject();
         depositId_ = d.value("id").toString();
         showDeposit(d);
-        showStatus("Pay the deposit from any Zcash wallet. Your reply unlocks at 10 confirmations.", false);
+        showStatus(d.value("deposit_coin").toString() == "BTC"
+                       ? "Pay the deposit from any Bitcoin wallet or exchange. Your reply unlocks at 2 confirmations."
+                       : "Pay the deposit from any Zcash wallet. Your reply unlocks at 10 confirmations.",
+                   false);
         refresh();
         return;
     }

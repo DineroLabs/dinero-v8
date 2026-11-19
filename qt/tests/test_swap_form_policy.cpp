@@ -64,6 +64,32 @@ private Q_SLOTS:
         QCOMPARE(dinFundingFeeRateHint(1e12), qint64(1000));
         QCOMPARE(SwapFormPolicy::formatUnits(SwapFormPolicy::kDinFundingMaximumFeeUna), QString("0.05000000"));
     }
+    void bitcoinDeposit() {
+        QJsonObject s{{"deposit_coin", "BTC"}, {"confirmations_needed", 2}, {"deposit_due_zat", 1003000}, {"deposit_seen_zat", 0},
+                      {"deposit_confirmed_zat", 0}, {"deposit_confirmations", 0}};
+        auto v = SwapFormPolicy::depositView(s);
+        QCOMPARE(v.coin, QString("BTC"));
+        QCOMPARE(v.needed, 2);
+        QCOMPARE(v.hint, QString("pay 0.01003000 BTC to the deposit address"));
+        s["deposit_seen_zat"] = 1003000;
+        s["deposit_confirmations"] = 1;
+        v = SwapFormPolicy::depositView(s);
+        QCOMPARE(v.hint, QString("wait for 1 more Bitcoin confirmations of the deposit"));
+        QVERIFY(!v.ready);
+        s["deposit_confirmed_zat"] = 1003000;
+        s["deposit_confirmations"] = 2;
+        QVERIFY(SwapFormPolicy::depositView(s).ready);
+        s["deposit_status"] = "no Bitcoin server reachable";
+        v = SwapFormPolicy::depositView(s);
+        QVERIFY(!v.ready);
+        QCOMPARE(v.hint, QString("your node cannot reach any Bitcoin server; the deposit address still stands"));
+        // An older node that names no coin is Zcash, at ten confirmations.
+        v = SwapFormPolicy::depositView(QJsonObject{{"deposit_due_zat", 100}});
+        QCOMPARE(v.coin, QString("ZEC"));
+        QCOMPARE(v.needed, SwapFormPolicy::kZecDepositConfirmations);
+        // A BTC deposit from a node that does not say how deep: two.
+        QCOMPARE(SwapFormPolicy::depositView(QJsonObject{{"deposit_coin", "BTC"}}).needed, 2);
+    }
     void networkHrp() {
         QCOMPARE(SwapFormPolicy::btcHrpForChain("mainnet"), QString("bc"));
         QCOMPARE(SwapFormPolicy::btcHrpForChain("main"), QString("bc"));

@@ -55,6 +55,8 @@ private:
     bool zecSupported_{false};  // the node reports "zec" in swap.capabilities
     bool lightBtc_{false};      // the node reports btc_backend "light": it sells DIN for BTC, it cannot buy
     QLabel* lightNotice_{nullptr};
+    QLabel* depositTitle_{nullptr};
+    QString depositCoin_{"ZEC"};  // the coin of the deposit being shown
     bool sellZec_{false};       // the sell form makes a ZEC offer
     QLabel* intro_;
     QGroupBox* sellBox_;

@@ -168,7 +168,9 @@ struct DepositView {
     qint64 confirmedZat = 0;  // at least kZecDepositConfirmations
     int confirmations = 0;    // of the newest payment
     bool reachable = true;
-    bool ready = false;       // covered at kZecDepositConfirmations: the reply can be sent
+    bool ready = false;       // covered at `needed` confirmations: the reply can be sent
+    QString coin = "ZEC";     // "ZEC", or "BTC" for a Bitcoin deposit on a node without Bitcoin Core
+    int needed = kZecDepositConfirmations;  // confirmations a payment needs to count (ZEC 10, BTC 2)
     QString hint;
 };
 
@@ -179,13 +181,20 @@ inline DepositView depositView(const QJsonObject& s) {
     v.seenZat = s.value("deposit_seen_zat").toVariant().toLongLong();
     v.confirmedZat = s.value("deposit_confirmed_zat").toVariant().toLongLong();
     v.confirmations = s.value("deposit_confirmations").toInt();
+    if (s.value("deposit_coin").toString() == "BTC") v.coin = "BTC";
+    const int needed = s.value("confirmations_needed").toInt();
+    if (needed > 0 && needed <= 100) v.needed = needed;
+    else if (v.coin == "BTC") v.needed = 2;
+    const bool btc = v.coin == "BTC";
     v.ready = v.reachable && v.dueZat > 0 && v.confirmedZat >= v.dueZat;
-    if (!v.reachable) v.hint = "your node cannot reach its Zcash node; the deposit address still stands";
-    else if (v.ready) v.hint = {};
-    else if (v.seenZat == 0) v.hint = "pay " + formatUnits(v.dueZat) + " ZEC to the deposit address";
-    else if (v.seenZat < v.dueZat) v.hint = formatUnits(v.dueZat - v.seenZat) + " ZEC still due";
-    else v.hint = QString("wait for %1 more Zcash confirmations of the deposit")
-                      .arg(qMax(1, kZecDepositConfirmations - v.confirmations));
+    if (!v.reachable) {
+        v.hint = btc ? "your node cannot reach any Bitcoin server; the deposit address still stands"
+                     : "your node cannot reach its Zcash node; the deposit address still stands";
+    } else if (v.ready) v.hint = {};
+    else if (v.seenZat == 0) v.hint = "pay " + formatUnits(v.dueZat) + " " + v.coin + " to the deposit address";
+    else if (v.seenZat < v.dueZat) v.hint = formatUnits(v.dueZat - v.seenZat) + " " + v.coin + " still due";
+    else v.hint = QString("wait for %1 more %2 confirmations of the deposit")
+                      .arg(qMax(1, v.needed - v.confirmations)).arg(btc ? "Bitcoin" : "Zcash");
     return v;
 }
 
