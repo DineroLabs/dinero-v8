@@ -7669,45 +7669,12 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       // Extract comprehensive sync information
       QString phase = obj["phase"].toString("unknown");
       QString phaseName = obj["phase_name"].toString("Unknown");
-      double overallProgress = obj["overall_progress"].toDouble(0.0);
       QString progressPercent = obj["overall_progress_percent"].toString("0.0%");
       QString etaFormatted = obj["eta_formatted"].toString("Estimating...");
-      bool isSynced = obj["is_synced"].toBool(false);
-
-      // Update sync progress label with enhanced information
-      if (lblSyncProgress_) {
-        QString syncText;
-        if (isSynced) {
-          syncText = "✅ Fully Synced";
-        } else {
-          syncText = QString("%1: %2 (ETA: %3)")
-            .arg(phaseName)
-            .arg(progressPercent)
-            .arg(etaFormatted);
-        }
-        lblSyncProgress_->setText(syncText);
-      }
-
-      // Extract detailed progress breakdown
-      if (obj.contains("headers") && obj["headers"].isObject()) {
-        auto headers = obj["headers"].toObject();
-        int headersSynced = headers["synced"].toInt(0);
-        int headersTotal = headers["total"].toInt(0);
-
-        if (lblHeaders_) {
-          lblHeaders_->setText(QString("Headers: %1 / %2").arg(headersSynced).arg(headersTotal));
-        }
-      }
-
-      if (obj.contains("blocks") && obj["blocks"].isObject()) {
-        auto blocks = obj["blocks"].toObject();
-        int blocksSynced = blocks["synced"].toInt(0);
-        int blocksTotal = blocks["total"].toInt(0);
-
-        if (lblHeight_) {
-          lblHeight_->setText(QString("Height: %1 / %2").arg(blocksSynced).arg(blocksTotal));
-        }
-      }
+      // Wallet delivery progress is a different measure from the node's
+      // block/header progress. The Overview node labels are owned by
+      // blockchain.getinfo, so asynchronous wallet replies cannot replace a
+      // real chain percentage with an unrelated value or a false "synced".
 
       // Extract slow reason information
       if (obj.contains("slow_reason") && obj["slow_reason"].isObject()) {
@@ -15648,10 +15615,12 @@ void MainWindow::updateWalletUIState() {
   bool canTransact = canUseWalletAddress && walletSendReady_;
   if (shieldedWidget_) {
     shieldedWidget_->setWalletUnlocked(canTransact && !walletTransparentV3SendReady_);
-#if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
-    if (orchardWidget_) orchardWidget_->setWalletUnlocked(canTransact && !walletTransparentV3SendReady_);
-#endif
   }
+#if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
+  // Orchard has its own activation, account and source-readiness gates. The
+  // transparent-v3 send scope must not hide its account/address controls.
+  if (orchardWidget_) orchardWidget_->setWalletUnlocked(canUseWalletAddress);
+#endif
   const QString sendMode = currentSendMode();
   const bool standardSendMode = isSendModePublic(sendMode);
   updateWalletSwitcherState();
