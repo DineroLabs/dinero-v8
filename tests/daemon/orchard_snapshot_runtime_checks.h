@@ -3129,7 +3129,11 @@ TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles)
                 ChainDBTransactionReadTestPeer::SnapshotCatalogFault(*db,source.f.token,state.transactions,{});
                 const auto after_fault=db->startupWriteFence();ASSERT_TRUE(after_fault);
                 EXPECT_NE(*after_fault,*before_fault);
-                EXPECT_FALSE(service->Start());EXPECT_EQ(service->GetActiveTip(),nullptr);
+                testing::internal::CaptureStdout();
+                const bool started_with_missing_node=service->Start();
+                const auto refusal_log=testing::internal::GetCapturedStdout();
+                EXPECT_FALSE(started_with_missing_node);EXPECT_EQ(service->GetActiveTip(),nullptr);
+                EXPECT_NE(refusal_log.find("Rechecking snapshot with actual selector"),std::string::npos);
                 ChainDBTransactionReadTestPeer::SnapshotCatalogFault(*db,source.f.token,state.transactions,*bytes);
             }
             ASSERT_TRUE(service->Start());

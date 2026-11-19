@@ -15328,8 +15328,11 @@ bool ChainstateService::StartOrchardSnapshotStorage() {
         // Init already performed the expensive full Restore. If the same
         // ChainDB engine has had no writes and the complete authenticated
         // ancestry matches the real selector, its publication can be reused.
-        // Any uncertainty takes the original full-Restore path.
+        // Uncertainty at binding takes the original full-Restore path.
         std::unique_ptr<consensus::HeaderChainSelector::AncestryRetention> startup_header_retention;
+        bool reused_authenticated_init=false;
+        uint64_t bound_eligibility=0;
+        uint256 bound_best_hash;
         {
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
             bool reused=false;
@@ -15355,6 +15358,11 @@ bool ChainstateService::StartOrchardSnapshotStorage() {
                             startup.authenticated_headers.back().height,ancestor,best_height) &&
                         best_height==best.height && ancestor==startup.authenticated_headers.back().hash &&
                         eligibility==header_chain_selector_->GetEligibilityGeneration();
+                    if(reused) {
+                        reused_authenticated_init=true;
+                        bound_eligibility=eligibility;
+                        bound_best_hash=best.hash;
+                    }
                 }
             }
             if(reused) {
@@ -15398,6 +15406,19 @@ bool ChainstateService::StartOrchardSnapshotStorage() {
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
             std::lock_guard<std::mutex> lifetime(wallet_index_use_mutex_);
             if(wallet_index_stopping_||selected_read_uses_||wallet_index_uses_||compact_startup_uses_||active_tip_)return false;
+            if(reused_authenticated_init) {
+                // DaemonApp starts chainstate before P2P/header sync; all
+                // selected ChainDB writers take activation_mutex_. Still
+                // recheck at the final handoff so a direct test/harness
+                // mutation cannot publish a stale fast-path selection.
+                // The tip audit has already run; a change here aborts startup
+                // rather than publishing an audit of a different database.
+                consensus::HeaderIndexEntry best;
+                if(chain_db_->startupWriteFence()!=orchard_snapshot_startup_->authenticated_db_fence ||
+                    header_chain_selector_->GetEligibilityGeneration()!=bound_eligibility ||
+                    !header_chain_selector_->GetBestHeaderCopy(best) || best.hash!=bound_best_hash)
+                    return false;
+            }
             BlockAcceptor::SetContext(DaemonContext::instance());p2p_orphan_pool_=std::move(orphans);
             orchard_snapshot_startup_->reads={}; // Startup-only DATA, never a running-state certificate.
             orchard_snapshot_startup_->authenticated_headers.clear();
