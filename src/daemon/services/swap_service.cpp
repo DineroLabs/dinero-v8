@@ -164,7 +164,50 @@ SwapService* SwapService::Active() { return g_active.load(); }
 void SwapService::SetZecInstaller(ZecInstaller installer) { ZecInstallerSlot() = std::move(installer); }
 void SwapService::SetLightBtcInstaller(LightBtcInstaller installer) { LightBtcInstallerSlot() = std::move(installer); }
 
+namespace {
+std::mutex g_off_reason_mu;
+std::string g_off_reason;   // the last refusal printed
+bool g_off_by_refusal = false;  // Init kept the node running without swaps
+}  // namespace
+
+bool SwapService::Refuse(const std::string& why) {
+    std::cerr << "[Swap] " << why << std::endl;
+    std::lock_guard<std::mutex> lock(g_off_reason_mu);
+    g_off_reason = why;
+    return false;
+}
+
+std::string SwapService::OffReason() {
+    std::lock_guard<std::mutex> lock(g_off_reason_mu);
+    return g_off_by_refusal ? g_off_reason : std::string();
+}
+
 bool SwapService::Init(DaemonContext& ctx) {
+    {
+        std::lock_guard<std::mutex> lock(g_off_reason_mu);
+        g_off_reason.clear();
+        g_off_by_refusal = false;
+    }
+    bool ok = false;
+    try {
+        ok = Setup(ctx);
+    } catch (const std::exception& e) {
+        Refuse(e.what());
+    }
+    if (ok) return true;
+    manager_.reset();
+    before_tick_ = nullptr;
+    auto config = std::dynamic_pointer_cast<ConfigService>(ctx.config);
+    if (!config || !config->GetBool("swap.optional", false)) return false;
+    // dinero-qt's switch: the wallet's node must start whatever the swap settings are.
+    std::cerr << "[Swap] swap.optional=1: the node starts with swaps off" << std::endl;
+    std::lock_guard<std::mutex> lock(g_off_reason_mu);
+    if (g_off_reason.empty()) g_off_reason = "this node refused the swap settings (its log says why)";
+    g_off_by_refusal = true;
+    return true;
+}
+
+bool SwapService::Setup(DaemonContext& ctx) {
     ctx_ = &ctx;
     auto config = std::dynamic_pointer_cast<ConfigService>(ctx.config);
     if (!config || !config->GetBool("swap.enable", false)) return true;  // disabled: nothing at all
@@ -172,29 +215,24 @@ bool SwapService::Init(DaemonContext& ctx) {
     const std::string btc = config->GetString("swap.btc_rpc", "");
     const bool zec_wanted = !config->GetString("swap.zec_rpc", "").empty();
     if (zec_wanted && !ZecInstallerSlot()) {
-        std::cerr << "[Swap] swap.zec_rpc needs a dinerod built with DINERO_SWAP_ZEC" << std::endl;
-        return false;
+        return Refuse("swap.zec_rpc needs a dinerod built with DINERO_SWAP_ZEC");
     }
     const std::string btc_backend = config->GetString("swap.btc_backend", "");
     const bool light_btc = btc_backend == "light";
     if (!btc_backend.empty() && btc_backend != "light" && btc_backend != "core") {
-        std::cerr << "[Swap] swap.btc_backend must be core or light" << std::endl;
-        return false;
+        return Refuse("swap.btc_backend must be core or light");
     }
     if (light_btc && !btc.empty()) {
-        std::cerr << "[Swap] swap.btc_backend=light and swap.btc_rpc are two ways to reach Bitcoin: set one" << std::endl;
-        return false;
+        return Refuse("swap.btc_backend=light and swap.btc_rpc are two ways to reach Bitcoin: set one");
     }
     if (light_btc && !LightBtcInstallerSlot()) {
-        std::cerr << "[Swap] swap.btc_backend=light needs a dinerod built with DINERO_SWAP_LIGHT_BTC" << std::endl;
-        return false;
+        return Refuse("swap.btc_backend=light needs a dinerod built with DINERO_SWAP_LIGHT_BTC");
     }
     const auto colon = btc.rfind(':');
     // Without swap.btc_rpc (a Zcash-only node) Bitcoin calls report "unreachable".
     swap::BtcRpc btc_rpc = [](const std::string&, const Json::Value&) { return std::optional<Json::Value>{}; };
     if (colon == std::string::npos && !zec_wanted && !light_btc) {
-        std::cerr << "[Swap] swap.enable=1 needs swap.btc_rpc=HOST:PORT (Bitcoin Core RPC)" << std::endl;
-        return false;
+        return Refuse("swap.enable=1 needs swap.btc_rpc=HOST:PORT (Bitcoin Core RPC)");
     }
     if (colon != std::string::npos) {
         auto client = std::make_shared<rpc::RpcClient>(btc.substr(0, colon), uint16_t(std::stoi(btc.substr(colon + 1))),
@@ -219,8 +257,7 @@ bool SwapService::Init(DaemonContext& ctx) {
     const int64_t din_fee_urgent = config->GetInt("swap.din_fee_urgent_una", int(mc.runner.din_fee_urgent_una));
     const int64_t btc_fee = config->GetInt("swap.btc_fee_sat", int(mc.runner.btc_fee_sat));
     if (const auto problem = swap::FeeConfigProblem(din_fee, din_fee_urgent, btc_fee)) {
-        std::cerr << "[Swap] " << *problem << std::endl;
-        return false;
+        return Refuse(*problem);
     }
     mc.runner.din_fee_una = uint64_t(din_fee);
     mc.runner.din_fee_urgent_una = uint64_t(din_fee_urgent);
@@ -234,13 +271,11 @@ bool SwapService::Init(DaemonContext& ctx) {
     };
     const auto max_btc = limit("swap.max_btc_sat"), max_din = limit("swap.max_din_una");
     if (!max_btc || !max_din) {
-        std::cerr << "[Swap] swap.max_btc_sat / swap.max_din_una must be whole numbers" << std::endl;
-        return false;
+        return Refuse("swap.max_btc_sat / swap.max_din_una must be whole numbers");
     }
     const auto beta = swap::BetaPolicy(mc.network, config->GetBool("swap.mainnet_beta", false), *max_btc, *max_din);
     if (beta.refusal) {
-        std::cerr << "[Swap] " << *beta.refusal << std::endl;
-        return false;
+        return Refuse(*beta.refusal);
     }
     mc.max_btc_sat = beta.max_btc_sat;
     mc.require_tower_for_bob = mc.network == swap::SwapNetwork::Mainnet;

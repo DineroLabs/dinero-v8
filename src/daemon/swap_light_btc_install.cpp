@@ -55,8 +55,8 @@ std::function<void(uint32_t)> InstallLightBitcoin(swap::SwapManager& manager, co
     switch (network) {
     case swap::SwapNetwork::Mainnet:
         if (!config.GetBool("swap.btc_light_mainnet_rehearsal", false)) {
-            std::cerr << "[Swap] swap.btc_backend=light is not offered on mainnet yet (testnet first); "
-                         "use swap.btc_rpc with Bitcoin Core" << std::endl;
+            SwapService::Refuse("swap.btc_backend=light is not offered on mainnet yet (testnet first); "
+                                "use swap.btc_rpc with Bitcoin Core");
             return nullptr;
         }
         c.params = swap::BtcChainParams::Mainnet();
@@ -87,7 +87,7 @@ std::function<void(uint32_t)> InstallLightBitcoin(swap::SwapManager& manager, co
     try {
         backend = std::make_shared<swap::BtcLightBackend>(c, swap::MakeBtcLightTransport());
     } catch (const std::exception& e) {
-        std::cerr << "[Swap] " << e.what() << std::endl;
+        SwapService::Refuse(e.what());
         return nullptr;
     }
 

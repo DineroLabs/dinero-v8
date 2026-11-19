@@ -19,8 +19,7 @@ bool InstallZec(swap::SwapManager& manager, const ConfigService& config, swap::S
     const std::string zec = config.GetString("swap.zec_rpc", "");
     const auto colon = zec.rfind(':');
     if (colon == std::string::npos) {
-        std::cerr << "[Swap] swap.zec_rpc must be HOST:PORT (Zebra RPC)" << std::endl;
-        return false;
+        return SwapService::Refuse("swap.zec_rpc must be HOST:PORT (Zebra RPC)");
     }
     auto client = std::make_shared<rpc::RpcClient>(zec.substr(0, colon), uint16_t(std::stoi(zec.substr(colon + 1))),
                                                    config.GetString("swap.zec_rpc_user", ""),

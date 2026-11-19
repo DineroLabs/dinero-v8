@@ -87,6 +87,9 @@ din::Json ToJson(const SwapSummary& s) {
 // Shared preconditions; returns an error object or nullopt.
 std::optional<din::Json> Refuse(const ExecutionContext& ctx, bool starting) {
     if (!SwapService::Active() || !SwapService::Active()->manager()) {
+        // swap.enable=1 was refused and swap.optional=1 kept the node running: say why.
+        const std::string why = SwapService::OffReason();
+        if (!why.empty()) return Error("swaps are disabled: " + why);
         return Error("swaps are disabled: start dinerod with swap.enable=1 and swap.btc_rpc=HOST:PORT");
     }
     if (starting) {

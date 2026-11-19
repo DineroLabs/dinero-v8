@@ -80,6 +80,19 @@ check "without swap.enable, swap.* reports disabled" '[[ "$out" == *disabled* ]]
 check "without swap.enable, no swap directory is created" '[[ ! -e "$DIR/inert/swaps" ]]'
 kill "$XPID"; wait "$XPID" 2>/dev/null || true; XPID=
 
+# --- A refused swap setting stops the node, unless swap.optional=1 (dinero-qt's switch) ---
+mkdir -p "$DIR/refused" "$DIR/optional"
+start_node refused $XPORT $XP2P --swap.enable=1 --swap.btc_backend=nonsense; XPID=$STARTED_PID
+stopped=0; for _ in $(seq 1 120); do kill -0 "$XPID" 2>/dev/null || { stopped=1; break; }; sleep 0.5; done
+check "a refused swap setting stops the node" '[[ $stopped == 1 ]] && grep -q "swap.btc_backend must be core or light" "$DIR/refused.log"'
+kill -9 "$XPID" 2>/dev/null || true; wait "$XPID" 2>/dev/null || true; XPID=
+start_node optional $XPORT $XP2P --swap.enable=1 --swap.btc_backend=nonsense --swap.optional=1; XPID=$STARTED_PID
+check "with swap.optional=1 the node starts all the same" 'wait_rpc $XPORT'
+out=$(rpc $XPORT swap.list '[]' 2>&1 || true)
+check "and swap.* say why swaps are off" '[[ "$out" == *"swaps are disabled: swap.btc_backend must be core or light"* ]]'
+check "and no swap directory is created" '[[ ! -e "$DIR/optional/swaps" ]]'
+kill "$XPID"; wait "$XPID" 2>/dev/null || true; XPID=
+
 # --- Alice's and Bob's daemons ---------------------------------------------------
 # Establish each intended payer before SwapService captures its durable owner.
 start_node alice $APORT $AP2P; APID=$STARTED_PID; wait_rpc $APORT

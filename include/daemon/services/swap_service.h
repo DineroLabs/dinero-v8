@@ -10,6 +10,9 @@
 //   swap.tick_seconds=30
 //   swap.tower_inbox=DIR          optional: arm a dinero-swap-tower for Bob
 //   swap.din_fee_una / swap.din_fee_urgent_una / swap.btc_fee_sat   (optional)
+//   swap.optional=1               a swap setting this node refuses leaves swaps
+//                                 off instead of stopping the node (dinero-qt's
+//                                 "Enable swaps" switch); swap.* then say why
 // Swap files live in <datadir>/swaps (mode 0700), encrypted with a key derived
 // from the wallet seed; while the wallet is locked swaps are paused.
 
@@ -21,6 +24,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 
 struct DaemonContext;
@@ -46,6 +50,13 @@ public:
     // The running instance (for the swap.* RPCs); nullptr when disabled.
     static SwapService* Active();
 
+    // Why swap.enable=1 did not turn swaps on (swap.optional=1 kept the node
+    // running); empty when swaps are on or were never asked for.
+    static std::string OffReason();
+    // Prints why the swap configuration is refused and remembers it for
+    // OffReason(). For Init and the installers below; always returns false.
+    static bool Refuse(const std::string& why);
+
     // Zcash swaps (dinerod built with DINERO_SWAP_ZEC): swap_zec_install.cpp,
     // linked only into that dinerod, registers this at start-up; Init calls it
     // when swap.zec_rpc is set. Returns false (after printing why) on a bad
@@ -64,6 +75,7 @@ public:
     static void SetLightBtcInstaller(LightBtcInstaller installer);
 
 private:
+    bool Setup(DaemonContext& ctx);
     void Loop();
 
     DaemonContext* ctx_{nullptr};
