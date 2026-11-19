@@ -39,6 +39,7 @@ const QString kStart = "swaptab.start";
 const QString kCancel = "swaptab.cancel";
 const QString kChain = "swaptab.chain";
 const QString kCaps = "swaptab.caps";
+const QString kFee = "swaptab.fee";
 const QString kDeposit = "swaptab.deposit";
 const QString kWithdraw = "swaptab.withdraw";
 
@@ -159,6 +160,7 @@ SwapWidget::SwapWidget(RpcClient* rpc, QWidget* parent) : QWidget(parent), rpc_(
     timer_->start(10000);
     rpc_->callNamedAs("getblockchaininfo", QJsonObject{}, kChain);
     rpc_->callNamedAs("swap.capabilities", QJsonObject{}, kCaps);  // older nodes: no answer, BTC only
+    rpc_->callAs("wallet.estimatefee", QJsonArray{6}, kFee);  // the rate offered for the DIN lock
     refresh();
 }
 
@@ -541,16 +543,20 @@ void SwapWidget::onCreateOffer() {
                     "<tr><td><b>Rate:</b></td><td>%1</td></tr>"
                     "<tr><td><b>Claim the ZEC by:</b></td><td>%2 (minus a 6 h safety margin)</td></tr>"
                     "<tr><td><b>DIN back if unanswered:</b></td><td>after %3</td></tr>"
+                    "<tr><td><b>Network fee to lock your DIN:</b></td><td>at most %4 DIN</td></tr>"
                     "<tr><td><b>Before you claim:</b></td><td>the buyer's ZEC lock gets 40 Zcash confirmations (~50 min)</td></tr>"
                     "</table><br>"
                     "You receive the ZEC (minus a 0.0002 ZEC claim fee) at your t-address; shield it afterwards.<br>"
                     "Your DIN is locked as soon as the buyer accepts. It goes to the buyer only when you claim the ZEC.<br>"
                     "<b>Keep this node online and the wallet unlocked until the swap finishes.</b>")
                 .arg(SwapFormPolicy::rate(r.dinUna, r.btcSat, "zat"), SwapFormPolicy::localTime(now + 48 * 3600),
-                     SwapFormPolicy::localTime(now + 96 * 3600));
+                     SwapFormPolicy::localTime(now + 96 * 3600),
+                     SwapFormPolicy::formatUnits(SwapFormPolicy::kDinFundingMaximumFeeUna));
         if (!Confirm(this, "Review your offer", heading, details, "Create offer")) return;
         QJsonObject p{{"chain", "zec"}, {"din_amount_una", r.dinUna}, {"zec_amount_zat", r.btcSat},
-                      {"zec_address", btcAddress_->text().trimmed()}};
+                      {"zec_address", btcAddress_->text().trimmed()},
+                      {"din_funding_fee_rate_hint", SwapFormPolicy::dinFundingFeeRateHint(dinFeeEstimate_)},
+                      {"din_funding_maximum_fee_una", SwapFormPolicy::kDinFundingMaximumFeeUna}};
         rpc_->callNamedAs("swap.offer", p, kOffer);
         return showStatus("Creating offer…", false);
     }
@@ -561,13 +567,17 @@ void SwapWidget::onCreateOffer() {
                 "<tr><td><b>Rate:</b></td><td>%1</td></tr>"
                 "<tr><td><b>Claim the BTC by:</b></td><td>%2 (minus a 6 h safety margin)</td></tr>"
                 "<tr><td><b>DIN back if unanswered:</b></td><td>after %3</td></tr>"
+                    "<tr><td><b>Network fee to lock your DIN:</b></td><td>at most %4 DIN</td></tr>"
                 "</table><br>"
                 "Your DIN is locked as soon as the buyer accepts. It goes to the buyer only when you claim the BTC.<br>"
                 "<b>Keep this node online and the wallet unlocked until the swap finishes.</b>")
             .arg(SwapFormPolicy::rate(r.dinUna, r.btcSat), SwapFormPolicy::localTime(now + 48 * 3600),
-                 SwapFormPolicy::localTime(now + 96 * 3600));
+                 SwapFormPolicy::localTime(now + 96 * 3600),
+                 SwapFormPolicy::formatUnits(SwapFormPolicy::kDinFundingMaximumFeeUna));
     if (!Confirm(this, "Review your offer", heading, details, "Create offer")) return;
-    QJsonObject p{{"din_amount_una", r.dinUna}, {"btc_amount_sat", r.btcSat}, {"btc_address", btcAddress_->text().trimmed()}};
+    QJsonObject p{{"din_amount_una", r.dinUna}, {"btc_amount_sat", r.btcSat}, {"btc_address", btcAddress_->text().trimmed()},
+                  {"din_funding_fee_rate_hint", SwapFormPolicy::dinFundingFeeRateHint(dinFeeEstimate_)},
+                  {"din_funding_maximum_fee_una", SwapFormPolicy::kDinFundingMaximumFeeUna}};
     rpc_->callNamedAs("swap.offer", p, kOffer);
     showStatus("Creating offer…", false);
 }
@@ -703,6 +713,10 @@ void SwapWidget::onSelectionChanged() {
 void SwapWidget::onRpcResult(const QString& method, const QJsonValue& result) {
     if (!method.startsWith("swaptab.")) return;
     if (method == kCaps && result.isObject() && result.toObject().contains("error")) return;  // swaps off: BTC wording
+    if (method == kFee) {  // no estimate: the floor in SwapFormPolicy stands
+        dinFeeEstimate_ = result.toObject().value("feerate").toDouble(0);
+        return;
+    }
     // swap.* report refusals in-band as {"error": "..."}.
     if (result.isObject() && result.toObject().contains("error") && !result.toObject().value("error").isNull()) {
         const QString message = result.toObject().value("error").toVariant().toString();
@@ -840,7 +854,7 @@ void SwapWidget::onRpcResult(const QString& method, const QJsonValue& result) {
 }
 
 void SwapWidget::onRpcError(const QString& method, int code, const QString& message) {
-    if (!method.startsWith("swaptab.") || method == kChain || method == kCaps) return;  // an older node: BTC only
+    if (!method.startsWith("swaptab.") || method == kChain || method == kCaps || method == kFee) return;  // an older node: BTC only
     if (method == kList && code == -32601) {
         table_->setRowCount(0);
         table_->setVisible(false);

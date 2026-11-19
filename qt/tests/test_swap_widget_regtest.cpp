@@ -161,8 +161,11 @@ private Q_SLOTS:
         QTRY_VERIFY_WITH_TIMEOUT(Find<QPushButton>(alice_, "createOffer")->isEnabled(), 15000);
         Find<QPushButton>(alice_, "createOffer")->click();
         auto* offerOut = Find<QPlainTextEdit>(alice_, "offerOut");
-        QTRY_VERIFY_WITH_TIMEOUT(offerOut->toPlainText().startsWith("dinswap1o"), 15000);
+        QTRY_VERIFY2_WITH_TIMEOUT(offerOut->toPlainText().startsWith("dinswap1o"),
+                                  qPrintable("no offer; the tab says: " + Find<QLabel>(alice_, "swapStatus")->text()), 15000);
         QVERIFY(!answered_.isEmpty() && answered_.last().contains("You sell 10.00000000 DIN for 0.01000000 BTC"));
+        // The fee she authorizes for the DIN lock is on the review she agreed to.
+        QVERIFY2(answered_.last().contains("at most 0.05000000 DIN"), qPrintable(answered_.last()));
 
         // Bob pastes the offer, reviews the decoded terms, accepts.
         Find<QPlainTextEdit>(bob_, "pasteIn")->setPlainText(offerOut->toPlainText());

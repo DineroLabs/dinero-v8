@@ -51,6 +51,7 @@ private:
     QJsonObject lastDecoded_;
     QString pastedText_;
 
+    double dinFeeEstimate_{0};  // una/vB from wallet.estimatefee (0: none yet)
     bool zecSupported_{false};  // the node reports "zec" in swap.capabilities
     bool sellZec_{false};       // the sell form makes a ZEC offer
     QLabel* intro_;
