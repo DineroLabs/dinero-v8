@@ -14,7 +14,9 @@ MINE="$(cd "$(dirname "$0")/../../tests/wallet" && pwd)/zebra_regtest_mine.py"
 nm "$DINEROD" 2>/dev/null | grep dzs_tx_build >/dev/null || { echo "SKIP: $DINEROD is built without DINERO_SWAP_ZEC"; exit 77; }
 REGTEST_GENESIS=029f11d80ef9765602235e1bc9727e3eb6ba20839319f761fee920d63401e327
 DIR=$(mktemp -d)
-BASE=$((30000 + RANDOM % 8000))
+# Only ports nothing answers on: another node or test may be running on this machine.
+source "$(dirname "$0")/../../tests/wallet/swap_regtest_lib.sh"
+BASE=$(swap_free_base 6)
 APORT=$BASE; AP2P=$((BASE + 1)); BPORT=$((BASE + 2)); BP2P=$((BASE + 3)); ZPORT=$((BASE + 5)); ZP2P=$((BASE + 6))
 SWAPCFG=(--swap.enable=1 --swap.zec_rpc=127.0.0.1:$ZPORT --swap.tick_seconds=1)
 cleanup() { for p in "${APID:-}" "${BPID:-}" "${ZPID:-}"; do [[ -n "$p" ]] && kill "$p" 2>/dev/null || true; done

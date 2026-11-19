@@ -7,7 +7,9 @@
 set -euo pipefail
 DINEROD=${1:?dinerod}; QTTEST=${2:?test binary}
 DIR=$(mktemp -d)
-BASE=$((21000 + RANDOM % 15000))
+# Only ports nothing answers on: another node or test may be running on this machine.
+source "$(dirname "$0")/../../tests/wallet/swap_regtest_lib.sh"
+BASE=$(swap_free_base 11)
 APORT=$BASE; AP2P=$((BASE + 1)); BPORT=$((BASE + 2)); BP2P=$((BASE + 3)); CPORT=$((BASE + 11))
 BCLI=(bitcoin-cli -regtest -datadir="$DIR/btc" -rpcport=$CPORT -rpcuser=test -rpcpassword=test)
 SWAPCFG=(--swap.enable=1 --swap.btc_rpc=127.0.0.1:$CPORT --swap.btc_rpc_user=test --swap.btc_rpc_pass=test
