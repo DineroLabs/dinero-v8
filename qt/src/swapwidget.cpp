@@ -5,7 +5,9 @@
 #include "paycollectpolicy.h"
 #include "rpcclient.h"
 #include "swapformpolicy.h"
+#include "swaplaunchpolicy.h"
 
+#include <QSettings>
 #include <QApplication>
 #include <QButtonGroup>
 #include <QClipboard>
@@ -178,6 +180,19 @@ void SwapWidget::setupUi() {
                          "swaps you can follow through. Buying DIN? A watchtower (dinero-swap-tower) can stand in "
                          "while you are offline.",
                          "swapDuties", this));
+    // The switch: swaps run only when the node was started for them.
+    auto* switchRow = new QHBoxLayout;
+    switchText_ = new QLabel(this);
+    switchText_->setObjectName("swapSwitchText");
+    switchText_->setWordWrap(true);
+    switchButton_ = ChromeButton("Turn on swaps", "Swaps run inside this wallet's node. Turning them on or off takes "
+                                                  "effect the next time Dinero starts.",
+                                 "swapSwitchButton", this);
+    connect(switchButton_, &QPushButton::clicked, this, &SwapWidget::onSwitchClicked);
+    switchRow->addWidget(switchText_, 1);
+    switchRow->addWidget(switchButton_);
+    root->addLayout(switchRow);
+    updateSwitch();
     // Shown only when the node reaches Bitcoin without Bitcoin Core (swap.capabilities).
     lightNotice_ = Pill(Tone::Info,
                         "This node reaches Bitcoin through public servers and Bitcoin's own network, without Bitcoin "
@@ -537,6 +552,37 @@ void SwapWidget::updatePasteReview() {
     reviewPasted_->setEnabled(blocker.isEmpty());
 }
 
+void SwapWidget::updateSwitch() {
+    const bool wanted = QSettings().value(SwapLaunchPolicy::enabledKey(), false).toBool();
+    const auto v = SwapLaunchPolicy::switchView(wanted, static_cast<SwapLaunchPolicy::Node>(nodeSwaps_), offReason_,
+                                                unfinishedSwaps_);
+    switchText_->setText(v.text);
+    switchButton_->setText(v.button);
+    switchButton_->setEnabled(v.buttonEnabled);
+}
+
+// The node says swaps are off: the switch says so, and why; no second message.
+void SwapWidget::noteSwapsOff(const QString& nodeMessage) {
+    nodeSwaps_ = static_cast<int>(SwapLaunchPolicy::Node::Off);
+    offReason_ = SwapLaunchPolicy::refusalReason(nodeMessage);
+    unfinishedSwaps_ = false;
+    updateSwitch();
+    showStatus(QString(), false);
+}
+
+void SwapWidget::onSwitchClicked() {
+    const bool wanted = QSettings().value(SwapLaunchPolicy::enabledKey(), false).toBool();
+    if (!wanted) {
+        const bool yes = confirmEnable_
+                             ? confirmEnable_()
+                             : QMessageBox::question(this, "Turn on swaps", SwapLaunchPolicy::enableQuestion()) ==
+                                   QMessageBox::Yes;
+        if (!yes) return;
+    }
+    QSettings().setValue(SwapLaunchPolicy::enabledKey(), !wanted);
+    updateSwitch();
+}
+
 void SwapWidget::showStatus(const QString& text, bool error) {
     status_->setText(text);
     status_->setStyleSheet(PayCollectPolicy::pillStyle(error ? Tone::Bad : Tone::Good));
@@ -767,11 +813,8 @@ void SwapWidget::onRpcResult(const QString& method, const QJsonValue& result) {
             table_->setRowCount(0);
             table_->setVisible(false);
             listEmpty_->setVisible(true);
-            showStatus(message.contains("disabled")
-                           ? "Swaps are off on this node: start dinerod with swap.enable=1 and swap.btc_rpc=HOST:PORT "
-                             "(on mainnet also swap.mainnet_beta=1; see the swap tester guide)"
-                           : message,
-                       true);
+            if (message.contains("disabled")) noteSwapsOff(message);
+            else showStatus(message, true);
         } else {
             showStatus(message, true);
         }
@@ -856,6 +899,13 @@ void SwapWidget::onRpcResult(const QString& method, const QJsonValue& result) {
         const QString selected =
             table_->currentRow() >= 0 ? table_->item(table_->currentRow(), 0)->data(Qt::UserRole).toString() : QString();
         const QJsonArray swaps = result.toArray();
+        nodeSwaps_ = static_cast<int>(SwapLaunchPolicy::Node::On);
+        offReason_.clear();
+        unfinishedSwaps_ = false;
+        for (const auto& entry : swaps) {
+            if (!SwapFormPolicy::finished(entry.toObject().value("state").toString())) unfinishedSwaps_ = true;
+        }
+        updateSwitch();
         table_->setRowCount(swaps.size());
         table_->setVisible(!swaps.isEmpty());
         listEmpty_->setVisible(swaps.isEmpty());
@@ -904,6 +954,13 @@ void SwapWidget::onRpcResult(const QString& method, const QJsonValue& result) {
 
 void SwapWidget::onRpcError(const QString& method, int code, const QString& message) {
     if (!method.startsWith("swaptab.") || method == kChain || method == kCaps || method == kFee) return;  // an older node: BTC only
+    // How a running node answers swap.list while swaps are off (code -32603).
+    if (method == kList && message.contains("disabled")) {
+        table_->setRowCount(0);
+        table_->setVisible(false);
+        listEmpty_->setVisible(true);
+        return noteSwapsOff(message);
+    }
     if (method == kList && code == -32601) {
         table_->setRowCount(0);
         table_->setVisible(false);

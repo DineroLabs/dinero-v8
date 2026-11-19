@@ -672,6 +672,7 @@ if(DIN_ENABLE_SWAP_UI)
     src/swapwidget.cpp
     src/swapwidget.h
     src/swapformpolicy.h
+    src/swaplaunchpolicy.h
   )
 endif()
 

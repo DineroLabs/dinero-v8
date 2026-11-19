@@ -1,5 +1,6 @@
 #include <QtTest/QtTest>
 #include "swapformpolicy.h"
+#include "swaplaunchpolicy.h"
 
 class SwapFormPolicyTest : public QObject {
     Q_OBJECT
@@ -206,6 +207,61 @@ private Q_SLOTS:
         QVERIFY(r.text.contains("0.02520000 ZEC"));  // amount + funding fee
         QVERIFY(r.text.contains("deposit"));
         QVERIFY(!r.text.contains("BTC"));
+    }
+
+    // --- The "Enable swaps" switch (swaplaunchpolicy.h) ---
+    void theSwitchAddsNothingToTheNodeWhenOff() { QVERIFY(SwapLaunchPolicy::daemonArgs(false).isEmpty()); }
+    void theSwitchStartsTheNodeForSwapsWithoutRiskingItsStart() {
+        const QStringList args = SwapLaunchPolicy::daemonArgs(true);
+        QVERIFY(args.contains("--swap.enable=1"));
+        // A refused swap setting must leave the wallet's node running.
+        QVERIFY(args.contains("--swap.optional=1"));
+        QVERIFY(args.contains("--swap.btc_backend=light"));  // no Bitcoin Core to install
+        QVERIFY(args.contains("--swap.mainnet_beta=1"));     // accepted in the switch's question
+        // The mainnet gate for swaps without Bitcoin Core is the node's to lift, not the switch's.
+        for (const auto& a : args) QVERIFY2(!a.contains("rehearsal"), qPrintable(a));
+    }
+    void theNodesReasonIsReadFromItsRefusal() {
+        using SwapLaunchPolicy::refusalReason;
+        QCOMPARE(refusalReason("swaps are disabled: start dinerod with swap.enable=1 and swap.btc_rpc=HOST:PORT"),
+                 QString());  // never asked for: no reason
+        QCOMPARE(refusalReason("swaps are disabled: swap.btc_backend must be core or light"),
+                 QString("swap.btc_backend must be core or light"));
+        QCOMPARE(refusalReason("no active wallet"), QString());
+    }
+    void theSwitchSaysWhereThingsStand() {
+        using SwapLaunchPolicy::Node;
+        using SwapLaunchPolicy::switchView;
+        auto v = switchView(false, Node::Off, "", false);
+        QVERIFY2(v.text.startsWith("Swaps are off."), qPrintable(v.text));
+        QCOMPARE(v.button, QString("Turn on swaps"));
+        QVERIFY(v.turnsOn && v.buttonEnabled);
+
+        v = switchView(true, Node::Off, "", false);  // switched on, node not restarted yet
+        QVERIFY2(v.text.contains("next time Dinero starts"), qPrintable(v.text));
+        QCOMPARE(v.button, QString("Turn off swaps"));
+        QVERIFY(!v.turnsOn);
+
+        v = switchView(true, Node::Off, "swap.btc_backend=light is not offered on mainnet yet (testnet first); use "
+                                        "swap.btc_rpc with Bitcoin Core", false);
+        QVERIFY2(v.text.contains("cannot start here") && v.text.contains("not available on mainnet yet"),
+                 qPrintable(v.text));
+        QVERIFY2(!v.text.contains("swap.btc_rpc"), "no node options in front of the user");
+
+        v = switchView(true, Node::Off, "swap.btc_backend=light needs a dinerod built with DINERO_SWAP_LIGHT_BTC", false);
+        QVERIFY2(v.text.contains("built without them"), qPrintable(v.text));
+
+        v = switchView(true, Node::On, "", false);
+        QCOMPARE(v.text, QString("Swaps are on."));
+        QVERIFY(v.buttonEnabled && !v.turnsOn);
+
+        v = switchView(true, Node::On, "", true);  // turning swaps off would abandon an open swap
+        QVERIFY(!v.buttonEnabled);
+        QVERIFY2(v.text.contains("still open"), qPrintable(v.text));
+
+        v = switchView(false, Node::On, "", false);
+        QVERIFY2(v.text.contains("until Dinero is restarted"), qPrintable(v.text));
+        QVERIFY(v.turnsOn);
     }
 };
 

@@ -5,6 +5,7 @@
 // per-swap deposit first, shown with its QR code). Copy-paste offers, a review screen
 // before anything is committed, and a live list of swaps with their deadlines.
 // The node does the work in the background; this tab only asks and shows.
+#include <functional>
 #include <QJsonObject>
 #include <QWidget>
 
@@ -23,6 +24,9 @@ class SwapWidget : public QWidget {
     Q_OBJECT
 public:
     explicit SwapWidget(RpcClient* rpc, QWidget* parent = nullptr);
+
+    // Asked before swaps are turned on (a message box unless a test replaces it).
+    void setEnableConfirmer(std::function<bool()> confirm) { confirmEnable_ = std::move(confirm); }
 
 private Q_SLOTS:
     void onCreateOffer();
@@ -43,6 +47,9 @@ private:
     void showStatus(const QString& text, bool error);
     void acceptOffer(const QString& offerText, const QJsonObject& decoded);
     void startFromAccept(const QString& acceptText);
+    void updateSwitch();
+    void onSwitchClicked();
+    void noteSwapsOff(const QString& nodeMessage);
     void showDeposit(const QJsonObject& status);
     void hideDeposit();
 
@@ -55,6 +62,13 @@ private:
     bool zecSupported_{false};  // the node reports "zec" in swap.capabilities
     bool lightBtc_{false};      // the node reports btc_backend "light": it sells DIN for BTC, it cannot buy
     QLabel* lightNotice_{nullptr};
+    // The "Enable swaps" switch (swaplaunchpolicy.h).
+    QLabel* switchText_{nullptr};
+    QPushButton* switchButton_{nullptr};
+    int nodeSwaps_{0};          // SwapLaunchPolicy::Node: what swap.list last said
+    QString offReason_;         // why the node refused the swap settings
+    bool unfinishedSwaps_{false};
+    std::function<bool()> confirmEnable_;
     QLabel* depositTitle_{nullptr};
     QString depositCoin_{"ZEC"};  // the coin of the deposit being shown
     bool sellZec_{false};       // the sell form makes a ZEC offer

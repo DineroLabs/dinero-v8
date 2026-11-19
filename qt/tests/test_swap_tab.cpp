@@ -17,6 +17,7 @@
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSettings>
 #include <QTableWidget>
 
 #include "chromestyle.h"
@@ -41,7 +42,13 @@ class SwapTabTest : public QObject {
     SwapWidget* tab_ = nullptr;
 
 private Q_SLOTS:
+    void initTestCase() {  // the switch is a stored setting: keep the test's apart from a real install's
+        QCoreApplication::setOrganizationName("DineroSwapTabTest");
+        QCoreApplication::setApplicationName("test_swap_tab");
+    }
+    void cleanupTestCase() { QSettings().clear(); }
     void init() {
+        QSettings().clear();
         rpc_ = new RpcClient(this);
         rpc_->setEndpoint(QUrl("http://127.0.0.1:1/"));  // nobody listens: offline
         tab_ = new SwapWidget(rpc_);
@@ -217,6 +224,58 @@ private Q_SLOTS:
             }
         });
         create->click();
+    }
+
+    // --- The "Enable swaps" switch ---
+    void theSwitchAsksStoresAndExplains() {
+        auto* text = Find<QLabel>(tab_, "swapSwitchText");
+        auto* button = Find<QPushButton>(tab_, "swapSwitchButton");
+        const QString key = "swap/enabled_v1";
+        QVERIFY2(text->text().startsWith("Swaps are off."), qPrintable(text->text()));
+        QCOMPARE(button->text(), QString("Turn on swaps"));
+
+        int asked = 0;
+        bool answer = false;
+        tab_->setEnableConfirmer([&] { ++asked; return answer; });
+        button->click();  // asked, declined: nothing changes
+        QCOMPARE(asked, 1);
+        QVERIFY(!QSettings().value(key, false).toBool());
+        QCOMPARE(button->text(), QString("Turn on swaps"));
+
+        answer = true;
+        button->click();
+        QCOMPARE(asked, 2);
+        QVERIFY(QSettings().value(key, false).toBool());
+        QCOMPARE(button->text(), QString("Turn off swaps"));
+        QVERIFY2(text->text().contains("next time Dinero starts"), qPrintable(text->text()));
+
+        // The node was started for swaps but refused the settings: the tab says why, in plain words.
+        // (A running node answers swap.list with RPC error -32603 while swaps are off.)
+        Q_EMIT rpc_->rpcError("swaptab.list", -32603,
+                              "swaps are disabled: swap.btc_backend=light is not offered on mainnet yet (testnet "
+                              "first); use swap.btc_rpc with Bitcoin Core");
+        QVERIFY2(text->text().contains("cannot start here") && text->text().contains("not available on mainnet yet"),
+                 qPrintable(text->text()));
+        QVERIFY2(!Find<QLabel>(tab_, "swapStatus")->isVisible(), "no second, technical message");
+
+        // Swaps running, one still open: they cannot be turned off under it.
+        Q_EMIT rpc_->rpcResult("swaptab.list", QJsonArray{QJsonObject{{"id", "aa"}, {"state", "din-locked"}}});
+        QVERIFY2(text->text().contains("still open"), qPrintable(text->text()));
+        QVERIFY(!button->isEnabled());
+        Q_EMIT rpc_->rpcResult("swaptab.list", QJsonArray{QJsonObject{{"id", "aa"}, {"state", "done"}}});
+        QCOMPARE(text->text(), QString("Swaps are on."));
+        QVERIFY(button->isEnabled());
+
+        // The same refusal arriving inside a result is read the same way.
+        Q_EMIT rpc_->rpcResult("swaptab.list", QJsonObject{{"error", "swaps are disabled: swap.btc_backend must be core or light"}});
+        QVERIFY2(text->text().contains("cannot start here: swap.btc_backend must be core or light"), qPrintable(text->text()));
+        Q_EMIT rpc_->rpcResult("swaptab.list", QJsonArray{});
+        QCOMPARE(text->text(), QString("Swaps are on."));
+
+        button->click();  // turning off needs no question
+        QCOMPARE(asked, 2);
+        QVERIFY(!QSettings().value(key, false).toBool());
+        QVERIFY2(text->text().contains("until Dinero is restarted"), qPrintable(text->text()));
     }
 
     // --- Zcash: only when the node says it can (swap.capabilities) ---
