@@ -1030,18 +1030,27 @@ void CreateSeedPage::onGenerateSeed() {
       rpcTimeout_->stop();
       rpcPending_ = false;
 
-      // A name collision means the node created nothing under this name: keep
-      // the existing wallet. Transport failures keep the name for cleanup.
-      if (wizard() && classifyRestoreError(error) == RestoreErrorKind::NameExists)
+      // The HTTP RPC envelope promotes handler errors to this callback. Both
+      // a name collision and the Orchard history preflight mean the node
+      // created no wallet. Never let rollback delete an existing wallet that
+      // happens to have the requested name.
+      const bool historyPending = error.contains(
+          "Orchard history is not ready; wallet was not created", Qt::CaseInsensitive);
+      if (wizard() && (historyPending || classifyRestoreError(error) == RestoreErrorKind::NameExists))
         wizard()->setProperty("walletRollbackCandidateName", QString());
       QString rollbackError;
       rollbackProvisionedWallet(wizard(), &rollbackError);
-      lblSeed_->setText("❌ Error generating seed: " + error + "\n\nPlease ensure daemon is running."
-                        + (rollbackError.isEmpty()
-                           ? QString()
-                           : "\n\nRollback warning:\n" + rollbackError));
-      lblSeed_->setStyleSheet("QLabel { color: #ff6b6b; background: #ffe3e3; padding: 20px; }");
+      lblSeed_->setText(historyPending
+          ? "Orchard history is still downloading and verifying. No wallet was created. Retry after sync progresses."
+          : "❌ Error generating seed: " + error + "\n\nPlease ensure daemon is running."
+                + (rollbackError.isEmpty()
+                   ? QString()
+                   : "\n\nRollback warning:\n" + rollbackError));
+      lblSeed_->setStyleSheet(historyPending
+          ? "QLabel { color: #f59f00; background: #2b2b2b; padding: 20px; }"
+          : "QLabel { color: #ff6b6b; background: #ffe3e3; padding: 20px; }");
       btnReveal_->setEnabled(false);
+      btnRetry_->setVisible(historyPending);
       qWarning() << "CreateSeedPage: Failed to generate seed:" << error;
     }
   );
