@@ -156,11 +156,27 @@ int main(int argc, char** argv) {
     const ZecRpc zec = MakeRpc(zec_client, "ZEC");
 
     int64_t zec_clock_offset = 0;  // how far Zebra's (libfaketime) clock runs ahead of ours
+    // Zebra runs under libfaketime once its clock is moved ahead, and now and
+    // then one of its clock reads comes back unshifted: it then refuses a block
+    // stamped with the shifted time as too far in the future (seen as
+    // InvalidBlockTime against the real time + 2 h). The next read is right, so
+    // a block refused while the clock is shifted is tried again.
     auto mine_zec = [&](int n) {
         for (int i = 0; i < n; ++i) {
-            const std::string when = zec_clock_offset ? std::to_string(int64_t(std::time(nullptr)) + zec_clock_offset) : "now";
-            const std::string cmd = "python3 '" + mine_py + "' " + std::to_string(zebra_port) + " 1 " + when + " >/dev/null";
-            if (std::system(cmd.c_str()) != 0) throw std::runtime_error("Zebra mining failed");
+            const int attempts = zec_clock_offset ? 30 : 1;
+            bool mined = false;
+            for (int attempt = 0; attempt < attempts && !mined; ++attempt) {
+                if (attempt) {
+                    std::cout << "  note: Zebra refused a block under the shifted clock; trying again\n";
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                }
+                const std::string when =
+                    zec_clock_offset ? std::to_string(int64_t(std::time(nullptr)) + zec_clock_offset) : "now";
+                const std::string cmd =
+                    "python3 '" + mine_py + "' " + std::to_string(zebra_port) + " 1 " + when + " >/dev/null";
+                mined = std::system(cmd.c_str()) == 0;
+            }
+            if (!mined) throw std::runtime_error("Zebra mining failed");
         }
     };
     // Moves Zebra's clock `seconds` ahead (it accepts block times up to its
