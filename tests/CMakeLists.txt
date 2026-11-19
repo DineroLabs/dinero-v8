@@ -17879,6 +17879,23 @@ target_include_directories(test_swap_btc_tx PRIVATE
 add_test(NAME SwapBtcTx COMMAND test_swap_btc_tx)
 set_tests_properties(SwapBtcTx PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 20)
 
+# Bitcoin header chain for swaps without Bitcoin Core: real mainnet headers,
+# Bitcoin Core's retarget vectors, hostile header sources.
+add_executable(test_swap_btc_header_chain
+  tests/wallet/test_swap_btc_header_chain.cpp
+  src/wallet/swap/btc_header_chain.cpp
+)
+add_dependencies(test_swap_btc_header_chain gtest gtest_main)
+target_link_libraries(test_swap_btc_header_chain PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_btc_header_chain)
+target_include_directories(test_swap_btc_header_chain PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapBtcHeaderChain COMMAND test_swap_btc_header_chain)
+set_tests_properties(SwapBtcHeaderChain PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 60)
+
 # Bitcoin Core regtest check of the swap's BTC side (needs bitcoind/bitcoin-cli on PATH).
 add_executable(swap_btc_regtest_tool
   tests/wallet/swap_btc_regtest_tool.cpp
