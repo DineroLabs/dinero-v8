@@ -1129,7 +1129,9 @@ void P2PService::StartSchedulerTickLoop() {
                         // bodies, so continuous backfill can starve the catalog
                         // transfer before the history worker can request its
                         // first body. Give either active transfer one bounded
-                        // window, then resume validation if it cannot finish. The local
+                        // window long enough for the catalog and verified
+                        // history on slower Windows disks, then resume
+                        // validation if it cannot finish. The local
                         // history cache can be reverified after restart without
                         // receiving a new catalog manifest in this process.
                         if (validating && wants_history) {
@@ -1143,10 +1145,10 @@ void P2PService::StartSchedulerTickLoop() {
                                     if (!orchard_history_priority_since) {
                                         orchard_history_priority_since = now;
                                         if (logger_interface_) logger_interface_->info(
-                                            "[P2PService] Prioritizing Orchard wallet history over snapshot body backfill for up to 15 minutes");
+                                            "[P2PService] Prioritizing Orchard wallet history over snapshot body backfill for up to 45 minutes");
                                     }
                                     prioritize_orchard_history =
-                                        now - *orchard_history_priority_since < std::chrono::minutes(15);
+                                        now - *orchard_history_priority_since < std::chrono::minutes(45);
                             }
                         }
 #endif
