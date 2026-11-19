@@ -79,7 +79,15 @@ struct BtcChainParams {
     uint32_t checkpoint_height{};        // a multiple of kBtcRetargetInterval
     BtcBlockHeader checkpoint;
 
-    static BtcChainParams Mainnet();     // from the genesis block
+    // Mainnet from block 971,712 (a retarget boundary mined in October 2026).
+    // The header was taken from a Bitcoin peer and matched against two
+    // independent servers; it carries mainnet proof of work, which cannot be
+    // forged. Move it forward with each release: see the note in the .cpp.
+    static BtcChainParams Mainnet();
+    static BtcChainParams MainnetFromGenesis();  // every header since 2009: tests only
+    // Testnet4 from block 157,248. Testnet allows minimum-difficulty blocks, so
+    // `bits` are only held to the limit there: weaker than mainnet by design.
+    static BtcChainParams Testnet4();
     static BtcChainParams Regtest();     // Bitcoin Core's regtest genesis
 };
 

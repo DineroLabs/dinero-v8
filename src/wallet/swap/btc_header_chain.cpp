@@ -250,6 +250,20 @@ BtcBlockHeader GenesisHeader(uint32_t time, uint32_t bits, uint32_t nonce) {
     h.nonce = nonce;
     return h;
 }
+
+// A checkpoint is one real header at a retarget boundary, given as its 80 raw
+// bytes. To move it forward: pick a boundary at least a month old, fetch the
+// header from a Bitcoin peer, confirm two unrelated servers report the same
+// hash at that height, and refresh the fixtures (tests/wallet/fixtures) so the
+// tests replay real headers from the new checkpoint across the next retarget.
+BtcBlockHeader CheckpointHeader(const char* raw_hex) {
+    std::vector<uint8_t> raw;
+    for (const char* p = raw_hex; p[0] && p[1]; p += 2) {
+        auto nibble = [](char c) { return c <= '9' ? c - '0' : c - 'a' + 10; };
+        raw.push_back(static_cast<uint8_t>(nibble(p[0]) << 4 | nibble(p[1])));
+    }
+    return *ParseBtcBlockHeader(raw);
+}
 }  // namespace
 
 BtcChainParams BtcChainParams::Mainnet() {
@@ -257,8 +271,33 @@ BtcChainParams BtcChainParams::Mainnet() {
     p.name = "main";
     p.pow_limit_bits = 0x1d00ffff;
     p.retargets = true;
+    p.checkpoint_height = 971712;  // 00000000000000000000c185f0906690a08d62d6fe842682a888d5560217e467
+    p.checkpoint = CheckpointHeader(
+        "006005202e5ea9d74cd63c1fb65514e47c38f2a4767ad8d6ae51000000000000000000003d63f20e90eb3b43e72ea91858f41d1d"
+        "92103442acfa6106400e04e08f4d94df8b1ad26a930002176d7224e8");
+    return p;
+}
+
+BtcChainParams BtcChainParams::MainnetFromGenesis() {
+    BtcChainParams p;
+    p.name = "main";
+    p.pow_limit_bits = 0x1d00ffff;
+    p.retargets = true;
     p.checkpoint_height = 0;
     p.checkpoint = GenesisHeader(1231006505, 0x1d00ffff, 2083236893);
+    return p;
+}
+
+BtcChainParams BtcChainParams::Testnet4() {
+    BtcChainParams p;
+    p.name = "testnet4";
+    p.pow_limit_bits = 0x1d00ffff;
+    p.retargets = true;
+    p.allows_min_difficulty = true;
+    p.checkpoint_height = 157248;  // 000000000000000311e5891b569e988c5c35da1cf4e59d8a7ead8fc8d322e384
+    p.checkpoint = CheckpointHeader(
+        "00604225783e9dae6773e19ec62820e5f726da4725bdc00d4d587ea9a070c300000000003d2985b298031247302f042b3b379233"
+        "1269eb7b84a3b989a9ff2a7e67611bc5937ad96ad12404194dbe125e");
     return p;
 }
 

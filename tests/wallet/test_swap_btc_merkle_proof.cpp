@@ -119,7 +119,7 @@ TEST(BtcRawTx, TheRealGenesisTransaction) {
     EXPECT_EQ(tx->vin[0].script_sig.size(), 77u);
 
     // It is the whole of block 0: the id is that block's Merkle root.
-    const BtcBlockHeader genesis = BtcChainParams::Mainnet().checkpoint;
+    const BtcBlockHeader genesis = BtcChainParams::MainnetFromGenesis().checkpoint;
     EXPECT_EQ(tx->txid, genesis.merkle_root);
     EXPECT_FALSE(BtcCheckTxInclusion({raw, {}, raw, {}}, genesis).has_value());
 }

@@ -3,9 +3,13 @@
 // a hostile header source would try to break.
 
 #include "wallet/swap/btc_header_chain.h"
+#include "wallet/swap/btc_header_store.h"
 
 #include <gtest/gtest.h>
 
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <stdexcept>
 
 using namespace dinero::swap;
@@ -80,7 +84,7 @@ BtcBlockHeader Block2() {
 }  // namespace
 
 TEST(BtcHeaderChain, RealMainnetHeadersHashAndConnect) {
-    BtcHeaderChain chain(BtcChainParams::Mainnet());
+    BtcHeaderChain chain(BtcChainParams::MainnetFromGenesis());
     EXPECT_EQ(BtcHashToHex(chain.TipHash()), kGenesis);
     EXPECT_EQ(BtcHashToHex(BtcBlockHash(Block1())), kBlock1);
     EXPECT_EQ(BtcHashToHex(BtcBlockHash(Block2())), kBlock2);
@@ -100,7 +104,7 @@ TEST(BtcHeaderChain, RealMainnetHeadersHashAndConnect) {
     // One changed bit anywhere and the real proof of work is gone.
     BtcBlockHeader forged = Block1();
     forged.merkle_root[0] ^= 1;
-    BtcHeaderChain fresh(BtcChainParams::Mainnet());
+    BtcHeaderChain fresh(BtcChainParams::MainnetFromGenesis());
     const auto r = fresh.Accept(forged, kNow);
     EXPECT_EQ(r.status, BtcHeaderChain::Status::Invalid);
     EXPECT_EQ(r.reason, "proof of work");
@@ -429,4 +433,125 @@ TEST(BtcHeaderChain, SavedChainIsReplayedNotTrusted) {
     truncated.resize(bytes.size() - 7);  // a torn last record is ignored
     BtcHeaderChain torn(BtcChainParams::Regtest());
     EXPECT_EQ(torn.LoadBestChain(truncated, kNow), 49u);
+}
+
+// ---- The real networks ---------------------------------------------------------
+
+namespace {
+
+std::vector<uint8_t> Fixture(const std::string& name) {
+    std::ifstream in(std::string(DINERO_SWAP_FIXTURES) + "/" + name, std::ios::binary);
+    if (!in) throw std::runtime_error("missing fixture " + name);
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+struct TempFile {
+    std::string path;
+    explicit TempFile(const std::string& name)
+        : path((std::filesystem::temp_directory_path() / ("swap_btc_headers_" + name)).string()) {
+        std::filesystem::remove(path);
+    }
+    ~TempFile() {
+        std::filesystem::remove(path);
+        std::filesystem::remove(path + ".tmp");
+    }
+};
+
+}  // namespace
+
+// 2,029 real mainnet headers after the checkpoint, fetched from a Bitcoin peer
+// and matched against two servers: they cross the retarget at block 973,728.
+TEST(BtcHeaderChain, RealMainnetHeadersAcrossARealRetarget) {
+    BtcHeaderChain chain(BtcChainParams::Mainnet());
+    EXPECT_EQ(chain.TipHeight(), 971712u);
+    EXPECT_EQ(BtcHashToHex(chain.TipHash()), "00000000000000000000c185f0906690a08d62d6fe842682a888d5560217e467");
+
+    const auto headers = Fixture("btc_headers_main_971713.bin");
+    ASSERT_EQ(headers.size(), 2029u * 80u);
+    EXPECT_EQ(chain.LoadBestChain(headers, kNow), 2029u);
+    EXPECT_EQ(chain.TipHeight(), 973741u);
+    EXPECT_EQ(BtcHashToHex(chain.TipHash()), "00000000000000000000411986a550b3625ae4bb8376b7ff8c8da18e709c3bc7");
+    // The network really changed its difficulty there, and the chain required exactly that.
+    EXPECT_EQ(chain.AtHeight(973727)->bits, 0x17020093U);
+    EXPECT_EQ(chain.AtHeight(973728)->bits, 0x1701e5acU);
+    EXPECT_EQ(BtcNextWorkRequired(chain.AtHeight(971712)->time, chain.AtHeight(973727)->time, 0x17020093, 0x1d00ffff),
+              0x1701e5acU);
+    ASSERT_TRUE(chain.MedianTimePast().has_value());
+    EXPECT_GT(*chain.MedianTimePast(), chain.AtHeight(973730)->time);
+    EXPECT_LT(*chain.MedianTimePast(), chain.Tip().time);
+
+    // The same headers with the clock set before they were mined: refused as from the future.
+    BtcHeaderChain early(BtcChainParams::Mainnet());
+    EXPECT_EQ(early.LoadBestChain(headers, 1'700'000'000), 0u);
+
+    // A real header, with a real proof of work, at the wrong place: not accepted.
+    BtcHeaderChain other(BtcChainParams::Mainnet());
+    const auto far = ParseBtcBlockHeader({headers.begin() + 80 * 100, headers.begin() + 80 * 101});
+    ASSERT_TRUE(far.has_value());
+    EXPECT_EQ(other.Accept(*far, kNow).status, BtcHeaderChain::Status::Orphan);
+}
+
+TEST(BtcHeaderChain, RealTestnet4Headers) {
+    BtcHeaderChain chain(BtcChainParams::Testnet4());
+    EXPECT_EQ(BtcHashToHex(chain.TipHash()), "000000000000000311e5891b569e988c5c35da1cf4e59d8a7ead8fc8d322e384");
+    const auto headers = Fixture("btc_headers_testnet4_157249.bin");
+    ASSERT_EQ(headers.size(), 2029u * 80u);
+    EXPECT_EQ(chain.LoadBestChain(headers, kNow), 2029u);
+    EXPECT_EQ(chain.TipHeight(), 159277u);
+    EXPECT_EQ(BtcHashToHex(chain.TipHash()), "000000007ebf9ff8064ecb492ede2d36ba855463c0d3e093298d439353d43e12");
+    // Mainnet's rules would refuse testnet's minimum-difficulty blocks: the networks are not interchangeable.
+    BtcChainParams strict = BtcChainParams::Testnet4();
+    strict.allows_min_difficulty = false;
+    BtcHeaderChain mainnet_rules(strict);
+    EXPECT_LT(mainnet_rules.LoadBestChain(headers, kNow), 2029u);
+}
+
+TEST(BtcHeaderStore, SurvivesRestartAndIgnoresWhatIsNotItsOwn) {
+    TempFile file("store");
+    const auto headers = Fixture("btc_headers_main_971713.bin");
+    BtcHeaderChain chain(BtcChainParams::Mainnet());
+    ASSERT_EQ(chain.LoadBestChain({headers.begin(), headers.begin() + 80 * 500}, kNow), 500u);
+    SaveBtcHeaderChain(file.path, chain);
+    EXPECT_FALSE(std::filesystem::exists(file.path + ".tmp"));
+
+    BtcHeaderChain restarted(BtcChainParams::Mainnet());
+    EXPECT_EQ(LoadBtcHeaderChain(file.path, restarted, kNow), 500u);
+    EXPECT_EQ(restarted.TipHash(), chain.TipHash());
+
+    // Saving again after more headers replaces the file.
+    ASSERT_EQ(chain.LoadBestChain({headers.begin() + 80 * 500, headers.begin() + 80 * 600}, kNow), 100u);
+    SaveBtcHeaderChain(file.path, chain);
+    BtcHeaderChain again(BtcChainParams::Mainnet());
+    EXPECT_EQ(LoadBtcHeaderChain(file.path, again, kNow), 600u);
+
+    // Another network's chain does not read this file, and a missing file is not an error.
+    BtcHeaderChain testnet(BtcChainParams::Testnet4());
+    EXPECT_EQ(LoadBtcHeaderChain(file.path, testnet, kNow), 0u);
+    EXPECT_EQ(testnet.TipHeight(), 157248u);
+    BtcHeaderChain from_genesis(BtcChainParams::MainnetFromGenesis());  // same network, another checkpoint
+    EXPECT_EQ(LoadBtcHeaderChain(file.path, from_genesis, kNow), 0u);
+    BtcHeaderChain fresh(BtcChainParams::Mainnet());
+    EXPECT_EQ(LoadBtcHeaderChain(file.path + ".absent", fresh, kNow), 0u);
+
+    // Damage: what is before it is kept, the rest is dropped (and fetched again).
+    std::string bytes;
+    {
+        std::ifstream in(file.path, std::ios::binary);
+        bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    const size_t label = bytes.size() - 600 * 80;
+    bytes[label + 80 * 300 + 10] ^= 0x40;  // inside header 301's link to its parent
+    {
+        std::ofstream out(file.path, std::ios::binary | std::ios::trunc);
+        out << bytes;
+    }
+    BtcHeaderChain damaged(BtcChainParams::Mainnet());
+    EXPECT_EQ(LoadBtcHeaderChain(file.path, damaged, kNow), 300u);
+    bytes[3] ^= 1;  // the label itself
+    {
+        std::ofstream out(file.path, std::ios::binary | std::ios::trunc);
+        out << bytes;
+    }
+    BtcHeaderChain mislabeled(BtcChainParams::Mainnet());
+    EXPECT_EQ(LoadBtcHeaderChain(file.path, mislabeled, kNow), 0u);
 }

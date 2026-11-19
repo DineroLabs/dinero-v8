@@ -17884,7 +17884,10 @@ set_tests_properties(SwapBtcTx PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT
 add_executable(test_swap_btc_header_chain
   tests/wallet/test_swap_btc_header_chain.cpp
   src/wallet/swap/btc_header_chain.cpp
+  src/wallet/swap/btc_header_store.cpp
 )
+target_compile_definitions(test_swap_btc_header_chain PRIVATE
+  DINERO_SWAP_FIXTURES="${CMAKE_SOURCE_DIR}/tests/wallet/fixtures")
 add_dependencies(test_swap_btc_header_chain gtest gtest_main)
 target_link_libraries(test_swap_btc_header_chain PRIVATE dinero_consensus gtest gtest_main)
 link_zstd_if_needed(test_swap_btc_header_chain)
