@@ -470,3 +470,40 @@ tower without Bitcoin Core against that machine's Dinero node, both under their 
 user. It was the first build of this code on Linux. The switch passes this address
 (`--swap.tower_url`), and its question says so. No real swap has used it yet: that is the
 rehearsal's job (section 7, step 6).
+
+## 15. The testnet4 rehearsal (2026-11-19): passed
+
+Step 3 of section 9, run with `tests/wallet/swap_light_testnet4_rehearsal.sh`. Dinero was a local
+regtest pair with transaction locks on, because Dinero's own testnet does not enforce time locks
+(`swap.btc_rehearsal_chain=testnet4`); Bitcoin was the public testnet4, reached with no Bitcoin Core
+by either node or by the tower. 1 DIN for 20,000 sat.
+
+| Step | When (EST) | On testnet4 |
+|---|---|---|
+| Deposit of 23,000 sat paid from an outside wallet | 14:23 | `1e805a2caa9e75ca25c13f3cea15500053dd8bfaf930e3ce0cc127c5e2f7115a`, block 162,273 |
+| Two confirmations seen on the node's own chain; Bob accepts, Alice starts | 14:53 | |
+| Tower armed over HTTP (6 DIN claim and 2 BTC refund levels), then the BTC lock, built by the node from the deposit | 15:04 | `42ae40185d9aeafcfd2da878d874f822701179ef9c787f91fe46a5ec8bd2b403`, block 162,275: 20,000 sat to the swap, 2,847 sat change to Bob's refund address, fee 153 |
+| Alice claims the BTC | 16:07 | `97a77ad47f53c34b51cfc4fe87ce7ae8d3783a900d69f95825f6a7aa33006572`, block 162,279: 19,000 sat to her address, fee 1,000 |
+| The tower reads the secret from the unconfirmed claim and sends Bob's DIN claim and sweep, before Bob's own node does | 16:07 | |
+| Both sides done; the script's checks pass | 16:26 | tip 162,284 |
+
+What it showed beyond the regtest suite:
+
+- **A real split, handled as designed.** For about an hour testnet4 had two branches of equal work
+  from block 162,275. Both nodes, fed by Bitcoin peers, followed one; the public server and the
+  tower followed the other, where the BTC lock was already confirmed. The nodes kept answering "not
+  yet", because the server's proof pointed into a block their own chain did not hold, and carried
+  on by themselves once the network agreed. A node that believed the server would have counted
+  confirmations on a branch it could not verify.
+- **The server is not consistent with itself.** At one moment it reported a transaction confirmed
+  and its two parents unconfirmed; later it reported the lock unconfirmed with its block already
+  two deep. Neither moved the nodes.
+- **State survives a restart mid-swap.** The run was stopped at its time limit with Alice's claim
+  unconfirmed and resumed on rebuilt programs; both nodes picked the swap up where it was.
+- **Testnet4's block times are not real time.** Its minimum-difficulty blocks are stamped up to two
+  hours ahead, close to the limit the header chain enforces. No header was refused.
+
+Not covered by this run: the refund paths on testnet4 (they need the deadlines to pass, 48 hours
+at the defaults), a swap where the buyer's node is offline (covered on regtest only), the public
+tower at swaptower.dinerolabs.org (this run used a tower on the same machine, armed the same way),
+and a second server (testnet4 has one default). The mainnet rehearsal is step 4.
