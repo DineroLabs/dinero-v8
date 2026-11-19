@@ -17896,6 +17896,26 @@ target_include_directories(test_swap_btc_header_chain PRIVATE
 add_test(NAME SwapBtcHeaderChain COMMAND test_swap_btc_header_chain)
 set_tests_properties(SwapBtcHeaderChain PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 60)
 
+# Reading any Bitcoin transaction and proving it into a block (light Bitcoin).
+add_executable(test_swap_btc_merkle_proof
+  tests/wallet/test_swap_btc_merkle_proof.cpp
+  src/wallet/swap/btc_merkle_proof.cpp
+  src/wallet/swap/btc_raw_tx.cpp
+  src/wallet/swap/btc_header_chain.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_btc_merkle_proof gtest gtest_main)
+target_link_libraries(test_swap_btc_merkle_proof PRIVATE dinero_consensus gtest gtest_main)
+link_zstd_if_needed(test_swap_btc_merkle_proof)
+target_include_directories(test_swap_btc_merkle_proof PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME SwapBtcMerkleProof COMMAND test_swap_btc_merkle_proof)
+set_tests_properties(SwapBtcMerkleProof PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 60)
+
 # Bitcoin Core regtest check of the swap's BTC side (needs bitcoind/bitcoin-cli on PATH).
 add_executable(swap_btc_regtest_tool
   tests/wallet/swap_btc_regtest_tool.cpp
