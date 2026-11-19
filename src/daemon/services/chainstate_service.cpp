@@ -8266,7 +8266,9 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
                 const auto point=full_replay_->Point(outbox_head).checkpoint;
                 if((*final)->head!=outbox_head||(*final)->next!=outbox_head||!(*final)->events.empty()||
                    !(*final)->after_tip||(*final)->after_tip->first!=point.block_hash||
-                   (*final)->after_tip->second!=point.height)return Status::Invalid;
+                   (*final)->after_tip->second!=point.height){
+                    full_replay_.reset();return Status::Invalid;
+                }
                 return full_replay_;
             }
             std::shared_ptr<const RuntimeAccountReplay> extended;
