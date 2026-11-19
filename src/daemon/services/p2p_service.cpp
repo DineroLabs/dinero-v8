@@ -2198,14 +2198,7 @@ void P2PService::StartOrchardHistoryWorkers() {
                     // newly created wallet is allowed to issue account 0.
                     chainstate_->RequestRetainedPhoneHistoryData();
                 }
-#ifndef _WIN32
                 const auto cache=phone_history_root_?std::make_shared<p2p::OrchardHistoryCache>(*phone_history_root_):nullptr;
-#else
-                // Retention requires the POSIX no-follow/no-replace contract.
-                // Keep the existing genuinely verified volatile source on
-                // other platforms; never replace these checks with weaker IO.
-                const std::shared_ptr<p2p::OrchardHistoryCache> cache;
-#endif
                 {std::lock_guard lock(orchard_catalog_download_mutex_);wallet_history_cache_=cache;}
                 // A refused cached activation proof retires the proof cache for
                 // this process: the catalog is then fetched from peers instead
