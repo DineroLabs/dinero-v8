@@ -176,6 +176,13 @@ std::string g_off_reason;   // the last refusal printed
 bool g_off_by_refusal = false;  // Init kept the node running without swaps
 }  // namespace
 
+swap::SwapNetwork SwapService::BitcoinNetworkFor(const ConfigService& config, swap::SwapNetwork dinero_network) {
+    if (dinero_network == swap::SwapNetwork::Regtest && config.GetString("swap.btc_rehearsal_chain", "") == "testnet4") {
+        return swap::SwapNetwork::Testnet;
+    }
+    return dinero_network;
+}
+
 bool SwapService::Refuse(const std::string& why) {
     std::cerr << "[Swap] " << why << std::endl;
     std::lock_guard<std::mutex> lock(g_off_reason_mu);
@@ -256,9 +263,15 @@ bool SwapService::Setup(DaemonContext& ctx) {
     mc.dir = config->DataDir() + "/swaps";
     mc.network = NetworkOf(params);
     mc.runner.din_hrp = params.hrp;
-    mc.runner.btc_hrp = mc.network == swap::SwapNetwork::Mainnet ? "bc"
-                      : mc.network == swap::SwapNetwork::Testnet ? "tb" : "bcrt";
-    mc.runner.btc_chain = swap::BitcoinChainFor(mc.network);
+    if (const std::string rehearsal = config->GetString("swap.btc_rehearsal_chain", ""); !rehearsal.empty()) {
+        if (mc.network != swap::SwapNetwork::Regtest || rehearsal != "testnet4") {
+            return Refuse("swap.btc_rehearsal_chain is for a regtest node only, and only testnet4");
+        }
+    }
+    const swap::SwapNetwork btc_network = BitcoinNetworkFor(*config, mc.network);
+    mc.runner.btc_hrp = btc_network == swap::SwapNetwork::Mainnet ? "bc"
+                      : btc_network == swap::SwapNetwork::Testnet ? "tb" : "bcrt";
+    mc.runner.btc_chain = swap::BitcoinChainFor(btc_network);
     const int64_t din_fee = config->GetInt("swap.din_fee_una", int(mc.runner.din_fee_una));
     const int64_t din_fee_urgent = config->GetInt("swap.din_fee_urgent_una", int(mc.runner.din_fee_urgent_una));
     const int64_t btc_fee = config->GetInt("swap.btc_fee_sat", int(mc.runner.btc_fee_sat));

@@ -54,7 +54,9 @@ std::vector<std::string> List(const std::string& text) {
 }
 
 std::function<void(uint32_t)> InstallLightBitcoin(swap::SwapManager& manager, const ConfigService& config,
-                                                  swap::SwapNetwork network, swap::DinRpc din) {
+                                                  swap::SwapNetwork dinero_network, swap::DinRpc din) {
+    // The Bitcoin network, which a rehearsal may set apart from Dinero's.
+    const swap::SwapNetwork network = SwapService::BitcoinNetworkFor(config, dinero_network);
     swap::BtcLightBackendConfig c;
     std::string default_servers, default_peers;
     switch (network) {

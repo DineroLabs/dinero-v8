@@ -11,6 +11,8 @@
 //   swap.tower_inbox=DIR          optional: arm a dinero-swap-tower for Bob
 //   swap.tower_url=https://HOST   optional: arm a tower over the network instead
 //   swap.din_fee_una / swap.din_fee_urgent_una / swap.btc_fee_sat   (optional)
+//   swap.btc_rehearsal_chain=testnet4   regtest only: the Bitcoin side is the
+//                                 public testnet4 (rehearsals)
 //   swap.optional=1               a swap setting this node refuses leaves swaps
 //                                 off instead of stopping the node (dinero-qt's
 //                                 "Enable swaps" switch); swap.* then say why
@@ -57,6 +59,13 @@ public:
     // Prints why the swap configuration is refused and remembers it for
     // OffReason(). For Init and the installers below; always returns false.
     static bool Refuse(const std::string& why);
+
+    // Which Bitcoin network a node on `dinero_network` swaps against: its own
+    // counterpart, except in a rehearsal. swap.btc_rehearsal_chain=testnet4 on
+    // a Dinero REGTEST node pairs it with the public Bitcoin testnet4, because
+    // Dinero's testnet does not enforce time locks and so cannot host a swap.
+    // Init refuses the option anywhere else.
+    static swap::SwapNetwork BitcoinNetworkFor(const ConfigService& config, swap::SwapNetwork dinero_network);
 
     // Zcash swaps (dinerod built with DINERO_SWAP_ZEC): swap_zec_install.cpp,
     // linked only into that dinerod, registers this at start-up; Init calls it
