@@ -48,7 +48,8 @@ public:
 
     OrchardParentReplay(Target target, Limits limits)
         : target_(std::move(target)), limits_(limits), profile_(Profile()),
-          thread_(std::this_thread::get_id()) {
+          thread_(std::this_thread::get_id()),
+          replay_(consensus::ReplayFailurePolicy::RetireOwner) {
         const auto& params = Params();
         Require(consensus::OrchardProfileConfigurationValid(params) &&
             params.orchard_activation_height != UINT32_MAX &&
@@ -254,6 +255,9 @@ private:
     const Limits limits_;
     const ProfileIdentity profile_;
     const std::thread::id thread_;
+    // Append poisons this owner on any failure, so no per-block rollback state
+    // can be observed or reused. RetireOwner avoids cloning the growing forest
+    // at every historical block while retaining the same successful proof.
     assumeutxo::AssumeUtxoReplayEngine replay_;
     uint32_t epoch_ = 0;
     bool reset_epoch_ = false;
