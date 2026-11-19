@@ -261,6 +261,24 @@ void test_w2_1_4_no_false_100_percent() {
                     "Lagging wallet must not report fully synced");
     }
 
+    // Live mining can leave the selected body a few blocks behind the best
+    // header even when the wallet is current at that selected body.
+    {
+        WalletSyncStatus status;
+        status.phase = SyncPhase::STEADY_STATE;
+        status.headers_synced = status.headers_total = 156212;
+        status.blocks_synced = 156208;
+        status.blocks_total = 156212;
+        status.wallet_scan_height = status.chain_height = 156208;
+        status.overall_progress = WalletSyncStatusAggregator::CalculateOverallProgress(status);
+        assert_true(status.overall_progress <= 0.999,
+                    "Near-tip missing block bodies must stay below 100%");
+        assert_true(status.IsValid(),
+                    "Near-tip header lead must produce valid sync status");
+        assert_true(!status.IsFullySynced(),
+                    "Header lead must not report fully synced");
+    }
+
     // Test 4: Everything complete → allow 100%
     {
         WalletSyncStatus status;
