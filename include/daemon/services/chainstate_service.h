@@ -1095,6 +1095,11 @@ public:
     }
     // Full outbox material reads by getRuntimeAccountReplay (diagnostics/tests).
     uint64_t PhoneReplaySourceReads() const{return phone_replay_source_reads_.load();}
+    // Full-archive replay uses the same immutable prefix/tail contract as the
+    // phone reader. These counters expose full rebuilds versus tail extension.
+    std::pair<uint64_t,uint64_t> FullReplayCaptureCounts() const{
+        return {full_replay_full_builds_.load(),full_replay_extensions_.load()};
+    }
     // Read-only archival source. No selected lock during proof work; a real
     // service-use pins DB/header lifetimes through shutdown and rechecks them.
     StatusOr<std::shared_ptr<const consensus::OrchardSnapshotSection>> captureOrchardActivationProof(
@@ -2189,6 +2194,13 @@ private:
     mutable std::shared_ptr<const RuntimeAccountReplay> phone_replay_;
     mutable std::optional<std::pair<uint32_t,uint256>> phone_replay_base_;
     mutable std::atomic<uint64_t> phone_replay_full_builds_{0},phone_replay_extensions_{0},phone_replay_source_reads_{0};
+    // Full activation-origin sources previously rebuilt and reverified the
+    // entire retained outbox for each wallet delivery and Orchard RPC. The
+    // immutable view may be shared while current; tail extension requires its
+    // sole owner and otherwise falls back to a fresh verified capture.
+    mutable std::mutex full_replay_mutex_;
+    mutable std::shared_ptr<const RuntimeAccountReplay> full_replay_;
+    mutable std::atomic<uint64_t> full_replay_full_builds_{0},full_replay_extensions_{0};
     // Outbox head whose material needs the phone activation prefix while no
     // verified history is available. Until the head changes or history is
     // ready, a capture refuses without re-reading the whole outbox.

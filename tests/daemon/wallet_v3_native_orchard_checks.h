@@ -13,6 +13,41 @@ uint64_t NativeOrchardHead(CanonicalRecoveryFixture& f) {
 }
 } // namespace
 
+// Repeated wallet and Orchard reads must not reverify the whole activation
+// outbox. A new selected block extends only the newly authenticated tail.
+TEST(WalletV3NativeOrchard, FullAccountReplayReusesPrefixAndExtendsTail) {
+    OrchardCreationFixture f;
+    const auto before=f.f.service->FullReplayCaptureCounts();
+    {
+        const auto first=f.f.service->getRuntimeAccountReplay();
+        ASSERT_TRUE(first.ok());
+        const auto built=f.f.service->FullReplayCaptureCounts();
+        EXPECT_GE(built.first,before.first);
+        const auto same=f.f.service->getRuntimeAccountReplay();
+        ASSERT_TRUE(same.ok());
+        EXPECT_EQ((*first)->Head(),(*same)->Head());
+        EXPECT_EQ(f.f.service->FullReplayCaptureCounts(),built);
+    }
+    const auto cached=f.f.service->FullReplayCaptureCounts();
+    f.MineEmpty();
+    {
+        const auto advanced=f.f.service->getRuntimeAccountReplay();
+        ASSERT_TRUE(advanced.ok());
+        EXPECT_EQ((*advanced)->Point((*advanced)->Head()).checkpoint.block_hash,
+            f.f.service->GetActiveTip()->hash);
+    }
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,cached.first);
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().second,cached.second+1);
+    ASSERT_TRUE(ShieldedStateStartupTestAccess::DisconnectBoundary(
+        *f.f.service,f.f.service->GetActiveTip()));
+    const auto disconnected=f.f.service->getRuntimeAccountReplay();
+    ASSERT_TRUE(disconnected.ok());
+    EXPECT_EQ((*disconnected)->Point((*disconnected)->Head()).checkpoint.block_hash,
+        f.f.service->GetActiveTip()->hash);
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,cached.first);
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().second,cached.second+2);
+}
+
 // A native-complete wallet on v3 creates an Orchard account, and an Orchard
 // note sent to it is delivered by the v3 route: the account cursor advances
 // only when delivery runs, matches the authenticated source, the note shows

@@ -8253,7 +8253,33 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             if(!captured_head)captured_head=(*page)->head;
             return **page;
         };
-        // Only phone nodes retain a replay; ordinary captures stay concurrent.
+        // A full activation-origin outbox is already authenticated after its
+        // first capture. Share that immutable view while the head is the same;
+        // extend only the new tail after all earlier readers release it. The
+        // fixed-prefix reader rechecks continuity and the selected after-tip.
+        std::unique_lock<std::mutex> full_retained(full_replay_mutex_,std::defer_lock);
+        if(!orchard_phone_history_requested_.load())full_retained.lock();
+        if(full_retained.owns_lock()&&full_replay_){
+            if(full_replay_->Head()==outbox_head){
+                const auto final=getRuntimeDeliveryPageAtPrefix(outbox_head,outbox_head,1,16*1024*1024);
+                if(!final.ok())return final.status();
+                const auto point=full_replay_->Point(outbox_head).checkpoint;
+                if((*final)->head!=outbox_head||(*final)->next!=outbox_head||!(*final)->events.empty()||
+                   !(*final)->after_tip||(*final)->after_tip->first!=point.block_hash||
+                   (*final)->after_tip->second!=point.height)return Status::Invalid;
+                return full_replay_;
+            }
+            std::shared_ptr<const RuntimeAccountReplay> extended;
+            try{extended=RuntimeAccountReplay::ExtendTail(std::move(full_replay_),read);}
+            catch(const consensus::OrchardStateLookupError&){if(full_replay_)throw;captured_head.reset();}
+            catch(...){full_replay_.reset();captured_head.reset();}
+            if(extended){full_replay_=extended;++full_replay_extensions_;return extended;}
+            // A concurrent reader still owns the old immutable view. A new
+            // full capture keeps this call's semantics and becomes the cache.
+            captured_head.reset();
+        }
+        // Phone activation-prefix material has its own retained view and
+        // remains independent of the full activation-origin cache above.
         std::unique_lock<std::mutex> retained(phone_replay_mutex_,std::defer_lock);
         if(orchard_phone_history_requested_.load())retained.lock();
         // Same adoption checks for a fresh or an extended replay; neither is
@@ -8331,7 +8357,9 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             ++phone_replay_full_builds_;
             return adopt(replay,source,target,download);
         }
-        return RuntimeAccountReplay::Build(std::move(material));
+        auto replay=RuntimeAccountReplay::Build(std::move(material));
+        if(full_retained.owns_lock()){full_replay_=replay;++full_replay_full_builds_;}
+        return replay;
     } catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
       catch(...){return Status::Internal;}
 #else
