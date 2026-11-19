@@ -4885,7 +4885,9 @@ void MainWindow::setupUI() {
     lblMiningHeight_->setStyleSheet("QLabel { font-weight: bold; color: #d6dde6; }");
     row2->addWidget(lblMiningHeight_);
 
-    row2->addWidget(new QLabel("Difficulty:"));
+    auto *lblMiningTargetBits = new QLabel("Target bits:");
+    lblMiningTargetBits->setToolTip("Compact proof-of-work target (nBits); this can stay at the network's easiest allowed target.");
+    row2->addWidget(lblMiningTargetBits);
     lblMiningDifficulty_ = new QLabel("-");
     lblMiningDifficulty_->setStyleSheet(
       "QLabel { font-family: monospace; font-weight: bold; color: #d6dde6; }");
@@ -4915,7 +4917,7 @@ void MainWindow::setupUI() {
       auto* dialogLayout = new QVBoxLayout(dialog);
       auto* table = new QTableWidget(miningSessionFinds_.size(), 6, dialog);
       table->setHorizontalHeaderLabels(
-        {"Height", "Hash", "Merkle root", "Utreexo root", "Nonce", "Difficulty"});
+        {"Height", "Hash", "Merkle root", "Utreexo root", "Nonce", "Target bits"});
       table->setEditTriggers(QAbstractItemView::NoEditTriggers);
       table->setSelectionBehavior(QAbstractItemView::SelectRows);
       table->setWordWrap(false);
@@ -5510,7 +5512,9 @@ void MainWindow::setupUI() {
     lblTemplateFees_->setStyleSheet("QLabel { font-weight: bold; color: #d6dde6; }");
     statsLayout->addWidget(lblTemplateFees_, 1, 1);
 
-    statsLayout->addWidget(new QLabel("Difficulty:"), 1, 2);
+    auto *lblTemplateTargetBits = new QLabel("Target bits:");
+    lblTemplateTargetBits->setToolTip("Compact proof-of-work target (nBits).");
+    statsLayout->addWidget(lblTemplateTargetBits, 1, 2);
     lblTemplateDifficulty_ = new QLabel("-");
     lblTemplateDifficulty_->setStyleSheet("QLabel { font-weight: bold; }");
     statsLayout->addWidget(lblTemplateDifficulty_, 1, 3);
