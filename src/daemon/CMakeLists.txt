@@ -188,6 +188,37 @@ if(DINERO_SWAP_ZEC)
   message(STATUS "DIN<->ZEC swaps: ON (dinerod links rust/zcash_swap)")
 endif()
 
+# DIN <-> BTC swaps without Bitcoin Core
+# (docs/design/din-btc-swaps-without-bitcoin-core.md): OFF by default until
+# the testnet and mainnet rehearsals pass. ON compiles the light Bitcoin client
+# into dinerod and links libcurl, in dinerod only.
+option(DINERO_SWAP_LIGHT_BTC "dinerod: DIN<->BTC swaps without Bitcoin Core (links libcurl)" OFF)
+if(DINERO_SWAP_LIGHT_BTC)
+  target_sources(dinerod PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/daemon/swap_light_btc_install.cpp
+    ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_light_chain_io.cpp
+    ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_light_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_light_transport.cpp
+    ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_light_watcher.cpp
+    ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_esplora.cpp
+    ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_http_curl.cpp
+    ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_merkle_proof.cpp
+    ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_raw_tx.cpp
+    ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_header_chain.cpp
+    ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_header_store.cpp
+    ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_p2p.cpp
+    ${CMAKE_SOURCE_DIR}/src/wallet/swap/btc_p2p_client.cpp)
+  if(WIN32)
+    if(NOT TARGET CURL::libcurl)
+      find_package(CURL REQUIRED)
+    endif()
+    target_link_libraries(dinerod PRIVATE CURL::libcurl)
+  else()
+    target_link_libraries(dinerod PRIVATE curl)
+  endif()
+  message(STATUS "DIN<->BTC swaps without Bitcoin Core: ON (dinerod links libcurl)")
+endif()
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Link All Layers: Proper dependency order
 # ═══════════════════════════════════════════════════════════════════════════

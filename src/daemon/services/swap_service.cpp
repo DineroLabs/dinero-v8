@@ -31,6 +31,11 @@ SwapService::ZecInstaller& ZecInstallerSlot() {
     return installer;
 }
 
+SwapService::LightBtcInstaller& LightBtcInstallerSlot() {
+    static SwapService::LightBtcInstaller installer;
+    return installer;
+}
+
 bool IsWrite(const std::string& m) {
     return m == "sendrawtransaction" || m == "wallet.sendtoaddress" || m == "wallet.getnewaddress";
 }
@@ -157,6 +162,7 @@ swap::DinFundingOwner MakeRetainedSwapFundingOwner(DaemonContext& ctx) {
 SwapService* SwapService::Active() { return g_active.load(); }
 
 void SwapService::SetZecInstaller(ZecInstaller installer) { ZecInstallerSlot() = std::move(installer); }
+void SwapService::SetLightBtcInstaller(LightBtcInstaller installer) { LightBtcInstallerSlot() = std::move(installer); }
 
 bool SwapService::Init(DaemonContext& ctx) {
     ctx_ = &ctx;
@@ -169,10 +175,24 @@ bool SwapService::Init(DaemonContext& ctx) {
         std::cerr << "[Swap] swap.zec_rpc needs a dinerod built with DINERO_SWAP_ZEC" << std::endl;
         return false;
     }
+    const std::string btc_backend = config->GetString("swap.btc_backend", "");
+    const bool light_btc = btc_backend == "light";
+    if (!btc_backend.empty() && btc_backend != "light" && btc_backend != "core") {
+        std::cerr << "[Swap] swap.btc_backend must be core or light" << std::endl;
+        return false;
+    }
+    if (light_btc && !btc.empty()) {
+        std::cerr << "[Swap] swap.btc_backend=light and swap.btc_rpc are two ways to reach Bitcoin: set one" << std::endl;
+        return false;
+    }
+    if (light_btc && !LightBtcInstallerSlot()) {
+        std::cerr << "[Swap] swap.btc_backend=light needs a dinerod built with DINERO_SWAP_LIGHT_BTC" << std::endl;
+        return false;
+    }
     const auto colon = btc.rfind(':');
     // Without swap.btc_rpc (a Zcash-only node) Bitcoin calls report "unreachable".
     swap::BtcRpc btc_rpc = [](const std::string&, const Json::Value&) { return std::optional<Json::Value>{}; };
-    if (colon == std::string::npos && !zec_wanted) {
+    if (colon == std::string::npos && !zec_wanted && !light_btc) {
         std::cerr << "[Swap] swap.enable=1 needs swap.btc_rpc=HOST:PORT (Bitcoin Core RPC)" << std::endl;
         return false;
     }
@@ -225,7 +245,7 @@ bool SwapService::Init(DaemonContext& ctx) {
     mc.max_btc_sat = beta.max_btc_sat;
     mc.require_tower_for_bob = mc.network == swap::SwapNetwork::Mainnet;
     mc.max_din_una = beta.max_din_una;
-    mc.btc_configured = colon != std::string::npos;
+    mc.btc_configured = colon != std::string::npos || light_btc;
 
     // Swap keys from the wallet seed at m/SWAP'/... (see swap_manager.h).
     swap::KeyDeriver derive = [&ctx](const std::vector<std::vector<uint32_t>>& paths, bool require_funding_identity)
@@ -254,6 +274,13 @@ bool SwapService::Init(DaemonContext& ctx) {
     if (zec_wanted && !ZecInstallerSlot()(*manager_, *config, mc.network, InProcessRpc(&ctx))) {
         manager_.reset();
         return false;
+    }
+    if (light_btc) {
+        before_tick_ = LightBtcInstallerSlot()(*manager_, *config, mc.network, InProcessRpc(&ctx));
+        if (!before_tick_) {
+            manager_.reset();
+            return false;
+        }
     }
     const std::string inbox = config->GetString("swap.tower_inbox", "");
     if (!inbox.empty()) {
@@ -294,6 +321,7 @@ void SwapService::Stop() {
 void SwapService::Loop() {
     while (true) {
         try {
+            if (before_tick_) before_tick_(static_cast<uint32_t>(std::time(nullptr)));  // outside the manager's lock
             manager_->TickAll(static_cast<uint32_t>(std::time(nullptr)));
         } catch (const std::exception& e) {
             std::cerr << "[Swap] tick failed: " << e.what() << std::endl;

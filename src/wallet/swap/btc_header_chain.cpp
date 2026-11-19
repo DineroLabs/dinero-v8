@@ -507,6 +507,17 @@ std::vector<uint8_t> BtcHeaderChain::SerializeBestChain() const {
     return out;
 }
 
+size_t BtcHeaderChain::Adopt(const BtcHeaderChain& other, uint32_t now_unix) {
+    size_t accepted = 0;
+    for (size_t i = 1; i < other.best_.size(); ++i) {
+        if (Find(other.best_[i])) continue;
+        const Status status = Accept(other.Find(other.best_[i])->header, now_unix).status;
+        if (status == Status::Accepted) ++accepted;
+        else if (status != Status::Duplicate) break;
+    }
+    return accepted;
+}
+
 size_t BtcHeaderChain::LoadBestChain(const std::vector<uint8_t>& bytes, uint32_t now_unix) {
     size_t accepted = 0;
     for (size_t offset = 0; offset + 80 <= bytes.size(); offset += 80) {

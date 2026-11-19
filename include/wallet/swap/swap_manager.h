@@ -77,6 +77,12 @@ Bytes32 ZecDepositKey(const KeyDeriver& derive, SwapNetwork network, uint32_t in
 // Zcash support (docs/design/din-zec-atomic-swaps.md), installed by
 // swap_manager_zec.cpp in dinerod builds with DINERO_SWAP_ZEC. Without it the
 // manager refuses Zcash offers; this file links no Zcash code.
+struct LightBtcSupport {
+    // The Bitcoin side of one swap, from the node's light backend.
+    std::function<std::unique_ptr<RpcSwapChainIo>(const SwapSession&, const RunnerConfig&)> make_io;
+    // The verified header chain's height; throws std::runtime_error while it is not synced.
+    std::function<uint32_t()> tip_height;
+};
 struct ZecDepositStatus {
     uint64_t seen_zat{};       // paid to the deposit address, at least 1 confirmation
     uint64_t confirmed_zat{};  // at least kZecDepositConfirmations (10)
@@ -203,6 +209,12 @@ public:
     // Zcash support (dinerod built with DINERO_SWAP_ZEC). Not on mainnet: the
     // design starts with a testnet beta.
     void SetZecSupport(ZecSupport zec);
+    // Bitcoin without Bitcoin Core (docs/design/din-btc-swaps-without-bitcoin-core.md),
+    // installed by swap_light_btc_install.cpp in a dinerod built with
+    // DINERO_SWAP_LIGHT_BTC. With it this node sells DIN for BTC; buying DIN
+    // (which pays BTC) still needs Bitcoin Core and is refused.
+    void SetLightBitcoin(LightBtcSupport light);
+    bool LightBitcoin() const { return light_btc_.has_value(); }
     bool SupportsZec() const;
     bool SupportsBtc() const { return config_.btc_configured; }
     // Bob pastes a Zcash offer: allocates its swap index and deposit address
@@ -245,6 +257,7 @@ private:
     std::function<void(const std::string&)> tower_sink_;
     std::function<bool(const std::string&, const std::string&)> tower_ack_;
     std::optional<ZecSupport> zec_;
+    std::optional<LightBtcSupport> light_btc_;
     std::optional<Bytes32> store_key_;  // kept while the daemon runs: live swaps survive a relock
     Bytes32 StoreKey();                  // binds the first key; relock retains it, a different key refuses
     std::mutex mu_;

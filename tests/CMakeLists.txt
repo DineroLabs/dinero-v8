@@ -18023,6 +18023,14 @@ target_include_directories(swap_btc_http_tool PRIVATE ${CMAKE_SOURCE_DIR}/includ
 add_test(NAME SwapBtcHttp COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_btc_http_test.sh $<TARGET_FILE:swap_btc_http_tool>)
 set_tests_properties(SwapBtcHttp PROPERTIES LABELS "wallet;swap" TIMEOUT 120 SKIP_RETURN_CODE 77)
 
+# A whole DIN -> BTC swap where the seller's dinerod has no Bitcoin Core: headers and broadcast over
+# Bitcoin P2P, lookups to two Esplora servers (one hiding everything), a kill and restart mid-swap.
+if(DINERO_SWAP_LIGHT_BTC AND DINERO_BITCOIND AND TARGET dinerod)
+  add_test(NAME SwapLightBtcRegtest
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_light_btc_regtest.sh $<TARGET_FILE:dinerod>)
+  set_tests_properties(SwapLightBtcRegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 900 SKIP_RETURN_CODE 77)
+endif()
+
 # The same client over real sockets against a real Bitcoin Core (regtest).
 add_executable(swap_btc_p2p_tool
   tests/wallet/swap_btc_p2p_tool.cpp
@@ -18236,7 +18244,10 @@ if(CARGO_EXECUTABLE AND NOT WIN32)
     add_test(NAME SwapZecE2ERegtest
       COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_zec_e2e_regtest.sh
               $<TARGET_FILE:swap_e2e_fixture_daemon> $<TARGET_FILE:swap_zec_e2e_tool> ${DINERO_ZEBRAD})
-    set_tests_properties(SwapZecE2ERegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 1800)
+    # Zebra's clock is moved with faketime and blocks are mined against it: under
+    # load from another daemon topology the "alice-silent" scenario has failed to
+    # mine in time. Run it clear of the others, like SwapE2ERegtest.
+    set_tests_properties(SwapZecE2ERegtest PROPERTIES LABELS "wallet;swap;regtest" TIMEOUT 1800 RUN_SERIAL TRUE)
   endif()
   # swap.* for ZEC through real daemons: only with a dinerod built with DINERO_SWAP_ZEC.
   if(DINERO_SWAP_ZEC AND DINERO_ZEBRAD AND TARGET dinerod)

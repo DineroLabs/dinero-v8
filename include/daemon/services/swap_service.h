@@ -54,12 +54,22 @@ public:
                                             swap::SwapNetwork network, swap::DinRpc din)>;
     static void SetZecInstaller(ZecInstaller installer);
 
+    // Bitcoin without Bitcoin Core (dinerod built with DINERO_SWAP_LIGHT_BTC):
+    // swap_light_btc_install.cpp registers this; Init calls it when
+    // swap.btc_backend=light. It installs the support in the manager and
+    // returns what to run before every tick (the header sync), or nothing
+    // (after printing why) on a bad config.
+    using LightBtcInstaller = std::function<std::function<void(uint32_t now_unix)>(
+        swap::SwapManager& manager, const ConfigService& config, swap::SwapNetwork network, swap::DinRpc din)>;
+    static void SetLightBtcInstaller(LightBtcInstaller installer);
+
 private:
     void Loop();
 
     DaemonContext* ctx_{nullptr};
     std::unique_ptr<swap::SwapManager> manager_;
     uint32_t tick_seconds_{30};
+    std::function<void(uint32_t)> before_tick_;  // light Bitcoin: header sync
     std::thread thread_;
     std::mutex wake_mu_;
     std::condition_variable wake_;

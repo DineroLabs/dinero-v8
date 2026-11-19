@@ -44,9 +44,19 @@ std::string BtcLightBackend::problem() const {
     return problem_;
 }
 
-void BtcLightBackend::AfterChange(uint32_t tip_before) {
+BtcHeaderChain BtcLightBackend::Copy() const {
+    std::lock_guard<std::mutex> lock(chain_mu_);
+    return chain_;
+}
+
+// Takes what a Sync or Broadcast learned into the shared chain: every header
+// again through the chain's checks (those it already has are skipped).
+void BtcLightBackend::Merge(const BtcHeaderChain& learned, uint32_t now_unix) {
+    std::lock_guard<std::mutex> lock(chain_mu_);
+    const Bytes32 before = chain_.TipHash();
+    chain_.Adopt(learned, now_unix);
     tip_height_ = chain_.TipHeight();
-    if (chain_.TipHeight() == tip_before || config_.header_file.empty()) return;
+    if (chain_.TipHash() == before || config_.header_file.empty()) return;
     try {
         SaveBtcHeaderChain(config_.header_file, chain_);
     } catch (const std::exception&) {
@@ -56,7 +66,8 @@ void BtcLightBackend::AfterChange(uint32_t tip_before) {
 
 // Talks to up to peers_per_round peers; returns how many conversations ended
 // with our chain as far as that peer's. Peers that fail are forgotten.
-size_t BtcLightBackend::SyncFromPeers(const std::vector<std::vector<uint8_t>>& txs, std::vector<Bytes32>* delivered) {
+size_t BtcLightBackend::SyncFromPeers(BtcHeaderChain& chain, const std::vector<std::vector<uint8_t>>& txs,
+                                      std::vector<Bytes32>* delivered) {
     if (config_.peer_hosts.empty()) return 0;
     if (peers_.size() < config_.peers_per_round) {
         peers_ = transport_.resolve(config_.peer_hosts, config_.peer_port, 32);
@@ -65,7 +76,7 @@ size_t BtcLightBackend::SyncFromPeers(const std::vector<std::vector<uint8_t>>& t
     size_t good = 0;
     for (size_t round = 0; round < config_.peers_per_round && !peers_.empty(); ++round) {
         if (next_peer_ >= peers_.size()) next_peer_ = 0;
-        const BtcPeerOutcome out = transport_.talk(peers_[next_peer_], net_, chain_, txs);
+        const BtcPeerOutcome out = transport_.talk(peers_[next_peer_], net_, chain, txs);
         if (delivered) {
             for (const Bytes32& txid : out.txs_sent) {
                 if (std::find(delivered->begin(), delivered->end(), txid) == delivered->end()) delivered->push_back(txid);
@@ -83,26 +94,26 @@ size_t BtcLightBackend::SyncFromPeers(const std::vector<std::vector<uint8_t>>& t
 
 // The slow path: headers one at a time from the servers. Returns whether any
 // server answered with a tip.
-bool BtcLightBackend::SyncFromServers(uint32_t now_unix) {
+bool BtcLightBackend::SyncFromServers(BtcHeaderChain& chain, uint32_t now_unix) {
     bool answered = false;
     // One bound for the whole round, however many servers there are.
-    const uint32_t limit = chain_.TipHeight() + config_.max_server_headers_per_sync;
+    const uint32_t limit = chain.TipHeight() + config_.max_server_headers_per_sync;
     for (auto& server : servers_) {
         const auto tip = server->TipHeight();
         if (!tip) continue;
         answered = true;
-        if (*tip <= chain_.TipHeight() || chain_.TipHeight() >= limit) continue;
+        if (*tip <= chain.TipHeight() || chain.TipHeight() >= limit) continue;
         const uint32_t last = std::min(*tip, limit);
         // Walk back from our tip + 1 until a header connects (the server may be
         // on a branch that forks a few blocks below our tip), then forward.
         std::vector<BtcBlockHeader> pending;
-        uint32_t height = chain_.TipHeight() + 1;
+        uint32_t height = chain.TipHeight() + 1;
         bool connected = false;
-        for (int back = 0; back < 12 && height > chain_.params().checkpoint_height; ++back, --height) {
+        for (int back = 0; back < 12 && height > chain.params().checkpoint_height; ++back, --height) {
             const auto hash = server->BlockHashAt(height);
             const auto header = hash ? server->Header(*hash) : std::nullopt;
             if (!header) break;
-            const auto result = chain_.Accept(*header, now_unix);
+            const auto result = chain.Accept(*header, now_unix);
             if (result.status == BtcHeaderChain::Status::Orphan) {
                 pending.push_back(*header);
                 continue;
@@ -113,13 +124,13 @@ bool BtcLightBackend::SyncFromServers(uint32_t now_unix) {
         if (!connected) continue;  // this server's chain does not meet ours, or it sent an invalid header
         bool ok = true;
         for (auto it = pending.rbegin(); it != pending.rend() && ok; ++it) {
-            ok = chain_.Accept(*it, now_unix).status != BtcHeaderChain::Status::Invalid;
+            ok = chain.Accept(*it, now_unix).status != BtcHeaderChain::Status::Invalid;
         }
-        for (uint32_t h = chain_.TipHeight() + 1; ok && h <= last; ++h) {
+        for (uint32_t h = chain.TipHeight() + 1; ok && h <= last; ++h) {
             const auto hash = server->BlockHashAt(h);
             const auto header = hash ? server->Header(*hash) : std::nullopt;
             if (!header) break;
-            const auto status = chain_.Accept(*header, now_unix).status;
+            const auto status = chain.Accept(*header, now_unix).status;
             ok = status == BtcHeaderChain::Status::Accepted || status == BtcHeaderChain::Status::Duplicate;
         }
     }
@@ -127,25 +138,27 @@ bool BtcLightBackend::SyncFromServers(uint32_t now_unix) {
 }
 
 void BtcLightBackend::Sync(uint32_t now_unix, bool force) {
+    std::lock_guard<std::mutex> network(network_mu_);
     if (!synced_once_ && !config_.header_file.empty()) {
+        std::lock_guard<std::mutex> lock(chain_mu_);
         LoadBtcHeaderChain(config_.header_file, chain_, now_unix);  // what a previous run already verified
         tip_height_ = chain_.TipHeight();
     }
     if (synced_once_ && !force && now_unix - last_sync_ < config_.min_sync_interval_seconds) return;
     synced_once_ = true;
     last_sync_ = now_unix;
-    const uint32_t before = chain_.TipHeight();
+    BtcHeaderChain working = Copy();
     std::string problem;
     try {
-        const size_t peers = SyncFromPeers({}, nullptr);
-        if (peers == 0 && !SyncFromServers(now_unix)) {
+        const size_t peers = SyncFromPeers(working, {}, nullptr);
+        if (peers == 0 && !SyncFromServers(working, now_unix)) {
             problem = config_.peer_hosts.empty() ? "cannot reach any Bitcoin server"
                                                  : "cannot reach any Bitcoin peer or server";
         }
     } catch (const std::exception& e) {
         problem = std::string("Bitcoin header sync failed: ") + e.what();
     }
-    AfterChange(before);
+    Merge(working, now_unix);
     std::lock_guard<std::mutex> lock(problem_mu_);
     problem_ = problem;
 }
@@ -168,14 +181,17 @@ std::string BtcLightBackend::Broadcast(const std::vector<uint8_t>& raw_tx) {
             unsure = true;
         }
     }
-    const uint32_t before = chain_.TipHeight();
     std::vector<Bytes32> delivered;
-    try {
-        SyncFromPeers({raw_tx}, &delivered);
-    } catch (const std::exception&) {
-        unsure = true;
+    {
+        std::lock_guard<std::mutex> network(network_mu_);
+        BtcHeaderChain working = Copy();
+        try {
+            SyncFromPeers(working, {raw_tx}, &delivered);
+        } catch (const std::exception&) {
+            unsure = true;
+        }
+        Merge(working, working.Tip().time + kBtcMaxFutureBlockTime);  // headers a peer just gave: already time-checked there
     }
-    AfterChange(before);
     // A peer that fetched it and answered afterwards has looked at it. It may
     // still have rejected it, so this is "sent", to be confirmed by seeing it.
     if (std::find(delivered.begin(), delivered.end(), tx->txid) != delivered.end()) taken = true;

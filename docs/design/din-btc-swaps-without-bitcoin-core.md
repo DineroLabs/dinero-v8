@@ -1,7 +1,9 @@
 # DIN <-> BTC swaps without Bitcoin Core ("light Bitcoin")
 
 **Status:** design, revised 2026-11-18 after three independent reviews (security, code feasibility,
-architecture; section 12). Not started. Target: after v8.2.5.
+architecture; section 12). Steps 0 to 2 are built on `claude/swaps-light-base` (section 13): a seller
+of DIN swaps with no Bitcoin Core on regtest. Not offered to users: off by default at build time,
+refused on mainnet. Target: after v8.2.5.
 **Owner:** Claude. **Depends on:** `claude/swaps-multichain` landing in `dinero-main` first (section 8).
 **Builds on:** `din-btc-atomic-swaps.md`, `din-btc-atomic-swaps-v1-plan.md`, `din-zec-atomic-swaps.md`.
 
@@ -334,3 +336,43 @@ Three independent read-only reviews of the first draft. What they changed:
 
 A fourth review by a second model could not run (the Codex plugin's default model was refused by
 the account).
+
+## 13. What is built (2026-11-19)
+
+On `claude/swaps-light-base`, behind the build option `DINERO_SWAP_LIGHT_BTC` (off by default) and
+the config `swap.btc_backend=light`. Mainnet additionally needs `swap.btc_light_mainnet_rehearsal=1`.
+
+| Piece | Files (`src/wallet/swap/`) | Proven by |
+|---|---|---|
+| Header chain: proof of work, retarget, time rules, most work, checkpoint, bounded forks | `btc_header_chain` | Real mainnet headers 0 to 2; 2,029 real mainnet headers across the retarget at block 973,728 and 2,029 real testnet4 headers (fixtures); Bitcoin Core's retarget vectors |
+| Header file | `btc_header_store` | Restart, another network, damage |
+| Any-transaction reader; Merkle proofs with the 64-byte and depth protections | `btc_raw_tx`, `btc_merkle_proof` | The real genesis transaction; trees of 1 to 33 transactions; 60,000 damaged inputs |
+| Bitcoin P2P: headers, and transaction hand-over with a receipt | `btc_p2p`, `btc_p2p_client` | Real Bitcoin Core v31 on regtest; by hand, mainnet to the tip two servers reported |
+| Server client; a transaction is returned only if proven | `btc_esplora` | A real mainnet transaction of block 973,000 with its real proof; fifteen single lies refused |
+| HTTPS | `btc_http_curl` | Local servers: limits, no redirects, certificate and host name |
+| Watcher: the engine's view | `btc_light_watcher` | A simulated Bitcoin with lying and hiding servers |
+| Shared backend: sync (peers, then servers), broadcast | `btc_light_backend`, `btc_light_transport` | A scripted network |
+| Runner and daemon wiring | `btc_light_chain_io`, `src/daemon/swap_light_btc_install.cpp` | `SwapLightBtcRegtest` |
+
+`SwapLightBtcRegtest` is the end-to-end proof: Alice's `dinerod` has no Bitcoin RPC. It syncs
+headers and broadcasts over Bitcoin P2P and asks two Esplora servers, one of which hides
+everything. She sells DIN to Bob (an ordinary Bitcoin Core swap node), is killed and restarted
+mid-swap, and is paid at a legacy address. Run with both servers hiding, or with every proof wrong,
+she never sees the lock and never claims.
+
+Differences from the plan above, each found while building:
+
+- **A transaction written to a peer is not delivered.** Bitcoin Core drops what a peer sent if the
+  peer hangs up first. Each transaction is followed by a ping, and counts only when the pong
+  arrives. (Section 3.1 did not have this.)
+- **The header chain is shared across threads** (`swap.refund` runs on an RPC thread). Sync and
+  broadcast work on a copy and merge back through the chain's checks; a watcher holds the lock for
+  one observation.
+- **An unknown transaction's status is `{"confirmed":false}` with HTTP 200** on both real servers,
+  so existence is taken from the raw transaction, never from the status.
+- **Buying DIN is refused in light mode** (`swap.accept` says why), until steps 3 and 5.
+
+Not built: deposit funding (step 3), the Swap tab's light-mode wording and deposit box (step 4),
+the tower in light mode (step 5), the testnet4 and mainnet rehearsals (step 6), a CA bundle for
+Windows, fuzz targets beyond the in-test random-damage loops. The Windows socket code is written
+and has never been compiled.

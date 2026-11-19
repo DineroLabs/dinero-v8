@@ -136,6 +136,11 @@ public:
     // stops at the first one that is not.
     size_t LoadBestChain(const std::vector<uint8_t>& bytes, uint32_t now_unix);
 
+    // Takes the headers of `other`'s best chain that this chain lacks, each
+    // through Accept (those already known are skipped). Returns how many were
+    // new; stops at the first one this chain refuses.
+    size_t Adopt(const BtcHeaderChain& other, uint32_t now_unix);
+
     size_t side_header_count() const { return nodes_.size() - best_.size(); }
 
 private:

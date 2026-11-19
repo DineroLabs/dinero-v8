@@ -892,6 +892,62 @@ TEST(SwapManager, BtcPayoutScriptAcceptsLegacyAddresses) {
     EXPECT_THROW(PayoutScriptFromAddress("mrS8eVKXguwufwvsVe9GtgGb7fif9UQeAu", "rdin"), std::invalid_argument);
 }
 
+// Bitcoin without Bitcoin Core: the manager takes the Bitcoin side of a swap
+// from the installed support, sells DIN through it, and refuses to buy.
+TEST(SwapManager, LightBitcoinSellsDinAndRefusesToBuy) {
+    TempDir da("light_btc_alice"), db("light_btc_bob");
+    FakeWallet wa{0xe1}, wb{0xe2};
+    // A node with no Bitcoin RPC at all: every call to it fails.
+    const BtcRpc no_core = [](const std::string&, const Json::Value&) { return std::optional<Json::Value>{}; };
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, no_core);
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    EXPECT_THROW(alice.SetLightBitcoin(LightBtcSupport{}), std::invalid_argument);
+    EXPECT_FALSE(alice.LightBitcoin());
+
+    size_t ios = 0, tips = 0;
+    LightBtcSupport light;
+    light.make_io = [&](const SwapSession& s, const RunnerConfig& rc) {
+        ++ios;
+        return std::make_unique<RpcSwapChainIo>(kNoDin, kNoBtc, s, rc);
+    };
+    light.tip_height = [&] {
+        ++tips;
+        return uint32_t{800};
+    };
+    alice.SetLightBitcoin(light);
+    EXPECT_TRUE(alice.LightBitcoin());
+
+    const std::string offer = alice.MakeOffer(Request(), kNow);
+    // Buying DIN pays BTC: a light node cannot, and says so before anything is allocated.
+    try {
+        alice.Accept(offer, P2trAddress("rdin", 0x31), P2trAddress("bcrt", 0x32), kNow + 1);
+        ADD_FAILURE() << "a light node accepted an offer";
+    } catch (const std::runtime_error& e) {
+        EXPECT_NE(std::string(e.what()).find("buying DIN with BTC still needs Bitcoin Core"), std::string::npos) << e.what();
+    }
+    EXPECT_EQ(ios, 0u);
+
+    const auto accepted = bob.Accept(offer, P2trAddress("rdin", 0x31), P2trAddress("bcrt", 0x32), kNow + 1);
+    ASSERT_TRUE(accepted.accept_text.has_value());
+    tips = 0;
+    alice.Accept(*accepted.accept_text, "", "", kNow + 2);  // would throw "Bitcoin node unreachable" without the light tip
+    EXPECT_EQ(ios, 1u);   // the swap's Bitcoin side came from the light support
+    EXPECT_EQ(tips, 1u);  // and so did the height its watcher starts from
+    const auto key = SwapStoreKeyFromSeed(wa.Deriver(), SwapNetwork::Regtest);
+    EXPECT_EQ(EncryptedFileSwapStore::Load(da.path + "/swap-0.swap", key).btc_scan_from_height, 800u - 6u);
+
+    // The light view not synced yet: no swap is started on a guess.
+    TempDir dc("light_btc_carol");
+    FakeWallet wc{0xe3};
+    SwapManager carol(Config(dc.path), wc.Deriver(), kNoDin, no_core);
+    light.tip_height = []() -> uint32_t { throw std::runtime_error("Bitcoin headers are not synced yet: cannot reach any Bitcoin server"); };
+    carol.SetLightBitcoin(light);
+    const std::string carol_offer = carol.MakeOffer(Request(), kNow);
+    const auto to_carol = bob.Accept(carol_offer, P2trAddress("rdin", 0x33), P2trAddress("bcrt", 0x34), kNow + 1);
+    EXPECT_THROW(carol.Accept(*to_carol.accept_text, "", "", kNow + 2), std::runtime_error);
+    EXPECT_FALSE(fs::exists(dc.path + "/swap-0.swap"));
+}
+
 // Both entry points take a legacy Bitcoin address: the seller's claim address
 // in the offer and the buyer's refund address in the accept.
 TEST(SwapManager, OfferAndAcceptTakeLegacyBitcoinAddresses) {

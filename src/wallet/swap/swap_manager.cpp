@@ -330,6 +330,12 @@ void SwapManager::SetZecSupport(ZecSupport zec) {
     zec_ = std::move(zec);
 }
 
+void SwapManager::SetLightBitcoin(LightBtcSupport light) {
+    if (!light.make_io || !light.tip_height) throw std::invalid_argument("incomplete light Bitcoin support");
+    std::lock_guard<std::mutex> lock(mu_);
+    light_btc_ = std::move(light);
+}
+
 bool SwapManager::SupportsZec() const { return zec_.has_value() && config_.network != SwapNetwork::Mainnet; }
 
 void SwapManager::RequireZec() const {
@@ -437,7 +443,7 @@ void SwapManager::StartSession(uint32_t index, SwapSession session, const Bytes3
                                         : Bytes32{};
         live.io = zec_->make_io(session, rc, deposit_key);
     } else {
-        live.io = std::make_unique<RpcSwapChainIo>(din_, btc_, session, rc);
+        live.io = light_btc_ ? light_btc_->make_io(session, rc) : std::make_unique<RpcSwapChainIo>(din_, btc_, session, rc);
         if (tower_sink_) live.io->SetTowerSink(tower_sink_);
         if (tower_ack_) live.io->SetTowerAck(tower_ack_);
     }
@@ -522,6 +528,8 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
         if (chain == CounterChain::Zcash) {
             RequireZec();
             tip = zec_->tip_height();
+        } else if (light_btc_) {
+            tip = light_btc_->tip_height();
         } else {
             const auto btc_tip = btc_("getblockcount", Json::Value(Json::arrayValue));
             if (!btc_tip || !btc_tip->isNumeric()) throw std::runtime_error("Bitcoin node unreachable (swap.btc_rpc_*)");
@@ -549,6 +557,11 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
     if (text.rfind(kOfferPrefix, 0) == 0) {  // Bob accepts Alice's offer
         const SwapOffer offer = DecodeOffer(text);
         if (offer.network != config_.network) throw std::invalid_argument("offer is for another network");
+        if (light_btc_) {
+            // Buying DIN pays BTC, and a light node has no Bitcoin wallet to pay from yet.
+            throw std::runtime_error("this node uses Bitcoin without Bitcoin Core: it can sell DIN for BTC, but buying "
+                                     "DIN with BTC still needs Bitcoin Core (swap.btc_rpc)");
+        }
         RequireAcceptableNow(offer, now);
         if (config_.require_tower_for_bob && (!tower_sink_ || !tower_ack_)) {
             throw std::runtime_error("mainnet beta: buying DIN needs a watchtower (set swap.tower_inbox and run "

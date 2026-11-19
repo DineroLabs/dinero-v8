@@ -10,9 +10,11 @@
 //   - Broadcast: hand a transaction to every server and directly to peers, and
 //     say whether anybody took it.
 //
-// Threads. Sync, Broadcast, chain() and servers() belong to the swap service's
-// thread, the only one that touches the header chain. tip_height() and
-// problem() may be called from any thread.
+// Threads. Any thread may call anything here. The header chain is guarded by
+// a mutex: whoever reads it through chain() holds Lock() meanwhile (a watcher
+// does, for one observation). Sync and Broadcast never hold the lock while
+// they wait for the network: they work on a copy of the chain and merge what
+// they learned back in, through the chain's own checks.
 //
 // The network itself is injected (BtcLightTransport), so the logic here is
 // tested without one.
@@ -71,7 +73,9 @@ public:
     // have been sent" when that cannot be told.
     std::string Broadcast(const std::vector<uint8_t>& raw_tx);
 
+    // The header chain. Hold Lock() while using it.
     const BtcHeaderChain& chain() const { return chain_; }
+    std::unique_lock<std::mutex> Lock() const { return std::unique_lock<std::mutex>(chain_mu_); }
     std::vector<EsploraServer*> servers();
     const BtcLightBackendConfig& config() const { return config_; }
 
@@ -80,14 +84,18 @@ public:
     std::string problem() const;
 
 private:
-    size_t SyncFromPeers(const std::vector<std::vector<uint8_t>>& txs, std::vector<Bytes32>* delivered);
-    bool SyncFromServers(uint32_t now_unix);
-    void AfterChange(uint32_t tip_before);
+    size_t SyncFromPeers(BtcHeaderChain& chain, const std::vector<std::vector<uint8_t>>& txs,
+                         std::vector<Bytes32>* delivered);
+    bool SyncFromServers(BtcHeaderChain& chain, uint32_t now_unix);
+    BtcHeaderChain Copy() const;
+    void Merge(const BtcHeaderChain& learned, uint32_t now_unix);
 
     BtcLightBackendConfig config_;
     BtcLightTransport transport_;
     BtcP2pNetwork net_;
+    mutable std::mutex chain_mu_;
     BtcHeaderChain chain_;
+    std::mutex network_mu_;  // one Sync or Broadcast at a time: they share the peer list
     std::vector<std::unique_ptr<EsploraServer>> servers_;
     std::vector<BtcPeerEndpoint> peers_;
     size_t next_peer_{0};

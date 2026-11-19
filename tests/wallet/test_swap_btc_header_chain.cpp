@@ -409,6 +409,41 @@ TEST(BtcHeaderChain, LocatorWalksBackToTheCheckpoint) {
     EXPECT_EQ(*chain.HeightOf(locator[9]), 491u);   // the ten newest, one by one
 }
 
+// What another copy of the chain learned is taken in through the same checks.
+TEST(BtcHeaderChain, AdoptsWhatACopyLearned) {
+    BtcHeaderChain ours(BtcChainParams::Regtest());
+    Extend(ours, 10);
+    BtcHeaderChain copy = ours;
+    Extend(copy, 5);
+    EXPECT_EQ(ours.Adopt(copy, kNow), 5u);
+    EXPECT_EQ(ours.TipHash(), copy.TipHash());
+    EXPECT_EQ(ours.Adopt(copy, kNow), 0u);  // nothing new the second time
+
+    // The copy reorganized onto a longer branch: ours follows.
+    BtcHeaderChain forked = ours;
+    const BtcBlockHeader base = *forked.AtHeight(12);
+    BtcBlockHeader tip = base;
+    for (int i = 0; i < 5; ++i) {
+        tip = Mine(tip, tip.time + 600, tip.bits, 77);
+        ASSERT_EQ(forked.Accept(tip, kNow).status, BtcHeaderChain::Status::Accepted);
+    }
+    ASSERT_EQ(forked.TipHeight(), 17u);
+    EXPECT_EQ(ours.Adopt(forked, kNow), 5u);
+    EXPECT_EQ(ours.TipHash(), forked.TipHash());
+
+    // A header our clock says is from the future is not adopted, nor anything after it.
+    BtcHeaderChain ahead = ours;
+    BtcBlockHeader next = Mine(ahead.Tip(), kNow + 3 * 3600, ahead.Tip().bits);
+    ASSERT_EQ(ahead.Accept(next, kNow + 3 * 3600).status, BtcHeaderChain::Status::Accepted);
+    for (int i = 0; i < 2; ++i) {
+        next = Mine(next, next.time + 600, next.bits);
+        ASSERT_EQ(ahead.Accept(next, kNow + 4 * 3600).status, BtcHeaderChain::Status::Accepted);
+    }
+    EXPECT_EQ(ours.Adopt(ahead, kNow), 0u);
+    EXPECT_EQ(ours.TipHeight(), 17u);
+    EXPECT_EQ(ours.Adopt(ahead, kNow + 4 * 3600), 3u);  // once the clock has caught up
+}
+
 TEST(BtcHeaderChain, SavedChainIsReplayedNotTrusted) {
     BtcHeaderChain chain(BtcChainParams::Regtest());
     Extend(chain, 50);
