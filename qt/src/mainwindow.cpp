@@ -8763,6 +8763,11 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
   // route and must not turn a pool-only error into a global error banner.
   if (method.startsWith(QStringLiteral("pool.earnings."))) return;
 
+  // The Swap tab owns its routes and says in its own words what went wrong.
+  // It asks for the swap list every few seconds, and a node with swaps off
+  // (the default) refuses each time: that is not an error to raise here.
+  if (method.startsWith(QStringLiteral("swaptab."))) return;
+
   if (method.startsWith(QLatin1String("overview.miningrewards:"))) {
     if (!walletSwitchInFlight_ && method == miningRewardsReplyAlias()) {
       // The HTTP dispatcher normalizes a wallet_balance_not_current result to
