@@ -421,6 +421,11 @@ public:
         // unlocked seed and bound to this wallet's delivery identity. nullopt
         // when no record exists; throws when locked, mismatched or malformed.
         [[nodiscard]] std::optional<uint32_t> SealedFreshBirthHeight(uint64_t expected_session) const;
+        // The ordinary-history shortcut also requires every watched or
+        // spendable transparent script to derive from that same seed. A later
+        // key, descriptor, watch-only or P2MR import preserves the birth
+        // record but must replay history preceding wallet creation.
+        [[nodiscard]] std::optional<uint32_t> SealedFreshOrdinaryBirthHeight(uint64_t expected_session) const;
         // Enroll a never-enrolled legacy wallet atomically. The identity and
         // pending marker become visible together, or neither does.
         [[nodiscard]] std::string BeginLegacyTransparentMigration();
