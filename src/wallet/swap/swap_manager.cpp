@@ -282,6 +282,49 @@ std::vector<uint8_t> BtcPayoutScriptFromAddress(const std::string& address, cons
                                 (mainnet ? "1… or 3…" : "m…, n… or 2…") + "): " + address);
 }
 
+std::string BtcAddressFromPayoutScript(const std::vector<uint8_t>& spk, const std::string& hrp) {
+    const size_t n = spk.size();
+    if ((n == 22 || n == 34) && spk[0] == 0x00 && spk[1] == n - 2) {
+        return bech32::Encode(hrp, 0, std::vector<uint8_t>(spk.begin() + 2, spk.end()), bech32::Encoding::BECH32);
+    }
+    if (n == 34 && spk[0] == 0x51 && spk[1] == 0x20) {
+        return bech32::Encode(hrp, 1, std::vector<uint8_t>(spk.begin() + 2, spk.end()), bech32::Encoding::BECH32M);
+    }
+    const bool mainnet = hrp == "bc";
+    std::vector<uint8_t> payload;
+    if (n == 25 && spk[0] == 0x76 && spk[1] == 0xa9 && spk[2] == 0x14 && spk[23] == 0x88 && spk[24] == 0xac) {
+        payload.push_back(mainnet ? 0x00 : 0x6f);
+        payload.insert(payload.end(), spk.begin() + 3, spk.begin() + 23);
+    } else if (n == 23 && spk[0] == 0xa9 && spk[1] == 0x14 && spk[22] == 0x87) {
+        payload.push_back(mainnet ? 0x05 : 0xc4);
+        payload.insert(payload.end(), spk.begin() + 2, spk.begin() + 22);
+    } else {
+        return {};
+    }
+    uint8_t once[32], twice[32];
+    crypto::CSHA256().Write(payload.data(), payload.size()).Finalize(once);
+    crypto::CSHA256().Write(once, 32).Finalize(twice);
+    payload.insert(payload.end(), twice, twice + 4);
+    // Base58: repeated division of the big-endian number by 58.
+    static const char* const kAlphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    std::string out;
+    std::vector<uint8_t> number(payload);
+    size_t start = 0;
+    while (start < number.size()) {
+        uint32_t remainder = 0;
+        for (size_t i = start; i < number.size(); ++i) {
+            const uint32_t value = remainder * 256 + number[i];
+            number[i] = static_cast<uint8_t>(value / 58);
+            remainder = value % 58;
+        }
+        out.push_back(kAlphabet[remainder]);
+        while (start < number.size() && number[start] == 0) ++start;
+    }
+    for (size_t i = 0; i < payload.size() && payload[i] == 0; ++i) out.push_back('1');
+    std::reverse(out.begin(), out.end());
+    return out;
+}
+
 std::string SwapId(const SwapOffer& offer) {
     const auto id = OfferId(offer);
     return ToHex(std::vector<uint8_t>(id.begin(), id.begin() + 8));
@@ -1126,6 +1169,67 @@ SwapManager::RecoveredDeposits SwapManager::RecoverBtcDeposits(const std::string
                                   " sat found but not sent (" + e.what() + ")");
         }
     }
+    return out;
+}
+
+SwapManager::BtcHoldings SwapManager::BtcHoldingsOfSwaps() {
+    BtcHoldings out;
+    std::function<uint64_t(const std::vector<uint8_t>&)> balance_of;
+    std::vector<std::vector<uint8_t>> scripts;  // one per row of out.addresses
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!light_btc_ || !light_btc_->script_balance) {
+            throw std::runtime_error("this node cannot read Bitcoin addresses: it needs swaps without Bitcoin Core "
+                                     "(swap.btc_backend=light)");
+        }
+        balance_of = light_btc_->script_balance;
+        std::optional<Bytes32> store_key;
+        try {
+            store_key = StoreKey();
+        } catch (const std::runtime_error&) {
+        }
+        for (const auto& [index, path] : ScanDir(".swap")) {
+            std::optional<SwapSession> session;
+            if (auto it = live_.find(index); it != live_.end()) {
+                session = it->second.runner->session();
+            } else if (store_key) {
+                try {
+                    session = LoadSession(index, *store_key);
+                } catch (const std::exception&) {
+                }
+            }
+            if (!session) {
+                ++out.unreadable_swaps;
+                continue;
+            }
+            if (session->record.offer.chain != CounterChain::Bitcoin) continue;
+            const std::string address = BtcAddressFromPayoutScript(session->btc_payout_script, config_.runner.btc_hrp);
+            if (address.empty()) continue;
+            size_t row = 0;
+            while (row < scripts.size() && scripts[row] != session->btc_payout_script) ++row;
+            if (row == scripts.size()) {
+                scripts.push_back(session->btc_payout_script);
+                out.addresses.emplace_back();
+                out.addresses.back().address = address;
+            }
+            auto& a = out.addresses[row];
+            a.swap_ids.push_back(SwapId(session->record.offer));
+            (session->record.role == Role::DinSeller ? a.sale_proceeds : a.purchase_refund) = true;
+        }
+    }
+    // The servers are asked without the manager's lock: swaps keep ticking.
+    for (size_t row = 0; row < scripts.size(); ++row) {
+        auto& a = out.addresses[row];
+        try {
+            a.sat = balance_of(scripts[row]);
+            a.known = true;
+            out.known_sat += a.sat;
+        } catch (const std::exception& e) {
+            a.problem = e.what();
+        }
+    }
+    out.complete = out.unreadable_swaps == 0;
+    for (const auto& a : out.addresses) out.complete = out.complete && a.known;
     return out;
 }
 

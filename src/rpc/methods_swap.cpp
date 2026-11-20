@@ -368,6 +368,34 @@ din::Json RpcRecoverDeposits(const ExecutionContext& ctx, const din::Json& param
     }
 }
 
+// The Bitcoin at the addresses this wallet's swaps paid to (watch-only).
+din::Json RpcBtcHoldings(const ExecutionContext& ctx, const din::Json&) {
+    if (auto e = Refuse(ctx, false)) return *e;
+    try {
+        const auto h = SwapService::Active()->manager()->BtcHoldingsOfSwaps();
+        din::Json out(Json::objectValue);
+        out["addresses"] = Json::Value(Json::arrayValue);
+        for (const auto& a : h.addresses) {
+            din::Json j(Json::objectValue);
+            j["address"] = a.address;
+            j["known"] = a.known;
+            if (a.known) j["sat"] = Json::UInt64(a.sat);
+            else j["problem"] = a.problem;
+            j["sale_proceeds"] = a.sale_proceeds;
+            j["purchase_refund"] = a.purchase_refund;
+            j["swaps"] = Json::Value(Json::arrayValue);
+            for (const auto& id : a.swap_ids) j["swaps"].append(id);
+            out["addresses"].append(j);
+        }
+        out["known_sat"] = Json::UInt64(h.known_sat);
+        out["unreadable_swaps"] = h.unreadable_swaps;
+        out["complete"] = h.complete;
+        return out;
+    } catch (const std::exception& e) {
+        return Error(e.what());
+    }
+}
+
 din::Json RpcCancel(const ExecutionContext& ctx, const din::Json& params) {
     if (auto e = Refuse(ctx, false)) return *e;
     const din::Json& id = params.isArray() && params.size() == 1 && params[0].isString() ? params[0] : Arg(params, "id");
@@ -393,6 +421,7 @@ void registerSwapMethods() {
     g_rpcRegistry.registerHandler("swap.cancel", RpcCancel, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.refund", RpcRefund, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.recoverdeposits", RpcRecoverDeposits, RegisterMode::Overwrite, "context-aware");
+    g_rpcRegistry.registerHandler("swap.btcholdings", RpcBtcHoldings, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.deposit", RpcDeposit, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.capabilities", RpcCapabilities, RegisterMode::Overwrite, "context-aware");
 }

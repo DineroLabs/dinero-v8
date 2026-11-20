@@ -98,6 +98,10 @@ struct LightBtcSupport {
     std::function<uint64_t(const Bytes32& deposit_key)> recoverable_sat;
     uint64_t funding_fee_sat{3000};  // part of the deposit: the most the lock's network fee may be
     bool CanPay() const { return deposit_address && deposit_status && sweep_deposit; }
+    // Watch-only: the unspent satoshi a script holds in payments proven into
+    // the node's own header chain (at least one confirmation). Throws if no
+    // server answers. Optional: without it SwapManager::BtcHoldingsOfSwaps refuses.
+    std::function<uint64_t(const std::vector<uint8_t>& script_pubkey)> script_balance;
 };
 // A deposit's state, in the counter chain's smallest unit (zatoshi, or satoshi
 // for a Bitcoin deposit: the field names are Zcash's, where deposits began).
@@ -129,6 +133,9 @@ std::vector<uint8_t> PayoutScriptFromAddress(const std::string& address, const s
 // (1… / 3… on mainnet, m… n… / 2… elsewhere) of the network `hrp` names.
 // Exchanges and older wallets still hand those out. Throws std::invalid_argument.
 std::vector<uint8_t> BtcPayoutScriptFromAddress(const std::string& address, const std::string& hrp);
+// The address of a payout script, the inverse of the above: bech32(m) for a
+// witness program, base58 for P2PKH and P2SH. Empty for any other script.
+std::string BtcAddressFromPayoutScript(const std::vector<uint8_t>& script, const std::string& hrp);
 
 struct OfferRequest {
     CounterChain chain{CounterChain::Bitcoin};  // Zcash: amounts in zatoshi, a t-address below
@@ -250,6 +257,31 @@ public:
         uint32_t indexes_checked{};
     };
     RecoveredDeposits RecoverBtcDeposits(const std::string& btc_address, uint32_t extra_indexes);
+
+    // The Bitcoin at the addresses this wallet's Bitcoin swaps paid to: a
+    // seller's payout address, a buyer's refund address (his lock's change
+    // goes there too). Watch-only: the node has no key for them and the user
+    // chose each one, so an address may belong to an exchange, where the
+    // chain's balance is not the user's balance there. One row per address.
+    // Reads no key and works while the wallet is locked for the swaps already
+    // running; records it cannot read are counted, not hidden. Throws
+    // std::runtime_error on a node that cannot read Bitcoin addresses.
+    struct BtcHoldings {
+        struct Address {
+            std::string address;
+            std::vector<std::string> swap_ids;  // in swap order
+            bool sale_proceeds{false};          // BTC from selling DIN was paid here
+            bool purchase_refund{false};        // refunds and change of buying DIN go here
+            bool known{false};                  // false: no server answered (see problem); sat is 0
+            uint64_t sat{};                     // proven, unspent, at least one confirmation
+            std::string problem;
+        };
+        std::vector<Address> addresses;
+        uint64_t known_sat{};        // the sum of the known rows
+        uint32_t unreadable_swaps{}; // records not read (wallet locked, or damaged)
+        bool complete{true};         // false: a row is unknown or a record was not read
+    };
+    BtcHoldings BtcHoldingsOfSwaps();
 
     // One tick of every unfinished swap. Returns false (and does nothing) when
     // the wallet is locked: swaps are paused, not failed.
