@@ -219,6 +219,7 @@ if(DINERO_SWAP_LIGHT_BTC)
   else()
     target_link_libraries(dinerod PRIVATE curl)
   endif()
+  dinero_keep_static_openssl_private(dinerod)
   message(STATUS "DIN<->BTC swaps without Bitcoin Core: ON (dinerod links libcurl)")
 endif()
 

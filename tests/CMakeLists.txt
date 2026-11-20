@@ -18121,6 +18121,19 @@ set_tests_properties(SwapBtcHttp PROPERTIES LABELS "wallet;swap" TIMEOUT 120 SKI
 
 # A whole DIN -> BTC swap where the seller's dinerod has no Bitcoin Core: headers and broadcast over
 # Bitcoin P2P, lookups to two Esplora servers (one hiding everything), a kill and restart mid-swap.
+# Linux: the programs that link libcurl keep their static OpenSSL to themselves
+# (a crash on the first HTTPS request otherwise; see cmake/BuildOptions.cmake).
+if(DINERO_SWAP_LIGHT_BTC)
+  foreach(_swap_curl_program dinerod dinero-swap-tower)
+    if(TARGET ${_swap_curl_program})
+      add_test(NAME SwapPrivateOpenssl_${_swap_curl_program}
+        COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_private_openssl_check.sh $<TARGET_FILE:${_swap_curl_program}>)
+      set_tests_properties(SwapPrivateOpenssl_${_swap_curl_program} PROPERTIES
+        LABELS "wallet;swap" TIMEOUT 60 SKIP_RETURN_CODE 77)
+    endif()
+  endforeach()
+endif()
+
 if(DINERO_SWAP_LIGHT_BTC AND DINERO_BITCOIND AND TARGET dinerod)
   add_test(NAME SwapLightBtcRegtest
     COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_light_btc_regtest.sh $<TARGET_FILE:dinerod>)

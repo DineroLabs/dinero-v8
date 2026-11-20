@@ -42,6 +42,7 @@ if(NOT WIN32)
       src/wallet/swap/btc_p2p_client.cpp)
     target_compile_definitions(dinero-swap-tower PRIVATE DINERO_SWAP_LIGHT_BTC=1)
     target_link_libraries(dinero-swap-tower PRIVATE dinero_crypto ${DINERO_CURL_TARGET})
+    dinero_keep_static_openssl_private(dinero-swap-tower)
   endif()
   install(TARGETS dinero-swap-tower DESTINATION bin COMPONENT swap-tower)
 
