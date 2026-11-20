@@ -1,4 +1,5 @@
 #pragma once
+#include "p2p/start_once_due.h"
 #include "daemon/iservice.h"
 #include "p2p/self_reachability.h"
 #include "daemon/p2p_manager.h"
@@ -555,6 +556,11 @@ private:
     std::shared_ptr<p2p::OrchardCatalogDownload> CatalogDownload() const;
     void StopCatalogWorkers();
     void StartOrchardHistoryWorkers();
+    // Starts the snapshot-history workers the first time they are needed;
+    // safe to call again and again (see the definition).
+    void EnsureSnapshotHistoryWorkers();
+    std::mutex snapshot_history_start_mutex_;
+    p2p::StartOnceDue snapshot_history_start_;
     void StartSchedulerTickLoop();
     void StopSchedulerTickLoop();
     bool IsDynamicP2PActive() const;

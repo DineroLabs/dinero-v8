@@ -5497,6 +5497,27 @@ endif()
 # 2026-09-16 field incident: connect-only isolation gap in the periodic anchor
 # auto-reconnect probe. Pure decision logic (header-only) — links only gtest,
 # no daemon/sockets.
+# The rule that starts the Orchard snapshot-history workers on a first run.
+add_executable(test_start_once_due tests/services/test_start_once_due.cpp)
+add_dependencies(test_start_once_due gtest gtest_main)
+target_include_directories(test_start_once_due BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(test_start_once_due PRIVATE GTest::gtest_main)
+add_test(NAME StartOnceDue COMMAND test_start_once_due)
+set_tests_properties(StartOnceDue PROPERTIES LABELS "services-boundary-smoke;daemon;p2p;smoke" TIMEOUT 15)
+# The Orchard history target as the download's worker and the wallet threads read it.
+add_executable(test_cached_source tests/services/test_cached_source.cpp)
+add_dependencies(test_cached_source gtest gtest_main)
+target_include_directories(test_cached_source BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(test_cached_source PRIVATE GTest::gtest_main)
+add_test(NAME CachedSource COMMAND test_cached_source)
+set_tests_properties(CachedSource PROPERTIES LABELS "services-boundary-smoke;daemon;p2p;smoke" TIMEOUT 60)
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_anchor_reconnect_policy.cpp)
   add_executable(test_anchor_reconnect_policy
     tests/services/test_anchor_reconnect_policy.cpp
