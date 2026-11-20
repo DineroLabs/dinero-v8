@@ -339,8 +339,25 @@ bool SwapService::Setup(DaemonContext& ctx) {
         return swap::BtcWalletAccountFromSecret(deriver.getPrivateKey(), deriver.getChainCode());
     };
     mc.btc_wallet_on_mainnet = config->GetBool("swap.btc_wallet_mainnet", false);
+    // While the wallet is new, one payment sends at most this much on mainnet
+    // (the swap beta's ceiling); test networks have no limit.
+    mc.btc_wallet_max_send_sat = mc.network == swap::SwapNetwork::Mainnet ? 1'000'000 : 0;
     manager_ = std::make_unique<swap::SwapManager>(mc, derive, InProcessRpc(&ctx), btc_rpc, MakeRetainedSwapFundingOwner(ctx));
     manager_->SetBtcAccountSource(btc_account);
+    // The same account's private half, for signing a payment. Used inside
+    // SwapManager::SendBtc only, and wiped there.
+    manager_->SetBtcAccountSecretSource([&ctx](uint32_t coin_type) -> std::optional<swap::BtcAccountSecret> {
+        if (!ctx.wallet) return std::nullopt;
+        auto wallet_use = WalletService::AcquireWalletUse(ctx.wallet);
+        if (wallet_use->Wallet().isWalletLocked()) return std::nullopt;
+        auto lease = wallet_use->Wallet().AcquireDatabaseLease();
+        auto seed = lease->CopyRecoverySeed(lease->Session());
+        BIP32Deriver deriver(seed->Bytes().data(), seed->Bytes().size());
+        deriver.deriveHardened(swap::kBtcWalletPurpose);
+        deriver.deriveHardened(coin_type);
+        deriver.deriveHardened(0);
+        return swap::BtcAccountSecret{deriver.getPrivateKey(), deriver.getChainCode()};
+    });
     if (zec_wanted && !ZecInstallerSlot()(*manager_, *config, mc.network, InProcessRpc(&ctx))) {
         manager_.reset();
         return false;

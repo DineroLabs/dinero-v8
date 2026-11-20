@@ -262,6 +262,41 @@ check "and finds both payments (41,817 sat)" '[[ "$(jget "$(rpc $APORT btc.getba
 WADDR3=$(jget "$(rpc $APORT btc.getnewaddress '{}')" address)
 check "and does not hand out an address that was paid ($WADDR3)" '[[ "$WADDR3" != "$WADDR" && "$WADDR3" != "$WADDR2" ]]'
 
+echo "=== the built-in Bitcoin wallet pays: shown first, then sent exactly as shown ==="
+PAY_TO=$("${BCLI[@]}" getnewaddress "" bech32m)
+PV=$(rpc $APORT btc.preview "{\"address\":\"$PAY_TO\",\"amount_sat\":20000}"); echo "  $PV" | cut -c1-260
+PTXID=$(jget "$PV" txid)
+check "the preview adds up: amount + fee + change is one coin of the wallet" '(( $(jget "$PV" amount_sat) == 20000 && $(jget "$PV" fee_sat) > 100 && $(jget "$PV" fee_sat) < 2000 && $(jget "$PV" amount_sat) + $(jget "$PV" fee_sat) + $(jget "$PV" change_sat) == 31817 ))'
+check "a preview sends nothing" '[[ "$("${BCLI[@]}" getrawmempool | python3 -c "import sys,json; print(len(json.load(sys.stdin)))")" == 0 ]]'
+out=$(rpc $APORT btc.send "{\"address\":\"$PAY_TO\",\"amount_sat\":20000,\"txid\":\"$(printf '0%.0s' $(seq 1 64))\"}" 2>&1 || true)
+check "a payment other than the one shown is refused (${out:0:70})" '[[ "$out" == *"no longer the one that was shown"* ]]'
+out=$(rpc $APORT btc.send "{\"address\":\"$PAY_TO\",\"amount_sat\":20000}" 2>&1 || true)
+check "sending needs the preview's txid" '[[ "$out" == *"usage: btc.send"* ]]'
+SENT=$(rpc $APORT btc.send "{\"address\":\"$PAY_TO\",\"amount_sat\":20000,\"txid\":\"$PTXID\"}"); echo "  $SENT" | cut -c1-200
+check "sent, with the txid that was shown" '[[ "$(jget "$SENT" sent)" == True && "$(jget "$SENT" txid)" == "$PTXID" ]]'
+for _ in $(seq 1 20); do "${BCLI[@]}" getmempoolentry "$PTXID" >/dev/null 2>&1 && break; sleep 1; done
+ME=$("${BCLI[@]}" getmempoolentry "$PTXID" 2>&1 || true)
+check "Bitcoin Core accepted it into its mempool, replaceable (${ME:0:50})" '[[ "$(jget "$ME" bip125-replaceable)" == True ]]'
+check "it pays the fee that was shown ($(jget "$PV" fee_sat) sat)" '[[ "$(python3 -c "import sys,json; print(round(json.loads(sys.argv[1])[\"fees\"][\"base\"]*1e8))" "$ME")" == "$(jget "$PV" fee_sat)" ]]'
+check "its real size is within the size the fee was computed for" '(( $(jget "$ME" vsize) <= $(jget "$PV" vsize) ))'
+# Before it confirms: its coin is not offered to a second payment.
+PV2=$(rpc $APORT btc.preview "{\"address\":\"$PAY_TO\",\"amount_sat\":5000}")
+check "a second payment uses the other coin (10,000 sat)" '(( $(jget "$PV2" amount_sat) + $(jget "$PV2" fee_sat) + $(jget "$PV2" change_sat) == 10000 ))'
+mine_btc 1; sleep 3
+check "the destination received exactly 20,000 sat" '[[ "$(sats "$PAY_TO")" == 20000 ]]'
+BAL_AFTER=$(jget "$(rpc $APORT btc.getbalance '{}')" sat)
+check "the wallet holds what is left: 41,817 less the payment and its fee ($BAL_AFTER sat)" '(( BAL_AFTER == 41817 - 20000 - $(jget "$PV" fee_sat) ))'
+# Send everything that is left.
+PVA=$(rpc $APORT btc.preview "{\"address\":\"$PAY_TO\",\"send_all\":true}")
+check "send all: the whole balance less the fee, no change" '(( $(jget "$PVA" amount_sat) + $(jget "$PVA" fee_sat) == BAL_AFTER && $(jget "$PVA" change_sat) == 0 && $(jget "$PVA" inputs) == 2 ))'
+rpc $APORT btc.send "{\"address\":\"$PAY_TO\",\"send_all\":true,\"txid\":\"$(jget "$PVA" txid)\"}" >/dev/null
+for _ in $(seq 1 20); do "${BCLI[@]}" getmempoolentry "$(jget "$PVA" txid)" >/dev/null 2>&1 && break; sleep 1; done
+mine_btc 1; sleep 3
+check "the wallet is empty" '[[ "$(jget "$(rpc $APORT btc.getbalance "{}")" sat)" == 0 ]]'
+check "and the destination holds both payments" '(( $(sats "$PAY_TO") == 20000 + $(jget "$PVA" amount_sat) ))'
+out=$(rpc $APORT btc.preview "{\"address\":\"$PAY_TO\",\"amount_sat\":1000}" 2>&1 || true)
+check "an empty wallet says it has not enough (${out:0:80})" '[[ "$out" == *"not enough bitcoin"* ]]'
+
 echo "=== BTC that reaches a deposit address late is recovered ==="
 # A second withdrawal from an exchange arrives after the swap is over, and something lands on the first, cancelled address.
 "${BCLI[@]}" sendtoaddress "$ADDR" 0.0006 >/dev/null

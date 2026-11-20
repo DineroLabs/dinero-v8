@@ -402,7 +402,7 @@ din::Json BtcWalletStatusJson(const swap::SwapManager::BtcWalletState& st) {
     din::Json out(Json::objectValue);
     out["offered"] = st.offered;
     out["enabled"] = st.enabled;
-    out["can_send"] = false;  // receiving and balances only, for now
+    out["can_send"] = st.offered || st.enabled;
     if (!st.why_not.empty()) out["why_not"] = st.why_not;
     if (st.enabled) {
         out["address"] = st.address;
@@ -464,6 +464,75 @@ din::Json RpcBtcBalance(const ExecutionContext& ctx, const din::Json&) {
     }
 }
 
+din::Json BtcPaymentJson(const swap::SwapManager::BtcPayment& p) {
+    din::Json out(Json::objectValue);
+    out["txid"] = p.txid;
+    out["to"] = p.to_address;
+    out["amount_sat"] = Json::UInt64(p.amount_sat);
+    out["fee_sat"] = Json::UInt64(p.fee_sat);
+    out["change_sat"] = Json::UInt64(p.change_sat);
+    out["dust_to_fee_sat"] = Json::UInt64(p.dust_to_fee_sat);
+    out["total_sat"] = Json::UInt64(p.amount_sat + p.fee_sat);
+    out["vsize"] = Json::UInt64(p.vsize);
+    out["feerate_sat_per_vb"] = p.feerate_sat_per_vb;
+    out["balance_before_sat"] = Json::UInt64(p.balance_before_sat);
+    out["inputs"] = Json::UInt64(p.inputs);
+    return out;
+}
+
+// {address, amount_sat | send_all:true, [target_blocks]}: 1 fast, 6 normal (default), 24 slow.
+struct BtcSendArgs {
+    std::string address;
+    uint64_t amount_sat{};
+    bool send_all{false};
+    uint32_t target_blocks{6};
+};
+std::optional<BtcSendArgs> ParseBtcSendArgs(const din::Json& params) {
+    BtcSendArgs a;
+    if (!Arg(params, "address").isString()) return std::nullopt;
+    a.address = Arg(params, "address").asString();
+    a.send_all = Arg(params, "send_all").isBool() && Arg(params, "send_all").asBool();
+    if (!a.send_all) {
+        if (!Arg(params, "amount_sat").isUInt64()) return std::nullopt;
+        a.amount_sat = Arg(params, "amount_sat").asUInt64();
+    } else if (!Arg(params, "amount_sat").isNull()) {
+        return std::nullopt;  // one or the other
+    }
+    if (Arg(params, "target_blocks").isUInt()) a.target_blocks = Arg(params, "target_blocks").asUInt();
+    return a;
+}
+const char* const kBtcSendUsage = "{address, amount_sat (or send_all: true), [target_blocks: 1 fast, 6 normal, 24 slow]}";
+
+// What a payment would be: signs nothing, sends nothing, needs no unlock.
+din::Json RpcBtcPreview(const ExecutionContext& ctx, const din::Json& params) {
+    if (auto e = Refuse(ctx, false)) return *e;
+    const auto a = ParseBtcSendArgs(params);
+    if (!a) return Error(std::string("usage: btc.preview ") + kBtcSendUsage);
+    try {
+        return BtcPaymentJson(SwapService::Active()->manager()->PreviewBtcSend(a->address, a->amount_sat, a->send_all, a->target_blocks));
+    } catch (const std::exception& e) {
+        return Error(e.what());
+    }
+}
+
+// Sends the payment btc.preview showed: `txid` is the preview's, and the
+// payment is refused if it would no longer be that one.
+din::Json RpcBtcSend(const ExecutionContext& ctx, const din::Json& params) {
+    if (auto e = Refuse(ctx, true)) return *e;
+    const auto a = ParseBtcSendArgs(params);
+    if (!a || !Arg(params, "txid").isString()) {
+        return Error(std::string("usage: btc.send ") + kBtcSendUsage + " and txid: the txid btc.preview showed for it");
+    }
+    try {
+        din::Json out = BtcPaymentJson(SwapService::Active()->manager()->SendBtc(a->address, a->amount_sat, a->send_all,
+                                                                              a->target_blocks, Arg(params, "txid").asString()));
+        out["sent"] = true;
+        return out;
+    } catch (const std::exception& e) {
+        return Error(e.what());
+    }
+}
+
 din::Json RpcCancel(const ExecutionContext& ctx, const din::Json& params) {
     if (auto e = Refuse(ctx, false)) return *e;
     const din::Json& id = params.isArray() && params.size() == 1 && params[0].isString() ? params[0] : Arg(params, "id");
@@ -494,6 +563,8 @@ void registerSwapMethods() {
     g_rpcRegistry.registerHandler("btc.enable", RpcBtcEnable, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("btc.getnewaddress", RpcBtcNewAddress, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("btc.getbalance", RpcBtcBalance, RegisterMode::Overwrite, "context-aware");
+    g_rpcRegistry.registerHandler("btc.preview", RpcBtcPreview, RegisterMode::Overwrite, "context-aware");
+    g_rpcRegistry.registerHandler("btc.send", RpcBtcSend, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.deposit", RpcDeposit, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.capabilities", RpcCapabilities, RegisterMode::Overwrite, "context-aware");
 }
