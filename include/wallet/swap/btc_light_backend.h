@@ -79,6 +79,12 @@ public:
     // say, never below 1. nullopt if none answers.
     std::optional<double> FeeRate(uint32_t target_blocks);
 
+    // True once a sync round of this run was answered and added fewer than a
+    // hundred headers: the chain is at Bitcoin's tip, or within minutes of
+    // it. Until then recent payments cannot be proven, and a reader would
+    // take them for missing.
+    bool CaughtUp() const { return caught_up_.load(); }
+
     const BtcHeaderChain& chain() const { return chain_; }
     std::unique_lock<std::mutex> Lock() const { return std::unique_lock<std::mutex>(chain_mu_); }
     std::vector<EsploraServer*> servers();
@@ -106,6 +112,7 @@ private:
     size_t next_peer_{0};
     uint32_t last_sync_{0};
     bool synced_once_{false};
+    std::atomic<bool> caught_up_{false};
     std::atomic<uint32_t> tip_height_{0};
     mutable std::mutex problem_mu_;
     std::string problem_;

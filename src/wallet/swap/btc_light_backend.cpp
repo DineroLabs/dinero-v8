@@ -158,7 +158,10 @@ void BtcLightBackend::Sync(uint32_t now_unix, bool force) {
     } catch (const std::exception& e) {
         problem = std::string("Bitcoin header sync failed: ") + e.what();
     }
+    const uint32_t before = tip_height_.load();
     Merge(working, now_unix);
+    const uint32_t after = tip_height_.load();
+    if (problem.empty()) caught_up_ = after < before + 100;
     std::lock_guard<std::mutex> lock(problem_mu_);
     problem_ = problem;
 }

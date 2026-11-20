@@ -154,6 +154,12 @@ std::function<void(uint32_t)> InstallLightBitcoin(swap::SwapManager& manager, co
         // that is busy for a moment answers one of them with nothing. Ask that
         // one again, with the locks released in between, before giving up on
         // the whole reading.
+        // Just started, or back after hours offline: the header chain is
+        // behind, recent payments cannot be proven, and the balance would
+        // come out too small. Not ready is the honest answer.
+        if (!backend->CaughtUp()) {
+            throw std::runtime_error("still catching up with Bitcoin's block headers: try again in a moment");
+        }
         swap::BtcDepositView view;
         {
             std::lock_guard<std::mutex> one(watched->mu);

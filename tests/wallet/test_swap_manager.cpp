@@ -1443,6 +1443,18 @@ TEST(SwapManager, TheBitcoinWalletIsTurnedOnFromTheSeedAndReadWhileLocked) {
     EXPECT_EQ(coin_types.size(), asked_for_seed) << "reading needs no seed";
     reachable = false;
     EXPECT_THROW(m.BtcWalletBalance(), std::runtime_error);  // never an empty wallet instead
+    reachable = true;
+    // Just started: Bitcoin's headers are not up to date, so recent payments
+    // cannot be proven yet. That is "not ready", not a smaller balance.
+    light.tip_height = []() -> uint32_t { throw std::runtime_error("Bitcoin headers are still syncing"); };
+    m.SetLightBitcoin(light);
+    try {
+        m.BtcWalletBalance();
+        ADD_FAILURE() << "a balance from a header chain that is behind";
+    } catch (const std::runtime_error& e) {
+        EXPECT_STREQ(e.what(), "Bitcoin headers are still syncing");
+    }
+    EXPECT_THROW(m.BtcWalletHistory(), std::runtime_error);
 }
 
 TEST(SwapManager, ABitcoinPaymentIsShownThenSentExactlyAsShown) {
