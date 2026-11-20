@@ -676,6 +676,7 @@ private:
     bool startsNewBlock = false;
   };
   QVector<MiningHashSample> miningHashSamples_;
+  bool miningFoundPendingTemplate_ = false;
   // Height the miner is working on; a change marks the first row of a new block.
   int miningTipHeight_ = -1;
   QString miningSessionHeader_;

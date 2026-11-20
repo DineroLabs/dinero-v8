@@ -66,10 +66,10 @@ private Q_SLOTS:
     QVERIFY2(first.g - first.r <= grey.g - grey.r + 2 && first.b - first.g <= grey.b - grey.g + 2,
              "must stay the same grey tone, not a new colour");
     QVERIFY(first.r - grey.r <= 60);  // a slight lift, not a highlight
-    // Your own found block stays orange.
+    // The one current find is orange, distinct from the new-template row.
     const auto mine = hashRowColor(true, true, true);
-    QCOMPARE(mine.r, 213); QCOMPARE(mine.g, 138); QCOMPARE(mine.b, 50); QCOMPARE(mine.a, 255);
-    QCOMPARE(hashRowColor(true, false, false).a, 205);
+    QCOMPARE(mine.r, 255); QCOMPARE(mine.g, 176); QCOMPARE(mine.b, 48); QCOMPARE(mine.a, 255);
+    QCOMPARE(hashRowColor(true, false, false).a, 225);
   }
 
   void compactDifficultyMatchesMinerOutput() {
