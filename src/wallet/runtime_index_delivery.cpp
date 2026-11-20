@@ -1891,6 +1891,12 @@ void RuntimeOrdinaryDelivery::ReconcileCoverage(WalletManager& wallet,UTXOIndex&
     }
     RuntimeIndexDelivery::ReconcileCoverage(index,source,[&] {
         WriteCoverageOrdinary(db,wallet.current_wallet_id_,scripts,source,plan);
+        // The ordinary receipt and the status watermark describe the same
+        // committed coverage. Write the watermark first: its guard revokes
+        // the old receipt, which is replaced below in this transaction.
+        Statement scan(db,"UPDATE sync_meta SET last_scanned_height=?,scan_complete=1 WHERE id=1");
+        scan.Int(1,source.TipHeight());scan.Done();
+        if(sqlite3_changes(db)!=1)Fail("Coverage scan watermark unavailable");
         Receipt next{{source.Head(),origin.OriginHash(),source.TipHash(),origin.OriginHeight(),source.TipHeight()},Profile(origin.first_.context)};
         Statement receipt(db,"UPDATE wallet_meta SET runtime_ordinary_receipt=?,runtime_ordinary_invalid=0 WHERE id=1");
         receipt.Blob(1,Encode(next,origin.identity_,scripts.digest,"DNOW01"));receipt.Done();
@@ -2421,11 +2427,12 @@ RuntimeIndexProgress RuntimeOrdinaryDelivery::ApplyInTransaction(WalletManager& 
     Exec(db,"UPDATE utxos SET is_mature=CASE WHEN is_coinbase=0 OR confirmations>=100 THEN 1 ELSE 0 END");
     OrdinaryInt(db,"UPDATE transactions SET confirmations=CASE WHEN height>0 THEN MAX(0,?-height+1) ELSE 0 END",after.second);
     OrdinaryInt(db,"INSERT INTO tip(rowid,height) VALUES(1,?) ON CONFLICT(rowid) DO UPDATE SET height=excluded.height",after.second);
-    if(lease->TypedTransparentState()==WalletManager::LegacyTransparentState::Complete) {
-        Statement scan(db,"UPDATE sync_meta SET last_scanned_height=?,scan_complete=1 WHERE id=1");
-        scan.Int(1,after.second);scan.Done();
-        if(sqlite3_changes(db)!=1)Fail("Legacy transparent incremental scan watermark unavailable");
-    }
+    // Both native and migrated wallets report the height their ordinary
+    // delivery actually committed. The sync_meta guard revokes the previous
+    // receipt; seal the new one only after this write, in the same commit.
+    Statement scan(db,"UPDATE sync_meta SET last_scanned_height=?,scan_complete=1 WHERE id=1");
+    scan.Int(1,after.second);scan.Done();
+    if(sqlite3_changes(db)!=1)Fail("Ordinary incremental scan watermark unavailable");
     Receipt next;next.profile=profile;next.progress={event.cursor,old?old->progress.origin_hash:before.first,after.first,old?old->progress.origin_height:before.second,after.second};
     const auto bytes=Encode(next,identity,scripts.digest,"DNOW01");
     Statement checkpoint(db,"UPDATE wallet_meta SET runtime_ordinary_receipt=?,runtime_ordinary_invalid=0 WHERE id=1");checkpoint.Blob(1,bytes);checkpoint.Done();
