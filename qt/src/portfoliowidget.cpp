@@ -69,15 +69,18 @@ QString ErrorOf(const QJsonValue& result) {
 }
 }  // namespace
 
-PortfolioWidget::PortfolioWidget(RpcClient* rpc, QWidget* parent) : QWidget(parent), rpc_(rpc) {
+PortfolioWidget::PortfolioWidget(RpcClient* rpc, QWidget* parent, Place place)
+    : QWidget(parent), rpc_(rpc), place_(place) {
     auto* root = new QVBoxLayout(this);
+    const bool withinWallet = place_ == Place::WithinWallet;
+    if (withinWallet) root->setContentsMargins(0, 0, 0, 0);  // a section of the page, not a page
 
-    auto* coinsBox = new QGroupBox("Your coins", this);
+    auto* coinsBox = new QGroupBox(withinWallet ? "Other coins in this wallet" : "Your coins", this);
     coinsBox->setObjectName("portfolioCoins");
     auto* coinsLayout = new QVBoxLayout(coinsBox);
     coins_ = Table({"Coin", "You hold", "How it is known"}, "coinsTable", coinsBox);
     coins_->setSelectionMode(QAbstractItemView::NoSelection);
-    coins_->setMaximumHeight(170);
+    coins_->setMaximumHeight(withinWallet ? 130 : 170);
     refresh_ = Button("Refresh", "Ask your node again for every balance", "portfolioRefresh", coinsBox);
     auto* coinsButtons = new QHBoxLayout;
     coinsButtons->addStretch();
@@ -179,7 +182,7 @@ PortfolioWidget::PortfolioWidget(RpcClient* rpc, QWidget* parent) : QWidget(pare
     status_->setVisible(false);
     btcLayout->addWidget(status_);
     root->addWidget(btcBox_);
-    root->addStretch(1);
+    if (!withinWallet) root->addStretch(1);  // the Wallet page keeps its own spare height below
 
     connect(rpc_, &RpcClient::rpcResult, this, &PortfolioWidget::onRpcResult);
     connect(rpc_, &RpcClient::rpcError, this, &PortfolioWidget::onRpcError);
@@ -214,7 +217,7 @@ void PortfolioWidget::showEvent(QShowEvent* event) {
 // The Bitcoin balance asks public servers about this wallet's addresses.
 // Turning the wallet on is the user's consent to that; before, nothing is asked.
 void PortfolioWidget::refresh() {
-    rpc_->callAs("wallet.getbalance", {}, kDin);
+    if (place_ == Place::Standalone) rpc_->callAs("wallet.getbalance", {}, kDin);
     rpc_->callNamedAs("btc.status", QJsonObject{}, kStatus);
 }
 
@@ -225,7 +228,7 @@ void PortfolioWidget::say(const QString& text, bool problem) {
 }
 
 void PortfolioWidget::showCoins() {
-    const auto rows = PortfolioPolicy::coinRows(dinTotal_, btcStatus_, btcBalance_, btcProblem_);
+    const auto rows = PortfolioPolicy::coinRows(dinTotal_, btcStatus_, btcBalance_, btcProblem_, place_ == Place::Standalone);
     coins_->setRowCount(rows.size());
     for (int i = 0; i < rows.size(); ++i) {
         const QString values[3] = {rows[i].coin, rows[i].amount.isEmpty() ? QString::fromUtf8("—") : rows[i].amount, rows[i].note};

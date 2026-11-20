@@ -3419,6 +3419,12 @@ void MainWindow::setupUI() {
     addressLayout->addWidget(txtValidation_);
     
     layout->addWidget(addressGroup);
+#if defined(DIN_ENABLE_SWAP_UI) && DIN_ENABLE_SWAP_UI
+    // The other coins this wallet can hold (Bitcoin first), on the Wallet page
+    // itself: most users hold only DIN, so this is one more section here, not
+    // an entry of its own in the main menu (docs/design/multi-coin-wallet.md).
+    layout->addWidget(new PortfolioWidget(rpc_, wallet, PortfolioWidget::Place::WithinWallet));
+#endif
     layout->addStretch(1);  // spare height goes below the content, not into the boxes
     
     connect(btnNewAddress_, &QPushButton::clicked, this, &MainWindow::onNewAddress);
@@ -4205,8 +4211,6 @@ void MainWindow::setupUI() {
   // Off in release builds until the swap code has had external review.
   {
     tabs->addTab(makeScrollableTab(new SwapWidget(rpc_, this)), navigationIcon(NavigationGlyph::Swap), "Swap");
-    // Every coin this wallet holds, and the built-in Bitcoin wallet (docs/design/multi-coin-wallet.md).
-    tabs->addTab(makeScrollableTab(new PortfolioWidget(rpc_, this)), navigationIcon(NavigationGlyph::Swap), "Portfolio");
   }
 #endif
 
