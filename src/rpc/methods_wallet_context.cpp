@@ -8061,6 +8061,18 @@ static void AddCreationReceiveAddresses(const ExecutionContext& ctx, din::Json& 
 #else
     result["orchard_error"] = "Orchard wallet backend unavailable";
 #endif
+    // Bitcoin, from the same recovery words (the built-in Bitcoin wallet's
+    // account), when this node runs its Bitcoin client: the new wallet can
+    // be paid bitcoin, and sell DIN for it, without a further step. Absent
+    // on a node that does not run it; never an error of wallet creation.
+    try {
+        if (auto* btc = g_rpcRegistry.lookup("btc.enable")) {
+            const auto enabled = (*btc)(ctx, din::Json(Json::objectValue));
+            if (enabled.isObject() && enabled.isMember("address") && enabled["address"].isString())
+                result["first_btc_address"] = enabled["address"];
+        }
+    } catch (const std::exception&) {
+    }
 }
 
 din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Json& params) {
