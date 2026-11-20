@@ -45,6 +45,7 @@ private Q_SLOTS:
 private:
     void setupUi();
     void showStatus(const QString& text, bool error);
+    void showRefreshError(const QString& text);
     void acceptOffer(const QString& offerText, const QJsonObject& decoded);
     void startFromAccept(const QString& acceptText);
     void updateSwitch();
@@ -68,6 +69,7 @@ private:
     int nodeSwaps_{0};          // SwapLaunchPolicy::Node: what swap.list last said
     QString offReason_;         // why the node refused the swap settings
     bool unfinishedSwaps_{false};
+    bool refreshErrorShown_{false};  // the status line is a failed background refresh
     std::function<bool()> confirmEnable_;
     QLabel* depositTitle_{nullptr};
     QString depositCoin_{"ZEC"};  // the coin of the deposit being shown

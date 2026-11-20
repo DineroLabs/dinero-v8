@@ -226,6 +226,28 @@ private Q_SLOTS:
         create->click();
     }
 
+    // A failed background refresh is shown, and goes away when the node answers again.
+    // (Seen on mainnet: "Connection refused" from the seconds a node was restarting
+    // stayed on screen above a list that was loading fine.)
+    void aFailedRefreshClearsWhenTheNodeAnswersAgain() {
+        auto* status = Find<QLabel>(tab_, "swapStatus");
+        Q_EMIT rpc_->rpcError("swaptab.list", -1, "Connection refused");
+        QVERIFY(status->isVisible());
+        QCOMPARE(status->text(), QString("Connection refused"));
+        Q_EMIT rpc_->rpcResult("swaptab.list", QJsonArray{QJsonObject{{"id", "aa"}, {"state", "offer-sent"}}});
+        QVERIFY2(!status->isVisible(), qPrintable(status->text()));
+        // What an action answered stays: a refresh does not wipe it.
+        Q_EMIT rpc_->rpcError("swaptab.offer", -32603, "not enough DIN");
+        QVERIFY(status->isVisible());
+        Q_EMIT rpc_->rpcResult("swaptab.list", QJsonArray{});
+        QVERIFY(status->isVisible());
+        QCOMPARE(status->text(), QString("not enough DIN"));
+        // And a new refresh failure after an action's message is again taken down.
+        Q_EMIT rpc_->rpcError("swaptab.list", -1, "Connection refused");
+        Q_EMIT rpc_->rpcResult("swaptab.list", QJsonArray{});
+        QVERIFY(!status->isVisible());
+    }
+
     // --- The "Enable swaps" switch ---
     void theSwitchAsksStoresAndExplains() {
         auto* text = Find<QLabel>(tab_, "swapSwitchText");

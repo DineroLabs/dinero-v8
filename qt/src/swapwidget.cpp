@@ -584,9 +584,18 @@ void SwapWidget::onSwitchClicked() {
 }
 
 void SwapWidget::showStatus(const QString& text, bool error) {
+    refreshErrorShown_ = false;  // whatever is said next replaces it
     status_->setText(text);
     status_->setStyleSheet(PayCollectPolicy::pillStyle(error ? Tone::Bad : Tone::Good));
     status_->setVisible(!text.isEmpty());
+}
+
+// A failed background refresh (the swap list, asked for every few seconds):
+// shown, and taken down again by the next refresh that works. An answer to
+// something the user did stays until they do something else.
+void SwapWidget::showRefreshError(const QString& text) {
+    showStatus(text, true);
+    refreshErrorShown_ = true;
 }
 
 void SwapWidget::refresh() { rpc_->callNamedAs("swap.list", QJsonObject{}, kList); }
@@ -814,7 +823,7 @@ void SwapWidget::onRpcResult(const QString& method, const QJsonValue& result) {
             table_->setVisible(false);
             listEmpty_->setVisible(true);
             if (message.contains("disabled")) noteSwapsOff(message);
-            else showStatus(message, true);
+            else showRefreshError(message);
         } else {
             showStatus(message, true);
         }
@@ -899,6 +908,7 @@ void SwapWidget::onRpcResult(const QString& method, const QJsonValue& result) {
         const QString selected =
             table_->currentRow() >= 0 ? table_->item(table_->currentRow(), 0)->data(Qt::UserRole).toString() : QString();
         const QJsonArray swaps = result.toArray();
+        if (refreshErrorShown_) showStatus(QString(), false);  // the node answers again
         nodeSwaps_ = static_cast<int>(SwapLaunchPolicy::Node::On);
         offReason_.clear();
         unfinishedSwaps_ = false;
@@ -965,7 +975,8 @@ void SwapWidget::onRpcError(const QString& method, int code, const QString& mess
         table_->setRowCount(0);
         table_->setVisible(false);
         listEmpty_->setVisible(true);
-        return showStatus("This node does not offer swaps (connect to your own dinerod with swap.enable=1).", true);
+        return showRefreshError("This node does not offer swaps (connect to your own dinerod with swap.enable=1).");
     }
+    if (method == kList) return showRefreshError(message);  // e.g. "Connection refused" while the node starts
     showStatus(message, true);
 }
