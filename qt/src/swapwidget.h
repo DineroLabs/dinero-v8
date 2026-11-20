@@ -53,6 +53,9 @@ private:
     void noteSwapsOff(const QString& nodeMessage);
     void showDeposit(const QJsonObject& status);
     void hideDeposit();
+    void onCheckHoldings();
+    void showHoldings(const QJsonObject& reply);
+    void showHoldingsProblem(const QString& message);
 
     RpcClient* rpc_;
     QString chain_{"mainnet"};
@@ -120,6 +123,12 @@ private:
     QPushButton* copyDeposit_;
     QPushButton* acceptDeposit_;
     QPushButton* withdrawDeposit_;
+
+    // The Bitcoin at the addresses the swaps paid to: asked only on a click.
+    QGroupBox* holdingsBox_{nullptr};
+    QPushButton* checkHoldings_{nullptr};
+    QTableWidget* holdingsTable_{nullptr};
+    QLabel* holdingsSummary_{nullptr};
 
     QLabel* listEmpty_;
     QTableWidget* table_;

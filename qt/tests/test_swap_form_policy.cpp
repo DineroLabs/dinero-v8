@@ -1,4 +1,5 @@
 #include <QtTest/QtTest>
+#include <QJsonArray>
 #include "swapformpolicy.h"
 #include "swaplaunchpolicy.h"
 
@@ -259,6 +260,48 @@ private Q_SLOTS:
         v = switchView(false, Node::On, "", false);
         QVERIFY2(v.text.contains("until Dinero is restarted"), qPrintable(v.text));
         QVERIFY(v.turnsOn);
+    }
+
+    // The Bitcoin at the addresses the swaps paid to, in words.
+    void holdingsSayWhatIsKnownAndWhatIsNot() {
+        using SwapFormPolicy::holdingsView;
+        auto v = holdingsView(QJsonObject{{"addresses", QJsonArray{}}, {"known_sat", 0}, {"unreadable_swaps", 0},
+                                          {"complete", true}});
+        QVERIFY(v.rows.isEmpty());
+        QVERIFY(!v.incomplete);
+        QCOMPARE(v.summary, QString("No swap of this wallet has paid Bitcoin to an address yet."));
+
+        const QJsonObject sale{{"address", "bc1qsale"}, {"known", true}, {"sat", 29000}, {"sale_proceeds", true},
+                               {"purchase_refund", false}};
+        const QJsonObject refund{{"address", "bc1qrefund"}, {"known", true}, {"sat", 2817}, {"sale_proceeds", false},
+                                 {"purchase_refund", true}};
+        v = holdingsView(QJsonObject{{"addresses", QJsonArray{sale, refund}}, {"known_sat", 31817},
+                                     {"unreadable_swaps", 0}, {"complete", true}});
+        QCOMPARE(v.rows.size(), 2);
+        QCOMPARE(v.rows[0].amount, QString("0.00029000 BTC"));
+        QCOMPARE(v.rows[0].what, QString("Paid to you for DIN you sold"));
+        QCOMPARE(v.rows[1].what, QString("Refunds and change from buying DIN"));
+        QCOMPARE(v.summary, QString("0.00031817 BTC at 2 addresses."));
+        QVERIFY(!v.incomplete);
+
+        // An address no server answered for is never shown as empty.
+        const QJsonObject unread{{"address", "bc1qunread"}, {"known", false}, {"problem", "cannot reach any Bitcoin server"},
+                                 {"sale_proceeds", true}, {"purchase_refund", true}};
+        v = holdingsView(QJsonObject{{"addresses", QJsonArray{sale, unread}}, {"known_sat", 29000},
+                                     {"unreadable_swaps", 0}, {"complete", false}});
+        QCOMPARE(v.rows[1].amount, QString("Not read"));
+        QVERIFY(!v.rows[1].known);
+        QVERIFY(v.rows[1].what.contains("sold") && v.rows[1].what.contains("buying"));
+        QVERIFY(v.incomplete);
+        QVERIFY2(v.summary.startsWith("0.00029000 BTC at 2 addresses. 1 address could not be read") &&
+                     v.summary.contains("not the whole amount"),
+                 qPrintable(v.summary));
+
+        // A locked wallet after a restart: said, not shown as "nothing".
+        v = holdingsView(QJsonObject{{"addresses", QJsonArray{}}, {"known_sat", 0}, {"unreadable_swaps", 3},
+                                     {"complete", false}});
+        QVERIFY(v.incomplete);
+        QCOMPARE(v.summary, QString("3 swaps could not be opened while the wallet is locked: unlock it and check again."));
     }
 };
 

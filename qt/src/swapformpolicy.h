@@ -7,7 +7,9 @@
 
 #include <QCryptographicHash>
 #include <QDateTime>
+#include <QJsonArray>
 #include <QJsonObject>
+#include <QList>
 #include <QString>
 #include <QStringList>
 
@@ -302,6 +304,66 @@ inline AcceptReview reviewDecodedOffer(const QJsonObject& d, const QString& expe
                       localTime(tDin))
                  .arg(d.value("n_din").toInt());
     return r;
+}
+
+// The Bitcoin at the addresses this wallet's swaps paid to (swap.btcholdings),
+// in words. Watch-only: nothing here can be spent from the app, and an address
+// may be an exchange's, where the chain's balance is not the user's.
+struct HoldingRow {
+    QString address;
+    QString what;
+    QString amount;
+    bool known{false};
+};
+struct HoldingsView {
+    QList<HoldingRow> rows;
+    QString summary;
+    bool incomplete{false};  // the summary is not the whole picture
+};
+
+inline HoldingsView holdingsView(const QJsonObject& reply) {
+    HoldingsView v;
+    int unknown = 0;
+    for (const auto& entry : reply.value("addresses").toArray()) {
+        const QJsonObject a = entry.toObject();
+        HoldingRow r;
+        r.address = a.value("address").toString();
+        r.known = a.value("known").toBool();
+        const bool sale = a.value("sale_proceeds").toBool(), refund = a.value("purchase_refund").toBool();
+        r.what = sale && refund ? "Paid to you for DIN you sold; refunds and change from buying DIN"
+                 : sale ? "Paid to you for DIN you sold"
+                        : "Refunds and change from buying DIN";
+        if (r.known) {
+            r.amount = formatUnits(a.value("sat").toVariant().toLongLong()) + " BTC";
+        } else {
+            r.amount = "Not read";
+            ++unknown;
+        }
+        v.rows.append(r);
+    }
+    const int unreadable = reply.value("unreadable_swaps").toInt();
+    if (v.rows.isEmpty() && unreadable == 0) {
+        v.summary = "No swap of this wallet has paid Bitcoin to an address yet.";
+        return v;
+    }
+    if (!v.rows.isEmpty()) {
+        v.summary = QString("%1 BTC at %2.")
+                        .arg(formatUnits(reply.value("known_sat").toVariant().toLongLong()),
+                             v.rows.size() == 1 ? QString("1 address") : QString("%1 addresses").arg(v.rows.size()));
+    }
+    if (unknown > 0) {
+        v.incomplete = true;
+        v.summary += QString(" %1 could not be read (no Bitcoin server answered), so this is not the whole amount. "
+                             "Check again in a minute.")
+                         .arg(unknown == 1 ? QString("1 address") : QString("%1 addresses").arg(unknown));
+    }
+    if (unreadable > 0) {
+        v.incomplete = true;
+        v.summary += QString(" %1 could not be opened while the wallet is locked: unlock it and check again.")
+                         .arg(unreadable == 1 ? QString("1 swap") : QString("%1 swaps").arg(unreadable));
+    }
+    v.summary = v.summary.trimmed();
+    return v;
 }
 
 }  // namespace SwapFormPolicy
