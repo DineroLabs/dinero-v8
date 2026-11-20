@@ -799,7 +799,7 @@ bool walletUnlockedFromRpc(const QJsonObject& obj) {
 }
 
 QString miningStatusActiveText() {
-  return QStringLiteral("Mining - Dinero: Real Money For Free People - Post-Quantum Native");
+  return QStringLiteral("Dinero: Real Money For Free People - Post-Quantum Native");
 }
 
 QString miningStatusInactiveText() {
@@ -810,6 +810,39 @@ QString chromePillStyle() {
   return QStringLiteral(
     "QLabel { padding: 5px 10px; background: #272c33; color: #d6dde6; "
     "border: 1px solid #3a4048; border-radius: 6px; font-weight: 600; }");
+}
+
+QString miningStatusStyle() {
+  return QStringLiteral(
+    "QLabel { padding: 5px 10px; background: #000000; color: #bec8d0; "
+    "border: 1px solid #293138; border-radius: 6px; font-weight: 600; }");
+}
+
+QString miningButtonStyle() {
+  return QStringLiteral(
+    "QPushButton { min-height: 30px; max-height: 30px; padding: 0 10px; "
+    "background: #000000; color: #c2cbd2; border: 1px solid #303940; "
+    "border-radius: 8px; font-size: 12px; font-weight: 600; } "
+    "QPushButton:hover { background: #10161a; border-color: #48525a; } "
+    "QPushButton:pressed { background: #182127; } "
+    "QPushButton:disabled { background: #000000; color: #747e86; "
+    "border-color: #252c31; }");
+}
+
+QString miningComboStyle() {
+  return QStringLiteral(
+    "QComboBox { background: #000000; color: #c2cbd2; border: 1px solid #303940; "
+    "border-radius: 8px; padding: 0 8px; font-size: 12px; } "
+    "QComboBox:disabled { color: #747e86; border-color: #252c31; } "
+    "QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right; "
+    "width: 22px; border-left: 1px solid #303940; background: #000000; "
+    "border-top-right-radius: 8px; border-bottom-right-radius: 8px; } "
+    "QComboBox::down-arrow { width: 0; height: 0; margin-right: 7px; "
+    "border-left: 5px solid transparent; border-right: 5px solid transparent; "
+    "border-top: 6px solid #aebac3; } "
+    "QComboBox::down-arrow:disabled { border-top: 6px solid #5d6870; } "
+    "QComboBox QAbstractItemView { background: #050505; color: #c2cbd2; "
+    "selection-background-color: #1b262b; selection-color: #d4dce2; }");
 }
 
 QString chromeSectionLabelStyle() {
@@ -857,8 +890,9 @@ QScrollArea* makeScrollableTab(QWidget* page) {
 
 QString miningControlFieldStyle() {
   return QStringLiteral(
-    "QLineEdit { min-height: 30px; max-height: 30px; background: #1f2328; color: #d7dde5; "
-    "border: 1px solid #353b44; border-radius: 8px; padding: 0 10px; font-size: 13px; }");
+    "QLineEdit { min-height: 30px; max-height: 30px; background: #000000; color: #c2cbd2; "
+    "border: 1px solid #303940; border-radius: 8px; padding: 0 10px; font-size: 13px; } "
+    "QLineEdit:disabled { color: #747e86; border-color: #252c31; }");
 }
 
 QString miningConsoleFontFamily() {
@@ -1660,7 +1694,7 @@ QString ensureDineroBlockCoinGlyphPath() {
 }
 
 constexpr char kMiningBlockCardProperty[] = "_dineroMiningBlockCardLines";
-constexpr char kMiningOutputTextColor[] = "#f1f4f7";
+constexpr char kMiningOutputTextColor[] = "#bec8d0";
 constexpr char kMiningOutputIdleBackground[] = "#000000";
 constexpr char kMiningOutputMatrixBackground[] = "#000000";
 
@@ -4595,6 +4629,8 @@ void MainWindow::setupUI() {
 #else
     // Widgets-based mining tab
     auto *mining = new QWidget;
+    mining->setObjectName("miningContent");
+    mining->setStyleSheet("QWidget#miningContent { background: #000000; }");
     auto *layout = new QVBoxLayout(mining);
     layout->setSpacing(6); // Compact spacing
 
@@ -4602,8 +4638,9 @@ void MainWindow::setupUI() {
     auto *quickMineGroup = new QGroupBox("");
     miningControlsGroup_ = quickMineGroup;
     quickMineGroup->setStyleSheet(
-      "QGroupBox { border: 1px solid #30353d; border-radius: 10px; margin-top: 0px; "
-      "padding-top: 8px; background: #20242a; }");
+      "QGroupBox { border: 1px solid #293138; border-radius: 10px; margin-top: 0px; "
+      "padding-top: 8px; background: #000000; } "
+      "QGroupBox QLabel { background: transparent; color: #bec8d0; }");
     quickMineGroup->setMaximumHeight(150); // Increased height for miner type row
     auto *quickMineLayout = new QVBoxLayout(quickMineGroup);
     quickMineLayout->setSpacing(6);
@@ -4619,10 +4656,7 @@ void MainWindow::setupUI() {
     cmbMiningMode_->addItem("Pool Mining (SV2)", "sv2_pool");
     cmbMiningMode_->setCurrentIndex(0);
     cmbMiningMode_->setFixedHeight(30);
-    cmbMiningMode_->setStyleSheet(
-      "QComboBox { background: #1f2328; color: #d7dde5; border: 1px solid #353b44; "
-      "border-radius: 8px; padding: 0 8px; font-size: 12px; } "
-      "QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right; width: 22px; border-left: 1px solid #353b44; background: #21262c; border-top-right-radius: 8px; border-bottom-right-radius: 8px; } QComboBox::down-arrow { width: 0; height: 0; margin-right: 7px; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid #c4cdd9; } QComboBox::down-arrow:disabled { border-top: 6px solid #5b6470; }");
+    cmbMiningMode_->setStyleSheet(miningComboStyle());
     cmbMiningMode_->setToolTip(
       "Solo = mine directly with your node.\n"
       "Pool (Stratum V1) = submit shares to a V1 pool (legacy, cleartext).\n"
@@ -4658,7 +4692,7 @@ void MainWindow::setupUI() {
     modeRow->addWidget(edtStratumEndpoint_, 2);
 
     btnLocalStratum_ = new QPushButton("Start Local");
-    btnLocalStratum_->setStyleSheet(headerButtonStyle());
+    btnLocalStratum_->setStyleSheet(miningButtonStyle());
     btnLocalStratum_->setFixedSize(104, 30);
     btnLocalStratum_->setVisible(false);
     btnLocalStratum_->setToolTip(
@@ -4732,10 +4766,7 @@ void MainWindow::setupUI() {
       cmbSv2Backend_->setCurrentIndex(idx >= 0 ? idx : 0);
     }
     cmbSv2Backend_->setFixedHeight(30);
-    cmbSv2Backend_->setStyleSheet(
-      "QComboBox { background: #1f2328; color: #d7dde5; border: 1px solid #353b44; "
-      "border-radius: 8px; padding: 0 8px; font-size: 12px; } "
-      "QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right; width: 22px; border-left: 1px solid #353b44; background: #21262c; border-top-right-radius: 8px; border-bottom-right-radius: 8px; } QComboBox::down-arrow { width: 0; height: 0; margin-right: 7px; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid #c4cdd9; } QComboBox::down-arrow:disabled { border-top: 6px solid #5b6470; }");
+    cmbSv2Backend_->setStyleSheet(miningComboStyle());
     cmbSv2Backend_->setToolTip(
       "CPU = dinero-sv2-miner (all cores hashing).\n"
       "GPU (Metal) = dinero-sv2-gpu-miner (Apple Silicon, ~500 MH/s).");
@@ -4805,10 +4836,7 @@ void MainWindow::setupUI() {
     // anymore and the setting isn't persisted between launches.
     cmbMinerType_->setCurrentIndex(0); // Default to internal
     cmbMinerType_->setFixedHeight(30);
-    cmbMinerType_->setStyleSheet(
-      "QComboBox { background: #1f2328; color: #d7dde5; border: 1px solid #353b44; "
-      "border-radius: 8px; padding: 0 8px; font-size: 12px; } "
-      "QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right; width: 22px; border-left: 1px solid #353b44; background: #21262c; border-top-right-radius: 8px; border-bottom-right-radius: 8px; } QComboBox::down-arrow { width: 0; height: 0; margin-right: 7px; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid #c4cdd9; } QComboBox::down-arrow:disabled { border-top: 6px solid #5b6470; }");
+    cmbMinerType_->setStyleSheet(miningComboStyle());
     cmbMinerType_->setToolTip("Choose the solo mining engine");
     connect(cmbMinerType_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onMinerTypeChanged);
@@ -4826,7 +4854,7 @@ void MainWindow::setupUI() {
     row0->addWidget(edtMinerPath_, 2);
 
     btnBrowseMiner_ = new QPushButton("Browse...");
-    btnBrowseMiner_->setStyleSheet(headerButtonStyle());
+    btnBrowseMiner_->setStyleSheet(miningButtonStyle());
     btnBrowseMiner_->setFixedSize(84, 30);
     btnBrowseMiner_->setVisible(false); // Hidden by default
     connect(btnBrowseMiner_, &QPushButton::clicked, this, &MainWindow::onBrowseMinerBinary);
@@ -4843,7 +4871,7 @@ void MainWindow::setupUI() {
     edtMiningAddress_->setFixedHeight(30);
     row1->addWidget(edtMiningAddress_, 2);
     btnUseWalletAddr_ = new QPushButton("Use Wallet");
-    btnUseWalletAddr_->setStyleSheet(headerButtonStyle());
+    btnUseWalletAddr_->setStyleSheet(miningButtonStyle());
     btnUseWalletAddr_->setFixedSize(100, 30);
     btnUseWalletAddr_->setToolTip("Fill mining address from your wallet (requires unlocked wallet)");
     connect(btnUseWalletAddr_, &QPushButton::clicked, this, &MainWindow::onSetMiningAddress);
@@ -4872,7 +4900,7 @@ void MainWindow::setupUI() {
     auto *row2 = new QHBoxLayout;
     // v0.14.0.4: Single toggle button for Start/Stop mining
     btnStartMining_ = new QPushButton("Start Mining");
-    btnStartMining_->setStyleSheet(headerButtonStyle());
+    btnStartMining_->setStyleSheet(miningButtonStyle());
     // CRITICAL: Start disabled - will be enabled when daemon connects
     btnStartMining_->setEnabled(false);
     btnStartMining_->setToolTip("Start daemon first to enable mining");
@@ -4887,7 +4915,14 @@ void MainWindow::setupUI() {
     btnStopMining_->setVisible(false);  // Hidden - we use toggle button instead
 
     lblMiningStatus_ = new QLabel(miningStatusInactiveText());
-    lblMiningStatus_->setStyleSheet(chromePillStyle());
+    QFont miningStatusFont = lblMiningStatus_->font();
+    if (miningStatusFont.pointSizeF() > 0) {
+      miningStatusFont.setPointSizeF(miningStatusFont.pointSizeF() * 0.9);
+    } else if (miningStatusFont.pixelSize() > 0) {
+      miningStatusFont.setPixelSize(qMax(1, qRound(miningStatusFont.pixelSize() * 0.9)));
+    }
+    lblMiningStatus_->setFont(miningStatusFont);
+    lblMiningStatus_->setStyleSheet(miningStatusStyle());
     lblMiningStatus_->setFixedHeight(miningControlHeight);
     lblMiningStatus_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     lblMiningStatus_->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
@@ -4899,13 +4934,13 @@ void MainWindow::setupUI() {
 
     // Tiny stats
     lblBlocksFound_ = new QLabel("0");
-    lblBlocksFound_->setStyleSheet("QLabel { font-weight: bold; color: #d6dde6; }");
+    lblBlocksFound_->setStyleSheet("QLabel { font-weight: bold; color: #bec8d0; }");
     row2->addWidget(new QLabel("Blocks:"));
     row2->addWidget(lblBlocksFound_);
 
     row2->addWidget(new QLabel("Height:"));
     lblMiningHeight_ = new QLabel("-");
-    lblMiningHeight_->setStyleSheet("QLabel { font-weight: bold; color: #d6dde6; }");
+    lblMiningHeight_->setStyleSheet("QLabel { font-weight: bold; color: #bec8d0; }");
     row2->addWidget(lblMiningHeight_);
 
     auto *lblMiningTargetBits = new QLabel("Target bits:");
@@ -4913,11 +4948,11 @@ void MainWindow::setupUI() {
     row2->addWidget(lblMiningTargetBits);
     lblMiningDifficulty_ = new QLabel("-");
     lblMiningDifficulty_->setStyleSheet(
-      "QLabel { font-family: monospace; font-weight: bold; color: #d6dde6; }");
+      "QLabel { font-family: monospace; font-weight: bold; color: #bec8d0; }");
     row2->addWidget(lblMiningDifficulty_);
     
     lblCurrentHash_ = new QLabel("0.00");
-    lblCurrentHash_->setStyleSheet("QLabel { font-weight: bold; color: #339af0; font-size: 10px; }");
+    lblCurrentHash_->setStyleSheet("QLabel { font-weight: bold; color: #bec8d0; font-size: 10px; }");
     row2->addWidget(new QLabel("MH/s:"));
     row2->addWidget(lblCurrentHash_);
     
@@ -4928,7 +4963,7 @@ void MainWindow::setupUI() {
     row2->addWidget(lblMiningUptime_);
 
     btnMiningSessionFinds_ = new QPushButton("Session finds");
-    btnMiningSessionFinds_->setStyleSheet(headerButtonStyle());
+    btnMiningSessionFinds_->setStyleSheet(miningButtonStyle());
     btnMiningSessionFinds_->setFixedHeight(miningControlHeight);
     btnMiningSessionFinds_->setEnabled(false);
     connect(btnMiningSessionFinds_, &QPushButton::clicked, this, [this]() {
@@ -4981,7 +5016,7 @@ void MainWindow::setupUI() {
     // the mining-output panel with one line per accept.
     lblSv2Shares_ = new QLabel("Shares: 0");
     lblSv2Shares_->setStyleSheet(
-      "QLabel { font-size: 10px; color: #9ddf9d; font-weight: bold; }");
+      "QLabel { font-size: 10px; color: #bec8d0; font-weight: bold; }");
     lblSv2Shares_->setVisible(false);
     row2->addWidget(lblSv2Shares_);
 
@@ -5031,9 +5066,9 @@ void MainWindow::setupUI() {
     // children of the text edit (not its viewport) so the live hash overlay,
     // which is raised on every frame, never covers them.
     const QString zoomStyle = QStringLiteral(
-      "QPushButton { background: transparent; color: #c9d2dc; border: none; "
+      "QPushButton { background: transparent; color: #bec8d0; border: none; "
       "padding: 0; font-weight: 700; } "
-      "QPushButton:hover { color: #ffffff; } "
+      "QPushButton:hover { color: #d4dce2; } "
       "QPushButton:pressed { color: #f0bf68; } "
       "QPushButton:disabled { color: #59616b; }");
     btnMiningZoomOut_ = new QPushButton(QString::fromUtf8("\xE2\x88\x92"), txtMiningOutput_);
@@ -5095,6 +5130,14 @@ void MainWindow::setupUI() {
     setMiningOutputCinematicEnabled(false);
     
     auto* miningPage = makeScrollableTab(mining);
+    miningPage->setObjectName("miningScrollArea");
+    miningPage->setStyleSheet("QScrollArea#miningScrollArea { background: #000000; border: none; }");
+    QPalette miningPagePalette = miningPage->palette();
+    miningPagePalette.setColor(QPalette::Window, QColor("#000000"));
+    miningPagePalette.setColor(QPalette::Base, QColor("#000000"));
+    miningPage->setPalette(miningPagePalette);
+    miningPage->viewport()->setPalette(miningPagePalette);
+    miningPage->viewport()->setAutoFillBackground(true);
     tabs->addTab(miningPage, navigationIcon(NavigationGlyph::Mining), "Mining");
     miningTabWidget_ = miningPage;
 
@@ -5269,23 +5312,23 @@ void MainWindow::setupUI() {
             updateMiningRuntimeLabel();
             if (btnStartMining_) {
                 btnStartMining_->setText("Stop Mining");
-                btnStartMining_->setStyleSheet(headerButtonStyle());
+                btnStartMining_->setStyleSheet(miningButtonStyle());
                 btnStartMining_->setToolTip("Click to stop mining");
             }
             if (lblMiningStatus_) {
                 lblMiningStatus_->setText(miningStatusActiveText());
-                lblMiningStatus_->setStyleSheet(chromePillStyle());
+                lblMiningStatus_->setStyleSheet(miningStatusStyle());
             }
             updateOverviewHardwareTelemetry();
         } else {
             if (btnStartMining_) {
                 btnStartMining_->setText("Start Mining");
-                btnStartMining_->setStyleSheet(headerButtonStyle());
+                btnStartMining_->setStyleSheet(miningButtonStyle());
                 btnStartMining_->setToolTip("Click to start mining");
             }
             if (lblMiningStatus_) {
                 lblMiningStatus_->setText(miningStatusInactiveText());
-                lblMiningStatus_->setStyleSheet(chromePillStyle());
+                lblMiningStatus_->setStyleSheet(miningStatusStyle());
             }
             miningSessionHeader_ = QString("Embedded solo miner · %1 · Stopped")
                                        .arg(MinerController::versionLabel());
@@ -7952,11 +7995,11 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
           if (btnStartMining_) {
             if (is_mining) {
               btnStartMining_->setText("Stop Mining");
-              btnStartMining_->setStyleSheet(headerButtonStyle());
+              btnStartMining_->setStyleSheet(miningButtonStyle());
               btnStartMining_->setToolTip("Click to stop mining");
             } else {
               btnStartMining_->setText("Start Mining");
-              btnStartMining_->setStyleSheet(headerButtonStyle());
+              btnStartMining_->setStyleSheet(miningButtonStyle());
               btnStartMining_->setToolTip("Click to start mining");
             }
           }
@@ -7965,10 +8008,10 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         if (lblMiningStatus_) {
           if (is_mining) {
             lblMiningStatus_->setText(miningStatusActiveText());
-            lblMiningStatus_->setStyleSheet(chromePillStyle());
+            lblMiningStatus_->setStyleSheet(miningStatusStyle());
           } else {
             lblMiningStatus_->setText(miningStatusInactiveText());
-            lblMiningStatus_->setStyleSheet(chromePillStyle());
+            lblMiningStatus_->setStyleSheet(miningStatusStyle());
           }
         }
 
@@ -9264,12 +9307,12 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
     if (btnStopMining_) btnStopMining_->setEnabled(false);
     if (btnStartMining_) {
       btnStartMining_->setText("Start Mining");
-      btnStartMining_->setStyleSheet(headerButtonStyle());
+      btnStartMining_->setStyleSheet(miningButtonStyle());
       btnStartMining_->setToolTip("Click to start mining");
     }
     if (lblMiningStatus_) {
       lblMiningStatus_->setText(miningStatusInactiveText() + " | Taproot address required");
-      lblMiningStatus_->setStyleSheet(chromePillStyle());
+      lblMiningStatus_->setStyleSheet(miningStatusStyle());
     }
     return;
   }
@@ -10786,7 +10829,7 @@ void MainWindow::updateMiningStats(const QJsonObject& miningInfo) {
   // Update status
   if (mining) {
     lblMiningStatus_->setText(miningStatusActiveText());
-    lblMiningStatus_->setStyleSheet(chromePillStyle());
+    lblMiningStatus_->setStyleSheet(miningStatusStyle());
     isMining_ = true;
     if (activeMinerType_ == "none") {
       activeMinerType_ = "daemon";
@@ -10794,19 +10837,19 @@ void MainWindow::updateMiningStats(const QJsonObject& miningInfo) {
     }
     if (btnStartMining_) {
       btnStartMining_->setText("Stop Mining");
-      btnStartMining_->setStyleSheet(headerButtonStyle());
+      btnStartMining_->setStyleSheet(miningButtonStyle());
       btnStartMining_->setToolTip("Click to stop mining");
     }
   } else {
     lblMiningStatus_->setText(miningStatusInactiveText());
-    lblMiningStatus_->setStyleSheet(chromePillStyle());
+    lblMiningStatus_->setStyleSheet(miningStatusStyle());
     if (activeMinerType_ != "external" && activeMinerType_ != "stratum_worker" && activeMinerType_ != "gpu") {
       isMining_ = false;
       activeMinerType_ = "none";
       setMiningModeControlsLocked(false);
       if (btnStartMining_) {
         btnStartMining_->setText("Start Mining");
-        btnStartMining_->setStyleSheet(headerButtonStyle());
+        btnStartMining_->setStyleSheet(miningButtonStyle());
         btnStartMining_->setToolTip("Click to start mining");
       }
     }
@@ -11031,7 +11074,7 @@ void MainWindow::onBrowseMinerBinary() {
       if (lblMiningStatus_ && !isMining_) {
         lblMiningStatus_->setText(miningStatusInactiveText());
         lblMiningStatus_->setToolTip(profileText);
-        lblMiningStatus_->setStyleSheet(chromePillStyle());
+        lblMiningStatus_->setStyleSheet(miningStatusStyle());
       }
     } else if (!probeError.isEmpty() && txtMiningOutput_) {
       txtMiningOutput_->append(QString("[Miner Detection] Auto-detect uncertain: %1").arg(probeError));
@@ -11108,7 +11151,7 @@ void MainWindow::onToggleLocalStratumServer() {
       }
       if (lblMiningStatus_ && !isMining_ && currentMiningMode() == "pool") {
         lblMiningStatus_->setText("Pool mode ready (Stratum stopped)");
-        lblMiningStatus_->setStyleSheet(chromePillStyle());
+        lblMiningStatus_->setStyleSheet(miningStatusStyle());
       }
     });
 
@@ -11161,7 +11204,7 @@ void MainWindow::onToggleLocalStratumServer() {
   }
   if (lblMiningStatus_) {
     lblMiningStatus_->setText("Local Stratum ready");
-    lblMiningStatus_->setStyleSheet(chromePillStyle());
+    lblMiningStatus_->setStyleSheet(miningStatusStyle());
   }
   updateStratumIdentityLabel();
 }
@@ -11189,7 +11232,7 @@ void MainWindow::stopLocalStratumServer() {
   }
   if (lblMiningStatus_ && !isMining_ && currentMiningMode() == "pool") {
     lblMiningStatus_->setText("Pool mode ready (Stratum stopped)");
-    lblMiningStatus_->setStyleSheet(chromePillStyle());
+    lblMiningStatus_->setStyleSheet(miningStatusStyle());
   }
 }
 
@@ -11274,7 +11317,7 @@ void MainWindow::onMiningModeChanged(int index) {
     } else {
       lblMiningStatus_->setText(miningStatusInactiveText());
     }
-    lblMiningStatus_->setStyleSheet(chromePillStyle());
+    lblMiningStatus_->setStyleSheet(miningStatusStyle());
   }
 
   onMinerTypeChanged(cmbMinerType_ ? cmbMinerType_->currentIndex() : 0);
@@ -11411,7 +11454,7 @@ void MainWindow::applyMiningFocusDim(bool enabled) {
     anyTarget = true;
   }
   if (auto* effect = ensureEffect(miningControlsGroup_, miningControlsDimEffect_)) {
-    applyStrength(effect, 0.52);
+    applyStrength(effect, 0.12);
     anyTarget = true;
   }
   if (auto* effect = ensureEffect(lblMiningOutputSection_, miningOutputLabelDimEffect_)) {
@@ -11981,7 +12024,7 @@ void MainWindow::updateMiningStats() {
     // Process stopped - update UI to reflect reality
     isMining_ = false;
     lblMiningStatus_->setText(miningStatusInactiveText());
-    lblMiningStatus_->setStyleSheet(chromePillStyle());
+    lblMiningStatus_->setStyleSheet(miningStatusStyle());
     setMiningOutputCinematicEnabled(false);
     return;
   }
@@ -12024,7 +12067,7 @@ void MainWindow::updateMiningRuntimeLabel() {
   }
 
   lblMiningUptime_->setText(runtime);
-  lblMiningUptime_->setStyleSheet("QLabel { color: #d6dde6; font-weight: bold; }");
+  lblMiningUptime_->setStyleSheet("QLabel { color: #bec8d0; font-weight: bold; }");
 }
 
 // Handle external miner stats response from daemon
@@ -12047,7 +12090,7 @@ void MainWindow::handleExternalMinerStats(const QJsonObject& stats) {
     statusText = QString("⛏️ External miner active | Templates: %1 | Last: %2s ago")
                    .arg(templates)
                    .arg(lastAgo);
-    lblHashrate_->setStyleSheet("QLabel { color: #d6dde6; font-weight: bold; }");
+    lblHashrate_->setStyleSheet("QLabel { color: #bec8d0; font-weight: bold; }");
   } else if (templates > 0) {
     statusText = QString("⏸️ External miner idle | Templates: %1 | Last: %2s ago")
                    .arg(templates)
@@ -12078,7 +12121,7 @@ void MainWindow::handleExternalMinerStats(const QJsonObject& stats) {
 
     // Color: green if accepted, red if rejections, neutral otherwise
     if (acceptedBlocks > 0 && rejectedBlocks == 0) {
-      lblBlocksFound_->setStyleSheet("QLabel { color: #d6dde6; font-weight: bold; }");
+      lblBlocksFound_->setStyleSheet("QLabel { color: #bec8d0; font-weight: bold; }");
     } else if (rejectedBlocks > 0) {
       lblBlocksFound_->setStyleSheet("QLabel { color: #b7c0ca; }");
     } else {
@@ -12137,7 +12180,7 @@ void MainWindow::parseMiningOutput(const QString& line) {
 
     // Show visual feedback but make clear this is unconfirmed
     lblMiningStatus_->setText(miningStatusActiveText() + " | Candidate solved - verifying with consensus...");
-    lblMiningStatus_->setStyleSheet(chromePillStyle());
+    lblMiningStatus_->setStyleSheet(miningStatusStyle());
 
     // After 3 seconds, query daemon for actual chain state
     // The daemon is the ONLY authority on block acceptance
@@ -12145,7 +12188,7 @@ void MainWindow::parseMiningOutput(const QString& line) {
       rpc_->call("getblockchaininfo", QJsonArray{});
       // Result handled in onRpcResult - will update UI with real chain tip
       lblMiningStatus_->setText(miningStatusActiveText());
-      lblMiningStatus_->setStyleSheet(chromePillStyle());
+      lblMiningStatus_->setStyleSheet(miningStatusStyle());
     });
 
     // Reload transaction history to check for new coinbase rewards
@@ -13022,10 +13065,10 @@ void MainWindow::startGPUMiner() {
       setMiningModeControlsLocked(false);
       setMiningOutputCinematicEnabled(false);
       btnStartMining_->setText("Start Mining");
-      btnStartMining_->setStyleSheet(headerButtonStyle());
+      btnStartMining_->setStyleSheet(miningButtonStyle());
       btnStartMining_->setToolTip("Click to start mining");
       lblMiningStatus_->setText(miningStatusInactiveText());
-      lblMiningStatus_->setStyleSheet(chromePillStyle());
+      lblMiningStatus_->setStyleSheet(miningStatusStyle());
       txtMiningOutput_->append("\n=== GPU Mining stopped ===\n");
       resetOverviewMiningTelemetry();
     });
@@ -13091,18 +13134,13 @@ void MainWindow::startGPUMiner() {
   isMining_ = true;
   activeMinerType_ = "gpu";
   btnStartMining_->setText("Stop Mining");
-  btnStartMining_->setStyleSheet(
-    "QPushButton { background: #da3633; color: white; border: none; border-radius: 8px; "
-    "padding: 6px 16px; font-weight: bold; } "
-    "QPushButton:hover { background: #f85149; }");
+  btnStartMining_->setStyleSheet(miningButtonStyle());
 #if defined(Q_OS_WIN)
   lblMiningStatus_->setText("CUDA Mining Active");
 #else
   lblMiningStatus_->setText("GPU Mining Active");
 #endif
-  lblMiningStatus_->setStyleSheet(
-    "QLabel { background: #1f6feb; color: white; border-radius: 10px; "
-    "padding: 3px 10px; font-size: 11px; font-weight: bold; }");
+  lblMiningStatus_->setStyleSheet(miningStatusStyle());
   setMiningModeControlsLocked(true);
   setMiningOutputCinematicEnabled(true);
 
@@ -13285,11 +13323,11 @@ void MainWindow::startExternalMiner() {
       setMiningModeControlsLocked(false);
       setMiningOutputCinematicEnabled(false);
       btnStartMining_->setText("Start Mining");
-      btnStartMining_->setStyleSheet(headerButtonStyle());
+      btnStartMining_->setStyleSheet(miningButtonStyle());
       btnStartMining_->setToolTip("Click to start mining");
 
       lblMiningStatus_->setText(miningStatusInactiveText());
-      lblMiningStatus_->setStyleSheet(chromePillStyle());
+      lblMiningStatus_->setStyleSheet(miningStatusStyle());
       resetOverviewMiningTelemetry();
       txtMiningOutput_->append("\n=== Mining stopped ===\n");
     });
@@ -13337,7 +13375,7 @@ void MainWindow::startExternalMiner() {
     }
     if (lblMiningStatus_) {
       lblMiningStatus_->setText("Pool mode ready (set endpoint)");
-      lblMiningStatus_->setStyleSheet(chromePillStyle());
+      lblMiningStatus_->setStyleSheet(miningStatusStyle());
     }
     return;
   }
@@ -13460,11 +13498,11 @@ void MainWindow::startExternalMiner() {
     // v0.14.0.4: Set mining state and update toggle button
     isMining_ = true;
     btnStartMining_->setText("Stop Mining");
-    btnStartMining_->setStyleSheet(headerButtonStyle());
+    btnStartMining_->setStyleSheet(miningButtonStyle());
     btnStartMining_->setToolTip("Click to stop mining");
 
     lblMiningStatus_->setText(poolMode ? "Pool Mining Active" : miningStatusActiveText());
-    lblMiningStatus_->setStyleSheet(chromePillStyle());
+    lblMiningStatus_->setStyleSheet(miningStatusStyle());
     setMiningOutputCinematicEnabled(true);
     txtMiningOutput_->append("=== Mining started ===");
     txtMiningOutput_->append(QString("Mode: %1").arg(poolMode ? "Pool (Stratum)" : "Solo (RPC)"));
@@ -13497,7 +13535,7 @@ void MainWindow::startExternalMiner() {
       miningStatsTimer_->stop();
     }
     lblMiningStatus_->setText(miningStatusInactiveText());
-    lblMiningStatus_->setStyleSheet(chromePillStyle());
+    lblMiningStatus_->setStyleSheet(miningStatusStyle());
     resetOverviewMiningTelemetry();
 
     QString detail = attemptDiagnostics.join("\n");
@@ -13837,7 +13875,7 @@ void MainWindow::startSv2Miner() {
     }
     if (lblMiningStatus_) {
       lblMiningStatus_->setText(miningStatusInactiveText());
-      lblMiningStatus_->setStyleSheet(chromePillStyle());
+      lblMiningStatus_->setStyleSheet(miningStatusStyle());
     }
     if (btnStartMining_) btnStartMining_->setText("Start Mining");
   });
@@ -13900,7 +13938,7 @@ void MainWindow::startSv2Miner() {
     lblMiningStatus_->setText(rewardMode == QStringLiteral("shared")
       ? "Mining (SV2 Pool Shared)"
       : "Mining (SV2 Pool Solo)");
-    lblMiningStatus_->setStyleSheet(chromePillStyle() + " color: #2cb84a;");
+    lblMiningStatus_->setStyleSheet(miningStatusStyle());
   }
   setMiningOutputCinematicEnabled(true);
 }
@@ -13948,7 +13986,7 @@ void MainWindow::stopExternalMiner() {
 
   if (miningProcess_ && miningProcess_->state() == QProcess::Running) {
     lblMiningStatus_->setText(miningStatusInactiveText() + " | Stopping miner...");
-    lblMiningStatus_->setStyleSheet(chromePillStyle());
+    lblMiningStatus_->setStyleSheet(miningStatusStyle());
 
     externalMinerStopRequested_ = true;
     miningProcess_->terminate();
@@ -13972,12 +14010,12 @@ void MainWindow::stopExternalMiner() {
   setMiningOutputCinematicEnabled(false);
   resetOverviewMiningTelemetry();
   btnStartMining_->setText("Start Mining");
-  btnStartMining_->setStyleSheet(headerButtonStyle());
+  btnStartMining_->setStyleSheet(miningButtonStyle());
   btnStartMining_->setToolTip("Click to start mining");
 
   // Update status label
   lblMiningStatus_->setText(miningStatusInactiveText());
-  lblMiningStatus_->setStyleSheet(chromePillStyle());
+  lblMiningStatus_->setStyleSheet(miningStatusStyle());
   if (lblHashrate_) {
     lblHashrate_->setText("0.00 MH/s");
   }
@@ -15924,16 +15962,16 @@ void MainWindow::updateWalletUIState() {
     btnUseWalletAddr_->setEnabled(canUseWalletAddress);
     if (!hasWallet) {
       btnUseWalletAddr_->setToolTip("Create or load a wallet first");
-      btnUseWalletAddr_->setStyleSheet(headerButtonStyle());
+      btnUseWalletAddr_->setStyleSheet(miningButtonStyle());
     } else if (walletRescanning_) {
       btnUseWalletAddr_->setToolTip("Wait for blockchain rescan to complete");
-      btnUseWalletAddr_->setStyleSheet(headerButtonStyle());
+      btnUseWalletAddr_->setStyleSheet(miningButtonStyle());
     } else if (!walletUnlocked_) {
       btnUseWalletAddr_->setToolTip("Unlock wallet to use your Taproot address");
-      btnUseWalletAddr_->setStyleSheet(headerButtonStyle());
+      btnUseWalletAddr_->setStyleSheet(miningButtonStyle());
     } else {
       btnUseWalletAddr_->setToolTip("Fill mining address from your wallet");
-      btnUseWalletAddr_->setStyleSheet(headerButtonStyle()); // Uniform mining control style
+      btnUseWalletAddr_->setStyleSheet(miningButtonStyle()); // Uniform mining control style
     }
   }
 
@@ -18049,12 +18087,12 @@ void MainWindow::onDaemonConnected() {
     btnStartMining_->setToolTip("Start mining to this address");
     if (!isMining_) {
       btnStartMining_->setText("Start Mining");
-      btnStartMining_->setStyleSheet(headerButtonStyle());
+      btnStartMining_->setStyleSheet(miningButtonStyle());
     }
   }
   if (lblMiningStatus_) {
     lblMiningStatus_->setText(miningStatusInactiveText());
-    lblMiningStatus_->setStyleSheet(chromePillStyle());
+    lblMiningStatus_->setStyleSheet(miningStatusStyle());
   }
   resetMiningReadinessDisplay("Readiness: waiting for daemon mining state",
                               "Daemon connected. Waiting for fresh mining.info.");
@@ -18122,14 +18160,14 @@ void MainWindow::onDaemonDisconnected() {
         ? "Start pool mining"
         : "Start daemon first to enable mining");
     btnStartMining_->setText(poolMinerActive ? "Stop Mining" : "Start Mining");
-    btnStartMining_->setStyleSheet(headerButtonStyle());
+    btnStartMining_->setStyleSheet(miningButtonStyle());
   }
   if (btnStopMining_) {
     btnStopMining_->setEnabled(poolMinerActive);
   }
   if (lblMiningStatus_) {
     lblMiningStatus_->setText(poolMinerActive ? "Mining (Pool)" : miningStatusInactiveText());
-    lblMiningStatus_->setStyleSheet(chromePillStyle());
+    lblMiningStatus_->setStyleSheet(miningStatusStyle());
   }
   resetMiningReadinessDisplay("Readiness: daemon unavailable",
                               "Daemon disconnected. Mining readiness cannot be evaluated.");
@@ -18200,12 +18238,12 @@ void MainWindow::updateConnectionStatus(ConnectionManager::ConnectionState state
           ? "Start pool mining"
           : "Start daemon first to enable mining");
       btnStartMining_->setText(poolActive ? "Stop Mining" : "Start Mining");
-      btnStartMining_->setStyleSheet(headerButtonStyle());
+      btnStartMining_->setStyleSheet(miningButtonStyle());
     }
     if (btnStopMining_) btnStopMining_->setEnabled(poolActive);
     if (lblMiningStatus_) {
       lblMiningStatus_->setText(poolActive ? "Mining (Pool)" : miningStatusInactiveText());
-      lblMiningStatus_->setStyleSheet(chromePillStyle());
+      lblMiningStatus_->setStyleSheet(miningStatusStyle());
     }
     resetMiningReadinessDisplay("Readiness: daemon unavailable",
                                 "Connection state is not connected. Mining readiness cannot be evaluated.");
@@ -18257,7 +18295,7 @@ void MainWindow::updateConnectionStatus(ConnectionManager::ConnectionState state
       lblMiningStatus_->setText(poolActive
         ? (activeMinerType_.startsWith("sv2_pool") ? "Mining (SV2 Pool)" : "Pool Mining Active")
         : miningStatusInactiveText());
-      lblMiningStatus_->setStyleSheet(chromePillStyle());
+      lblMiningStatus_->setStyleSheet(miningStatusStyle());
     }
     if (!poolActive) {
       resetMiningReadinessDisplay("Readiness: waiting for daemon mining state",
