@@ -1,5 +1,6 @@
 #include <QtTest/QtTest>
 #include <QPushButton>
+#include <QImage>
 #include <QSettings>
 #include <QTabBar>
 #include <QTabWidget>
@@ -90,6 +91,11 @@ private Q_SLOTS:
             QCOMPARE(button->size(), zoom->size());
             QVERIFY(button->x() < out->width() / 2);
             QVERIFY(button->geometry().bottom() < out->viewport()->geometry().top());
+            const QColor center = button->grab().toImage().pixelColor(button->width() / 2,
+                                                                       button->height() / 2);
+            QCOMPARE(center.red(), int((choice.rgb >> 16) & 0xff));
+            QCOMPARE(center.green(), int((choice.rgb >> 8) & 0xff));
+            QCOMPARE(center.blue(), int(choice.rgb & 0xff));
             if (previous) QVERIFY(previous->geometry().right() < button->geometry().left());
             previous = button;
         }

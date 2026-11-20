@@ -1,6 +1,7 @@
 #include <QtTest/QtTest>
 #include <QGroupBox>
 #include <QLabel>
+#include <QImage>
 #include <QPushButton>
 #include <QTabWidget>
 #include "hardwarewalletwidget.h"
@@ -23,7 +24,14 @@ private Q_SLOTS:
         QCOMPARE(tabs->tabText(2), QString("USB"));
         for (int i = 0; i < tabs->count(); ++i) {
             QVERIFY(!tabs->tabIcon(i).isNull());
-            QVERIFY(!tabs->tabIcon(i).pixmap(20, 20).isNull());
+            const QImage icon = tabs->tabIcon(i).pixmap(20, 20).toImage();
+            QVERIFY(!icon.isNull());
+            bool hasVisibleStroke = false;
+            for (int y = 0; y < icon.height(); ++y) {
+                for (int x = 0; x < icon.width(); ++x)
+                    hasVisibleStroke |= icon.pixelColor(x, y).alpha() > 0;
+            }
+            QVERIFY(hasVisibleStroke);
         }
         const QStringList actions = {
             "Export Dinero PSBT to File", "Import Signed Dinero PSBT",
