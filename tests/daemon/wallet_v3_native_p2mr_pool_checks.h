@@ -39,9 +39,23 @@ TEST(WalletV3NativeP2MRPool, CreatedWalletIssuesFundedP2MRFromPool) {
     EXPECT_FALSE(P2MRTargetOpen(f));
     ExpectNativeReceiptsCurrent(f,102);
     ExecutionContext request;request.daemon=&f.context;request.walletName="canonical-recovery";
+    const auto reserved=rpc_context_wallet_listaddresses(request,din::obj());
+    ASSERT_TRUE(reserved.isArray()) << reserved.toStyledString();
+    for(const auto& row:reserved)
+        EXPECT_FALSE(row["address"].asString().starts_with("rdin1r"))
+            << "unissued P2MR reserve must not be shown as a receive address";
     const auto first=NativeIssue(request,"p2mr","savings");
     ASSERT_TRUE(first.isMember("address")) << first.toStyledString();
     EXPECT_TRUE(first["address"].asString().starts_with("rdin1r"));
+    const auto issued=rpc_context_wallet_listaddresses(request,din::obj());
+    ASSERT_TRUE(issued.isArray()) << issued.toStyledString();
+    size_t visible_p2mr=0;
+    for(const auto& row:issued)
+        if(row["address"].asString().starts_with("rdin1r")) {
+            ++visible_p2mr;
+            EXPECT_EQ(row["address"].asString(),first["address"].asString());
+        }
+    EXPECT_EQ(visible_p2mr,1u);
     ExpectNativeReceiptsCurrent(f,102);
     // The PQ RPC serves the same pool, and refuses explicit derivation.
     registerV7PqWalletMethods();

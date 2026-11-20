@@ -7453,8 +7453,8 @@ ChainstateService::resumeRuntimeWalletRecoveryIfNeededImpl(WalletManager& wallet
       catch (...) { return Status::Internal; }
 }
 
-Status ChainstateService::resumeRuntimeOrchardDeliveryV3(WalletManager& wallet,UTXOIndex& metadata_index,
-        uint64_t session) {
+StatusOr<bool> ChainstateService::resumeRuntimeOrchardDeliveryV3(WalletManager& wallet,UTXOIndex& metadata_index,
+        uint64_t session,size_t max_events) {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     // #939 phase 3: deliver a native-complete wallet's Orchard accounts on a
     // full-archive v3 source. Orchard account state only: no transparent,
@@ -7474,25 +7474,25 @@ Status ChainstateService::resumeRuntimeOrchardDeliveryV3(WalletManager& wallet,U
             return Status::Invalid;
         std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> table(raw,sqlite3_finalize);
         int rc=sqlite3_step(raw);
-        if(rc==SQLITE_DONE)return Status::Ok; // No Orchard account: nothing to deliver.
+        if(rc==SQLITE_DONE)return true; // No Orchard account: nothing to deliver.
         if(rc!=SQLITE_ROW)return Status::Invalid;
         raw=nullptr;
         if(sqlite3_prepare_v2(lease->Database(),"SELECT 1 FROM orchard_wallet_snapshots LIMIT 1",-1,&raw,nullptr)!=SQLITE_OK)
             return Status::Invalid;
         std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> rows(raw,sqlite3_finalize);
         rc=sqlite3_step(raw);
-        if(rc==SQLITE_DONE)return Status::Ok;
+        if(rc==SQLITE_DONE)return true;
         if(rc!=SQLITE_ROW)return Status::Invalid;
     }
     // Orchard catalog/account restoration needs the seed. A locked wallet
     // keeps its transparent delivery; its Orchard accounts catch up on unlock.
-    if(wallet.isWalletLocked())return Status::Ok;
+    if(wallet.isWalletLocked())return true;
     try {
         const auto captured=getRuntimeAccountReplayForWallet(wallet,session);
         if(!captured.ok())return captured.status();
         const auto& replay=**captured;
         const auto head=replay.Head();
-        if(!head.sequence)return Status::Ok;
+        if(!head.sequence)return true;
         const auto point=replay.Point(head).checkpoint;
         const RuntimeWalletRecovery::OrchardSourceOwner bind=[&](const auto& write){
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
@@ -7513,8 +7513,11 @@ Status ChainstateService::resumeRuntimeOrchardDeliveryV3(WalletManager& wallet,U
             fence();write(fence);
         };
         const ChainstateRuntimeRecoverySource recovery_source(*this);
-        (void)RuntimeWalletRecovery::ResumePreparedOrchardCatalogStores(replay,recovery_source,wallet,session,bind);
-        return Status::Ok;
+        if(max_events) return RuntimeWalletRecovery::AdvancePreparedOrchardCatalogStores(
+            replay,recovery_source,wallet,session,bind,max_events).has_value();
+        (void)RuntimeWalletRecovery::ResumePreparedOrchardCatalogStores(
+            replay,recovery_source,wallet,session,bind);
+        return true;
     } catch(const consensus::OrchardStateLookupError& e) { return e.SourceStatus(); }
       catch(...) { return Status::Internal; }
 #else
@@ -7581,7 +7584,9 @@ void FillNativeP2MRTargetsV3(WalletManager& wallet,uint64_t session) {
 
 StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
 ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,UTXOIndex& metadata_index,
-        uint64_t expected_session,size_t material_limit_bytes) {
+        uint64_t expected_session,size_t material_limit_bytes,size_t orchard_events_per_pass,
+        bool* advanced_partial) {
+    if(advanced_partial)*advanced_partial=false;
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     if(activation_mutex_.HeldByCurrentThread() || !material_limit_bytes ||
        material_limit_bytes>128*1024*1024)return Status::Invalid;
@@ -7708,8 +7713,13 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 source.TipHash(),source.Origin().OriginHeight(),source.TipHeight()};
             wallet.PublishRecoveredBlockchainHeight(wallet.getBlockchainHeight(),applied.tip_height,session);
             if(native) {
-                const auto orchard=resumeRuntimeOrchardDeliveryV3(wallet,metadata_index,session);
-                if(orchard!=Status::Ok)return orchard;
+                const auto orchard=resumeRuntimeOrchardDeliveryV3(
+                    wallet,metadata_index,session,orchard_events_per_pass);
+                if(!orchard.ok())return orchard.status();
+                if(!*orchard){
+                    if(advanced_partial)*advanced_partial=true;
+                    return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
+                }
                 continue_restored_account0();
             }
             return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
@@ -7766,9 +7776,22 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 return Status::Invalid;
         }
         wallet.PublishRecoveredBlockchainHeight(wallet.getBlockchainHeight(),applied.tip_height,session);
+        // A worker pass carries at most 32 ordinary events. Finish every
+        // available ordinary page before beginning an expensive Orchard
+        // account step, so mining rewards cannot wait behind old account
+        // history when this page already proves transparent backlog.
+        if(orchard_events_per_pass && applied.cursor!=(*page)->head) {
+            if(advanced_partial)*advanced_partial=true;
+            return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
+        }
         if(native) {
-            const auto orchard=resumeRuntimeOrchardDeliveryV3(wallet,metadata_index,session);
-            if(orchard!=Status::Ok)return orchard;
+            const auto orchard=resumeRuntimeOrchardDeliveryV3(
+                wallet,metadata_index,session,orchard_events_per_pass);
+            if(!orchard.ok())return orchard.status();
+            if(!*orchard){
+                if(advanced_partial)*advanced_partial=true;
+                return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
+            }
         }
         return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
             RuntimeEnrolledWalletRecoveryResult{applied,{},(*page)->head,std::nullopt});
@@ -7777,6 +7800,7 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
       catch(...) { return Status::Internal; }
 #else
     (void)wallet;(void)metadata_index;(void)expected_session;(void)material_limit_bytes;
+    (void)orchard_events_per_pass;(void)advanced_partial;
     return Status::Internal;
 #endif
 }
@@ -8239,7 +8263,35 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             if(!captured_head)captured_head=(*page)->head;
             return **page;
         };
-        // Only phone nodes retain a replay; ordinary captures stay concurrent.
+        // A full activation-origin outbox is already authenticated after its
+        // first capture. Share that immutable view while the head is the same;
+        // extend only the new tail after all earlier readers release it. The
+        // fixed-prefix reader rechecks continuity and the selected after-tip.
+        std::unique_lock<std::mutex> full_retained(full_replay_mutex_,std::defer_lock);
+        if(!orchard_phone_history_requested_.load())full_retained.lock();
+        if(full_retained.owns_lock()&&full_replay_){
+            if(full_replay_->Head()==outbox_head){
+                const auto final=getRuntimeDeliveryPageAtPrefix(outbox_head,outbox_head,1,16*1024*1024);
+                if(!final.ok())return final.status();
+                const auto point=full_replay_->Point(outbox_head).checkpoint;
+                if((*final)->head!=outbox_head||(*final)->next!=outbox_head||!(*final)->events.empty()||
+                   !(*final)->after_tip||(*final)->after_tip->first!=point.block_hash||
+                   (*final)->after_tip->second!=point.height){
+                    full_replay_.reset();return Status::Invalid;
+                }
+                return full_replay_;
+            }
+            std::shared_ptr<const RuntimeAccountReplay> extended;
+            try{extended=RuntimeAccountReplay::ExtendTail(std::move(full_replay_),read);}
+            catch(const consensus::OrchardStateLookupError&){if(full_replay_)throw;captured_head.reset();}
+            catch(...){full_replay_.reset();captured_head.reset();}
+            if(extended){full_replay_=extended;++full_replay_extensions_;return extended;}
+            // A concurrent reader still owns the old immutable view. A new
+            // full capture keeps this call's semantics and becomes the cache.
+            captured_head.reset();
+        }
+        // Phone activation-prefix material has its own retained view and
+        // remains independent of the full activation-origin cache above.
         std::unique_lock<std::mutex> retained(phone_replay_mutex_,std::defer_lock);
         if(orchard_phone_history_requested_.load())retained.lock();
         // Same adoption checks for a fresh or an extended replay; neither is
@@ -8317,7 +8369,9 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             ++phone_replay_full_builds_;
             return adopt(replay,source,target,download);
         }
-        return RuntimeAccountReplay::Build(std::move(material));
+        auto replay=RuntimeAccountReplay::Build(std::move(material));
+        if(full_retained.owns_lock()){full_replay_=replay;++full_replay_full_builds_;}
+        return replay;
     } catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
       catch(...){return Status::Internal;}
 #else

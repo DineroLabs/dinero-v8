@@ -527,6 +527,32 @@ private Q_SLOTS:
         QVERIFY2(bar->isHidden(), "resolved error stayed on screen");
         QVERIFY(bar->text().isEmpty());
     }
+    void utxoTabDistinguishesCatchUpFromImmatureRewards() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        auto* table = window.findChild<QTableWidget*>("tblUTXOs");
+        QVERIFY(table);
+        QTabWidget* tabs = nullptr;
+        for (auto* candidate : window.findChildren<QTabWidget*>()) {
+            for (int index = 0; index < candidate->count(); ++index) {
+                if (candidate->tabText(index) == "UTXOs") {
+                    tabs = candidate;
+                    candidate->setCurrentIndex(index);
+                    break;
+                }
+            }
+        }
+        QVERIFY(tabs);
+        window.onRpcError("wallet.listunspent", -32603,
+                          "Legacy transparent wallet is catching up to the selected chain");
+        QVERIFY(table->item(0, 0));
+        QVERIFY(table->item(0, 0)->text().contains("catching up"));
+        window.onRpcResult("wallet.listunspent", QJsonArray{});
+        QVERIFY(table->item(0, 0));
+        QVERIFY(table->item(0, 0)->text().contains("100 confirmations"));
+    }
     void backgroundPollErrorsStayOutOfTheErrorBar() {
         QTemporaryDir dir;
         QVERIFY(dir.isValid());

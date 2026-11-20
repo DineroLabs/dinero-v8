@@ -4,6 +4,8 @@
 #include <openssl/sha.h>
 #include <set>
 #include <map>
+#include <atomic>
+#include <vector>
 #include <utility>
 namespace dinero::wallet {
 namespace {
@@ -39,6 +41,39 @@ constexpr size_t kMaxWalletNotes = 4096;
 // Operational bound: refuse before publishing, never truncate history. The
 // enclosing encrypted snapshot's byte bound still applies independently.
 constexpr size_t kMaxReceivedNotes = 65536;
+// Viewing-key validity is a pure function of the key bytes: deriving the
+// default external receiver either succeeds or throws. A catalog capture or
+// restore re-proved it for EVERY retained revision of the same account, so
+// per-event delivery cost grew with history (Hotel, v8.2.4). Inside a
+// ValidatedViewingKeyScope a key proven once on this thread is not re-proven.
+// The memo holds only SHA-256(fvk) (the encoded state's viewing identity),
+// lives for that one call, and is wiped when the outermost scope ends, so no
+// key material survives the call, a wallet lock or a session change. Outside
+// any scope every call proves the key exactly as before.
+thread_local int t_viewing_scope_depth = 0;
+thread_local std::vector<std::array<uint8_t, 32>> t_valid_viewing_keys;
+std::atomic<uint64_t> g_viewing_key_proofs{0};
+void RequireValidViewingKey(const FullViewingKeyBytes &fvk) {
+  if (!t_viewing_scope_depth) {
+    (void)WalletReceiver::FromViewingKey(fvk, WalletScope::External, {});
+    g_viewing_key_proofs.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  std::array<uint8_t, 32> digest{};
+  SHA256(fvk.data(), fvk.size(), digest.data());
+  if (std::find(t_valid_viewing_keys.begin(), t_valid_viewing_keys.end(), digest) ==
+      t_valid_viewing_keys.end()) {
+    try {
+      (void)WalletReceiver::FromViewingKey(fvk, WalletScope::External, {});
+    } catch (...) {
+      OPENSSL_cleanse(digest.data(), digest.size());
+      throw;
+    }
+    g_viewing_key_proofs.fetch_add(1, std::memory_order_relaxed);
+    t_valid_viewing_keys.push_back(digest);
+  }
+  OPENSSL_cleanse(digest.data(), digest.size());
+}
 } // namespace
 struct OrchardWalletScanState::Data {
   orchard::SigningDomain domain;
@@ -63,7 +98,7 @@ OrchardWalletScanState OrchardWalletScanState::AtHistoricalTip(
     uint32_t height, const uint256 &parent) {
   Check(activation > 0 && activation != UINT32_MAX && height < activation && !parent.IsNull());
   (void)SigningContext::Create(domain, 0, {}, {}, 0);
-  (void)WalletReceiver::FromViewingKey(fvk, WalletScope::External, {});
+  RequireValidViewingKey(fvk);
   auto state = std::make_shared<Data>();
   state->domain = domain;
   state->fvk = fvk;
@@ -87,7 +122,7 @@ OrchardWalletScanState OrchardWalletScanState::AtFreshSeedCheckpoint(
         checkpoint.height >= activation && checkpoint.height < UINT32_MAX &&
         !checkpoint.block_hash.IsNull() && checkpoint.pool_balance <= kMaxMoneyUna);
   (void)SigningContext::Create(domain, 0, {}, {}, 0);
-  (void)WalletReceiver::FromViewingKey(fvk, WalletScope::External, {});
+  RequireValidViewingKey(fvk);
   const auto frontier = Frontier(checkpoint);
   Check(frontier.Size() == checkpoint.tree_size &&
         frontier.Root() == HashBytes(checkpoint.anchor));
@@ -393,7 +428,7 @@ OrchardWalletScanState OrchardWalletScanState::Restore(
         selected.height < UINT32_MAX &&
         !selected.block_hash.IsNull());
   (void)SigningContext::Create(domain, 0, {}, {}, 0);
-  (void)WalletReceiver::FromViewingKey(fvk, WalletScope::External, {});
+  RequireValidViewingKey(fvk);
   Reader r{encoded.Bytes()};
   auto magic = r.Raw(kScanMagic.size());
   const bool legacy = std::equal(magic.begin(), magic.end(),
@@ -544,5 +579,14 @@ OrchardWalletScanState OrchardWalletScanState::Restore(
   Check(std::equal(canonical.Bytes().begin(), canonical.Bytes().end(),
                    encoded.Bytes().begin(), encoded.Bytes().end()));
   return restored;
+}
+ValidatedViewingKeyScope::ValidatedViewingKeyScope() noexcept { ++t_viewing_scope_depth; }
+ValidatedViewingKeyScope::~ValidatedViewingKeyScope() {
+  if (--t_viewing_scope_depth) return;
+  for (auto &digest : t_valid_viewing_keys) OPENSSL_cleanse(digest.data(), digest.size());
+  t_valid_viewing_keys.clear();
+}
+uint64_t ValidatedViewingKeyScope::ProofsForTest() noexcept {
+  return g_viewing_key_proofs.load(std::memory_order_relaxed);
 }
 } // namespace dinero::wallet

@@ -3335,6 +3335,13 @@ std::set<std::string> WalletManager::nativePoolHiddenAddresses() const {
     PoolStatement rows(db_, "SELECT p.address FROM native_v3_address_pool p WHERE (p.chain=1 OR p.issued=0) "
         "AND NOT EXISTS (SELECT 1 FROM utxos u WHERE u.address=p.address)");
     while (rows.Row()) hidden.insert(rows.ColumnText(0));
+    // P2MR keys live in a separate store, but their unissued v3 pool rows are
+    // watched reserves just like the Taproot pool. Do not show all twenty as
+    // addresses handed to the user. The RPC still displays a funded reserve.
+    if (NativeTablePresent(db_, "native_v3_p2mr_pool")) {
+        PoolStatement p2mr(db_, "SELECT address FROM native_v3_p2mr_pool WHERE issued=0");
+        while (p2mr.Row()) hidden.insert(p2mr.ColumnText(0));
+    }
     return hidden;
 }
 
@@ -8921,9 +8928,9 @@ WalletManager::WalletScanStatus WalletManager::GetScanStatus(uint32_t chain_heig
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             status.scan_height = static_cast<uint32_t>(sqlite3_column_int(stmt, 0));
-            int scan_complete = sqlite3_column_int(stmt, 1);
-            // is_scanning = true if scan started but not complete, and not at tip
-            status.is_scanning = (scan_complete == 0) && (status.scan_height < status.chain_height);
+            // Historical rescan completion and current runtime delivery are
+            // separate. A completed scan can still lag newly selected blocks.
+            status.is_scanning = status.scan_height < status.chain_height;
         } else {
             // No sync_meta entry - never scanned
             status.scan_height = 0;

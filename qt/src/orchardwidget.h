@@ -4,6 +4,7 @@
 // and release qualification are required; see the RPC contract document.
 #include "orchardflow.h"
 
+#include <QElapsedTimer>
 #include <QJsonValue>
 #include <QWidget>
 
@@ -72,7 +73,7 @@ private:
     void requestHistory(quint64 offset,quint64 revision=0);
     void showHistory();
     void handle(const QString& shortName, const QJsonValue& result);
-    void showStatus(const QString& text, bool error);
+    void showStatus(const QString& text, bool error, bool operationsError = false);
 
     RpcClient* rpc_;
     QString wallet_;
@@ -83,6 +84,7 @@ private:
     bool unlocked_ = false;
     quint64 account_ = 0;
     bool accountSelected_ = false, accountsInFlight_ = false, creatingAccount_ = false;
+    QElapsedTimer accountDiscoveryElapsed_;
     std::optional<OrchardContract::AccountsReply> accountsSnapshot_;
     quint64 balanceRevision_ = 0;  // reject balance replies older than an observed account revision
     quint64 revision_ = 0;  // 0 = account not set up / unknown
@@ -122,5 +124,6 @@ private:
     QTableWidget* operations_;
     QLabel* operationsEmpty_;
     QLabel* status_;
+    bool operationsErrorVisible_ = false;
     QTimer* poll_;
 };

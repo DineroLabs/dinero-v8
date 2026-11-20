@@ -903,6 +903,47 @@ TEST(WalletV3NativeInterim, V3CreatesGeneratedWalletsWithThreeAddresses) {
         WalletManager::kNativeV3ReceivePool);
 }
 
+TEST(WalletV3NativeInterim, WizardCreatesTwentyIssuedTaprootAndOneIssuedP2MR) {
+    CanonicalRecoveryFixture f(false,false);
+    (void)f.MineToWallet();
+    NativeV3IndexScope v3(f,"v3-native-wizard-addresses-index");
+    registerV7PqWalletMethods();
+    ExecutionContext request;request.daemon=&f.context;
+    auto create=din::obj();
+    create["name"]="native-wizard-addresses";
+    create["initial_taproot_addresses"]=20;
+    const auto created=rpc_context_wallet_createhd(request,create);
+    ASSERT_FALSE(created.isMember("error")) << created.toStyledString();
+    ASSERT_TRUE(created["taproot_receive_addresses"].isArray());
+    ASSERT_EQ(created["taproot_receive_addresses"].size(),20u);
+    EXPECT_EQ(created["taproot_receive_addresses"][0].asString(),
+              created["first_address"].asString());
+    std::set<std::string> distinct;
+    for (const auto& address:created["taproot_receive_addresses"])
+        distinct.insert(address.asString());
+    EXPECT_EQ(distinct.size(),20u);
+    EXPECT_TRUE(created.isMember("first_p2mr_address"));
+    EXPECT_TRUE(created.isMember("first_orchard_address"));
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+              WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    EXPECT_EQ(NativeTestCount(use->Wallet(),
+        "SELECT count(*) FROM native_v3_address_pool WHERE chain=0 AND issued=1"),20);
+    EXPECT_EQ(NativeTestCount(use->Wallet(),
+        "SELECT count(*) FROM native_v3_p2mr_pool WHERE issued=1"),1);
+    request.walletName="native-wizard-addresses";
+    const auto listed=rpc_context_wallet_listaddresses(request,din::obj());
+    ASSERT_TRUE(listed.isArray()) << listed.toStyledString();
+    int taproot=0,p2mr=0;
+    for(const auto& row:listed) {
+        if(row["type"].asString()=="p2tr") ++taproot;
+        if(row["type"].asString()=="p2mr") ++p2mr;
+    }
+    EXPECT_EQ(taproot,20);
+    EXPECT_EQ(p2mr,1);
+}
+
 TEST(WalletV3NativeInterim, EncryptedV3CreationIssuesThreeAddressesAndRelocks) {
     CanonicalRecoveryFixture f(false,false);
     (void)f.MineToWallet();
