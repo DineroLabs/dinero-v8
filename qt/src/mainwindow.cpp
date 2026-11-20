@@ -5314,6 +5314,7 @@ void MainWindow::setupUI() {
       foundSample.highlightUntilMs = QDateTime::currentMSecsSinceEpoch() +
                                      dinero::qt::kBlockFoundHighlightMs;
       miningHashSamples_.append(std::move(foundSample));
+      updateMiningOutputCinematicFrame();
     });
 
     // Forward embedded miner state into the daemon's relay auto-mode so
@@ -11582,18 +11583,37 @@ void MainWindow::updateMiningOutputCinematicFrame() {
       // Only the current find is orange.
       const auto colour = dinero::qt::hashRowColor(
         sample.blockFound, sample.highlightUntilMs > nowMs, miningHashColorRgb_);
-      int alpha = colour.a;
-      // A solved template is retired during submission. Pulse only its text
-      // during this real handoff; never invent candidate hashes to fill it.
-      if (sample.blockFound && miningFoundPendingTemplate_) {
-        const int phase = miningCinematicFrame_ % 8;
-        alpha = 180 + qMin(phase, 8 - phase) * 15;
-      }
-      painter.setPen(QColor(colour.r, colour.g, colour.b, alpha));
+      painter.setPen(QColor(colour.r, colour.g, colour.b, colour.a));
       const qreal textTop = frameSize.height() - 6 - visual * rowHeight - metrics.ascent();
-      painter.drawStaticText(
-        QPointF(8, textTop),
-        sample.renderedLine);
+      const qint64 remainingMs = sample.highlightUntilMs - nowMs;
+      if (sample.blockFound && remainingMs > 0 &&
+          remainingMs <= dinero::qt::kBlockFoundHighlightMs) {
+        // The solved template stops producing samples while the next one is
+        // loaded. For exactly one second, jolt only the orange text in three
+        // slices. The cached line is still the real winning header; no fake
+        // hashes, divider lines, or extra animation timer are needed.
+        static constexpr int offsets[5][3] = {
+          {-4,  6, -2}, { 3, -5,  1}, {-2,  4, -6},
+          { 5, -3,  2}, {-3,  2,  5}
+        };
+        const int elapsedMs = dinero::qt::kBlockFoundHighlightMs -
+                              static_cast<int>(remainingMs);
+        const int phase = std::clamp(
+          elapsedMs / dinero::qt::kHashEngineIntervalMs, 0, 4);
+        const int textHeight = metrics.height();
+        for (int slice = 0; slice < 3; ++slice) {
+          const int top = textHeight * slice / 3;
+          const int bottom = textHeight * (slice + 1) / 3;
+          painter.save();
+          painter.setClipRect(QRectF(0, textTop + top,
+                                     frameSize.width(), bottom - top));
+          painter.drawStaticText(
+            QPointF(8 + offsets[phase][slice], textTop), sample.renderedLine);
+          painter.restore();
+        }
+      } else {
+        painter.drawStaticText(QPointF(8, textTop), sample.renderedLine);
+      }
     }
     if (miningHashOverlay_) {
       miningHashOverlay_->setGeometry(viewport->rect());
