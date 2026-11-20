@@ -194,7 +194,12 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     // Index may commit first; ordinary progress remains absent until its own
     // effects commit. Retry from the same checked event closes that prefix.
     CHECK(!RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session));
+    CHECK(ordinary.getCurrentBlockchainHeight()!=c.height);  // as opened: not yet at the block about to be delivered
     CHECK(RuntimeOrdinaryDelivery::ApplyForWallet(ordinary,ordinary_session,event).cursor==first.cursor);
+    // A native wallet has no other publisher of its in-memory height: the
+    // delivery that just committed the tip must have published it, or a coin
+    // delivered now reads as unconfirmed until a restart.
+    CHECK(ordinary.getCurrentBlockchainHeight()==c.height);
     using Account=dinero::wallet::OrchardAccountDelivery;
     const Account::Profile account_profile{c.domain,c.activation_height,0};
     const auto account_view=RuntimeAccountReplayTestAccess::Capture(db,c);

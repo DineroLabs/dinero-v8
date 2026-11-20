@@ -878,6 +878,28 @@ public:
     };
     AbandonmentInfo getAbandonmentInfo(const std::string& txid) const;
 
+    // A NATIVE wallet (no legacy transparent state) is served only by runtime
+    // delivery, which has just COMMITTED its tip row and its coins'
+    // confirmations at `height`. Balance and coin readers count
+    // confirmations from the in-memory height, and for such a wallet nothing
+    // else sets it after open: a coin recovered or received since then would
+    // read as unconfirmed until the node is restarted. The delivery
+    // therefore publishes the height it wrote. It writes nothing itself and
+    // may lower the height (a disconnect).
+    //
+    // A wallet with legacy transparent state is NOT touched here: its height
+    // is published by PublishRecoveredBlockchainHeight, which checks the
+    // durable scan watermark and the session first, and its balance readers
+    // refuse until that has happened.
+    void publishNativeDeliveredTipHeight(DatabaseLease& lease, uint32_t height) {
+        if (lease.TypedTransparentState() != LegacyTransparentState::Absent) return;
+        {
+            std::lock_guard<std::mutex> lk(height_mu_);
+            current_blockchain_height_ = height;
+        }
+        height_cv_.notify_all();
+    }
+
     // Blockchain height access for maturity calculations
     void setBlockchainHeight(uint32_t height) {
         {
