@@ -77,6 +77,7 @@ private Q_SLOTS:
         auto* out = output(*window);
         auto* zoom = window->findChild<QPushButton*>("miningZoomIn");
         QVERIFY(out && zoom);
+        QCOMPARE(out->grab().toImage().pixelColor(out->width() / 2, 10), QColor("#000000"));
         const struct { const char* name; quint32 rgb; } choices[] = {
             {"miningHashColorGreen", 0x00ff00},
             {"miningHashColorBlue", 0x489cff},
