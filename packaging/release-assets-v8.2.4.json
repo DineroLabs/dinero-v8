@@ -17,6 +17,7 @@
     "SHA256SUMS-assumeutxo-153051",
     "SHA256SUMS-assumeutxo-153578",
     "SHA256SUMS-assumeutxo-155650",
+    "SHA256SUMS-assumeutxo-159255",
     "SHA256SUMS-assumeutxo-99677",
     "SHA256SUMS-dinero-core-8.2.4",
     "SHA256SUMS-dinero-core-dbgsym-8.2.4",
@@ -52,6 +53,10 @@
     "dinero-assumeutxo-155650-v6-full.dat.manifest.json",
     "dinero-assumeutxo-155650-v6-full.dat.publisher.manifest.json",
     "dinero-assumeutxo-155650-v6-full.dat.publisher.manifest.sig",
+    "dinero-assumeutxo-159255-v6-full.dat",
+    "dinero-assumeutxo-159255-v6-full.dat.manifest.json",
+    "dinero-assumeutxo-159255-v6-full.dat.publisher.manifest.json",
+    "dinero-assumeutxo-159255-v6-full.dat.publisher.manifest.sig",
     "dinero-assumeutxo-73035-v4.dat",
     "dinero-assumeutxo-73035-v4.manifest.json",
     "dinero-assumeutxo-99677-v4.dat",
@@ -75,6 +80,7 @@
     "snapshot-native-qualification-148375.json",
     "snapshot-native-qualification-153578.json",
     "snapshot-native-qualification-155650.json",
+    "snapshot-native-qualification-159255.json",
     "utxo-snapshot-65300.dat",
     "utxo-snapshot-65300.dat.manifest.json"
   ]
