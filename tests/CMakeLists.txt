@@ -17878,6 +17878,8 @@ set_tests_properties(SwapEncryptedStore PROPERTIES LABELS "wallet;swap;mandatory
 add_executable(test_swap_manager
   tests/wallet/test_swap_manager.cpp
   src/wallet/swap/swap_manager.cpp
+  src/wallet/swap/btc_wallet.cpp
+  src/wallet/swap/btc_wallet_keys.cpp
   src/wallet/swap/encrypted_store.cpp
   src/crypto/wallet_crypto.cpp
   src/wallet/swap/tower.cpp
