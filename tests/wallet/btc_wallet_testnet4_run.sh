@@ -49,7 +49,7 @@ retry() { local out; for _ in 1 2 3 4 5 6; do if out=$("$@" 2>&1); then echo "$o
 balance() { jget "$(rpc btc.getbalance '{}' 2>/dev/null || echo '{"sat":"?"}')" sat; }
 wait_for() {  # wait_for "what" 'condition' minutes
   local until=$(( $(date +%s) + ${3:-$MAX} * 60 ))
-  while (( $(date +%s) < until )); do eval "$2" && { say "     $1"; return 0; }; sleep 45; done
+  while (( $(date +%s) < until )); do eval "$2" && { say "     $1"; return 0; }; sleep 120; done
   say "FAIL waited ${3:-$MAX} min for: $1"; fail=1; return 1
 }
 
@@ -95,11 +95,11 @@ wait_for "the payment ($WHICH, fee $FEE sat) is confirmed: the wallet holds $((S
   say "     balance now $(balance); the list: $(rpc btc.listtransactions '{}' 2>&1 | cut -c1-400)"; }
 conf=$(curl -s -m 30 "https://mempool.space/testnet4/api/tx/$TXID/status" || true)
 check "the public chain has it in a block (${conf:0:80})" '[[ "$conf" == *"\"confirmed\":true"* ]]'
-say "the list: $(rpc btc.listtransactions '{}' | cut -c1-500)"
+say "the list: $(retry rpc btc.listtransactions '{}' | cut -c1-500)"
 
 if [[ ! -f "$WORK/returned" ]]; then
   PVA=$(retry rpc btc.preview "{\"address\":\"$RETURN\",\"send_all\":true,\"target_blocks\":6}")
-  rpc btc.send "{\"address\":\"$RETURN\",\"send_all\":true,\"target_blocks\":6,\"txid\":\"$(jget "$PVA" txid)\"}" >/dev/null
+  retry rpc btc.send "{\"address\":\"$RETURN\",\"send_all\":true,\"target_blocks\":6,\"txid\":\"$(jget "$PVA" txid)\"}" >/dev/null
   echo "$(jget "$PVA" txid) $(jget "$PVA" amount_sat)" >"$WORK/returned"
   say "everything left ($(jget "$PVA" amount_sat) sat) sent back to $RETURN: $(jget "$PVA" txid)"
 fi

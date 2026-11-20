@@ -136,6 +136,17 @@ std::function<void(uint32_t)> InstallLightBitcoin(swap::SwapManager& manager, co
     struct Watched {
         std::mutex mu;
         std::map<std::vector<uint8_t>, std::unique_ptr<swap::BtcDepositWatcher>> watchers;
+        // What each address showed a moment ago. A review followed by the
+        // payment, or a balance followed by the list, reads the same forty
+        // addresses twice within seconds; public servers answer such bursts
+        // with nothing. A reading this fresh is used again instead.
+        // Only while Bitcoin's tip is the same: a new block may have paid or spent.
+        struct Recent {
+            std::chrono::steady_clock::time_point at;
+            swap::Bytes32 tip{};
+            swap::BtcDepositView view;
+        };
+        std::map<std::vector<uint8_t>, Recent> recent;
     };
     auto watched = std::make_shared<Watched>();
     support.script_activity = [backend, watched](const std::vector<uint8_t>& script) {
@@ -144,14 +155,23 @@ std::function<void(uint32_t)> InstallLightBitcoin(swap::SwapManager& manager, co
         // one again, with the locks released in between, before giving up on
         // the whole reading.
         swap::BtcDepositView view;
-        for (int attempt = 0; attempt < 3; ++attempt) {
+        {
+            std::lock_guard<std::mutex> one(watched->mu);
+            const auto chain_lock = backend->Lock();
+            const auto it = watched->recent.find(script);
+            if (it != watched->recent.end() && std::chrono::steady_clock::now() - it->second.at < std::chrono::seconds(45) &&
+                it->second.tip == backend->chain().TipHash()) {
+                view = it->second.view;
+            }
+        }
+        for (int attempt = 0; attempt < 3 && !view.ok; ++attempt) {
             if (attempt) std::this_thread::sleep_for(std::chrono::milliseconds(1500));
             std::lock_guard<std::mutex> one(watched->mu);
             const auto chain_lock = backend->Lock();
             auto& watcher = watched->watchers[script];
             if (!watcher) watcher = std::make_unique<swap::BtcDepositWatcher>(backend->chain(), backend->servers(), script);
             view = watcher->Observe();
-            if (view.ok) break;
+            if (view.ok) watched->recent[script] = {std::chrono::steady_clock::now(), backend->chain().TipHash(), view};
         }
         if (!view.ok) throw std::runtime_error("cannot reach any Bitcoin server");
         swap::BtcScriptActivity activity{view.seen_sat, view.ever_paid, {}, {}};
