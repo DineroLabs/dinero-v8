@@ -1,6 +1,7 @@
 #include <QtTest/QtTest>
 #include <QGroupBox>
 #include <QLabel>
+#include <QPushButton>
 #include <QTabWidget>
 #include "hardwarewalletwidget.h"
 #include "rpcclient.h"
@@ -11,6 +12,37 @@ void killStaleDinerodByPort() { qFatal("Unexpected daemon cleanup in hardware wa
 class HardwareWalletLayoutTest : public QObject {
     Q_OBJECT
 private Q_SLOTS:
+    void transportAndActionsUseConsistentLineIcons() {
+        RpcClient rpc;
+        HardwareWalletWidget widget(&rpc);
+        auto* tabs = widget.findChild<QTabWidget*>();
+        QVERIFY(tabs);
+        QCOMPARE(tabs->count(), 3);
+        QCOMPARE(tabs->tabText(0), QString("File / SD Card"));
+        QCOMPARE(tabs->tabText(1), QString("QR Code"));
+        QCOMPARE(tabs->tabText(2), QString("USB"));
+        for (int i = 0; i < tabs->count(); ++i) {
+            QVERIFY(!tabs->tabIcon(i).isNull());
+            QVERIFY(!tabs->tabIcon(i).pixmap(20, 20).isNull());
+        }
+        const QStringList actions = {
+            "Export Dinero PSBT to File", "Import Signed Dinero PSBT",
+            "Analyze Dinero PSBT", "Sign via Connected USB",
+            "Finalize Dinero PSBT", "Broadcast Transaction",
+            "Show QR Code", "Scan Signed QR", "Detect Devices",
+            "Connect", "Get Address", "Verify on Device",
+            "Export Account Descriptors", "Import Into Active Wallet"
+        };
+        for (const QString& action : actions) {
+            QPushButton* match = nullptr;
+            for (auto* button : widget.findChildren<QPushButton*>()) {
+                if (button->text() == action) { match = button; break; }
+            }
+            QVERIFY2(match, qPrintable(action));
+            QVERIFY2(!match->icon().isNull(), qPrintable(action));
+        }
+    }
+
     void spareHeightStaysBelowTheContent() {
         RpcClient rpc;
         HardwareWalletWidget widget(&rpc);
