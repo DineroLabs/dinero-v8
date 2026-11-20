@@ -344,7 +344,8 @@ the account).
 ## 13. What is built (2026-11-19)
 
 On `claude/swaps-light-base`, behind the build option `DINERO_SWAP_LIGHT_BTC` (off by default) and
-the config `swap.btc_backend=light`. Mainnet additionally needs `swap.btc_light_mainnet_rehearsal=1`.
+the config `swap.btc_backend=light`. Since v8.2.4 mainnet needs nothing more than the beta opt-in
+`swap.mainnet_beta=1` (section 16, "The gate").
 
 | Piece | Files (`src/wallet/swap/`) | Proven by |
 |---|---|---|
@@ -422,10 +423,8 @@ both node launchers add `--swap.enable=1 --swap.optional=1 --swap.btc_backend=li
   through `swap.*` ("swaps are disabled: ...") and is shown in plain words.
 - **Turning it on asks first**: swaps are a beta, small amounts, keep Dinero open until a swap ends.
 - **It cannot be turned off while a swap is open.**
-- **The mainnet gate is not the switch's to lift.** Swaps without Bitcoin Core stay refused on
-  mainnet inside `dinerod` until the mainnet rehearsal has passed (section 7, step 6); the switch
-  never passes the rehearsal flag. Until then a mainnet user who turns it on reads "not available
-  on mainnet yet".
+- **Mainnet is offered since v8.2.4.** The node no longer refuses swaps without Bitcoin Core on
+  mainnet; the switch's question (beta, small amounts) is the opt-in, and the per-swap caps stay.
 - The release `dinerod` must be built with `DINERO_SWAP_LIGHT_BTC=ON`, or the tab says this copy
   was built without swaps.
 
@@ -544,11 +543,14 @@ What it found, none of it visible on regtest or testnet4:
 | The Swap tab kept an old "Connection refused" after the node came back. | Confusing, not harmful. | Fixed. |
 | The main window raised every Swap tab refusal as a global error. | An error bar for every user with swaps off. | Fixed. |
 | A new snapshot node does not request the Orchard wallet history until it is restarted. | A new user cannot create a wallet in the first run. | A fix exists on its own branch; not yet proven end to end. |
-| A new wallet on a snapshot node never scans: its balance stays 0 with the coins on chain. | The buyer cannot see or spend what he bought. | Open, in the wallet code, not the swap code. The mainnet gate stays until this is fixed. |
+| A new wallet on a snapshot node never scans: its balance stays 0 with the coins on chain. | The buyer cannot see or spend what he bought. | Fixed in the wallet code (the v8.2.4 wallet line, PR #961): on five clean copies of the buyer's node the coin was confirmed and spendable 20 to 47 seconds after the history was ready, with blocks arriving, and was kept after a restart. |
 
 Not covered: a refund on mainnet, a buyer who goes offline on mainnet, a Windows party, and paying
 the deposit in several payments.
 
-**The gate.** `swap.btc_light_mainnet_rehearsal` is lifted after the fixes above have landed
-(owner's decision, 2026-11-19), and not before the last row is closed: a buyer who cannot see his
-DIN is not a working swap.
+**The gate.** `swap.btc_light_mainnet_rehearsal` is removed in v8.2.4 (owner's decision,
+2026-11-20): the swap worked on mainnet with BTC bought at an exchange, and the buyer's wallet
+fix has passed its test. It ships together with that wallet fix and not without it: a buyer who
+cannot see his DIN is not a working swap. What stays: swaps are off until the user turns them on,
+`swap.mainnet_beta=1` (passed by the switch after its question), and the per-swap caps.
+`SwapLightMainnetStart` (tests/wallet/swap_light_mainnet_start.sh) holds a mainnet node to it.

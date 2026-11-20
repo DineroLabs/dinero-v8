@@ -12,7 +12,6 @@
 //   swap.btc_peer_port=N          (the network's default)
 //   swap.btc_min_servers=N        servers that must answer (default 2 on mainnet, else 1)
 //   swap.btc_sync_seconds=N       least time between header syncs (default 45)
-//   swap.btc_light_mainnet_rehearsal=1   required on mainnet until the mainnet rehearsal has passed
 //
 //   swap.tower_url=https://HOST   a watchtower armed over the network, for a
 //                                 buyer of DIN (instead of swap.tower_inbox)
@@ -61,11 +60,6 @@ std::function<void(uint32_t)> InstallLightBitcoin(swap::SwapManager& manager, co
     std::string default_servers, default_peers;
     switch (network) {
     case swap::SwapNetwork::Mainnet:
-        if (!config.GetBool("swap.btc_light_mainnet_rehearsal", false)) {
-            SwapService::Refuse("swap.btc_backend=light is not offered on mainnet yet (testnet first); "
-                                "use swap.btc_rpc with Bitcoin Core");
-            return nullptr;
-        }
         c.params = swap::BtcChainParams::Mainnet();
         default_servers = "https://mempool.space/api,https://blockstream.info/api";
         default_peers = "seed.bitcoin.sipa.be,dnsseed.bluematt.me,seed.btc.petertodd.net,seed.bitcoin.sprovoost.nl";

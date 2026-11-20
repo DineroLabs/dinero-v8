@@ -245,12 +245,6 @@ private Q_SLOTS:
         QCOMPARE(v.button, QString("Turn off swaps"));
         QVERIFY(!v.turnsOn);
 
-        v = switchView(true, Node::Off, "swap.btc_backend=light is not offered on mainnet yet (testnet first); use "
-                                        "swap.btc_rpc with Bitcoin Core", false);
-        QVERIFY2(v.text.contains("cannot start here") && v.text.contains("not available on mainnet yet"),
-                 qPrintable(v.text));
-        QVERIFY2(!v.text.contains("swap.btc_rpc"), "no node options in front of the user");
-
         v = switchView(true, Node::Off, "swap.btc_backend=light needs a dinerod built with DINERO_SWAP_LIGHT_BTC", false);
         QVERIFY2(v.text.contains("built without them"), qPrintable(v.text));
 

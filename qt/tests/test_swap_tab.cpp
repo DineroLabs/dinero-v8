@@ -286,9 +286,9 @@ private Q_SLOTS:
         // The node was started for swaps but refused the settings: the tab says why, in plain words.
         // (A running node answers swap.list with RPC error -32603 while swaps are off.)
         Q_EMIT rpc_->rpcError("swaptab.list", -32603,
-                              "swaps are disabled: swap.btc_backend=light is not offered on mainnet yet (testnet "
-                              "first); use swap.btc_rpc with Bitcoin Core");
-        QVERIFY2(text->text().contains("cannot start here") && text->text().contains("not available on mainnet yet"),
+                              "swaps are disabled: swap.btc_backend=light needs a dinerod built with "
+                              "DINERO_SWAP_LIGHT_BTC");
+        QVERIFY2(text->text().contains("cannot start here") && text->text().contains("built without them"),
                  qPrintable(text->text()));
         QVERIFY2(!Find<QLabel>(tab_, "swapStatus")->isVisible(), "no second, technical message");
 

@@ -130,7 +130,8 @@ jobs:
                  SwapTower SwapTowerHttp SwapEncryptedStore SwapManager SwapBtcWatcher
                  SwapBtcTx SwapBtcHeaderChain SwapBtcMerkleProof SwapBtcP2p SwapBtcEsplora
                  SwapBtcDeposit SwapBtcLightWatcher SwapBtcLightBackend SwapBtcHttp
-                 SwapPrivateOpenssl_dinerod SwapPrivateOpenssl_dinero-swap-tower'
+                 SwapPrivateOpenssl_dinerod SwapPrivateOpenssl_dinero-swap-tower
+                 SwapLightMainnetStart'
           failed=0
           for t in $tests; do
             ctest --test-dir build-swap --output-on-failure --no-tests=error -R "^${t}$" | tee "ctest-${t}.log" || failed=1

@@ -35,8 +35,6 @@ inline QString refusalReason(const QString& nodeMessage) {
 
 // The reason in words for someone who never set a node option.
 inline QString plainReason(const QString& reason) {
-    if (reason.contains("not offered on mainnet yet"))
-        return "swaps without Bitcoin Core are not available on mainnet yet. A later release switches them on.";
     if (reason.contains("built with DINERO_SWAP_LIGHT_BTC"))
         return "this copy of Dinero was built without them.";
     return reason;

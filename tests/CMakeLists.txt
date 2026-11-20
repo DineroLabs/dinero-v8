@@ -18137,6 +18137,13 @@ if(DINERO_SWAP_LIGHT_BTC)
   endforeach()
 endif()
 
+# Swaps without Bitcoin Core start on mainnet (an offline node in an empty folder; needs no bitcoind).
+if(DINERO_SWAP_LIGHT_BTC AND TARGET dinerod)
+  add_test(NAME SwapLightMainnetStart
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_light_mainnet_start.sh $<TARGET_FILE:dinerod>)
+  set_tests_properties(SwapLightMainnetStart PROPERTIES LABELS "wallet;swap" TIMEOUT 300)
+endif()
+
 if(DINERO_SWAP_LIGHT_BTC AND DINERO_BITCOIND AND TARGET dinerod)
   add_test(NAME SwapLightBtcRegtest
     COMMAND ${CMAKE_SOURCE_DIR}/tests/wallet/swap_light_btc_regtest.sh $<TARGET_FILE:dinerod>)
