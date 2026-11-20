@@ -4227,6 +4227,7 @@ void MainWindow::setupUI() {
       const int legacyTab = shieldedTabs->addTab(legacyPage, "Retired pool");
       shieldedTabs->setTabVisible(legacyTab, false);
       shieldedTabs->setCurrentIndex(0);
+      shieldedTabs->tabBar()->hide();
       connect(shieldedWidget_, &ShieldedWidget::retiredPoolVisibilityChanged, shieldedTabs,
               [shieldedTabs, legacyPage](bool visible, const QString& label) {
                 const int index = shieldedTabs->indexOf(legacyPage);
@@ -4234,6 +4235,7 @@ void MainWindow::setupUI() {
                 shieldedTabs->setTabText(index, label);
                 if (!visible && shieldedTabs->currentIndex() == index) shieldedTabs->setCurrentIndex(0);
                 shieldedTabs->setTabVisible(index, visible);
+                shieldedTabs->tabBar()->setVisible(visible);
               });
       tabs->addTab(shieldedTabs, navigationIcon(NavigationGlyph::Shield), "Shielded");
     }
