@@ -344,6 +344,18 @@ bool SwapService::Setup(DaemonContext& ctx) {
     mc.btc_wallet_max_send_sat = mc.network == swap::SwapNetwork::Mainnet ? 1'000'000 : 0;
     manager_ = std::make_unique<swap::SwapManager>(mc, derive, InProcessRpc(&ctx), btc_rpc, MakeRetainedSwapFundingOwner(ctx));
     manager_->SetBtcAccountSource(btc_account);
+    // Which wallet is open: its durable public identity, readable while it
+    // is locked. Each wallet gets its own Bitcoin wallet files.
+    manager_->SetBtcWalletTagSource([&ctx]() -> std::string {
+        if (!ctx.wallet) return {};
+        auto wallet_use = WalletService::AcquireWalletUse(ctx.wallet);
+        auto lease = wallet_use->Wallet().AcquireDatabaseLease();
+        const auto id = lease->ReadDeliveryIdentity();
+        static const char* const digits = "0123456789abcdef";
+        std::string tag;
+        for (size_t i = 0; i < 12; ++i) { tag += digits[id[i] >> 4]; tag += digits[id[i] & 15]; }
+        return tag;
+    });
     // The same account's private half, for signing a payment. Used inside
     // SwapManager::SendBtc only, and wiped there.
     manager_->SetBtcAccountSecretSource([&ctx](uint32_t coin_type) -> std::optional<swap::BtcAccountSecret> {

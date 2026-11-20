@@ -254,7 +254,8 @@ check "the next address is a new one ($WADDR2)" '[[ "$WADDR2" == bcrt1q* && "$WA
 mine_btc 1; sleep 3
 check "both addresses count (41,817 sat)" '[[ "$(jget "$(rpc $APORT btc.getbalance "{}")" sat)" == 41817 ]]'
 # A restore: the wallet's file is gone, only the seed is left. The chain says what was used.
-rm -f "$DIR/alice/swaps/btc-wallet.pub"
+rm -f "$DIR"/alice/swaps/btc-wallet-*/btc-wallet.pub "$DIR/alice/swaps/btc-wallet.pub"
+check "the wallet's file was in a folder of this Dinero wallet" '[[ -n "$(ls -d "$DIR"/alice/swaps/btc-wallet-* 2>/dev/null)" ]]'
 check "without its file the wallet is off again" '[[ "$(jget "$(rpc $APORT btc.status "{}")" enabled)" == False ]]'
 W2=$(rpc $APORT btc.enable '{}')
 check "the same seed gives the same first address" '[[ "$(jget "$W2" address)" == "$WADDR" ]]'
