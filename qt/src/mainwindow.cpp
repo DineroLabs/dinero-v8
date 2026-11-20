@@ -11484,25 +11484,19 @@ void MainWindow::updateMiningOutputCinematicFrame() {
     for (int visual = 0; visual < count; ++visual) {
       const int sampleIndex = count - 1 - visual;
       const MiningHashSample& sample = miningHashSamples_.at(sampleIndex);
-      // Normal rows are grey. The one current find is orange, with a thin
-      // full-width marker in the gap above its header; older finds are grey.
+      // Normal rows are grey. The one current find is orange; older finds
+      // return to grey while Session finds retains their full history.
       const auto colour = dinero::qt::hashRowColor(sample.blockFound, sample.highlightUntilMs > nowMs,
                                                    sample.startsNewBlock);
-      painter.setPen(QColor(colour.r, colour.g, colour.b, colour.a));
-      const qreal textTop = frameSize.height() - 6 - visual * rowHeight - metrics.ascent();
-      if (sample.blockFound) {
-        // A solved template has been retired while the miner submits it and
-        // requests new work. Pulse the marker during that real handoff so a
-        // short gap in hash samples does not look like a frozen display.
-        if (miningFoundPendingTemplate_) {
-          const int phase = miningCinematicFrame_ % 8;
-          const int pulse = qMin(phase, 8 - phase) * 18;
-          painter.setPen(QColor(colour.r, colour.g, colour.b, 155 + pulse));
-        }
-        painter.drawLine(QPointF(8, textTop - 2),
-                         QPointF(frameSize.width() - 8, textTop - 2));
-        painter.setPen(QColor(colour.r, colour.g, colour.b, colour.a));
+      int alpha = colour.a;
+      // A solved template is retired during submission. Pulse only its text
+      // during this real handoff; never invent candidate hashes to fill it.
+      if (sample.blockFound && miningFoundPendingTemplate_) {
+        const int phase = miningCinematicFrame_ % 8;
+        alpha = 180 + qMin(phase, 8 - phase) * 15;
       }
+      painter.setPen(QColor(colour.r, colour.g, colour.b, alpha));
+      const qreal textTop = frameSize.height() - 6 - visual * rowHeight - metrics.ascent();
       painter.drawStaticText(
         QPointF(8, textTop),
         sample.renderedLine);
