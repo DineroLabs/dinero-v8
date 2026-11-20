@@ -1,0 +1,150 @@
+# Swaps without Bitcoin Core on Linux, as a release would build them:
+# DINERO_SWAP_LIGHT_BTC=ON with the Orchard backend. No other Linux job turns
+# the light client on, and three Linux-only faults reached a pull request or
+# the public watchtower before this job existed: a missing header, a link
+# failure in unrelated tests (GNU ld pulling swap_service.o), and a crash on
+# the first HTTPS request (static OpenSSL symbols bound by the system libssl).
+name: Swap Linux
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [dinero-main]
+    paths:
+      - '.github/workflows/swap-linux.yml'
+      - 'src/wallet/swap/**'
+      - 'include/wallet/swap/**'
+      - 'src/daemon/services/swap_service.cpp'
+      - 'src/daemon/swap_*'
+      - 'src/daemon/CMakeLists.txt'
+      - 'cmake/SwapTower.cmake'
+      - 'cmake/BuildOptions.cmake'
+      - 'tools/dinero_swap_tower*.cpp'
+      - 'tests/wallet/*swap*'
+      - 'tests/CMakeLists.txt'
+
+concurrency:
+  group: swap-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  swap-linux-light:
+    name: Linux x86_64 — swaps without Bitcoin Core (light client ON)
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            ccache \
+            pkg-config \
+            python3 \
+            perl \
+            libcurl4-openssl-dev \
+            libudev-dev \
+            libusb-1.0-0-dev
+
+      - name: Read the Orchard backend's pinned Rust version
+        id: rust-pin
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import tomllib
+          with open('rust/orchard_backend/rust-toolchain.toml', 'rb') as f:
+              print('version=' + tomllib.load(f)['toolchain']['channel'])
+          PY
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: ${{ steps.rust-pin.outputs.version }}
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.workflow }}-linux
+          max-size: 1G
+
+      - name: Cache vendored prerequisites
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/openssl-3.5.7/prebuilt
+            depends/sources
+            depends/x86_64-pc-linux-gnu*
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: vendored-swap-linux-${{ runner.os }}-${{ hashFiles('depends/CMakeLists.txt', 'depends/packages/*.cmake', 'scripts/build-openssl-vendored.sh') }}
+          restore-keys: |
+            vendored-swap-linux-${{ runner.os }}-
+            vendored-tests-${{ runner.os }}-
+            vendored-${{ runner.os }}-
+
+      - name: Build vendored OpenSSL
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+
+      - name: Build depends
+        run: |
+          cmake -S depends -B depends/build
+          cmake --build depends/build -j
+
+      - name: CMake configure (light client and Orchard backend ON)
+        run: |
+          cmake -S . -B build-swap -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_USE_VENDORED_DEPS=ON \
+            -DDINERO_BUILD_ORCHARD_BACKEND=ON \
+            -DDINERO_SWAP_LIGHT_BTC=ON \
+            -DENABLE_GRPC=OFF \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          grep -E '^DINERO_SWAP_LIGHT_BTC:BOOL=ON$' build-swap/CMakeCache.txt
+
+      # The two unrelated tests are the ones that failed to link when
+      # swap_service.o sat in the wrong library.
+      - name: Build the programs and the swap tests
+        run: |
+          cmake --build build-swap -j"$(nproc)" --target \
+            dinerod dinero-swap-tower dinero-swap-tower-intake \
+            test_mining_height2 test_wallet_height2_coinbase \
+            test_swap_htlc test_swap_offer test_swap_fee_ladder test_swap_engine \
+            test_swap_runner test_swap_din_watcher test_swap_tower test_swap_tower_http \
+            test_swap_encrypted_store test_swap_manager test_swap_btc_watcher \
+            test_swap_btc_tx test_swap_btc_header_chain test_swap_btc_merkle_proof \
+            test_swap_btc_p2p test_swap_btc_esplora test_swap_btc_deposit \
+            test_swap_btc_light_watcher test_swap_btc_light_backend swap_btc_http_tool
+
+      - name: Run them (each must have run and passed, not been skipped)
+        run: |
+          tests='SwapHtlc SwapOffer SwapFeeLadder SwapEngine SwapRunner SwapDinWatcher
+                 SwapTower SwapTowerHttp SwapEncryptedStore SwapManager SwapBtcWatcher
+                 SwapBtcTx SwapBtcHeaderChain SwapBtcMerkleProof SwapBtcP2p SwapBtcEsplora
+                 SwapBtcDeposit SwapBtcLightWatcher SwapBtcLightBackend SwapBtcHttp
+                 SwapPrivateOpenssl_dinerod SwapPrivateOpenssl_dinero-swap-tower'
+          failed=0
+          for t in $tests; do
+            ctest --test-dir build-swap --output-on-failure --no-tests=error -R "^${t}$" | tee "ctest-${t}.log" || failed=1
+            grep -q '100% tests passed, 0 tests failed out of 1' "ctest-${t}.log" || { echo "::error::${t} did not run and pass exactly once"; failed=1; }
+            if grep -qiE 'Skipped|Not Run' "ctest-${t}.log"; then echo "::error::${t} was skipped"; failed=1; fi
+          done
+          exit $failed
+
+      # The crash this guards against happened at the first HTTPS request, so
+      # the symbol check above is the gate; this only shows the daemon starts
+      # and really links libcurl.
+      - name: dinerod starts and links libcurl
+        run: |
+          d="$(find build-swap -maxdepth 2 -type f -name dinerod | head -1)"
+          test -n "$d"
+          "$d" --version
+          ldd "$d" | grep libcurl
