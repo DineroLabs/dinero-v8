@@ -8296,31 +8296,70 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
         if(orchard_phone_history_requested_.load())retained.lock();
         // Same adoption checks for a fresh or an extended replay; neither is
         // returned unless it ends exactly at the current target and outbox head.
+        // Every refusal on the verified-history path says why, once per
+        // reason and replay head (the wallet retries about twice a second).
+        const auto stamp=[]{
+            const std::time_t now=std::time(nullptr);std::tm local{};
+#ifdef _WIN32
+            localtime_s(&local,&now);
+#else
+            localtime_r(&now,&local);
+#endif
+            char text[16];std::strftime(text,sizeof(text),"%H:%M:%S",&local);return std::string(text);
+        };
+        const auto refuse=[&](const char* why,const std::string& detail={})->Status {
+            static std::mutex said_mutex;static std::string said;
+            const std::string line=std::string("wallet replay waits: ")+why+(detail.empty()?"":" ("+detail+")");
+            std::lock_guard<std::mutex> lock(said_mutex);
+            if(said!=line){said=line;std::cerr<<"[OrchardHistory] "<<stamp()<<" "<<line<<std::endl;}
+            return Status::Invalid;
+        };
+        // The history was verified up to a checkpoint (`target`). It is
+        // adopted while the selected chain still contains that checkpoint and
+        // the replay ends at the node's own current outbox head on that chain.
+        // A block that arrived since verification does not undo it; a
+        // reorganisation that replaces the checkpoint does. (Before, the
+        // history had to be verified up to the very tip at this instant,
+        // which a chain with a block a minute almost never grants.)
         const auto adopt=[&](const std::shared_ptr<const RuntimeAccountReplay>& replay,
                 const std::shared_ptr<ChainstateService>& source,const p2p::OrchardPhoneHistoryTarget& target,
                 const std::shared_ptr<p2p::OrchardPhoneHistoryDownload>& download)->StatusOr<std::shared_ptr<const RuntimeAccountReplay>> {
             const auto head=replay->Head();const auto point=replay->Point(head).checkpoint;
             const auto final=getRuntimeDeliveryPage(head,1);
-            if(source->PhoneHistoryTarget()!=target||!download->Ready()||point.height!=target.height||point.block_hash!=target.hash||
-                !final.ok()||(*final)->head!=head||!(*final)->events.empty()||(*final)->next!=head)return Status::Invalid;
+            const auto tip=source->PhoneHistoryTarget();
+            if(!tip)return refuse("no selected history target");
+            const auto standing=download->ReadyCheckpointFor(*tip);
+            if(!standing||standing->target!=target)
+                return refuse("the verified checkpoint is no longer on the selected chain",
+                    "checkpoint "+std::to_string(target.height)+", tip "+std::to_string(tip->height));
+            if(!download->OnChainOf(*tip,point.height,point.block_hash))
+                return refuse("the replay does not end on the selected chain",
+                    "replay "+std::to_string(point.height)+", tip "+std::to_string(tip->height));
+            if(!final.ok()||(*final)->head!=head||!(*final)->events.empty()||(*final)->next!=head)
+                return refuse("a block was delivered while the replay was read","replay head "+std::to_string(head.sequence));
+            {static std::atomic<uint64_t> adopted{0};
+             if(++adopted==1||adopted%500==0)std::cerr<<"[OrchardHistory] "<<stamp()<<" wallet replay adopted (checkpoint "<<target.height
+                 <<", replay to "<<point.height<<", tip "<<tip->height<<", times "<<adopted.load()<<")"<<std::endl;}
             return replay;
         };
         const auto phone=[&]()->std::optional<std::tuple<std::shared_ptr<ChainstateService>,p2p::OrchardPhoneHistoryTarget,
                 std::shared_ptr<p2p::OrchardPhoneHistoryDownload>,std::shared_ptr<const p2p::OrchardPhoneHistoryData>>> {
             const auto source=std::const_pointer_cast<ChainstateService>(weak_from_this().lock());
             if(!source)return {};
-            const auto target=source->PhoneHistoryTarget();
             const auto* context=DaemonContext::instance();
-            if(!target||!context||context->chainstate.get()!=this)return {};
+            if(!context||context->chainstate.get()!=this)return {};
             const auto peers=std::dynamic_pointer_cast<P2PService>(context->p2p);
             auto download=peers?peers->PhoneHistoryDownload():nullptr;
-            auto history=download?download->Ready():nullptr;
-            if(!history||history->target!=*target)return {};
-            return std::tuple{source,*target,std::move(download),std::move(history)};
+            // The newest fully verified history that the selected chain still
+            // contains; its own target is the checkpoint the replay is built on.
+            auto history=download?download->ReadyCheckpoint():nullptr;
+            if(!history)return {};
+            const auto target=history->target;
+            return std::tuple{source,target,std::move(download),std::move(history)};
         };
         if(retained.owns_lock()&&phone_replay_&&phone_replay_base_){
             const auto ready=phone();
-            if(!ready)return Status::Invalid;
+            if(!ready)return refuse("no verified history checkpoint yet (retained replay kept)");
             const auto& [source,target,download,history]=*ready;
             const auto base=*phone_replay_base_;
             if(base.second==target.base&&base.first>=target.activation&&base.first<=target.height){
@@ -8346,17 +8385,21 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             captured_head.reset();
         }
         {std::lock_guard memo(phone_prefix_pending_mutex_);
-         if(phone_prefix_pending_head_&&*phone_prefix_pending_head_==std::pair{outbox_head.sequence,outbox_head.digest}&&!phone())return Status::Invalid;}
+         if(phone_prefix_pending_head_&&*phone_prefix_pending_head_==std::pair{outbox_head.sequence,outbox_head.digest}&&!phone())return refuse("no verified history checkpoint yet");}
         ++phone_replay_source_reads_;
         auto material=RuntimeAccountReplay::ReadSource(read);
         if(const auto base=RuntimeAccountReplay::ActivationPrefixBase(material)){
             const auto ready=phone();
-            if(!ready){std::lock_guard memo(phone_prefix_pending_mutex_);phone_prefix_pending_head_=std::pair{outbox_head.sequence,outbox_head.digest};return Status::Invalid;}
+            if(!ready){std::lock_guard memo(phone_prefix_pending_mutex_);phone_prefix_pending_head_=std::pair{outbox_head.sequence,outbox_head.digest};return refuse("no verified history checkpoint yet (first build)");}
             {std::lock_guard memo(phone_prefix_pending_mutex_);phone_prefix_pending_head_.reset();}
             const auto& [source,target,download,history]=*ready;
-            if(base->second!=target.base||base->first<target.activation||base->first>target.height)return Status::Invalid;
+            if(base->second!=target.base||base->first<target.activation||base->first>target.height)
+                return refuse("the node's record starts at another snapshot base than the verified history",
+                    "record "+std::to_string(base->first)+", checkpoint "+std::to_string(target.height));
             auto verifier=source->PreparePhoneHistoryVerifier(history->activation_proof,target);
-            if(!verifier)return Status::Invalid;
+            if(!verifier)return refuse("the history verifier could not be prepared","checkpoint "+std::to_string(target.height));
+            std::cerr<<"[OrchardHistory] "<<stamp()<<" wallet replay: building from the verified checkpoint "<<target.height
+                     <<" (bodies "<<target.activation<<" to "<<base->first<<")"<<std::endl;
             auto replay=RuntimeAccountReplay::BuildWithActivationPrefix(std::move(material),[&](uint32_t height){
                 auto body=std::make_shared<const OrchardBlockCandidate>(OrchardBlockCandidate::DecodeExact(history->Body(height)));
                 const auto now=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
@@ -8367,6 +8410,8 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             // the next capture then verifies only what arrived meanwhile.
             if(retained.owns_lock()){phone_replay_=replay;phone_replay_base_=*base;}
             ++phone_replay_full_builds_;
+            std::cerr<<"[OrchardHistory] "<<stamp()<<" wallet replay: built (full build "<<phone_replay_full_builds_
+                     <<(retained.owns_lock()?", kept for the next attempt)":", NOT kept)")<<std::endl;
             return adopt(replay,source,target,download);
         }
         auto replay=RuntimeAccountReplay::Build(std::move(material));
