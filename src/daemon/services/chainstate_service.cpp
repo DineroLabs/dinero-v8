@@ -2511,7 +2511,50 @@ bool ChainstateService::AuditHistoricalCompactTipUnderLock(const CBlockIndex& ti
 #endif
 }
 
+// The audit re-derives the selected tip's Orchard state from its body and undo
+// data, which rebuilds the whole accumulator forest: seconds of work under
+// the selected lock. Block activation asks for it on every pass, several
+// times a minute, also when nothing was written in between; on a snapshot
+// node that kept the selected lock held 84% to 95% of the time, and the
+// wallet and the history download, which need the same lock, starved.
+//
+// What the audit reads is the chain database, the tip's stored body, and the
+// in-memory tip. If the tip is the same, the database has not been written
+// since (its write fence: open generation and last write sequence, the same
+// fence the snapshot start-up uses to prove "nothing was written"), and the
+// in-memory UTXO set still names the same block, the audit has nothing new
+// to look at: its last success stands. Any write, any tip change, any
+// failure forgets it, and a failed audit is never remembered.
 bool ChainstateService::AuditSelectedOrchardTipUnderLock(std::string* reason) const {
+    AssertActivationLockHeld("Orchard selected-tip alignment");
+    const auto now=[&]()->std::optional<OrchardTipAuditPassed> {
+        if(!active_tip_||!chain_db_)return {};
+        const auto fence=chain_db_->startupWriteFence();
+        if(!fence)return {};
+        OrchardTipAuditPassed state;state.tip=active_tip_->hash;state.db_fence=*fence;
+        if(consensus_utxo_set_){state.utxo_best=consensus_utxo_set_->GetBestBlock();state.utxo_height=consensus_utxo_set_->GetHeight();}
+        return state;
+    };
+    const auto before=now();
+    if(before&&orchard_tip_audit_passed_&&*orchard_tip_audit_passed_==*before){
+        ++orchard_tip_audits_remembered_;
+        return true;
+    }
+    orchard_tip_audit_passed_.reset();
+    ++orchard_tip_audits_run_;
+    const auto started=std::chrono::steady_clock::now();
+    const bool passed=AuditSelectedOrchardTipUncachedUnderLock(reason);
+    // How long the selected lock was held for it, and how many repeats were spared since the last one.
+    std::cerr<<"[OrchardAudit] tip "<<(active_tip_?active_tip_->height:0)<<" audited in "
+             <<std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started).count()
+             <<" ms ("<<(passed?"passed":"FAILED")<<"; run "<<orchard_tip_audits_run_.load()
+             <<", remembered "<<orchard_tip_audits_remembered_.load()<<")"<<std::endl;
+    // Remembered only if the audit passed and wrote nothing itself.
+    if(passed&&before&&now()==before)orchard_tip_audit_passed_=before;
+    return passed;
+}
+
+bool ChainstateService::AuditSelectedOrchardTipUncachedUnderLock(std::string* reason) const {
     AssertActivationLockHeld("Orchard selected-tip alignment");
     const auto fail_orchard = [&](const char* message) {
         if (reason) *reason = message;

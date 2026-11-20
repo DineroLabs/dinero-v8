@@ -1679,6 +1679,21 @@ private:
         const std::optional<RuntimeOutboxCursor>& captured_head,
         const RuntimeOutboxCursor& after,size_t maximum_events,size_t maximum_bytes) const;
     bool AuditSelectedOrchardTipUnderLock(std::string* reason) const;
+    // The audit itself. AuditSelectedOrchardTipUnderLock adds only a memory of
+    // its last success (see there).
+    bool AuditSelectedOrchardTipUncachedUnderLock(std::string* reason) const;
+    // The last tip this audit passed for, with the chain database's write
+    // fence and the in-memory UTXO set's tip at that moment. Guarded by the
+    // selected lock, like the audit.
+    struct OrchardTipAuditPassed {
+        uint256 tip;
+        std::pair<uint64_t,uint64_t> db_fence;   // ChainDB::startupWriteFence(): open generation, last write
+        uint256 utxo_best;
+        uint32_t utxo_height=0;
+        bool operator==(const OrchardTipAuditPassed&)const=default;
+    };
+    mutable std::optional<OrchardTipAuditPassed> orchard_tip_audit_passed_;
+    mutable std::atomic<uint64_t> orchard_tip_audits_run_{0},orchard_tip_audits_remembered_{0};
     // Recheck a reconstructed activation parent without publishing it.
     bool AuditCompactBoundaryUnderLock(const CBlockIndex&,std::string* reason) const;
     bool AuditHistoricalCompactTipUnderLock(const CBlockIndex&,std::string* reason) const;
