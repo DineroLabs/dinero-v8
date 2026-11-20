@@ -385,7 +385,6 @@ bool SwapService::Setup(DaemonContext& ctx) {
         deriver.deriveHardened(0);
         return swap::BtcWalletAccountFromSecret(deriver.getPrivateKey(), deriver.getChainCode());
     };
-    mc.btc_wallet_on_mainnet = config->GetBool("swap.btc_wallet_mainnet", false);
     // While the wallet is new, one payment sends at most this much on mainnet
     // (the swap beta's ceiling); test networks have no limit.
     mc.btc_wallet_max_send_sat = mc.network == swap::SwapNetwork::Mainnet ? 1'000'000 : 0;

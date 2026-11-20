@@ -219,10 +219,6 @@ struct SwapManagerConfig {
     uint64_t max_din_una{0};
     bool require_tower_for_bob{false};  // mainnet beta: Bob may not accept without a watchtower
     bool btc_configured{true};          // false: no Bitcoin node (a Zcash-only node)
-    // The built-in Bitcoin wallet may be turned on on mainnet. Off until it
-    // has been rehearsed there: it receives, sends and raises fees on regtest
-    // and on public testnet4, and has not yet moved a mainnet coin.
-    bool btc_wallet_on_mainnet{false};
     uint64_t btc_wallet_max_send_sat{0};  // the most one payment may send (0: no limit)
 };
 

@@ -186,6 +186,6 @@ Differences from the sections above, decided while building:
 - **Not a `CoinModule` interface yet** (section 4). There is one coin; the interface is drawn when the second one arrives and shows what the two really share.
 - **Swap locks are not built from wallet coins** (section 5, "What swaps gain"). The lock must have a fixed, non-replaceable form that the watchtower package depends on; wallet payments are replaceable by design. Buying DIN from the wallet is therefore: pay the swap's deposit address from the wallet. It costs one more transaction and the deposit's two confirmations.
 - **Balances are read when the user looks**, after the wallet has been turned on, not on a timer.
-- **Mainnet:** turning the wallet on needs `swap.btc_wallet_mainnet=1` (off by default), and one payment sends at most 0.01 BTC.
+- **Mainnet:** offered since v8.2.4 with nothing more to set (owner's decision, 2026-11-20); one payment sends at most 0.01 BTC.
 
 Still open: dollar values (off, undecided), a history kept on disk across server outages, coin control, and every other coin.
