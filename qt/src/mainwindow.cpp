@@ -2529,6 +2529,11 @@ void MainWindow::setupUI() {
   connect(tabs, &QTabWidget::currentChanged, this, [this](int index) {
     updateMiningFocusDimState();
     setMiningOutputCinematicEnabled(isMining_);
+    const QString selectedTab = mainTabName(mainTabs_, index);
+    if (selectedTab == QStringLiteral("Receive"))
+      rpc_->callNamed("wallet.listaddresses", QJsonObject{{"count", 200}});
+    else if (selectedTab == QStringLiteral("Transactions"))
+      loadTransactionHistory();
     if (isUtxoTabActive()) {
       renderUtxoPage();
       requestUtxoRefresh();
@@ -3979,6 +3984,13 @@ void MainWindow::setupUI() {
 
     layout->addLayout(headerLayout);
 
+    lblAddressListStatus_ = new QLabel(receive);
+    lblAddressListStatus_->setObjectName("addressListStatus");
+    lblAddressListStatus_->setStyleSheet(
+        "QLabel { color: #f0b429; padding: 6px; background: #2c2618; border-radius: 4px; }");
+    lblAddressListStatus_->setVisible(false);
+    layout->addWidget(lblAddressListStatus_);
+
     // Single unified address table. Filter is applied in the listaddresses
     // response handler based on cmbReceiveMode_'s current value.
     tblAddresses_ = new QTableWidget(0, 6);
@@ -4040,6 +4052,13 @@ void MainWindow::setupUI() {
     headerLayout->addWidget(btnRefreshTxs);
     
     layout->addLayout(headerLayout);
+
+    lblTransactionListStatus_ = new QLabel(transactions);
+    lblTransactionListStatus_->setObjectName("transactionListStatus");
+    lblTransactionListStatus_->setStyleSheet(
+        "QLabel { color: #f0b429; padding: 6px; background: #2c2618; border-radius: 4px; }");
+    lblTransactionListStatus_->setVisible(false);
+    layout->addWidget(lblTransactionListStatus_);
     
     // Transaction table
     tblTransactions_ = new QTableWidget(0, 7);
@@ -6152,8 +6171,15 @@ void MainWindow::refresh() {
   refreshShieldedBalanceSummary();
   rpc_->call("wallet.listwallets", QJsonArray());
 
-  // ✅ Load all addresses to populate Receive tab (regardless of balance)
-  rpc_->callNamed("wallet.listaddresses", QJsonObject{{"count", 200}});
+  // History and address reads can briefly refuse while a newly mined block
+  // is delivered. Retry while their panel is visible, without polling hidden
+  // tables or surfacing a global error on every block.
+  const QString selectedTab = mainTabs_
+      ? mainTabName(mainTabs_, mainTabs_->currentIndex()) : QString();
+  if (selectedTab == QStringLiteral("Receive"))
+    rpc_->callNamed("wallet.listaddresses", QJsonObject{{"count", 200}});
+  else if (selectedTab == QStringLiteral("Transactions"))
+    loadTransactionHistory();
   // Large mining wallets may contain thousands of UTXOs. Fetch them only
   // while their panel is visible instead of rebuilding a hidden table every
   // five seconds on Qt's UI thread.
@@ -6612,14 +6638,36 @@ void MainWindow::updateWalletBalanceDisplay() {
   }
 }
 
-void MainWindow::showWalletBalanceUnavailable() {
+void MainWindow::showWalletBalanceUnavailable(bool transientCatchUp) {
+  const bool firstUnavailable = !walletBalanceUnavailable_;
   walletBalanceUnavailable_ = true;
   walletSendReady_ = false;
   walletTransparentV3SendReady_ = false;
   walletSendUnavailableReason_ = "Waiting for a current wallet balance";
   updateWalletBalanceDisplay();
   updateWalletUIState();
+  if (transientCatchUp && walletBalanceAccepted_) {
+    // A newly mined block can briefly make getinfo and getbalance refuse in
+    // either order. Pause sending now, retry the financial read, and reserve
+    // the global warning for a balance that stays stale beyond one refresh.
+    if (firstUnavailable) {
+      const QString wallet = currentWalletName_;
+      const qint64 verifiedAt = walletBalanceVerifiedAtMs_;
+      QTimer::singleShot(1500, this, [this, wallet, verifiedAt]() {
+        if (rpc_ && currentWalletName_ == wallet && walletBalanceUnavailable_ &&
+            walletBalanceVerifiedAtMs_ == verifiedAt)
+          rpc_->getBalance();
+      });
+      QTimer::singleShot(6000, this, [this, wallet, verifiedAt]() {
+        if (currentWalletName_ == wallet && walletBalanceUnavailable_ &&
+            walletBalanceVerifiedAtMs_ == verifiedAt)
+          showWalletBalanceUnavailable();
+      });
+    }
+    return;
+  }
   if (lblErrorMessage_) {
+    errorMessageMethod_.clear();
     lblErrorMessage_->setText(walletRecoveryUnlockNeeded_ && !walletUnlocked_
         ? "Wallet history is incomplete. Unlock this wallet to finish recovery; sending is paused."
         : walletBalanceAccepted_
@@ -8613,16 +8661,14 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
     }
   } else if (method == "wallet.listtransactions") {
     if (result.isArray()) {
+      if (lblTransactionListStatus_) lblTransactionListStatus_->setVisible(false);
       updateTransactionTable(result.toArray());
     } else {
       qWarning() << "listtransactions returned non-array result";
-      tblTransactions_->setRowCount(0);
-      tblTransactions_->insertRow(0);
-      auto *item = new QTableWidgetItem("No transactions found");
-      item->setForeground(QBrush(QColor("#868e96")));
-      item->setTextAlignment(Qt::AlignCenter);
-      tblTransactions_->setItem(0, 0, item);
-      tblTransactions_->setSpan(0, 0, 1, 7);
+      if (lblTransactionListStatus_) {
+        lblTransactionListStatus_->setText("Transaction history is unavailable. Refresh to try again.");
+        lblTransactionListStatus_->setVisible(true);
+      }
     }
   } else if (method == "wallet.listunspent") {
     utxoRequestPending_ = false;
@@ -8651,6 +8697,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
     }
   } else if (method == "wallet.listaddresses") {
     if (result.isArray()) {
+      if (lblAddressListStatus_) lblAddressListStatus_->setVisible(false);
       tblAddresses_->setSortingEnabled(false);
       tblAddresses_->setUpdatesEnabled(false);
       tblAddresses_->blockSignals(true);
@@ -8773,6 +8820,9 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       } else {
         qDebug() << "Loaded" << addresses.size() << "addresses";
       }
+    } else if (lblAddressListStatus_) {
+      lblAddressListStatus_->setText("Addresses are unavailable. Reload to try again.");
+      lblAddressListStatus_->setVisible(true);
     }
   } else if (method == "wallet.listaddresseswithbalances") {
     // Update address table with balances
@@ -8923,6 +8973,24 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
       tblUTXOs_->setSpan(0, 0, 1, 7);
       if (lblUtxoPage_) lblUtxoPage_->setText("UTXOs unavailable");
     }
+    if (code == -32603 && isWalletBalancePendingRefusal(message)) return;
+  }
+
+  if (code == -32603 && isWalletBalancePendingRefusal(message)) {
+    if (method == "wallet.listaddresses") {
+      if (lblAddressListStatus_) {
+        lblAddressListStatus_->setText("Wallet is catching up. Addresses will refresh automatically.");
+        lblAddressListStatus_->setVisible(true);
+      }
+      return;
+    }
+    if (method == "wallet.listtransactions") {
+      if (lblTransactionListStatus_) {
+        lblTransactionListStatus_->setText("Wallet is catching up. Transaction history will refresh automatically.");
+        lblTransactionListStatus_->setVisible(true);
+      }
+      return;
+    }
   }
 
   if (method == "network.setonionservice" || method == "network.setrelayservice" ||
@@ -9016,12 +9084,13 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
       }
       updateWalletSwitcherState();
     }
-    showWalletBalanceUnavailable();
+    showWalletBalanceUnavailable(!isWalletUnlockRequiredRefusal(message));
     return;
   }
 
   if (method == "wallet.getbalance") {
-    showWalletBalanceUnavailable();
+    showWalletBalanceUnavailable(code == -32603 &&
+                                 message == kWalletCatchingUpRefusal);
     return;
   }
 
@@ -15244,8 +15313,7 @@ bool MainWindow::shouldIgnoreWalletScopedResult(const QString& method) const {
   static const QSet<QString> walletScopedMethods = {
     QStringLiteral("wallet.getbalance"),
     QStringLiteral("wallet.shieldedbalance"),
-    // wallet.listaddresses removed from polling — too expensive with 24K+ addresses
-    // Loaded on-demand when user opens receive tab instead
+    QStringLiteral("wallet.listaddresses"),
     QStringLiteral("wallet.listunspent"),
     QStringLiteral("wallet.listtransactions"),
     QStringLiteral("wallet.getsyncstatus"),
@@ -15305,9 +15373,11 @@ void MainWindow::clearWalletScopedUiState() {
   if (tblAddresses_) {
     tblAddresses_->setRowCount(0);
   }
+  if (lblAddressListStatus_) lblAddressListStatus_->setVisible(false);
   if (tblTransactions_) {
     tblTransactions_->setRowCount(0);
   }
+  if (lblTransactionListStatus_) lblTransactionListStatus_->setVisible(false);
   if (tblUTXOs_) tblUTXOs_->setRowCount(0);
   cachedUtxos_ = {};
   currentUtxoPage_ = 0;
