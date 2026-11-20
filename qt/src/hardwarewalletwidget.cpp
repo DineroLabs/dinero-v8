@@ -34,7 +34,8 @@ QIcon hardwareIcon(HardwareGlyph glyph)
     pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
-    painter.scale(2, 2);
+    // The pixmap's device pixel ratio already maps logical 24px coordinates
+    // onto its 48px backing store. Scaling here clips most of each glyph.
     painter.setPen(QPen(QColor("#aeb8c4"), 1.8, Qt::SolidLine,
                         Qt::RoundCap, Qt::RoundJoin));
     painter.setBrush(Qt::NoBrush);
