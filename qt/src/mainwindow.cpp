@@ -143,15 +143,6 @@
 
 namespace {
 
-// Leave a narrow black control strip above the document. Hashes and the
-// startup line begin below the swatches and zoom controls, without overlap.
-class MiningOutputEdit final : public QTextEdit {
-public:
-  explicit MiningOutputEdit(QWidget* parent = nullptr) : QTextEdit(parent) {
-    setViewportMargins(0, 26, 0, 0);
-  }
-};
-
 // Keep mining telemetry accessible as label text while drawing numeric values
 // as compact seven-segment scoreboard digits. External miner status can also
 // use the Blocks label, so nonnumeric text retains normal QLabel rendering.
@@ -5142,7 +5133,7 @@ void MainWindow::setupUI() {
     
     // Mining output (label intentionally removed for cleaner layout)
     
-    txtMiningOutput_ = new MiningOutputEdit;
+    txtMiningOutput_ = new QTextEdit;
     txtMiningOutput_->setObjectName("miningOutput");
     txtMiningOutput_->setReadOnly(true);
     txtMiningOutput_->setMinimumHeight(250); // Ensure minimum decent size
@@ -5176,9 +5167,8 @@ void MainWindow::setupUI() {
     miningHashOverlay_->setStyleSheet("background: transparent;");
     miningHashOverlay_->hide();
 
-    // These controls sit in the black strip above the document. They are
-    // children of the edit rather than its viewport, so the live hash overlay
-    // can be raised every frame without covering them.
+    // Keep the controls at the right of the document's first line. As children
+    // of the edit, they can stay above the live hash overlay in its viewport.
     const struct { const char* name; const char* label; quint32 rgb; } hashChoices[] = {
       {"miningHashColorGreen", "Green", 0x00ff00},
       {"miningHashColorBlue", "Blue", 0x489cff},
@@ -5193,9 +5183,8 @@ void MainWindow::setupUI() {
       swatch->setObjectName(QString::fromLatin1(choice.name));
       swatch->setToolTip(QString("%1 mining hashes").arg(QString::fromLatin1(choice.label)));
       swatch->setAccessibleName(swatch->toolTip());
-      swatch->setFixedSize(22, 20);
-      // Keep the 22x20 hit target, but make the visible square one quarter
-      // of its former area (10x10 instead of filling the whole button).
+      swatch->setFixedSize(12, 20);
+      // The 10x10 visible square has just 2px between adjacent choices.
       swatch->setIconSize(QSize(12, 12));
       swatch->setCheckable(true);
       swatch->setFlat(true);
@@ -5227,7 +5216,7 @@ void MainWindow::setupUI() {
     }
     hashColorButtons.first()->setChecked(true);
 
-    // Text size controls stay in the top-right corner of the same strip.
+    // Text size controls stay in the top-right corner of the same first line.
     const QString zoomStyle = QStringLiteral(
       "QPushButton { background: transparent; color: #bec8d0; border: none; "
       "padding: 0; font-weight: 700; } "
@@ -5289,7 +5278,6 @@ void MainWindow::setupUI() {
           x -= swatch->width();
           swatch->move(x, y);
           swatch->raise();
-          x -= 2;
         }
         minus_->raise();
         plus_->raise();
