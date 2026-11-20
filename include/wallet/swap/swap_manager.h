@@ -24,6 +24,7 @@
 // survive a relock, but an unopened locked wallet cannot delete an offer.
 // next_index.
 
+#include "wallet/swap/btc_wallet.h"
 #include "wallet/swap/encrypted_store.h"
 #include "wallet/swap/runner.h"
 
@@ -102,7 +103,15 @@ struct LightBtcSupport {
     // the node's own header chain (at least one confirmation). Throws if no
     // server answers. Optional: without it SwapManager::BtcHoldingsOfSwaps refuses.
     std::function<uint64_t(const std::vector<uint8_t>& script_pubkey)> script_balance;
+    // The same, and whether the script was ever paid (spent or not): what the
+    // built-in Bitcoin wallet reads its addresses with. Optional: without it
+    // the wallet is not offered.
+    std::function<BtcScriptActivity(const std::vector<uint8_t>& script_pubkey)> script_activity;
 };
+
+// The public half of the wallet's BIP84 account m/84'/coin'/0', from the seed.
+// nullopt while the wallet is locked.
+using BtcAccountSource = std::function<std::optional<BtcWalletAccount>(uint32_t coin_type)>;
 // A deposit's state, in the counter chain's smallest unit (zatoshi, or satoshi
 // for a Bitcoin deposit: the field names are Zcash's, where deposits began).
 struct ZecDepositStatus {
@@ -199,6 +208,10 @@ struct SwapManagerConfig {
     uint64_t max_din_una{0};
     bool require_tower_for_bob{false};  // mainnet beta: Bob may not accept without a watchtower
     bool btc_configured{true};          // false: no Bitcoin node (a Zcash-only node)
+    // The built-in Bitcoin wallet may be turned on on mainnet. Off until it
+    // can send: coins received before then could only be moved with the
+    // recovery words in another Bitcoin wallet.
+    bool btc_wallet_on_mainnet{false};
 };
 
 class SwapManager {
@@ -283,6 +296,25 @@ public:
     };
     BtcHoldings BtcHoldingsOfSwaps();
 
+    // The built-in Bitcoin wallet (docs/design/multi-coin-wallet.md, section
+    // 5): the BIP84 account of this wallet's seed, read through the light
+    // Bitcoin client. Receiving and balances; it does not send yet.
+    void SetBtcAccountSource(BtcAccountSource source);
+    struct BtcWalletState {
+        bool offered{false};    // this node can run it (see why_not otherwise)
+        bool enabled{false};    // turned on: its account is stored
+        std::string why_not;
+        std::string address;    // the current receive address, when enabled
+        uint32_t handed_out{};  // receive addresses given out so far
+    };
+    BtcWalletState BtcWalletStatus();
+    // Turns it on (the wallet must be unlocked once: the account comes from
+    // the seed) and returns the first receive address. Doing it again is
+    // harmless. Throws std::runtime_error with the reason when it cannot.
+    std::string EnableBtcWallet();
+    std::string BtcWalletNewAddress();   // throws when not enabled, or see BtcWallet::NewReceiveAddress
+    BtcWallet::Balance BtcWalletBalance();  // throws when not enabled or no server answers
+
     // One tick of every unfinished swap. Returns false (and does nothing) when
     // the wallet is locked: swaps are paused, not failed.
     bool TickAll(uint32_t now_unix);
@@ -343,6 +375,9 @@ private:
     std::function<bool(const std::string&, const std::string&)> tower_ack_;
     std::optional<ZecSupport> zec_;
     std::optional<LightBtcSupport> light_btc_;
+    BtcAccountSource btc_account_;
+    std::mutex btc_wallet_mu_;  // the wallet's file; never taken while holding mu_
+    std::string BtcWalletWhyNot();  // empty when this node offers the wallet; takes mu_
     std::optional<Bytes32> store_key_;  // kept while the daemon runs: live swaps survive a relock
     Bytes32 StoreKey();                  // binds the first key; relock retains it, a different key refuses
     std::mutex mu_;

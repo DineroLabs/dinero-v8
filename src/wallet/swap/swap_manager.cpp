@@ -1233,6 +1233,76 @@ SwapManager::BtcHoldings SwapManager::BtcHoldingsOfSwaps() {
     return out;
 }
 
+void SwapManager::SetBtcAccountSource(BtcAccountSource source) {
+    std::lock_guard<std::mutex> lock(mu_);
+    btc_account_ = std::move(source);
+}
+
+std::string SwapManager::BtcWalletWhyNot() {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!light_btc_ || !light_btc_->script_activity || !btc_account_) {
+        return "the Bitcoin wallet needs this node to reach Bitcoin without Bitcoin Core (swap.btc_backend=light)";
+    }
+    return {};
+}
+
+SwapManager::BtcWalletState SwapManager::BtcWalletStatus() {
+    BtcWalletState out;
+    out.why_not = BtcWalletWhyNot();
+    out.offered = out.why_not.empty();
+    std::lock_guard<std::mutex> file(btc_wallet_mu_);
+    if (!BtcWallet::Enabled(config_.dir)) {
+        if (out.offered && config_.network == SwapNetwork::Mainnet && !config_.btc_wallet_on_mainnet) {
+            out.offered = false;
+            out.why_not = "the Bitcoin wallet is not offered on mainnet yet: it cannot send";
+        }
+        return out;
+    }
+    try {
+        BtcWallet wallet(config_.dir, config_.runner.btc_hrp);
+        out.enabled = true;
+        out.address = wallet.CurrentReceiveAddress();
+        out.handed_out = wallet.receive_handed_out();
+    } catch (const std::exception& e) {
+        out.why_not = e.what();
+    }
+    return out;
+}
+
+std::string SwapManager::EnableBtcWallet() {
+    if (const std::string why = BtcWalletWhyNot(); !why.empty()) throw std::runtime_error(why);
+    BtcAccountSource source;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        source = btc_account_;
+    }
+    std::lock_guard<std::mutex> file(btc_wallet_mu_);
+    if (config_.network == SwapNetwork::Mainnet && !config_.btc_wallet_on_mainnet && !BtcWallet::Enabled(config_.dir)) {
+        throw std::runtime_error("the Bitcoin wallet is not offered on mainnet yet: it cannot send");
+    }
+    const auto account = source(config_.network == SwapNetwork::Mainnet ? 0u : 1u);
+    if (!account) throw std::runtime_error("wallet is locked: unlock it to turn the Bitcoin wallet on");
+    BtcWallet::Enable(config_.dir, *account);
+    return BtcWallet(config_.dir, config_.runner.btc_hrp).CurrentReceiveAddress();
+}
+
+std::string SwapManager::BtcWalletNewAddress() {
+    std::lock_guard<std::mutex> file(btc_wallet_mu_);
+    return BtcWallet(config_.dir, config_.runner.btc_hrp).NewReceiveAddress();
+}
+
+BtcWallet::Balance SwapManager::BtcWalletBalance() {
+    if (const std::string why = BtcWalletWhyNot(); !why.empty()) throw std::runtime_error(why);
+    BtcWallet::ScriptReader read;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        read = light_btc_->script_activity;
+    }
+    // The servers are asked without the manager's lock: swaps keep ticking.
+    std::lock_guard<std::mutex> file(btc_wallet_mu_);
+    return BtcWallet(config_.dir, config_.runner.btc_hrp).ReadBalance(read);
+}
+
 bool SwapManager::TickAll(uint32_t now) {
     std::lock_guard<std::mutex> lock(mu_);
     Bytes32 store_key;

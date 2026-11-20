@@ -1362,6 +1362,126 @@ TEST(SwapManager, BitcoinAtTheAddressesOfThisWalletsSwaps) {
     EXPECT_EQ(h.unreadable_swaps, 3u);
 }
 
+// Portfolio, step 2: the built-in Bitcoin wallet, through the manager.
+TEST(SwapManager, TheBitcoinWalletIsTurnedOnFromTheSeedAndReadWhileLocked) {
+    TempDir da("btcw_a");
+    FakeWallet wa{0xd1};
+    Bytes32 key{}, chain{};
+    key.fill(0x5a);
+    chain.fill(0x5b);
+    const BtcWalletAccount account = BtcWalletAccountFromSecret(key, chain);
+    std::vector<uint32_t> coin_types;
+    bool locked = false;
+    const BtcAccountSource source = [&](uint32_t coin) -> std::optional<BtcWalletAccount> {
+        coin_types.push_back(coin);
+        if (locked) return std::nullopt;
+        return account;
+    };
+    std::map<std::vector<uint8_t>, BtcScriptActivity> at;
+    bool reachable = true;
+    LightBtcSupport light;
+    light.make_io = [](const SwapSession& s, const RunnerConfig& rc, const Bytes32&) {
+        return std::make_unique<RpcSwapChainIo>(kNoDin, kNoBtc, s, rc);
+    };
+    light.tip_height = [] { return uint32_t{800}; };
+
+    {
+        SwapManager m(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+        // A node with Bitcoin Core only, or a light client that cannot read addresses: not offered, with the reason.
+        EXPECT_FALSE(m.BtcWalletStatus().offered);
+        EXPECT_NE(m.BtcWalletStatus().why_not.find("without Bitcoin Core"), std::string::npos);
+        EXPECT_THROW(m.EnableBtcWallet(), std::runtime_error);
+        m.SetLightBitcoin(light);
+        m.SetBtcAccountSource(source);
+        EXPECT_FALSE(m.BtcWalletStatus().offered);
+        light.script_activity = [&](const std::vector<uint8_t>& script) {
+            if (!reachable) throw std::runtime_error("cannot reach any Bitcoin server");
+            const auto it = at.find(script);
+            return it == at.end() ? BtcScriptActivity{} : it->second;
+        };
+        m.SetLightBitcoin(light);
+        auto st = m.BtcWalletStatus();
+        EXPECT_TRUE(st.offered);
+        EXPECT_FALSE(st.enabled);
+        EXPECT_THROW(m.BtcWalletNewAddress(), std::runtime_error);  // not turned on
+        EXPECT_THROW(m.BtcWalletBalance(), std::runtime_error);
+
+        // Turning it on needs the seed once.
+        locked = true;
+        try {
+            m.EnableBtcWallet();
+            ADD_FAILURE() << "turned on with a locked wallet";
+        } catch (const std::runtime_error& e) {
+            EXPECT_STREQ(e.what(), "wallet is locked: unlock it to turn the Bitcoin wallet on");
+        }
+        EXPECT_FALSE(m.BtcWalletStatus().enabled);
+        locked = false;
+        const std::string first = m.EnableBtcWallet();
+        EXPECT_EQ(first, BtcWalletAddress(account, 0, 0, "bcrt"));
+        EXPECT_EQ(coin_types.back(), 1u) << "a test network uses coin type 1";
+        EXPECT_EQ(m.EnableBtcWallet(), first);  // again: harmless
+        st = m.BtcWalletStatus();
+        EXPECT_TRUE(st.enabled);
+        EXPECT_EQ(st.address, first);
+        EXPECT_EQ(st.handed_out, 1u);
+    }
+    // After a restart with the wallet locked: addresses and the balance still work.
+    locked = true;
+    wa.locked = true;
+    SwapManager m(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    m.SetLightBitcoin(light);
+    m.SetBtcAccountSource(source);
+    const size_t asked_for_seed = coin_types.size();
+    EXPECT_TRUE(m.BtcWalletStatus().enabled);
+    const std::string second = m.BtcWalletNewAddress();
+    EXPECT_EQ(second, BtcWalletAddress(account, 0, 1, "bcrt"));
+    at[BtcWalletScript(account, 0, 0)] = {29'000, true};
+    at[BtcWalletScript(account, 1, 0)] = {2'817, true};
+    const auto balance = m.BtcWalletBalance();
+    EXPECT_EQ(balance.sat, 31'817u);
+    EXPECT_EQ(balance.rows.size(), 2u);
+    EXPECT_EQ(coin_types.size(), asked_for_seed) << "reading needs no seed";
+    reachable = false;
+    EXPECT_THROW(m.BtcWalletBalance(), std::runtime_error);  // never an empty wallet instead
+}
+
+TEST(SwapManager, TheBitcoinWalletStaysOffOnMainnetUntilItCanSend) {
+    TempDir da("btcw_main");
+    FakeWallet wa{0xd2};
+    Bytes32 key{}, chain{};
+    key.fill(0x6a);
+    chain.fill(0x6b);
+    const BtcWalletAccount account = BtcWalletAccountFromSecret(key, chain);
+    std::vector<uint32_t> coin_types;
+    LightBtcSupport light;
+    light.make_io = [](const SwapSession& s, const RunnerConfig& rc, const Bytes32&) {
+        return std::make_unique<RpcSwapChainIo>(kNoDin, kNoBtc, s, rc);
+    };
+    light.tip_height = [] { return uint32_t{800}; };
+    light.script_activity = [](const std::vector<uint8_t>&) { return BtcScriptActivity{}; };
+    SwapManagerConfig c = Config(da.path);
+    c.network = SwapNetwork::Mainnet;
+    c.runner.btc_hrp = "bc";
+    {
+        SwapManager m(c, wa.Deriver(), kNoDin, kNoBtc);
+        m.SetLightBitcoin(light);
+        m.SetBtcAccountSource([&](uint32_t coin) { coin_types.push_back(coin); return std::optional<BtcWalletAccount>(account); });
+        const auto st = m.BtcWalletStatus();
+        EXPECT_FALSE(st.offered);
+        EXPECT_NE(st.why_not.find("not offered on mainnet yet"), std::string::npos) << st.why_not;
+        EXPECT_THROW(m.EnableBtcWallet(), std::runtime_error);
+        EXPECT_TRUE(coin_types.empty()) << "the seed is not touched for a refusal";
+        EXPECT_FALSE(BtcWallet::Enabled(da.path));
+    }
+    c.btc_wallet_on_mainnet = true;
+    SwapManager m(c, wa.Deriver(), kNoDin, kNoBtc);
+    m.SetLightBitcoin(light);
+    m.SetBtcAccountSource([&](uint32_t coin) { coin_types.push_back(coin); return std::optional<BtcWalletAccount>(account); });
+    EXPECT_EQ(m.EnableBtcWallet(), BtcWalletAddress(account, 0, 0, "bc"));
+    ASSERT_EQ(coin_types.size(), 1u);
+    EXPECT_EQ(coin_types[0], 0u) << "mainnet is coin type 0";
+}
+
 TEST(SwapManager, DepositsBelongToTheNodesThatCanUseThem) {
     TempDir da("light_who_alice"), db("light_who_core"), dc("light_who_sell");
     FakeWallet wa{0xf5}, wb{0xf6}, wc{0xf7};

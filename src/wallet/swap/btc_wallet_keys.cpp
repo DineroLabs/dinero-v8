@@ -1,6 +1,7 @@
 #include "wallet/swap/btc_wallet_keys.h"
 
-#include "wallet/swap/btc_deposit.h"
+#include "bech32/bech32.hpp"
+#include "crypto/hash.h"
 #include "wallet/swap/swap_crypto.h"
 
 #include <cstring>
@@ -94,12 +95,19 @@ Bytes32 BtcWalletSecretKey(const Bytes32& account_secret_key, const Bytes32& cha
     return key;
 }
 
+// (Not btc_deposit.cpp's helpers: that file is only in programs built with
+// the light Bitcoin client, and these keys are in every build.)
 std::vector<uint8_t> BtcWalletScript(const BtcWalletAccount& account, uint32_t branch, uint32_t index) {
-    return BtcP2wpkhScript(BtcWalletPubkey(account, branch, index));
+    const auto pubkey = BtcWalletPubkey(account, branch, index);
+    const auto hash = din::crypto::HASH160(pubkey.data(), pubkey.size());
+    std::vector<uint8_t> script{0x00, 0x14};
+    script.insert(script.end(), hash.begin(), hash.end());
+    return script;
 }
 
 std::string BtcWalletAddress(const BtcWalletAccount& account, uint32_t branch, uint32_t index, const std::string& hrp) {
-    return BtcP2wpkhAddress(BtcWalletPubkey(account, branch, index), hrp);
+    const auto script = BtcWalletScript(account, branch, index);
+    return bech32::Encode(hrp, 0, std::vector<uint8_t>(script.begin() + 2, script.end()));
 }
 
 std::vector<uint8_t> EncodeBtcWalletAccount(const BtcWalletAccount& account) {
