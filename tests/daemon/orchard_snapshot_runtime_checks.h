@@ -2443,6 +2443,8 @@ TEST(OrchardPhoneHistory, ABlockAfterVerificationKeepsTheCheckpointAndAReorganis
     EXPECT_FALSE(host.ReadyCheckpointFor(elsewhere));
     auto same_height_other_block=at_second;same_height_other_block.hash.data[0]^=1;
     EXPECT_FALSE(host.ReadyCheckpointFor(same_height_other_block));
+    auto same_block_other_catalog=at_second;same_block_other_catalog.catalog.data[0]^=1;
+    EXPECT_FALSE(host.ReadyCheckpointFor(same_block_other_catalog));
     auto other_base=at_second;other_base.base.data[0]^=1;
     EXPECT_FALSE(host.ReadyCheckpointFor(other_base));
     // And once the worker itself sees the selected target replaced, it withdraws what it had.

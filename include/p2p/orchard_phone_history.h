@@ -117,8 +117,13 @@ public:
         if(!verified)return {};
         try{
             if(cache_)cache_->Check();
-            return OnChainOf(current,verified->target.height,verified->target.hash)&&
-                verified->target.base==current.base&&verified->target.activation==current.activation?verified:nullptr;
+            const bool stands=OrchardHistoryCheckpointStands(verified->target,current,
+                [this,&current](const uint256& tip,uint32_t height)->std::optional<uint256>{
+                    uint256 at;uint32_t found=0;
+                    if(!headers_->GetAncestorHashByHash(tip,height,at,found)||found!=current.height)return std::nullopt;
+                    return at;
+                });
+            return stands?verified:nullptr;
         }catch(...){return {};}
     }
     // Is the block (height, hash) the selected target itself or one of its
