@@ -150,6 +150,87 @@ public:
   }
 };
 
+// Keep mining telemetry accessible as label text while drawing numeric values
+// as compact seven-segment scoreboard digits. External miner status can also
+// use the Blocks label, so nonnumeric text retains normal QLabel rendering.
+class MiningScoreboardLabel final : public QLabel {
+public:
+  explicit MiningScoreboardLabel(const QString& value, QWidget* parent = nullptr)
+      : QLabel(value, parent) {}
+
+  QSize sizeHint() const override {
+    const QString value = text();
+    if (!isDigits(value)) return QLabel::sizeHint();
+    return QSize(qCeil(value.size() * kDigitStep - kDigitGap),
+                 qMax(QLabel::sizeHint().height(), 18));
+  }
+
+protected:
+  void paintEvent(QPaintEvent* event) override {
+    const QString value = text();
+    if (!isDigits(value)) {
+      QLabel::paintEvent(event);
+      return;
+    }
+
+    static constexpr unsigned char segments[10] = {
+      0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f};
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(palette().color(QPalette::WindowText), 1.5,
+                        Qt::SolidLine, Qt::RoundCap));
+    const qreal top = (height() - kDigitHeight) / 2.0;
+    for (int i = 0; i < value.size(); ++i) {
+      const unsigned char bits = segments[value.at(i).unicode() - '0'];
+      const qreal left = i * kDigitStep;
+      const qreal right = left + kDigitWidth;
+      const qreal middle = top + kDigitHeight / 2.0;
+      if (bits & 0x01) {
+        painter.drawLine(QPointF(left + 1.5, top + 1),
+                         QPointF(right - 1.5, top + 1));
+      }
+      if (bits & 0x02) {
+        painter.drawLine(QPointF(right - 1, top + 2.5),
+                         QPointF(right - 1, middle - 1));
+      }
+      if (bits & 0x04) {
+        painter.drawLine(QPointF(right - 1, middle + 1),
+                         QPointF(right - 1, top + kDigitHeight - 2.5));
+      }
+      if (bits & 0x08) {
+        painter.drawLine(QPointF(left + 1.5, top + kDigitHeight - 1),
+                         QPointF(right - 1.5, top + kDigitHeight - 1));
+      }
+      if (bits & 0x10) {
+        painter.drawLine(QPointF(left + 1, middle + 1),
+                         QPointF(left + 1, top + kDigitHeight - 2.5));
+      }
+      if (bits & 0x20) {
+        painter.drawLine(QPointF(left + 1, top + 2.5),
+                         QPointF(left + 1, middle - 1));
+      }
+      if (bits & 0x40) {
+        painter.drawLine(QPointF(left + 1.5, middle),
+                         QPointF(right - 1.5, middle));
+      }
+    }
+  }
+
+private:
+  static bool isDigits(const QString& value) {
+    if (value.isEmpty()) return false;
+    for (const QChar digit : value) {
+      if (digit < QLatin1Char('0') || digit > QLatin1Char('9')) return false;
+    }
+    return true;
+  }
+
+  static constexpr qreal kDigitWidth = 8.5;
+  static constexpr qreal kDigitGap = 2.0;
+  static constexpr qreal kDigitStep = kDigitWidth + kDigitGap;
+  static constexpr qreal kDigitHeight = 14.0;
+};
+
 constexpr int kWalletUnlockTimeoutSeconds = 60 * 60;
 // A main tab's real name. Narrow windows show icon-only tabs (empty text, name
 // in the tooltip), so look tabs up through this, never through tabText().
@@ -835,6 +916,16 @@ QString miningButtonStyle() {
     "QPushButton:pressed { background: #182127; } "
     "QPushButton:disabled { background: #000000; color: #747e86; "
     "border-color: #252c31; }");
+}
+
+QString miningStatStyle(const char* color = "#bec8d0", bool strong = false,
+                        bool italic = false) {
+  // Match the 12 px text in the adjacent Session Finds button, including
+  // values whose color or emphasis changes as mining state changes.
+  return QStringLiteral(
+    "QLabel { font-size: 12px; color: %1; font-weight: %2; font-style: %3; }")
+    .arg(QString::fromLatin1(color), strong ? QStringLiteral("600") : QStringLiteral("400"),
+         italic ? QStringLiteral("italic") : QStringLiteral("normal"));
 }
 
 QString miningComboStyle() {
@@ -4920,34 +5011,43 @@ void MainWindow::setupUI() {
             this, &MainWindow::onMiningModeChanged);
 
     // Tiny stats
-    lblBlocksFound_ = new QLabel("0");
-    lblBlocksFound_->setStyleSheet("QLabel { font-weight: bold; color: #bec8d0; }");
-    row2->addWidget(new QLabel("Blocks:"));
+    lblBlocksFound_ = new MiningScoreboardLabel("0");
+    lblBlocksFound_->setStyleSheet(miningStatStyle("#bec8d0", true));
+    auto* lblBlocksCaption = new QLabel("Blocks:");
+    lblBlocksCaption->setStyleSheet(miningStatStyle());
+    row2->addWidget(lblBlocksCaption);
     row2->addWidget(lblBlocksFound_);
 
-    row2->addWidget(new QLabel("Height:"));
-    lblMiningHeight_ = new QLabel("-");
-    lblMiningHeight_->setStyleSheet("QLabel { font-weight: bold; color: #bec8d0; }");
+    auto* lblHeightCaption = new QLabel("Height:");
+    lblHeightCaption->setStyleSheet(miningStatStyle());
+    row2->addWidget(lblHeightCaption);
+    lblMiningHeight_ = new MiningScoreboardLabel("-");
+    lblMiningHeight_->setStyleSheet(miningStatStyle("#bec8d0", true));
     row2->addWidget(lblMiningHeight_);
 
-    row2->addWidget(new QLabel("Difficulty:"));
+    auto* lblTargetBitsCaption = new QLabel("Target Bits:");
+    lblTargetBitsCaption->setStyleSheet(miningStatStyle());
+    lblTargetBitsCaption->setToolTip("Compact proof-of-work target (nBits).");
+    row2->addWidget(lblTargetBitsCaption);
     lblMiningDifficulty_ = new QLabel("-");
-    lblMiningDifficulty_->setStyleSheet(
-      "QLabel { font-family: monospace; font-weight: bold; color: #bec8d0; }");
+    lblMiningDifficulty_->setStyleSheet(miningStatStyle("#bec8d0", true));
     row2->addWidget(lblMiningDifficulty_);
     
     lblCurrentHash_ = new QLabel("0.00");
-    lblCurrentHash_->setStyleSheet("QLabel { font-weight: bold; color: #bec8d0; font-size: 10px; }");
-    row2->addWidget(new QLabel("MH/s:"));
+    lblCurrentHash_->setStyleSheet(miningStatStyle("#bec8d0", true));
+    auto* lblHashrateCaption = new QLabel("MH/s:");
+    lblHashrateCaption->setStyleSheet(miningStatStyle());
+    row2->addWidget(lblHashrateCaption);
     row2->addWidget(lblCurrentHash_);
     
     lblMiningUptime_ = new QLabel("-");
-    lblMiningUptime_->setStyleSheet("QLabel { font-size: 10px; }");
+    lblMiningUptime_->setStyleSheet(miningStatStyle("#bec8d0", true));
     lblMiningUptimeCaption_ = new QLabel("Run:");
+    lblMiningUptimeCaption_->setStyleSheet(miningStatStyle());
     row2->addWidget(lblMiningUptimeCaption_);
     row2->addWidget(lblMiningUptime_);
 
-    btnMiningSessionFinds_ = new QPushButton("Session finds");
+    btnMiningSessionFinds_ = new QPushButton("Session Finds");
     btnMiningSessionFinds_->setStyleSheet(miningButtonStyle());
     btnMiningSessionFinds_->setFixedHeight(miningControlHeight);
     btnMiningSessionFinds_->setEnabled(false);
@@ -4956,11 +5056,11 @@ void MainWindow::setupUI() {
 
       auto* dialog = new QDialog(this);
       dialog->setAttribute(Qt::WA_DeleteOnClose);
-      dialog->setWindowTitle("Blocks found this session");
+      dialog->setWindowTitle("Blocks Found This Session");
       auto* dialogLayout = new QVBoxLayout(dialog);
       auto* table = new QTableWidget(miningSessionFinds_.size(), 6, dialog);
       table->setHorizontalHeaderLabels(
-        {"Height", "Hash", "Merkle root", "Utreexo root", "Nonce", "Difficulty"});
+        {"Height", "Hash", "Merkle Root", "Utreexo Root", "Nonce", "Target Bits"});
       table->setEditTriggers(QAbstractItemView::NoEditTriggers);
       table->setSelectionBehavior(QAbstractItemView::SelectRows);
       table->setWordWrap(false);
@@ -5000,8 +5100,7 @@ void MainWindow::setupUI() {
     // SV2-only: live share counter. Updated in place so we never spam
     // the mining-output panel with one line per accept.
     lblSv2Shares_ = new QLabel("Shares: 0");
-    lblSv2Shares_->setStyleSheet(
-      "QLabel { font-size: 10px; color: #bec8d0; font-weight: bold; }");
+    lblSv2Shares_->setStyleSheet(miningStatStyle("#bec8d0", true));
     lblSv2Shares_->setVisible(false);
     row2->addWidget(lblSv2Shares_);
 
@@ -5285,7 +5384,7 @@ void MainWindow::setupUI() {
       if (btnMiningSessionFinds_) {
         btnMiningSessionFinds_->setEnabled(true);
         btnMiningSessionFinds_->setText(
-          QString("Session finds (%1)").arg(miningSessionFinds_.size()));
+          QString("Session Finds (%1)").arg(miningSessionFinds_.size()));
       }
       miningFoundPendingTemplate_ = true;
       // The live hash field is only for the visible mining session. Keeping
@@ -5314,6 +5413,7 @@ void MainWindow::setupUI() {
       foundSample.highlightUntilMs = QDateTime::currentMSecsSinceEpoch() +
                                      dinero::qt::kBlockFoundHighlightMs;
       miningHashSamples_.append(std::move(foundSample));
+      updateMiningOutputCinematicFrame();
     });
 
     // Forward embedded miner state into the daemon's relay auto-mode so
@@ -5332,7 +5432,7 @@ void MainWindow::setupUI() {
             miningSessionFinds_.clear();
             miningHashSamples_.clear();
             if (btnMiningSessionFinds_) {
-                btnMiningSessionFinds_->setText("Session finds");
+                btnMiningSessionFinds_->setText("Session Finds");
                 btnMiningSessionFinds_->setEnabled(false);
             }
             if (mining_stats_.mining_started <= 0) {
@@ -5366,7 +5466,7 @@ void MainWindow::setupUI() {
             mining_stats_.mining_started = 0;
             if (lblMiningUptime_) {
                 lblMiningUptime_->setText("-");
-                lblMiningUptime_->setStyleSheet("QLabel { color: #868e96; }");
+                lblMiningUptime_->setStyleSheet(miningStatStyle("#868e96"));
             }
             setMiningModeControlsLocked(false);
             resetOverviewMiningTelemetry();
@@ -11582,18 +11682,37 @@ void MainWindow::updateMiningOutputCinematicFrame() {
       // Only the current find is orange.
       const auto colour = dinero::qt::hashRowColor(
         sample.blockFound, sample.highlightUntilMs > nowMs, miningHashColorRgb_);
-      int alpha = colour.a;
-      // A solved template is retired during submission. Pulse only its text
-      // during this real handoff; never invent candidate hashes to fill it.
-      if (sample.blockFound && miningFoundPendingTemplate_) {
-        const int phase = miningCinematicFrame_ % 8;
-        alpha = 180 + qMin(phase, 8 - phase) * 15;
-      }
-      painter.setPen(QColor(colour.r, colour.g, colour.b, alpha));
+      painter.setPen(QColor(colour.r, colour.g, colour.b, colour.a));
       const qreal textTop = frameSize.height() - 6 - visual * rowHeight - metrics.ascent();
-      painter.drawStaticText(
-        QPointF(8, textTop),
-        sample.renderedLine);
+      const qint64 remainingMs = sample.highlightUntilMs - nowMs;
+      if (sample.blockFound && remainingMs > 0 &&
+          remainingMs <= dinero::qt::kBlockFoundHighlightMs) {
+        // The solved template stops producing samples while the next one is
+        // loaded. For exactly one second, jolt only the orange text in three
+        // slices. The cached line is still the real winning header; no fake
+        // hashes, divider lines, or extra animation timer are needed.
+        static constexpr int offsets[5][3] = {
+          {-4,  6, -2}, { 3, -5,  1}, {-2,  4, -6},
+          { 5, -3,  2}, {-3,  2,  5}
+        };
+        const int elapsedMs = dinero::qt::kBlockFoundHighlightMs -
+                              static_cast<int>(remainingMs);
+        const int phase = std::clamp(
+          elapsedMs / dinero::qt::kHashEngineIntervalMs, 0, 4);
+        const int textHeight = metrics.height();
+        for (int slice = 0; slice < 3; ++slice) {
+          const int top = textHeight * slice / 3;
+          const int bottom = textHeight * (slice + 1) / 3;
+          painter.save();
+          painter.setClipRect(QRectF(0, textTop + top,
+                                     frameSize.width(), bottom - top));
+          painter.drawStaticText(
+            QPointF(8 + offsets[phase][slice], textTop), sample.renderedLine);
+          painter.restore();
+        }
+      } else {
+        painter.drawStaticText(QPointF(8, textTop), sample.renderedLine);
+      }
     }
     if (miningHashOverlay_) {
       miningHashOverlay_->setGeometry(viewport->rect());
@@ -11982,7 +12101,7 @@ void MainWindow::updateMiningRuntimeLabel() {
 
   if (mining_stats_.mining_started <= 0) {
     lblMiningUptime_->setText("-");
-    lblMiningUptime_->setStyleSheet("QLabel { color: #868e96; }");
+    lblMiningUptime_->setStyleSheet(miningStatStyle("#868e96"));
     return;
   }
 
@@ -12003,7 +12122,7 @@ void MainWindow::updateMiningRuntimeLabel() {
   }
 
   lblMiningUptime_->setText(runtime);
-  lblMiningUptime_->setStyleSheet("QLabel { color: #bec8d0; font-weight: bold; }");
+  lblMiningUptime_->setStyleSheet(miningStatStyle("#bec8d0", true));
 }
 
 // Handle external miner stats response from daemon
@@ -12057,15 +12176,15 @@ void MainWindow::handleExternalMinerStats(const QJsonObject& stats) {
 
     // Color: green if accepted, red if rejections, neutral otherwise
     if (acceptedBlocks > 0 && rejectedBlocks == 0) {
-      lblBlocksFound_->setStyleSheet("QLabel { color: #bec8d0; font-weight: bold; }");
+      lblBlocksFound_->setStyleSheet(miningStatStyle("#bec8d0", true));
     } else if (rejectedBlocks > 0) {
-      lblBlocksFound_->setStyleSheet("QLabel { color: #b7c0ca; }");
+      lblBlocksFound_->setStyleSheet(miningStatStyle("#b7c0ca"));
     } else {
-      lblBlocksFound_->setStyleSheet("");
+      lblBlocksFound_->setStyleSheet(miningStatStyle());
     }
   } else {
     lblBlocksFound_->setText("No block submissions yet");
-    lblBlocksFound_->setStyleSheet("QLabel { color: #868e96; font-style: italic; }");
+    lblBlocksFound_->setStyleSheet(miningStatStyle("#868e96", false, true));
   }
 
   // Build detailed tooltip with rejection reasons breakdown
@@ -13956,7 +14075,7 @@ void MainWindow::stopExternalMiner() {
   }
   if (lblMiningUptime_) {
     lblMiningUptime_->setText("-");
-    lblMiningUptime_->setStyleSheet("QLabel { color: #868e96; }");
+    lblMiningUptime_->setStyleSheet(miningStatStyle("#868e96"));
   }
   resetOverviewMiningTelemetry();
 }
