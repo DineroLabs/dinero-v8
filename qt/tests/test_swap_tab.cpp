@@ -82,6 +82,18 @@ private Q_SLOTS:
         }
     }
 
+    // Every second row of a table is painted with the palette's alternate
+    // colour: light, unless the table says otherwise, under the app's pale text.
+    void tablesKeepTheirRowsDark() {
+        const auto tables = tab_->findChildren<QTableWidget*>();
+        QVERIFY(!tables.isEmpty());
+        for (auto* t : tables) {
+            if (!t->alternatingRowColors()) continue;
+            QVERIFY2(t->styleSheet().contains("alternate-background-color: #2"),
+                     qPrintable(t->objectName() + " has light alternate rows"));
+        }
+    }
+
     void resultsStayHiddenUntilThereIsOne() {
         for (const char* name : {"offerOut", "acceptOut", "swapEvents"}) {
             QVERIFY2(!Find<QPlainTextEdit>(tab_, name)->isVisible(), name);

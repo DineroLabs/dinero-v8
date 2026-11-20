@@ -73,6 +73,12 @@ QPlainTextEdit* ReadOnlyText(QWidget* parent, int height) {
     return t;
 }
 
+// The app's dark table: without it every second row takes the platform's
+// light alternate colour under the app's pale text.
+const char* const kTableStyle =
+    "QTableWidget { background: #181b20; alternate-background-color: #20252b; color: #d6dde6; "
+    "gridline-color: #2f343c; selection-background-color: #3e4550; selection-color: #ffffff; }";
+
 QPushButton* ChromeButton(const QString& text, const QString& tip, const char* name, QWidget* parent) {
     auto* b = new QPushButton(text, parent);
     b->setObjectName(name);
@@ -444,6 +450,7 @@ void SwapWidget::setupUi() {
     table_->setSelectionMode(QAbstractItemView::SingleSelection);
     table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table_->setAlternatingRowColors(true);
+    table_->setStyleSheet(kTableStyle);
     table_->verticalHeader()->setVisible(false);
     table_->setToolTip("Select a swap to see what your node did");
     table_->setVisible(false);
