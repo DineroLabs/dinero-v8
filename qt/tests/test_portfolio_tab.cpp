@@ -79,12 +79,32 @@ private Q_SLOTS:
                                QJsonObject{{"error", "the Bitcoin wallet is not running on this node (swap.btc_wallet=1 starts it)"}});
         QVERIFY(turnOn->isVisible() && turnOn->isEnabled());
         QCOMPARE(coins->item(1, 2)->text(), QString("Not switched on"));
-        QVERIFY2(intro->text().contains("without any other Bitcoin software") && intro->text().contains("next time Dinero starts"),
-                 qPrintable(intro->text()));
+        QVERIFY2(intro->text().contains("without any other Bitcoin software"), qPrintable(intro->text()));
         QVERIFY2(!intro->text().contains("swap", Qt::CaseInsensitive), "no word about swaps");
         QVERIFY(!QSettings().value(SwapLaunchPolicy::bitcoinWalletKey(), false).toBool());
         turnOn->click();
-        QVERIFY(QSettings().value(SwapLaunchPolicy::bitcoinWalletKey(), false).toBool());
+        QVERIFY(QSettings().value(SwapLaunchPolicy::bitcoinWalletKey(), false).toBool());  // remembered for later starts
+        QVERIFY2(!turnOn->isEnabled(), "one click, one request");
+        // The running node starts it: no restart. The page moves straight on to
+        // giving this wallet its Bitcoin account.
+        Q_EMIT rpc_->rpcResult("portfolio.btcstart", QJsonObject{{"offered", true}, {"enabled", false}});
+        QVERIFY2(!intro->text().contains("quit Dinero"), qPrintable(intro->text()));
+        Q_EMIT rpc_->rpcResult("portfolio.btcenable", QJsonObject{{"error", "wallet is locked: wallet.unlock first"}});
+        QVERIFY2(Find<QLabel>(tab_, "portfolioStatus")->text().contains("locked"), "a locked wallet is said so");
+        QVERIFY(turnOn->isVisible() && turnOn->isEnabled());
+        turnOn->click();  // after unlocking
+        Q_EMIT rpc_->rpcResult("portfolio.btcenable", kOn);
+        Q_EMIT rpc_->rpcResult("portfolio.btcstatus", kOn);
+        QCOMPARE(Find<QLineEdit>(tab_, "bitcoinAddress")->text(), QString("bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu"));
+        // Its first balance comes a little later: the node is still collecting block headers.
+        Q_EMIT rpc_->rpcResult("portfolio.btcbalance", QJsonObject{{"error", "still catching up with Bitcoin's block headers: try again in a moment"}});
+        QVERIFY2(coins->item(1, 2)->text().startsWith("Getting ready"), qPrintable(coins->item(1, 2)->text()));
+        // An older node does not know the request: the switch is stored, and the page says a restart does it.
+        QSettings().remove(SwapLaunchPolicy::bitcoinWalletKey());
+        Q_EMIT rpc_->rpcResult("portfolio.btcstatus",
+                               QJsonObject{{"error", "the Bitcoin wallet is not running on this node (swap.btc_wallet=1 starts it)"}});
+        turnOn->click();
+        Q_EMIT rpc_->rpcError("portfolio.btcstart", -32601, "Method not found: btc.start");
         QVERIFY(!turnOn->isVisible());
         QVERIFY2(intro->text().contains("quit Dinero"), qPrintable(intro->text()));
         // What the node is started with next time: its Bitcoin client only, swaps stay off.

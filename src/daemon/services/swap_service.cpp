@@ -25,6 +25,8 @@ namespace dinero {
 namespace {
 
 std::atomic<SwapService*> g_active{nullptr};
+std::atomic<SwapService*> g_instance{nullptr};  // the node's service, running or not
+std::mutex g_start_mu;                          // one start at a time
 
 SwapService::ZecInstaller& ZecInstallerSlot() {
     static SwapService::ZecInstaller installer;
@@ -199,7 +201,41 @@ std::string SwapService::OffReason() {
     return g_off_by_refusal ? g_off_reason : std::string();
 }
 
+bool SwapService::StartBitcoinWalletNow(std::string* why) {
+    std::lock_guard<std::mutex> one(g_start_mu);
+    SwapService* self = g_instance.load();
+    const auto fail = [&](const std::string& reason) {
+        if (why) *why = reason;
+        return false;
+    };
+    if (!self || !self->ctx_) return fail("this node is still starting");
+    if (self->manager_) return true;  // running already, alone or with swaps
+    {
+        std::lock_guard<std::mutex> lock(g_off_reason_mu);
+        g_off_reason.clear();
+    }
+    self->bitcoin_wallet_requested_ = true;
+    bool ok = false;
+    try {
+        ok = self->Setup(*self->ctx_);
+    } catch (const std::exception& e) {
+        Refuse(e.what());
+    }
+    if (!ok || !self->manager_) {
+        self->manager_.reset();
+        self->before_tick_ = nullptr;
+        self->bitcoin_wallet_only_ = false;
+        self->bitcoin_wallet_requested_ = false;
+        std::lock_guard<std::mutex> lock(g_off_reason_mu);
+        g_off_by_refusal = true;  // btc.status reports the same reason afterwards
+        return fail(g_off_reason.empty() ? "this node cannot run the Bitcoin wallet" : g_off_reason);
+    }
+    return self->Start();
+}
+
 bool SwapService::Init(DaemonContext& ctx) {
+    ctx_ = &ctx;
+    g_instance = this;
     {
         std::lock_guard<std::mutex> lock(g_off_reason_mu);
         g_off_reason.clear();
@@ -232,7 +268,7 @@ bool SwapService::Setup(DaemonContext& ctx) {
     // The built-in Bitcoin wallet alone (swap.btc_wallet=1): the light Bitcoin
     // client and this wallet's Bitcoin account, with swaps off. Someone who
     // only wants to hold bitcoin does not have to turn swaps on for it.
-    const bool wallet_wanted = config && config->GetBool("swap.btc_wallet", false);
+    const bool wallet_wanted = bitcoin_wallet_requested_ || (config && config->GetBool("swap.btc_wallet", false));
     if (!swaps_wanted && !wallet_wanted) return true;  // neither: nothing at all
     bitcoin_wallet_only_ = !swaps_wanted;
 
@@ -430,6 +466,8 @@ bool SwapService::Start() {
 }
 
 void SwapService::Stop() {
+    std::lock_guard<std::mutex> one(g_start_mu);  // not while a start on request is under way
+    g_instance = nullptr;
     if (!manager_) return;
     g_active = nullptr;
     {

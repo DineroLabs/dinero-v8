@@ -380,4 +380,20 @@ NS=$(rpc $BPORT btc.status '{}')
 check "the open wallet's Bitcoin wallet is on, at that address" '[[ "$(jget "$NS" enabled)" == True && "$(jget "$NS" address)" == "$NADDR" ]]'
 check "and holds nothing of the first wallet's 10,000 sat" '[[ "$(jget "$(rpc $BPORT btc.getbalance "{}")" sat)" == 0 ]]'
 
+echo "=== switching the Bitcoin wallet on in a running node, without a restart ==="
+kill "$BPID" 2>/dev/null; wait "$BPID" 2>/dev/null || true; BPID=
+PLAIN=("${LIGHT[@]:1}")   # where Bitcoin is on this test network; neither swaps nor the wallet asked for
+start_node bob $BPORT $BP2P "${PLAIN[@]}" --connect=127.0.0.1:$AP2P; BPID=$STARTED_PID; wait_rpc $BPORT
+out=$(rpc $BPORT btc.status '{}' 2>&1 || true)
+check "a node started without it says the wallet is not running (${out:0:70})" '[[ "$out" == *"not running on this node"* ]]'
+ST=$(rpc $BPORT btc.start '{}')
+check "btc.start starts it in the running node (${ST:0:70})" '[[ "$(jget "$ST" offered)" == True ]]'
+check "starting it again changes nothing" '[[ "$(jget "$(rpc $BPORT btc.start "{}")" offered)" == True ]]'
+out=$(rpc $BPORT swap.list '{}' 2>&1 || true)
+check "swaps are still off" '[[ "$out" == *"swaps are disabled"* ]]'
+rpc $BPORT wallet.loadwallet '["w"]' >/dev/null 2>&1 || true
+rpc $BPORT wallet.unlock '["pw-swap-light", 7200]' >/dev/null 2>&1 || true
+for _ in $(seq 1 40); do RB=$(rpc $BPORT btc.getbalance '{}' 2>/dev/null || true); [[ "$(jget "${RB:-{\}}" sat)" =~ ^[0-9]+$ ]] && break; sleep 1; done
+check "and the wallet opened before reads its bitcoin again ($(jget "${RB:-{\}}" sat) sat)" '[[ "$(jget "${RB:-{\}}" sat)" =~ ^[0-9]+$ ]]'
+
 [[ $fail -eq 0 ]] && echo "SWAP LIGHT BTC BUY REGTEST: PASS" || { echo "SWAP LIGHT BTC BUY REGTEST: FAIL"; grep -h "\[Swap\]" "$DIR"/*.log | tail -8; exit 1; }

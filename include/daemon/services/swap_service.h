@@ -93,8 +93,16 @@ public:
     using TowerUrlInstaller = std::function<bool(swap::SwapManager& manager, const ConfigService& config)>;
     static void SetTowerUrlInstaller(TowerUrlInstaller installer);
 
+    // Starts the built-in Bitcoin wallet in a node that is already running
+    // (no swaps): what swap.btc_wallet=1 does at start-up, on request, so
+    // that turning it on in the app needs no restart. True when it runs
+    // afterwards (also if it ran already, alone or with swaps). False with
+    // the reason in `why` when this node cannot run it.
+    static bool StartBitcoinWalletNow(std::string* why);
+
 private:
     bool bitcoin_wallet_only_{false};
+    bool bitcoin_wallet_requested_{false};  // StartBitcoinWalletNow, as swap.btc_wallet=1
     bool Setup(DaemonContext& ctx);
     void Loop();
 

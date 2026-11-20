@@ -52,7 +52,9 @@ inline QList<CoinRow> coinRows(double dinTotal, const QJsonObject& btcStatus, co
     if (btcStatus.isEmpty()) {
         btc.note = "Waiting for your node";
     } else if (btcStatus.value("enabled").toBool()) {
-        if (!btcProblem.isEmpty()) {
+        if (btcProblem.contains("catching up")) {
+            btc.note = "Getting ready: collecting Bitcoin's block headers (about a minute the first time)";
+        } else if (!btcProblem.isEmpty()) {
             btc.note = "Not read: " + btcProblem;
         } else if (btcBalance.isEmpty()) {
             btc.note = "Reading";
@@ -97,8 +99,7 @@ inline BitcoinStartView bitcoinStartView(bool wanted, const QString& nodeMessage
     if (!wanted) {
         v.canSwitchOn = true;
         v.text = "Hold, receive and send Bitcoin in this wallet, with the recovery words you already have, and without "
-                 "any other Bitcoin software. Switching it on lets Dinero follow the Bitcoin network; it takes effect "
-                 "the next time Dinero starts.";
+                 "any other Bitcoin software. Switching it on lets Dinero follow the Bitcoin network.";
     } else if (reason.contains("not offered on mainnet yet")) {
         v.text = "The Bitcoin wallet is switched on, but it is not available on mainnet yet. A later release switches it on.";
     } else if (reason.contains("built with DINERO_SWAP_LIGHT_BTC")) {
