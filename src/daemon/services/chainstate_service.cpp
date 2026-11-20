@@ -8609,7 +8609,7 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
                lease->Session()!=session || wallet.getUTXOIndex()!=nullptr ||
                !sqlite3_get_autocommit(lease->Database()))return Status::Invalid;
             // A present-but-unverifiable record fails closed (throws below).
-            const auto birth=lease->SealedFreshBirthHeight(session);
+            const auto birth=lease->SealedFreshOrdinaryBirthHeight(session);
             fresh_empty_prefix=birth && *birth>=Params().orchard_activation_height;
         }
         {
@@ -8716,7 +8716,7 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
                     // The sealed record needs the seed: a locked wallet waits
                     // for unlock instead of being treated as unproved.
                     if(wallet.isWalletLocked())return Status::NotFound;
-                    birth=lease->SealedFreshBirthHeight(session);
+                    birth=lease->SealedFreshOrdinaryBirthHeight(session);
                 }
                 // The replay's outbox origin (Point({})) must be the same base;
                 // receipts are bound to that point.
