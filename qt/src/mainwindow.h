@@ -674,12 +674,9 @@ private:
     QStaticText renderedLine;
     bool blockFound = false;
     qint64 highlightUntilMs = 0;
-    bool startsNewBlock = false;
   };
   QVector<MiningHashSample> miningHashSamples_;
   bool miningFoundPendingTemplate_ = false;
-  // Height the miner is working on; a change marks the first row of a new block.
-  int miningTipHeight_ = -1;
   QString miningSessionHeader_;
   QLabel* miningHashOverlay_ = nullptr;
   QHash<QString, quint64> transientMiningErrorGenerations_;
