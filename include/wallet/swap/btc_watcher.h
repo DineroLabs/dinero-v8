@@ -32,6 +32,10 @@ namespace dinero::swap {
 using BtcRpc = std::function<std::optional<Json::Value>(const std::string& method,
                                                         const Json::Value& params)>;
 
+// The Bitcoin Core "chain" a Dinero network swaps against. Dinero testnet pairs
+// with testnet4: Core v31 deprecates testnet3 ("test") and will remove it.
+std::string BitcoinChainFor(SwapNetwork network);
+
 struct BtcWatchTarget {
     BtcHtlcTerms terms;
     uint32_t scan_from_height{0};    // first block that could contain the funding

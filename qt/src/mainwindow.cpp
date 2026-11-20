@@ -16,6 +16,7 @@
 #endif
 #if defined(DIN_ENABLE_SWAP_UI) && DIN_ENABLE_SWAP_UI
 #include "swapwidget.h"
+#include "portfoliowidget.h"
 #endif
 #include "miningsessionstatus.h"
 #include "peerheightsemantics.h"
@@ -108,6 +109,7 @@
 #include <QDateTime>
 #include <QTimeZone>
 #include <QDesktopServices>
+#include "swaplaunchpolicy.h"
 #include <QSettings>
 #include <QShortcut>
 #include <QKeyEvent>
@@ -3552,6 +3554,12 @@ void MainWindow::setupUI() {
     addressLayout->addWidget(txtValidation_);
     
     layout->addWidget(addressGroup);
+#if defined(DIN_ENABLE_SWAP_UI) && DIN_ENABLE_SWAP_UI
+    // The other coins this wallet can hold (Bitcoin first), on the Wallet page
+    // itself: most users hold only DIN, so this is one more section here, not
+    // an entry of its own in the main menu (docs/design/multi-coin-wallet.md).
+    layout->addWidget(new PortfolioWidget(rpc_, wallet, PortfolioWidget::Place::WithinWallet));
+#endif
     layout->addStretch(1);  // spare height goes below the content, not into the boxes
     
     connect(btnNewAddress_, &QPushButton::clicked, this, &MainWindow::onNewAddress);
@@ -9173,6 +9181,10 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
     }
     return;
   }
+  // The Swap tab owns its routes and says in its own words what went wrong.
+  // It asks for the swap list every few seconds, and a node with swaps off
+  // (the default) refuses each time: that is not an error to raise here.
+  if (method.startsWith(QStringLiteral("swaptab.")) || method.startsWith(QStringLiteral("portfolio."))) return;
   if (method.startsWith(QLatin1String("overview.miningrewards:"))) {
     if (!walletSwitchInFlight_ && method == miningRewardsReplyAlias()) {
       // The HTTP dispatcher normalizes a wallet_balance_not_current result to
@@ -15031,6 +15043,9 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
   if (allowPortMapping) {
     args << "--portmap=auto";
   }
+  // The Swap tab's "Enable swaps" switch.
+  args << SwapLaunchPolicy::daemonArgs(QSettings().value(SwapLaunchPolicy::enabledKey(), false).toBool(),
+                                        QSettings().value(SwapLaunchPolicy::bitcoinWalletKey(), false).toBool());
   args << "-addnode=173.249.200.59:20999";
   args << "-addnode=172.93.167.32:20999";
   args << "-addnode=92.118.190.62:20999";

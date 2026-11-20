@@ -11,6 +11,8 @@
 #include "util/hex.h"
 #include "rpc_client.h"
 #include "wallet/bip32_deriver.h"
+#include "wallet/key_origin.h"
+#include "wallet/swap/btc_watcher.h"
 #include "wallet/swap/tower.h"
 #include "wallet/wallet_manager.h"
 
@@ -23,6 +25,23 @@ namespace dinero {
 namespace {
 
 std::atomic<SwapService*> g_active{nullptr};
+std::atomic<SwapService*> g_instance{nullptr};  // the node's service, running or not
+std::mutex g_start_mu;                          // one start at a time
+
+SwapService::ZecInstaller& ZecInstallerSlot() {
+    static SwapService::ZecInstaller installer;
+    return installer;
+}
+
+SwapService::LightBtcInstaller& LightBtcInstallerSlot() {
+    static SwapService::LightBtcInstaller installer;
+    return installer;
+}
+
+SwapService::TowerUrlInstaller& TowerUrlInstallerSlot() {
+    static SwapService::TowerUrlInstaller installer;
+    return installer;
+}
 
 bool IsWrite(const std::string& m) {
     return m == "sendrawtransaction" || m == "wallet.sendtoaddress" || m == "wallet.getnewaddress";
@@ -81,6 +100,8 @@ swap::DinFundingOwner RetainedFundingOwner(DaemonContext* ctx) {
         WalletSigningIdentity identity;
         {
             auto lease=wallet_use->Wallet().AcquireDatabaseLease();
+            if (lease->LegacyTransparentState() != WalletManager::LegacyTransparentState::Absent)
+                throw std::runtime_error(WalletManager::kSwapLegacyWalletUnsupported);
             lease->RequireOrchardWalletReady();
             if(lease->ReadDeliveryIdentity()!=request.binding.wallet_id)
                 throw std::runtime_error("Swap funding selected a different payer database");
@@ -146,42 +167,163 @@ swap::DinFundingOwner MakeRetainedSwapFundingOwner(DaemonContext& ctx) {
 }
 
 SwapService* SwapService::Active() { return g_active.load(); }
+bool SwapService::SwapsOn() {
+    const SwapService* active = g_active.load();
+    return active && active->manager_ && !active->bitcoin_wallet_only_;
+}
+
+void SwapService::SetZecInstaller(ZecInstaller installer) { ZecInstallerSlot() = std::move(installer); }
+void SwapService::SetLightBtcInstaller(LightBtcInstaller installer) { LightBtcInstallerSlot() = std::move(installer); }
+void SwapService::SetTowerUrlInstaller(TowerUrlInstaller installer) { TowerUrlInstallerSlot() = std::move(installer); }
+
+namespace {
+std::mutex g_off_reason_mu;
+std::string g_off_reason;   // the last refusal printed
+bool g_off_by_refusal = false;  // Init kept the node running without swaps
+}  // namespace
+
+swap::SwapNetwork SwapService::BitcoinNetworkFor(const ConfigService& config, swap::SwapNetwork dinero_network) {
+    if (dinero_network == swap::SwapNetwork::Regtest && config.GetString("swap.btc_rehearsal_chain", "") == "testnet4") {
+        return swap::SwapNetwork::Testnet;
+    }
+    return dinero_network;
+}
+
+bool SwapService::Refuse(const std::string& why) {
+    std::cerr << "[Swap] " << why << std::endl;
+    std::lock_guard<std::mutex> lock(g_off_reason_mu);
+    g_off_reason = why;
+    return false;
+}
+
+std::string SwapService::OffReason() {
+    std::lock_guard<std::mutex> lock(g_off_reason_mu);
+    return g_off_by_refusal ? g_off_reason : std::string();
+}
+
+bool SwapService::StartBitcoinWalletNow(std::string* why) {
+    std::lock_guard<std::mutex> one(g_start_mu);
+    SwapService* self = g_instance.load();
+    const auto fail = [&](const std::string& reason) {
+        if (why) *why = reason;
+        return false;
+    };
+    if (!self || !self->ctx_) return fail("this node is still starting");
+    if (self->manager_) return true;  // running already, alone or with swaps
+    {
+        std::lock_guard<std::mutex> lock(g_off_reason_mu);
+        g_off_reason.clear();
+    }
+    self->bitcoin_wallet_requested_ = true;
+    bool ok = false;
+    try {
+        ok = self->Setup(*self->ctx_);
+    } catch (const std::exception& e) {
+        Refuse(e.what());
+    }
+    if (!ok || !self->manager_) {
+        self->manager_.reset();
+        self->before_tick_ = nullptr;
+        self->bitcoin_wallet_only_ = false;
+        self->bitcoin_wallet_requested_ = false;
+        std::lock_guard<std::mutex> lock(g_off_reason_mu);
+        g_off_by_refusal = true;  // btc.status reports the same reason afterwards
+        return fail(g_off_reason.empty() ? "this node cannot run the Bitcoin wallet" : g_off_reason);
+    }
+    return self->Start();
+}
 
 bool SwapService::Init(DaemonContext& ctx) {
     ctx_ = &ctx;
-    auto config = std::dynamic_pointer_cast<ConfigService>(ctx.config);
-    if (!config || !config->GetBool("swap.enable", false)) return true;  // disabled: nothing at all
-
-    const std::string btc = config->GetString("swap.btc_rpc", "");
-    const auto colon = btc.rfind(':');
-    if (colon == std::string::npos) {
-        std::cerr << "[Swap] swap.enable=1 needs swap.btc_rpc=HOST:PORT (Bitcoin Core RPC)" << std::endl;
-        return false;
+    g_instance = this;
+    {
+        std::lock_guard<std::mutex> lock(g_off_reason_mu);
+        g_off_reason.clear();
+        g_off_by_refusal = false;
     }
-    auto client = std::make_shared<rpc::RpcClient>(btc.substr(0, colon), uint16_t(std::stoi(btc.substr(colon + 1))),
-                                                   config->GetString("swap.btc_rpc_user", ""),
-                                                   config->GetString("swap.btc_rpc_pass", ""));
-    swap::BtcRpc btc_rpc = [client](const std::string& m, const Json::Value& p) -> std::optional<Json::Value> {
-        const auto r = client->call(m, p);
-        if (!r || !r->isMember("result") || (r->isMember("error") && !(*r)["error"].isNull())) return std::nullopt;
-        return (*r)["result"];
-    };
+    bool ok = false;
+    try {
+        ok = Setup(ctx);
+    } catch (const std::exception& e) {
+        Refuse(e.what());
+    }
+    if (ok) return true;
+    manager_.reset();
+    before_tick_ = nullptr;
+    bitcoin_wallet_only_ = false;
+    auto config = std::dynamic_pointer_cast<ConfigService>(ctx.config);
+    if (!config || !config->GetBool("swap.optional", false)) return false;
+    // dinero-qt's switch: the wallet's node must start whatever the swap settings are.
+    std::cerr << "[Swap] swap.optional=1: the node starts with swaps off" << std::endl;
+    std::lock_guard<std::mutex> lock(g_off_reason_mu);
+    if (g_off_reason.empty()) g_off_reason = "this node refused the swap settings (its log says why)";
+    g_off_by_refusal = true;
+    return true;
+}
+
+bool SwapService::Setup(DaemonContext& ctx) {
+    ctx_ = &ctx;
+    auto config = std::dynamic_pointer_cast<ConfigService>(ctx.config);
+    const bool swaps_wanted = config && config->GetBool("swap.enable", false);
+    // The built-in Bitcoin wallet alone (swap.btc_wallet=1): the light Bitcoin
+    // client and this wallet's Bitcoin account, with swaps off. Someone who
+    // only wants to hold bitcoin does not have to turn swaps on for it.
+    const bool wallet_wanted = bitcoin_wallet_requested_ || (config && config->GetBool("swap.btc_wallet", false));
+    if (!swaps_wanted && !wallet_wanted) return true;  // neither: nothing at all
+    bitcoin_wallet_only_ = !swaps_wanted;
+
+    const std::string btc = bitcoin_wallet_only_ ? std::string() : config->GetString("swap.btc_rpc", "");
+    const bool zec_wanted = !bitcoin_wallet_only_ && !config->GetString("swap.zec_rpc", "").empty();
+    if (zec_wanted && !ZecInstallerSlot()) {
+        return Refuse("swap.zec_rpc needs a dinerod built with DINERO_SWAP_ZEC");
+    }
+    const std::string btc_backend = bitcoin_wallet_only_ ? std::string("light") : config->GetString("swap.btc_backend", "");
+    const bool light_btc = btc_backend == "light";
+    if (!btc_backend.empty() && btc_backend != "light" && btc_backend != "core") {
+        return Refuse("swap.btc_backend must be core or light");
+    }
+    if (light_btc && !btc.empty()) {
+        return Refuse("swap.btc_backend=light and swap.btc_rpc are two ways to reach Bitcoin: set one");
+    }
+    if (light_btc && !LightBtcInstallerSlot()) {
+        return Refuse("swap.btc_backend=light needs a dinerod built with DINERO_SWAP_LIGHT_BTC");
+    }
+    const auto colon = btc.rfind(':');
+    // Without swap.btc_rpc (a Zcash-only node) Bitcoin calls report "unreachable".
+    swap::BtcRpc btc_rpc = [](const std::string&, const Json::Value&) { return std::optional<Json::Value>{}; };
+    if (colon == std::string::npos && !zec_wanted && !light_btc) {
+        return Refuse("swap.enable=1 needs swap.btc_rpc=HOST:PORT (Bitcoin Core RPC)");
+    }
+    if (colon != std::string::npos) {
+        auto client = std::make_shared<rpc::RpcClient>(btc.substr(0, colon), uint16_t(std::stoi(btc.substr(colon + 1))),
+                                                       config->GetString("swap.btc_rpc_user", ""),
+                                                       config->GetString("swap.btc_rpc_pass", ""));
+        btc_rpc = [client](const std::string& m, const Json::Value& p) -> std::optional<Json::Value> {
+            const auto r = client->call(m, p);
+            if (!r || !r->isMember("result") || (r->isMember("error") && !(*r)["error"].isNull())) return std::nullopt;
+            return (*r)["result"];
+        };
+    }
 
     const ChainParams& params = dinero::Params();
     swap::SwapManagerConfig mc;
     mc.dir = config->DataDir() + "/swaps";
     mc.network = NetworkOf(params);
     mc.runner.din_hrp = params.hrp;
-    mc.runner.btc_hrp = mc.network == swap::SwapNetwork::Mainnet ? "bc"
-                      : mc.network == swap::SwapNetwork::Testnet ? "tb" : "bcrt";
-    mc.runner.btc_chain = mc.network == swap::SwapNetwork::Mainnet ? "main"
-                        : mc.network == swap::SwapNetwork::Testnet ? "test" : "regtest";
+    if (const std::string rehearsal = config->GetString("swap.btc_rehearsal_chain", ""); !rehearsal.empty()) {
+        if (mc.network != swap::SwapNetwork::Regtest || rehearsal != "testnet4") {
+            return Refuse("swap.btc_rehearsal_chain is for a regtest node only, and only testnet4");
+        }
+    }
+    const swap::SwapNetwork btc_network = BitcoinNetworkFor(*config, mc.network);
+    mc.runner.btc_hrp = btc_network == swap::SwapNetwork::Mainnet ? "bc"
+                      : btc_network == swap::SwapNetwork::Testnet ? "tb" : "bcrt";
+    mc.runner.btc_chain = swap::BitcoinChainFor(btc_network);
     const int64_t din_fee = config->GetInt("swap.din_fee_una", int(mc.runner.din_fee_una));
     const int64_t din_fee_urgent = config->GetInt("swap.din_fee_urgent_una", int(mc.runner.din_fee_urgent_una));
     const int64_t btc_fee = config->GetInt("swap.btc_fee_sat", int(mc.runner.btc_fee_sat));
     if (const auto problem = swap::FeeConfigProblem(din_fee, din_fee_urgent, btc_fee)) {
-        std::cerr << "[Swap] " << *problem << std::endl;
-        return false;
+        return Refuse(*problem);
     }
     mc.runner.din_fee_una = uint64_t(din_fee);
     mc.runner.din_fee_urgent_una = uint64_t(din_fee_urgent);
@@ -195,17 +337,16 @@ bool SwapService::Init(DaemonContext& ctx) {
     };
     const auto max_btc = limit("swap.max_btc_sat"), max_din = limit("swap.max_din_una");
     if (!max_btc || !max_din) {
-        std::cerr << "[Swap] swap.max_btc_sat / swap.max_din_una must be whole numbers" << std::endl;
-        return false;
+        return Refuse("swap.max_btc_sat / swap.max_din_una must be whole numbers");
     }
     const auto beta = swap::BetaPolicy(mc.network, config->GetBool("swap.mainnet_beta", false), *max_btc, *max_din);
-    if (beta.refusal) {
-        std::cerr << "[Swap] " << *beta.refusal << std::endl;
-        return false;
+    if (beta.refusal && !bitcoin_wallet_only_) {  // the beta opt-in is about swaps
+        return Refuse(*beta.refusal);
     }
     mc.max_btc_sat = beta.max_btc_sat;
     mc.require_tower_for_bob = mc.network == swap::SwapNetwork::Mainnet;
     mc.max_din_una = beta.max_din_una;
+    mc.btc_configured = colon != std::string::npos || light_btc;
 
     // Swap keys from the wallet seed at m/SWAP'/... (see swap_manager.h).
     swap::KeyDeriver derive = [&ctx](const std::vector<std::vector<uint32_t>>& paths, bool require_funding_identity)
@@ -214,7 +355,9 @@ bool SwapService::Init(DaemonContext& ctx) {
         if (paths.empty() || paths.size() > 4) throw std::invalid_argument("invalid swap key batch size");
         auto wallet_use = WalletService::AcquireWalletUse(ctx.wallet);
         auto lease = wallet_use->Wallet().AcquireDatabaseLease();
-        lease->RequireOrchardWalletReady();
+        if (lease->LegacyTransparentState() != WalletManager::LegacyTransparentState::Absent)
+                throw std::runtime_error(WalletManager::kSwapLegacyWalletUnsupported);
+            lease->RequireOrchardWalletReady();
         auto seed = lease->CopyRecoverySeed(lease->Session());
         // One actual seed owner spans ALL paths. Derivers and temporary keys
         // are wiped before this lease ends. No chain/RPC callback under it.
@@ -228,19 +371,88 @@ bool SwapService::Init(DaemonContext& ctx) {
         }
         return result;
     };
+    // The built-in Bitcoin wallet's account, m/84'/coin'/0' of the same seed
+    // (swap/btc_wallet_keys.h). Only its public half leaves this lease.
+    swap::BtcAccountSource btc_account = [&ctx](uint32_t coin_type) -> std::optional<swap::BtcWalletAccount> {
+        if (!ctx.wallet) return std::nullopt;
+        auto wallet_use = WalletService::AcquireWalletUse(ctx.wallet);
+        if (wallet_use->Wallet().isWalletLocked()) return std::nullopt;
+        auto lease = wallet_use->Wallet().AcquireDatabaseLease();
+        auto seed = lease->CopyRecoverySeed(lease->Session());
+        BIP32Deriver deriver(seed->Bytes().data(), seed->Bytes().size());
+        deriver.deriveHardened(swap::kBtcWalletPurpose);
+        deriver.deriveHardened(coin_type);
+        deriver.deriveHardened(0);
+        return swap::BtcWalletAccountFromSecret(deriver.getPrivateKey(), deriver.getChainCode());
+    };
+    // While the wallet is new, one payment sends at most this much on mainnet
+    // (the swap beta's ceiling); test networks have no limit.
+    mc.btc_wallet_max_send_sat = mc.network == swap::SwapNetwork::Mainnet ? 1'000'000 : 0;
     manager_ = std::make_unique<swap::SwapManager>(mc, derive, InProcessRpc(&ctx), btc_rpc, MakeRetainedSwapFundingOwner(ctx));
-    const std::string inbox = config->GetString("swap.tower_inbox", "");
+    manager_->SetBtcAccountSource(btc_account);
+    // Which wallet is open: its durable public identity, readable while it
+    // is locked. Each wallet gets its own Bitcoin wallet files.
+    manager_->SetBtcWalletTagSource([&ctx]() -> std::string {
+        if (!ctx.wallet) return {};
+        auto wallet_use = WalletService::AcquireWalletUse(ctx.wallet);
+        auto lease = wallet_use->Wallet().AcquireDatabaseLease();
+        const auto id = lease->ReadDeliveryIdentity();
+        static const char* const digits = "0123456789abcdef";
+        std::string tag;
+        for (size_t i = 0; i < 12; ++i) { tag += digits[id[i] >> 4]; tag += digits[id[i] & 15]; }
+        return tag;
+    });
+    // The same account's private half, for signing a payment. Used inside
+    // SwapManager::SendBtc only, and wiped there.
+    manager_->SetBtcAccountSecretSource([&ctx](uint32_t coin_type) -> std::optional<swap::BtcAccountSecret> {
+        if (!ctx.wallet) return std::nullopt;
+        auto wallet_use = WalletService::AcquireWalletUse(ctx.wallet);
+        if (wallet_use->Wallet().isWalletLocked()) return std::nullopt;
+        auto lease = wallet_use->Wallet().AcquireDatabaseLease();
+        auto seed = lease->CopyRecoverySeed(lease->Session());
+        BIP32Deriver deriver(seed->Bytes().data(), seed->Bytes().size());
+        deriver.deriveHardened(swap::kBtcWalletPurpose);
+        deriver.deriveHardened(coin_type);
+        deriver.deriveHardened(0);
+        return swap::BtcAccountSecret{deriver.getPrivateKey(), deriver.getChainCode()};
+    });
+    if (zec_wanted && !ZecInstallerSlot()(*manager_, *config, mc.network, InProcessRpc(&ctx))) {
+        manager_.reset();
+        return false;
+    }
+    if (light_btc) {
+        before_tick_ = LightBtcInstallerSlot()(*manager_, *config, mc.network, InProcessRpc(&ctx));
+        if (!before_tick_) {
+            manager_.reset();
+            return false;
+        }
+    }
+    const std::string inbox = bitcoin_wallet_only_ ? std::string() : config->GetString("swap.tower_inbox", "");
+    const std::string tower_url = bitcoin_wallet_only_ ? std::string() : config->GetString("swap.tower_url", "");
+    if (!tower_url.empty()) {
+        if (!inbox.empty()) return Refuse("swap.tower_url and swap.tower_inbox are two ways to reach a watchtower: set one");
+        if (!TowerUrlInstallerSlot()) return Refuse("swap.tower_url needs a dinerod built with DINERO_SWAP_LIGHT_BTC");
+        if (!TowerUrlInstallerSlot()(*manager_, *config)) return false;
+    }
     if (!inbox.empty()) {
         manager_->SetTowerSink([inbox](const std::string& package) { swap::WriteTowerInbox(inbox, package); });
         manager_->SetTowerAck([inbox](const std::string& id, const std::string& hash) {
             return swap::TowerAckFresh(inbox, id, hash, static_cast<uint32_t>(std::time(nullptr)));
         });
     }
-    std::cout << "[Swap] enabled: dir=" << mc.dir << " btc_rpc=" << btc << " tick=" << tick_seconds_ << "s"
+    if (bitcoin_wallet_only_) {
+        std::cout << "[Swap] the Bitcoin wallet is available; swaps are off (swap.btc_wallet=1 without swap.enable=1)"
+                  << std::endl;
+        return true;
+    }
+    std::cout << "[Swap] enabled: dir=" << mc.dir << " btc_rpc=" << btc
+              << (zec_wanted ? " zec_rpc=" + config->GetString("swap.zec_rpc", "") : std::string()) << " tick="
+              << tick_seconds_ << "s"
               << (mc.max_btc_sat ? " max_btc_sat=" + std::to_string(mc.max_btc_sat) + " max_din_una=" +
                                        std::to_string(mc.max_din_una)
                                  : std::string())
-              << (inbox.empty() ? "" : " tower_inbox=" + inbox) << std::endl;
+              << (inbox.empty() ? "" : " tower_inbox=" + inbox)
+              << (tower_url.empty() ? "" : " tower_url=" + tower_url) << std::endl;
     return true;
 }
 
@@ -253,6 +465,8 @@ bool SwapService::Start() {
 }
 
 void SwapService::Stop() {
+    std::lock_guard<std::mutex> one(g_start_mu);  // not while a start on request is under way
+    g_instance = nullptr;
     if (!manager_) return;
     g_active = nullptr;
     {
@@ -266,6 +480,7 @@ void SwapService::Stop() {
 void SwapService::Loop() {
     while (true) {
         try {
+            if (before_tick_) before_tick_(static_cast<uint32_t>(std::time(nullptr)));  // outside the manager's lock
             manager_->TickAll(static_cast<uint32_t>(std::time(nullptr)));
         } catch (const std::exception& e) {
             std::cerr << "[Swap] tick failed: " << e.what() << std::endl;
