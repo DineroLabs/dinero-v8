@@ -603,6 +603,7 @@ private:
   // Daemon process (if started by GUI)
   class QProcess* daemonProcess_;
   bool suppressErrorDialogs_;  // Suppress error dialogs during daemon startup
+  bool daemonEverConnected_ = false;
   bool autoStartDaemonAttempted_ = false;
   bool daemonStopRequested_ = false;  // #295: user pressed Stop Daemon — suppress exit dialog
   int daemonLaunchRetries_ = 0;  // auto-retry transient launch races (datadir lock / port held by a slow-exiting prior daemon) before showing the failure dialog
@@ -676,6 +677,7 @@ private:
     bool startsNewBlock = false;
   };
   QVector<MiningHashSample> miningHashSamples_;
+  bool miningFoundPendingTemplate_ = false;
   // Height the miner is working on; a change marks the first row of a new block.
   int miningTipHeight_ = -1;
   QString miningSessionHeader_;

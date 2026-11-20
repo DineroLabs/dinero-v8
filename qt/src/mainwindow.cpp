@@ -22,6 +22,7 @@
 #include "responsiveuipolicy.h"
 #include "walletbackuplock.h"
 #include "rpcclient.h"
+#include "rpcconnectionpolicy.h"
 #include <QMenu>
 #include <QMenuBar>
 #include <QAction>
@@ -5006,10 +5007,11 @@ void MainWindow::setupUI() {
     // children of the text edit (not its viewport) so the live hash overlay,
     // which is raised on every frame, never covers them.
     const QString zoomStyle = QStringLiteral(
-      "QPushButton { background: #232830; color: #c9d2dc; border: 1px solid #3a414b; "
-      "border-radius: 4px; padding: 0; font-weight: 700; } "
-      "QPushButton:hover { background: #2d333c; } "
-      "QPushButton:disabled { color: #59616b; border-color: #2c323a; }");
+      "QPushButton { background: transparent; color: #c9d2dc; border: none; "
+      "padding: 0; font-weight: 700; } "
+      "QPushButton:hover { color: #ffffff; } "
+      "QPushButton:pressed { color: #f0bf68; } "
+      "QPushButton:disabled { color: #59616b; }");
     btnMiningZoomOut_ = new QPushButton(QString::fromUtf8("\xE2\x88\x92"), txtMiningOutput_);
     btnMiningZoomOut_->setObjectName("miningZoomOut");
     btnMiningZoomOut_->setToolTip(QString::fromUtf8("Smaller text (\xE2\x8C\x98\xE2\x88\x92)"));
@@ -5018,6 +5020,7 @@ void MainWindow::setupUI() {
     btnMiningZoomIn_->setToolTip(QString::fromUtf8("Larger text (\xE2\x8C\x98+)"));
     for (QPushButton* zoom : {btnMiningZoomOut_, btnMiningZoomIn_}) {
       zoom->setFixedSize(22, 20);
+      zoom->setFlat(true);
       zoom->setFocusPolicy(Qt::NoFocus);
       zoom->setCursor(Qt::PointingHandCursor);
       zoom->setStyleSheet(zoomStyle);
@@ -5151,6 +5154,7 @@ void MainWindow::setupUI() {
 
     connect(minerCtrl_, &MinerController::templateChanged, this,
             [this](int height, quint32 difficultyBits) {
+      miningFoundPendingTemplate_ = false;
       if (!miningSessionHeader_.isEmpty()) {
         replaceMiningOutputFirstLine(txtMiningOutput_, miningSessionHeader_);
       }
@@ -5187,6 +5191,13 @@ void MainWindow::setupUI() {
         btnMiningSessionFinds_->setText(
           QString("Session finds (%1)").arg(miningSessionFinds_.size()));
       }
+      miningFoundPendingTemplate_ = true;
+      // The live hash field is only for the visible mining session. Keeping
+      // offscreen find rows made a return to this tab show hours of old hits
+      // as if they were live; Session finds already preserves their history.
+      const bool miningTabActive = mainTabs_ && miningTabWidget_ &&
+        mainTabs_->currentWidget() == miningTabWidget_;
+      if (!miningTabActive) return;
       const QString liveRecord = QString(
         "nonce=0x%1 hash=%2 prev=%3 merkle=%4 utreexo=%5 version=0x%6 "
         "time=%7 bits=0x%8 reserved=000000000000000000000000 height=%9")
@@ -5202,6 +5213,7 @@ void MainWindow::setupUI() {
       foundSample.headerFields = liveRecord;
       foundSample.renderedLine.setText(liveRecord);
       foundSample.renderedLine.setPerformanceHint(QStaticText::AggressiveCaching);
+      for (auto& sample : miningHashSamples_) sample.blockFound = false;
       foundSample.blockFound = true;
       foundSample.highlightUntilMs = QDateTime::currentMSecsSinceEpoch() +
                                      dinero::qt::kBlockFoundHighlightMs;
@@ -5219,6 +5231,7 @@ void MainWindow::setupUI() {
 
     connect(minerCtrl_, &MinerController::runningChanged, this, [this]() {
         isMining_ = minerCtrl_->running();
+        miningFoundPendingTemplate_ = false;
         if (isMining_) {
             miningSessionFinds_.clear();
             miningHashSamples_.clear();
@@ -8862,6 +8875,12 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
   if (method == "wallet.sendtoaddress" || method == "sendtoaddress" || method == "wallet.covenant.ctvfund")
     sendSubmissionPending_ = false;
   if (!rpc_) return;  // Guard: shutting down
+  // A background probe can race the embedded daemon's first RPC listener.
+  // The startup dialog already explains this state; don't turn it into a
+  // frightening global error. After the first connection, show refusals.
+  if (RpcConnectionPolicy::ShouldSuppressStartupRefusal(
+        daemonEverConnected_, connectionMgr_ && connectionMgr_->isConnected(),
+        code, message)) return;
   if (method == "wallet.encrypt" && btnEncryptWallet_ &&
       message.contains("already encrypted", Qt::CaseInsensitive))
     btnEncryptWallet_->setVisible(false);
@@ -11338,6 +11357,8 @@ void MainWindow::setMiningOutputCinematicEnabled(bool enabled) {
     return;
   }
 
+  miningHashSamples_.clear();
+
   // Once a hidden cinematic has been stopped and restored to its idle
   // palette, mining-status polls must not repaint that hidden viewport.
   if (miningCinematicTimer_ && !miningCinematicTimer_->isActive()) {
@@ -11413,6 +11434,15 @@ void MainWindow::updateMiningOutputCinematicFrame() {
     QString headerFields;
     if (minerCtrl_->sampleCandidate(nonce, hash, headerFields, height, difficultyBits) &&
         !hash.isEmpty()) {
+      // A sample can only come from newly published work after a find: the
+      // miner retires the solved template before submitting it. This also
+      // clears the temporary status if queued template/find signals arrive
+      // in the opposite order.
+      if (miningFoundPendingTemplate_) {
+        miningFoundPendingTemplate_ = false;
+        if (!miningSessionHeader_.isEmpty())
+          replaceMiningOutputFirstLine(txtMiningOutput_, miningSessionHeader_);
+      }
       if (miningHashSamples_.isEmpty() ||
           miningHashSamples_.constLast().nonce != nonce ||
           miningHashSamples_.constLast().hash != hash) {
@@ -11454,13 +11484,21 @@ void MainWindow::updateMiningOutputCinematicFrame() {
     for (int visual = 0; visual < count; ++visual) {
       const int sampleIndex = count - 1 - visual;
       const MiningHashSample& sample = miningHashSamples_.at(sampleIndex);
-      // The first row of a new block is a lighter grey; your own finds stay orange.
+      // Normal rows are grey. The one current find is orange; older finds
+      // return to grey while Session finds retains their full history.
       const auto colour = dinero::qt::hashRowColor(sample.blockFound, sample.highlightUntilMs > nowMs,
                                                    sample.startsNewBlock);
-      painter.setPen(QColor(colour.r, colour.g, colour.b, colour.a));
+      int alpha = colour.a;
+      // A solved template is retired during submission. Pulse only its text
+      // during this real handoff; never invent candidate hashes to fill it.
+      if (sample.blockFound && miningFoundPendingTemplate_) {
+        const int phase = miningCinematicFrame_ % 8;
+        alpha = 180 + qMin(phase, 8 - phase) * 15;
+      }
+      painter.setPen(QColor(colour.r, colour.g, colour.b, alpha));
+      const qreal textTop = frameSize.height() - 6 - visual * rowHeight - metrics.ascent();
       painter.drawStaticText(
-        QPointF(8,
-                frameSize.height() - 6 - visual * rowHeight - metrics.ascent()),
+        QPointF(8, textTop),
         sample.renderedLine);
     }
     if (miningHashOverlay_) {
@@ -17866,6 +17904,7 @@ void MainWindow::onToggleAiPanel() {
 
 void MainWindow::onDaemonConnected() {
   qDebug() << "MainWindow: Daemon connected ✅";
+  daemonEverConnected_ = true;
   daemonLaunchRetries_ = 0;  // connected — reset the launch-retry budget
   autoLoadDefaultAttempted_ = false;
   walletReorgInfoSupported_ = true;
