@@ -28,6 +28,8 @@ namespace OF = OrchardFlow;
 namespace {
 constexpr int kFormStretch = 3, kCardStretch = 2, kGutter = 12;
 constexpr int kPollMs = 3000;
+constexpr int kAccountDiscoveryReadyMs = 60000;
+constexpr int kAccountDiscoveryRetryMs = 15000;
 const QString kDash = QString::fromUtf8("—");
 const QString kUnknown = QStringLiteral("Unknown");
 
@@ -124,7 +126,6 @@ void OrchardWidget::setupUi() {
     accountGrid->addWidget(accountSelector_,0,0);
     accountGrid->addWidget(accountStatus_, 1, 0);
     accountGrid->addWidget(createAccount_, 2, 0, Qt::AlignLeft);
-    accountGrid->addWidget(Muted("After setup the account needs to synchronize before it can spend.", account), 3, 0);
     connect(accountSelector_,&QComboBox::currentIndexChanged,this,&OrchardWidget::onAccountChanged);
 
     auto* balanceCard = new QGroupBox("Orchard balance", this);
@@ -134,7 +135,6 @@ void OrchardWidget::setupUi() {
     balance_->setObjectName("orchardBalance");
     balance_->setToolTip("Shown as Unknown until the node can report it; never assumed to be zero");
     balanceLayout->addWidget(balance_);
-    balanceLayout->addWidget(Muted("Unknown means the node did not report a balance, not that it is empty.", balanceCard));
     auto* row1 = new QHBoxLayout;
     ShareRow(row1, account, balanceCard);
     root->addLayout(row1);
@@ -296,6 +296,7 @@ void OrchardWidget::setWalletScope(const QString& walletName) {
     walletBinding_.clear();
     clearHistory("History unknown");
     accountsSnapshot_.reset();accountSelected_=false;accountsInFlight_=false;creatingAccount_=false;
+    accountDiscoveryElapsed_.invalidate();
     {QSignalBlocker blocked(accountSelector_);accountSelector_->clear();}
     activationObserved_ = false;
     chain_.clear();
@@ -346,8 +347,9 @@ void OrchardWidget::onConnectionContextChanged() {
 }
 
 void OrchardWidget::setWalletUnlocked(bool unlocked) {
+    const bool newlyUnlocked=unlocked&&!unlocked_;
     unlocked_ = unlocked;
-    if(unlocked_)refreshAccounts();
+    if(newlyUnlocked)refreshAccounts();
     updateForm();
 }
 
@@ -398,7 +400,7 @@ void OrchardWidget::clearAccountView() {
 }
 void OrchardWidget::refreshAccounts() {
     if(accountsInFlight_ || creatingAccount_ || wallet_.isEmpty() || !OC::ValidBinding(walletBinding_))return;
-    accountsInFlight_=true;send("accounts",OC::kListAccounts,{});
+    accountsInFlight_=true;accountDiscoveryElapsed_.start();send("accounts",OC::kListAccounts,{});
 }
 void OrchardWidget::onAccountChanged(int index) {
     if(!accountsSnapshot_ || index<0 || index>=accountsSnapshot_->accounts.size())return;
@@ -409,9 +411,14 @@ void OrchardWidget::onAccountChanged(int index) {
         for(int i=0;i<accountsSnapshot_->accounts.size();++i)if(accountsSnapshot_->accounts[i].account==account_)previous=i;
         accountSelector_->setCurrentIndex(previous);return;
     }
+    if(operationsErrorVisible_)showStatus({},false);
     ++generation_; // Late balances, errors and effects belong to the old account selection.
     account_=next.account;accountSelected_=true;accountsInFlight_=false;activationInFlight_=false;
     payment_.reset();clearAccountView();revision_=next.revision;
+    if(OF::LooksLikeOrchardAddress(next.firstReceiveAddress,chain_)) {
+        receiveAddress_->setText(next.firstReceiveAddress);
+        receiveAddress_->setVisible(true);copyAddress_->setVisible(true);
+    }
     accountStatus_->setText(QString("Account %1 — checking saved payments").arg(account_));
     showPayment();refreshOperations();refreshBalance();refreshHistory();
     activationInFlight_=true;send("activation",OC::kActivationStatus,{});updateForm();
@@ -538,8 +545,14 @@ void OrchardWidget::updateForm() {
     else if (mode == "unshield" && !memo_->text().isEmpty()) blocker = "remove the note (public payments cannot carry one)";
     memo_->setEnabled(mode != "unshield");
     const bool emptyCatalog=accountsSnapshot_ && accountsSnapshot_->accounts.isEmpty();
-    createAccount_->setVisible(emptyCatalog && !wallet_.isEmpty());
+    // Keep the setup action discoverable while the node is fetching the
+    // authenticated history needed to read an empty catalog. It cannot be
+    // clicked until discovery has actually succeeded.
+    createAccount_->setVisible(!wallet_.isEmpty() && (!accountsSnapshot_ || emptyCatalog));
     createAccount_->setEnabled(emptyCatalog && !creatingAccount_ && canChooseAccount() && unlocked_ && activationObserved_ && OC::ValidBinding(walletBinding_));
+    createAccount_->setToolTip(!accountsSnapshot_
+        ? "Waiting for verified Orchard history before account setup."
+        : "Create the first private receiving account for this wallet.");
     accountSelector_->setEnabled(accountsSnapshot_ && canChooseAccount() && OC::ValidBinding(walletBinding_));
     newAddress_->setEnabled(accountKnown() && unlocked_ && activationObserved_ && OC::ValidBinding(walletBinding_) && revision_!=0);
     review_->setEnabled(blocker.isEmpty());
@@ -637,7 +650,10 @@ void OrchardWidget::advance() {
 
 void OrchardWidget::onPoll() {
     if(wallet_.isEmpty() || !OC::ValidBinding(walletBinding_))return;
-    refreshAccounts();refreshOperations();refreshBalance();refreshHistory();
+    const int catalogInterval=accountsSnapshot_?kAccountDiscoveryReadyMs:kAccountDiscoveryRetryMs;
+    if(!accountDiscoveryElapsed_.isValid() || accountDiscoveryElapsed_.elapsed()>=catalogInterval)
+        refreshAccounts();
+    refreshOperations();refreshBalance();refreshHistory();
     if(!activationInFlight_){activationInFlight_=true;send("activation",OC::kActivationStatus,{});}
     if (!payment_ || callInFlight_ || !accountKnown() || !unlocked_ || !activationObserved_ || payment_->requiresExplicitRetry()) return;
     const auto s = payment_->state();
@@ -761,7 +777,11 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
         if(!catalog || stale) {
             accountsSnapshot_.reset();operationsSnapshot_.reset();balance_->setText(kUnknown);
             clearHistory("History unavailable — account discovery failed");
-            accountStatus_->setText("Account discovery unavailable");updateForm();return;
+            const auto error=OC::InBandError(result).value_or(QString());
+            accountStatus_->setText(error.contains("replay source unavailable",Qt::CaseInsensitive)
+                ? "Waiting for verified Orchard history — setup will become available after sync"
+                : "Account discovery unavailable");
+            updateForm();return;
         }
         accountsSnapshot_=*catalog;int selected=-1;
         {QSignalBlocker blocked(accountSelector_);accountSelector_->clear();
@@ -775,6 +795,13 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
             ++generation_;accountSelected_=false;clearAccountView();activationInFlight_=false;
             accountStatus_->setText("Selected account is missing — reopen the wallet");
             showStatus("The selected account is no longer reported. Earlier payments may still complete; check them before paying again.",true);
+        } else if(selected>=0 && receiveAddress_->text().isEmpty() &&
+                  OF::LooksLikeOrchardAddress(catalog->accounts[selected].firstReceiveAddress,chain_)) {
+            // Account creation and first receiver issuance can be observed in
+            // separate catalog reads. Fill the receiver on a later refresh
+            // without replacing a newer address the user has requested.
+            receiveAddress_->setText(catalog->accounts[selected].firstReceiveAddress);
+            receiveAddress_->setVisible(true);copyAddress_->setVisible(true);
         } else if(!accountSelected_ && !catalog->accounts.isEmpty() && canChooseAccount()) {
             accountSelector_->setCurrentIndex(0); // The first real catalog entry, never a guessed account zero.
         } else if(catalog->accounts.isEmpty())accountStatus_->setText("No accounts in the authenticated catalog");
@@ -785,7 +812,7 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
         const auto state=observed?observed->state:QString();
         activationObserved_=observed && observed->activeAtTip && observed->walletBackend && observed->nodeSupported;
         auto* intro=findChild<QLabel*>("orchardIntro");
-        if (intro) intro->setText(activationObserved_ ? "Orchard rules are active. Wallet synchronization is still required."
+        if (intro) intro->setText(activationObserved_ ? "Orchard rules are active."
             : observed && !observed->nodeSupported ? observed->nodeNotice
             : state=="unscheduled" ? "Orchard activation is not scheduled on this node."
             : state=="scheduled" ? "Orchard is scheduled but not active on this node."
@@ -820,11 +847,12 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
             operationsSnapshot_.reset();
             const QString e = OC::InBandError(result).value_or("Unexpected reply");
             if (revision_ == 0) accountStatus_->setText(FriendlyError(e));
-            else showStatus(FriendlyError(e), true);  // keep the known account state
+            else showStatus(FriendlyError(e), true, true);  // keep the known account state
             updateForm();
             return;
         }
         if(r->accountRevision<revision_)return;
+        if(operationsErrorVisible_)showStatus({},false);
         if(r->accountRevision>balanceRevision_){balance_->setText(kUnknown);balance_->setToolTip("Waiting for the current account balance.");}
         revision_ = r->accountRevision;
         operationsSnapshot_=*r;
@@ -858,7 +886,8 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
     }
 }
 
-void OrchardWidget::showStatus(const QString& text, bool error) {
+void OrchardWidget::showStatus(const QString& text, bool error, bool operationsError) {
+    operationsErrorVisible_=operationsError;
     status_->setText(text);
     status_->setStyleSheet(PayCollectPolicy::pillStyle(error ? Tone::Bad : Tone::Good));
     status_->setVisible(!text.isEmpty());

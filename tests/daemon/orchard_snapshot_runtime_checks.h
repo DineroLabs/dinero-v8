@@ -1992,13 +1992,15 @@ TEST(OrchardCatalogDownload, IngressIsBoundedAndStopJoinsWithoutPublishing){
             cv.wait_for(lock,std::chrono::seconds(10),[&]{return release;});return false;
         });
     {std::unique_lock lock(mutex);ASSERT_TRUE(cv.wait_for(lock,std::chrono::seconds(5),[&]{return entered;}));}
+    EXPECT_TRUE(host.InFlight()); // scheduler can prioritize the catalog before history requests begin
     std::vector<uint8_t> bytes(195);
     EXPECT_FALSE(host.Enqueue({"archive",52,0},Transfer::ManifestCommand,bytes));
     auto oversized=bytes;oversized.push_back(0);EXPECT_FALSE(host.Enqueue({"archive",51,0},Transfer::ManifestCommand,oversized));
     for(unsigned i=0;i<Download::MaximumQueue;++i)EXPECT_TRUE(host.Enqueue({"archive",51,0},Transfer::ManifestCommand,bytes));
     EXPECT_FALSE(host.Enqueue({"archive",51,0},Transfer::ManifestCommand,bytes));
     {std::lock_guard lock(mutex);release=true;cv.notify_all();}host.Stop();
-    EXPECT_EQ(sends,1u);EXPECT_FALSE(host.ReadyProof());EXPECT_FALSE(host.Enqueue({"archive",51,0},Transfer::ManifestCommand,bytes));
+    EXPECT_EQ(sends,1u);EXPECT_FALSE(host.InFlight());EXPECT_FALSE(host.ReadyProof());
+    EXPECT_FALSE(host.Enqueue({"archive",51,0},Transfer::ManifestCommand,bytes));
 }
 TEST(OrchardActivationOrigin, FirstBlockIsVerifiedFromEmptyAndStreamingStateMatchesCanonical){
     using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
@@ -2965,6 +2967,65 @@ TEST(OrchardSnapshotRuntime, QueuedDownloadedHeaderIsRevalidatedWithoutSelectedP
     EXPECT_EQ(source.f.db.getTip()->hash,tip->hash);EXPECT_EQ(source.f.db.getValidatedTip()->hash,tip->hash);
 }
 
+TEST(OrchardSnapshotRuntime, CompactPreloadedHeadersDeferImportUntilStart) {
+    using namespace consensus;
+    struct ConfigScope {
+        std::string profile=GetConfig().sync_profile;
+        bool stateless=GetConfig().utreexo_stateless;
+        ~ConfigScope(){GetConfig().sync_profile=profile;GetConfig().utreexo_stateless=stateless;}
+    } config_scope;
+    GetConfig().sync_profile.clear();
+    OrchardCycleFixture source(true);
+    MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+    const auto block=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));
+    ASSERT_TRUE(block);ASSERT_TRUE(source.Submit(block->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();
+    for(const auto& historical:source.f.blocks)ASSERT_TRUE(headers->AddHeader(historical.header));
+    ASSERT_TRUE(headers->AddHeader(block->Header()));
+    source.f.service->setHeaderChainSelector(headers);
+    shielded_store_fixture::TempDir directory;
+    const auto snapshot=directory.path/"compact.v6";
+    const auto exported=source.f.service->ExportSnapshot(snapshot,true);
+    ASSERT_TRUE(exported.success)<<exported.error_message;
+    const auto path=directory.path/"chainstate";
+    OrchardSnapshotStoreTestAccess::CreateFresh(path);
+    RawIngressGraph isolated;
+    struct ContextGuard {DaemonContext* prior=DaemonContext::instance();
+        ~ContextGuard(){BlockAcceptor::SetContext(prior);DaemonContext::setInstance(prior);}} guard;
+    GetConfig().utreexo_stateless=true;
+    auto db=std::make_shared<ChainDB>();ASSERT_EQ(db->init(path),Status::Ok);
+    DaemonContext context;context.config=std::make_shared<ConfigService>();
+    context.config->Set("datadir",directory.path.string());
+    context.config->Set("assumeutxo_snapshot",snapshot.string());
+    context.config->Set("assumeutxo_compact_bootstrap","1");
+    context.logger=std::make_shared<LoggerService>("");
+    context.block_storage=std::make_shared<BlockStorage>();
+    ASSERT_EQ(context.block_storage->init(directory.path/"files"),Status::Ok);
+    auto service=std::make_shared<ChainstateService>();context.chainstate=service;
+    struct StopGuard {std::shared_ptr<ChainstateService> service;DaemonContext& context;
+        ~StopGuard(){service->Stop();context.chainstate.reset();}} stop{service,context};
+    DaemonContext::setInstance(&context);service->setOwnedChainDB(db);
+    ASSERT_TRUE(service->Init(context));
+    service->setHeaderChainSelector(headers);
+    service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
+    service->setValidationMode(ValidationMode::STATELESS);
+    ASSERT_TRUE(service->IsSnapshotBootstrapPending());
+    // A restored header store may already contain the buried base before the
+    // daemon calls Start. The callback must leave the snapshot pending until
+    // Start has installed the compact owner and its runtime consumers.
+    service->TryDeferredSnapshotBootstrap();
+    EXPECT_TRUE(service->IsSnapshotBootstrapPending());
+    EXPECT_EQ(service->GetActiveTip(),nullptr);
+    ASSERT_TRUE(service->Start());
+    ASSERT_FALSE(service->IsSnapshotBootstrapPending());
+    ASSERT_NE(service->GetActiveTip(),nullptr);
+    EXPECT_EQ(service->GetActiveTip()->hash,block->Header().GetHash());
+    const auto selected=service->getUtreexoRpcSnapshot();ASSERT_TRUE(selected.ok());
+    EXPECT_TRUE(selected->compact);
+}
+
 TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles) {
     using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
     // This direct-service fixture selects its profile with utreexo_stateless.
@@ -3121,10 +3182,17 @@ TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles)
             if(run==1) {
                 // Init's retained decoded bytes cannot hide a later missing
                 // live catalog row at the actual Start publication boundary.
+                const auto before_fault=db->startupWriteFence();ASSERT_TRUE(before_fault);
                 const auto state=storage::catalog::State::Decode(*db->getOrchardCatalogState(second_metadata.block_hash));
                 const auto bytes=db->getOrchardCatalogNode(state.transactions);ASSERT_TRUE(bytes.ok());
                 ChainDBTransactionReadTestPeer::SnapshotCatalogFault(*db,source.f.token,state.transactions,{});
-                EXPECT_FALSE(service->Start());EXPECT_EQ(service->GetActiveTip(),nullptr);
+                const auto after_fault=db->startupWriteFence();ASSERT_TRUE(after_fault);
+                EXPECT_NE(*after_fault,*before_fault);
+                testing::internal::CaptureStdout();
+                const bool started_with_missing_node=service->Start();
+                const auto refusal_log=testing::internal::GetCapturedStdout();
+                EXPECT_FALSE(started_with_missing_node);EXPECT_EQ(service->GetActiveTip(),nullptr);
+                EXPECT_NE(refusal_log.find("Rechecking snapshot with actual selector"),std::string::npos);
                 ChainDBTransactionReadTestPeer::SnapshotCatalogFault(*db,source.f.token,state.transactions,*bytes);
             }
             ASSERT_TRUE(service->Start());
@@ -3171,6 +3239,17 @@ TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles)
             const auto accumulator=service->getUtreexoRpcSnapshot();ASSERT_TRUE(accumulator.ok());
             EXPECT_EQ(accumulator->block_hash,selected.block_hash);EXPECT_EQ(accumulator->height,selected.block_height);
             EXPECT_EQ(accumulator->compact,stateless);
+            // A late full-v6 snapshot needs the same independently verified
+            // activation-prefix source as the compact snapshot. The full coin
+            // owner alone cannot prove an Orchard wallet's earlier history.
+            EXPECT_FALSE(service->PhoneHistoryTarget().has_value());
+            service->RequestRetainedPhoneHistoryData();
+            const auto history_target=service->PhoneHistoryTarget();
+            ASSERT_TRUE(history_target.has_value());
+            EXPECT_EQ(history_target->activation,Params().orchard_activation_height);
+            EXPECT_EQ(history_target->base,metadata.block_hash);
+            EXPECT_EQ(history_target->height,selected.block_height);
+            EXPECT_EQ(history_target->hash,selected.block_hash);
             if(!stateless) {
                 GetConfig().utreexo_stateless=true;
                 EXPECT_FALSE(service->getUtreexoRpcSnapshot().ok()); // no legacy fallback in Orchard
@@ -3255,6 +3334,38 @@ TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles)
                 } else EXPECT_FALSE(service->IsBackgroundValidationComplete());
             }
             pool->Stop();context.mempool.reset();pool.reset();
+            service->Stop();context.chainstate.reset();service.reset();
+        }
+        {
+            // A quiet cold start in both full and compact profiles must reuse
+            // Init's authenticated publication.
+            // The earlier run intentionally wrote a catalog row between Init
+            // and Start, exercising the full-Restore fallback instead.
+            auto db=std::make_shared<ChainDB>();ASSERT_EQ(db->init(path),Status::Ok);
+            DaemonContext context;context.config=std::make_shared<ConfigService>();
+            context.config->Set("datadir",directory.path.string());
+            context.config->Set("assumeutxo_compact_bootstrap",stateless?"1":"0");
+            context.logger=std::make_shared<LoggerService>("");
+            context.block_storage=std::make_shared<BlockStorage>();
+            ASSERT_EQ(context.block_storage->init(directory.path/"files"),Status::Ok);
+            auto service=std::make_shared<ChainstateService>();context.chainstate=service;
+            struct ContextGuard {DaemonContext* prior=DaemonContext::instance();
+                ~ContextGuard(){BlockAcceptor::SetContext(prior);DaemonContext::setInstance(prior);}} guard;
+            DaemonContext::setInstance(&context);service->setOwnedChainDB(db);
+            ASSERT_TRUE(service->Init(context));
+            const auto fence=db->startupWriteFence();ASSERT_TRUE(fence);
+            service->setHeaderChainSelector(headers);
+            service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
+            if(stateless)service->setValidationMode(ValidationMode::STATELESS);
+            ASSERT_EQ(db->startupWriteFence(),fence);
+            testing::internal::CaptureStdout();
+            const bool started=service->Start();
+            const auto startup_log=testing::internal::GetCapturedStdout();
+            ASSERT_TRUE(started);
+            EXPECT_NE(startup_log.find("Reused authenticated Init publication"),std::string::npos);
+            EXPECT_NE(service->GetActiveTip(),nullptr);
+            const auto accumulator=service->getUtreexoRpcSnapshot();ASSERT_TRUE(accumulator.ok());
+            EXPECT_EQ(accumulator->compact,stateless);
             service->Stop();context.chainstate.reset();service.reset();
         }
     }

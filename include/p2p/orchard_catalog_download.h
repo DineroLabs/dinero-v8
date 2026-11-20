@@ -49,6 +49,8 @@ public:
     // of polling every 50 ms; any request, packet or stop still wakes them.
     static constexpr std::chrono::milliseconds IdleWait{1000},ActiveWait{50};
     uint64_t Iterations()const{return iterations_.load();}
+    uint64_t ExpectedBytes()const{return expected_bytes_.load();}
+    bool InFlight()const{std::lock_guard lock(mutex_);return !stop_&&flight_.has_value();}
 
     void Stop(){
         std::lock_guard joining(join_mutex_);
@@ -56,7 +58,7 @@ public:
         cv_.notify_all();if(worker_.joinable())worker_.join();
     }
 private:
-    std::atomic<uint64_t> iterations_{0};bool woken_=false;
+    std::atomic<uint64_t> iterations_{0},expected_bytes_{0};bool woken_=false;
     struct Packet{Peer peer;std::string command;Bytes bytes;};
     static bool Equal(const Peer& a,const Peer& b){return a.address==b.address&&a.session==b.session;}
     void Run()noexcept {
@@ -118,7 +120,11 @@ private:
                 }
                 if(stop_)break;
                 if(!client)continue;
-                if(packet)client->Receive(packet->peer,packet->command,packet->bytes,Clock::now());
+                if(packet){
+                    const bool accepted=client->Receive(packet->peer,packet->command,packet->bytes,Clock::now());
+                    if(accepted&&packet->command==Transfer::ManifestCommand)
+                        expected_bytes_.store(Transfer::Manifest::Decode(packet->bytes).bytes);
+                }
                 if(client->Current()==Client::State::Ready){
                     auto proof=client->Take();
                     request->CheckSelected(*headers_);

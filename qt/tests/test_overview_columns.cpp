@@ -75,7 +75,7 @@ private Q_SLOTS:
 
         auto box = [&](const QString& title) -> QGroupBox* {
             for (auto* g : window.findChildren<QGroupBox*>())
-                if (g->title() == title) return g;
+                if (g->title().compare(title, Qt::CaseInsensitive) == 0) return g;
             return nullptr;
         };
         QGroupBox* consensus = box("v7 Consensus Health");
@@ -101,12 +101,14 @@ private Q_SLOTS:
             QVERIFY2(qAbs(left(resources) - left(consensus)) <= 1, qPrintable("resources left edge" + at));
             QVERIFY2(qAbs(mempool->width() - consensus->width()) <= 1, qPrintable("mempool width" + at));
             QVERIFY2(qAbs(resources->width() - consensus->width()) <= 1, qPrintable("resources width" + at));
-            // My mining rewards sits under Resources in the same column and
+            // My mining rewards sits under Mempool in the same column and
             // ends level with Node operation.
             auto top = [&](QWidget* w) { return w->mapTo(&window, QPoint(0, 0)).y(); };
             QVERIFY2(qAbs(left(rewards) - left(consensus)) <= 1, qPrintable("rewards left edge" + at));
             QVERIFY2(qAbs(rewards->width() - consensus->width()) <= 1, qPrintable("rewards width" + at));
-            QVERIFY2(top(rewards) > top(resources) + resources->height(), qPrintable("rewards below resources" + at));
+            QVERIFY2(top(rewards) > top(mempool) + mempool->height(), qPrintable("rewards below mempool" + at));
+            // Row order: Node operation sits above Latest Blocks.
+            QVERIFY2(top(node) < top(blocks), qPrintable("node operation above latest blocks" + at));
             QVERIFY2(qAbs((top(rewards) + rewards->height()) - (top(node) + node->height())) <= 2,
                      qPrintable(QString("rewards bottom %1 vs node bottom %2").arg(top(rewards) + rewards->height())
                                     .arg(top(node) + node->height()) + at));
@@ -479,7 +481,10 @@ private Q_SLOTS:
         QVERIFY(!alerts->isHidden());
         QVERIFY2(alerts->height() >= 3 * alerts->fontMetrics().lineSpacing(),
                  qPrintable(QString("alerts list %1 px for 3 lines").arg(alerts->height())));
-        QVERIFY2(box->height() <= 220, qPrintable(QString("alerts box grew to %1 px").arg(box->height())));
+        // Showing the editor schedules a layout pass. Windows may report the
+        // old expanded geometry once before the compact fixed height settles.
+        QTRY_VERIFY2_WITH_TIMEOUT(box->height() <= 220,
+                                  qPrintable(QString("alerts box grew to %1 px").arg(box->height())), 2000);
     }
     void networkInfoReadsAsAList() {
         QTemporaryDir dir;
@@ -489,7 +494,7 @@ private Q_SLOTS:
         auto* rpc = window.findChild<RpcClient*>();
         QVERIFY(rpc);
         QGroupBox* info = nullptr;
-        for (auto* g : window.findChildren<QGroupBox*>()) if (g->title() == "Network Info") info = g;
+        for (auto* g : window.findChildren<QGroupBox*>()) if (g->title().compare("Network Info", Qt::CaseInsensitive) == 0) info = g;
         QVERIFY(info);
         Q_EMIT rpc->rpcResult("blockchain.getinfo", QJsonObject{{"blocks", 121208}, {"headers", 121208}, {"chain", "main"}});
         Q_EMIT rpc->rpcResult("economics.getinfo", QJsonObject{{"current_halving_epoch", 0}, {"halving_interval", 1314000},
@@ -504,6 +509,64 @@ private Q_SLOTS:
         // The Mempool card already shows mempool size; no duplicate row here.
         for (auto* r : info->findChildren<InfoRow*>())
             QVERIFY2(r->nameText() != "Mempool" || r->isHidden(), "duplicate Mempool row is visible");
+    }
+    void errorBarClearsWhenTheFailedCallSucceeds() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        auto* bar = window.findChild<QLabel*>("walletGlobalError");
+        QVERIFY(bar);
+        window.onRpcError("wallet.listunspent", -32603, "node busy");
+        QVERIFY(!bar->isHidden());
+        QVERIFY(bar->text().contains("wallet.listunspent"));
+        // An unrelated success leaves it; the same call succeeding clears it.
+        window.onRpcResult("getblockcount", QJsonValue(5));
+        QVERIFY(!bar->isHidden());
+        window.onRpcResult("wallet.listunspent", QJsonArray{});
+        QVERIFY2(bar->isHidden(), "resolved error stayed on screen");
+        QVERIFY(bar->text().isEmpty());
+    }
+    void utxoTabDistinguishesCatchUpFromImmatureRewards() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        auto* table = window.findChild<QTableWidget*>("tblUTXOs");
+        QVERIFY(table);
+        QTabWidget* tabs = nullptr;
+        for (auto* candidate : window.findChildren<QTabWidget*>()) {
+            for (int index = 0; index < candidate->count(); ++index) {
+                if (candidate->tabText(index) == "UTXOs") {
+                    tabs = candidate;
+                    candidate->setCurrentIndex(index);
+                    break;
+                }
+            }
+        }
+        QVERIFY(tabs);
+        window.onRpcError("wallet.listunspent", -32603,
+                          "Legacy transparent wallet is catching up to the selected chain");
+        QVERIFY(table->item(0, 0));
+        QVERIFY(table->item(0, 0)->text().contains("catching up"));
+        window.onRpcResult("wallet.listunspent", QJsonArray{});
+        QVERIFY(table->item(0, 0));
+        QVERIFY(table->item(0, 0)->text().contains("100 confirmations"));
+    }
+    void backgroundPollErrorsStayOutOfTheErrorBar() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        auto* bar = window.findChild<QLabel*>("walletGlobalError");
+        QVERIFY(bar);
+        for (const char* method : {"orchardtab|accounts|6465|3", "wallet.getshieldedaddress",
+                                   "wallet.listshielded", "wallet.shieldedbalance",
+                                   "orchard.getactivationstatus"}) {
+            window.onRpcError(method, -32603, "Legacy transparent wallet is catching up to the selected chain");
+            QVERIFY2(bar->isHidden() || !bar->text().contains(method),
+                     qPrintable(QString("%1 reached the global error bar").arg(method)));
+        }
     }
     void mempoolColumnsAreNotCramped() {
         QTemporaryDir dir;

@@ -65,6 +65,8 @@ private:
     const std::thread::id thread_=std::this_thread::get_id();
     Digest transactions_{},legacy_{},nontransparent_{};uint64_t transaction_count_=0,legacy_count_=0,nontransparent_count_=0;
     std::vector<uint8_t> stump_;
+    // Test-only observation of Create's write batches.
+    size_t unsynced_batches_=0,synced_batches_=0;
     PreparedOrchardCatalog(ChainDB& db,const OrchardParentReplay& replay)
         :db_(db),proof_(replay),record_(replay.Record()),target_(replay.ValidatedTarget()),
          leaf_activation_(consensus::GetUtreexoMaturityLeafActivationHeight()){}
@@ -87,7 +89,8 @@ private:
         return {kind,[this](const auto& id){return Read(id);}};
     }
     static std::unique_ptr<PreparedOrchardCatalog> Create(ChainDB& db,const ChainWriteToken& token,
-        const OrchardParentReplay& replay,const OrchardHistoryCapture& history) {
+        const OrchardParentReplay& replay,const OrchardHistoryCapture& history,
+        size_t pending_limit=ChainDB::kOrchardCatalogNodeBatchLimit) {
         // Production callers are the detached service and unpublished startup
         // reindex owner. Both run Append BEFORE RecordBody for this exact
         // hash-linked history, then finish both and compare the selected state.
@@ -104,15 +107,21 @@ private:
         const auto restored=consensus::UtreexoStump::deserialize(result->stump_);
         Require(restored.getNumLeaves()==forest->getNumLeaves()&&restored.getCommitment()==forest->getCommitment());
         // Fixed pending-node bound, separate from the full replay's work policy.
-        // Sync each batch. Any prefix is immutable and unreachable until the
-        // future canonical batch installs a head; no preparation receipt is a head.
-        constexpr size_t pending_limit=ChainDB::kOrchardCatalogNodeBatchLimit;
+        // Intermediate batches are written WITHOUT a WAL sync: any prefix is
+        // immutable, content-addressed and unreachable until a future canonical
+        // batch installs a head (no preparation receipt is a head), so a crash
+        // can only leave harmless unreachable nodes that a retry rewrites. The
+        // final batch is synced, which syncs the whole WAL including every
+        // earlier batch, before Create re-reads and returns.
+        Require(pending_limit>0);
         std::map<Digest,std::string> pending;
-        const auto flush=[&] {
+        size_t unsynced=0,synced=0;
+        const auto flush=[&](bool sync) {
             if(pending.empty())return;
             rocksdb::WriteBatch batch;
             Require(db.stageOrchardCatalogNodes(token,pending,batch)==Status::Ok);
-            Require(db.writeBatch(token,std::move(batch),true)==Status::Ok);pending.clear();
+            Require(db.writeBatch(token,std::move(batch),sync)==Status::Ok);pending.clear();
+            ++(sync?synced:unsynced);
         };
         const auto read=[&](const Digest& id) {
             const auto found=pending.find(id);return found==pending.end()?result->Read(id):found->second;
@@ -120,7 +129,7 @@ private:
         const auto write=[&](const Digest& id,const std::string& bytes) {
             Require(storage::catalog::ValidNode(id,bytes));
             if(const auto found=pending.find(id);found!=pending.end()){Require(found->second==bytes);return;}
-            if(pending.size()==pending_limit)flush();pending.emplace(id,bytes);
+            if(pending.size()==pending_limit)flush(false);pending.emplace(id,bytes);
         };
         storage::catalog::Tree transactions(storage::catalog::Kind::Transactions,read,write);
         const auto count=history.ForEachTransaction([&](const TxId& id) {
@@ -145,7 +154,11 @@ private:
             storage::catalog::Number(bytes,coin.height,4);bytes.push_back(coin.isCoinbase?1:0);
             result->legacy_=legacy.Insert(result->legacy_,storage::catalog::LegacyKey(outpoint),bytes);++result->legacy_count_;
         }
-        flush();
+        // Flushes are lazy, so any earlier unsynced batch leaves a non-empty
+        // final batch whose synced write is the durability barrier.
+        Require(unsynced==0||!pending.empty());
+        flush(true);
+        result->unsynced_batches_=unsynced;result->synced_batches_=synced;
         // Re-read from durable storage after every pending write has completed.
         // Enumerate the actual validated owners again, never raw database rows.
         Require(history.ForEachTransaction([&](const TxId& id){return result->ContainsTransaction(id);})==count);

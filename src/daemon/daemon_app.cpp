@@ -1,3 +1,4 @@
+#include "daemon/prebase_marker_refusal.h"
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 #include "daemon/orchard_reindex.h"
 #include "daemon/orchard_snapshot_store.h"
@@ -203,8 +204,8 @@ void RequireFullArchiveWalletV3StartupSource(const std::filesystem::path& datadi
     storage::RequireFullOrchardStorage(source);
     if (storage::ReadOrchardSnapshotBase(source))
         throw std::runtime_error("Wallet index v3 startup refuses a snapshot source");
-    if (source.getPreBaseCoinSetBase().status() != Status::NotFound)
-        throw std::runtime_error("Wallet index v3 startup refuses an imported pre-base source");
+    if (const auto refusal = PreBaseMarkerRefusal(source.getPreBaseCoinSetBase(), "startup"))
+        throw std::runtime_error(*refusal);
     const auto prune_height = source.getPruneHeight();
     if (!prune_height.ok() || prune_height.value() != 0)
         throw std::runtime_error("Wallet index v3 startup requires unpruned block storage");
@@ -7536,6 +7537,9 @@ bool DaemonApp::Start() {
     // Wire BlockAssembler to Mempool (deferred from InitializeServices)
     // MUST happen after services Init() because Mempool is created in Init()
     // ═══════════════════════════════════════════════════════════════════
+    if (ctx_.block_assembler) {
+        ctx_.block_assembler->SetHeaderChainSelector(ctx_.header_chain);
+    }
     if (ctx_.block_assembler && ctx_.mempool && ctx_.mempool->isInitialized()) {
         std::weak_ptr<ChainstateService> weak_chain = ctx_.chainstate;
         ctx_.block_assembler->SetChainstateReadGuardFactory([weak_chain]()
@@ -8143,6 +8147,15 @@ void DaemonApp::Stop() {
 
     const auto shutdown_start = ShutdownClock::now();
     LogShutdownPhase("interrupting", shutdown_start, "DaemonApp::Stop entered");
+
+    // A replay may hold activation_mutex_ while walking old headers. Signal
+    // its cancellation BEFORE detaching notifications, which needs that same
+    // mutex; the later Stop() joins after the provider has been detached.
+    if (runtime_delivery_worker_) {
+        runtime_delivery_worker_->RequestStop();
+        LogShutdownPhase("runtime_delivery_cancel_requested", shutdown_start,
+                         "wallet replay cancellation signaled before selected ownership");
+    }
 
     // Remove the daemon-owned handoff before joining either worker. These
     // tokens own only wake mailboxes, so removal cannot join under selected

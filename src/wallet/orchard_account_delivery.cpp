@@ -426,7 +426,8 @@ struct OrchardAccountDelivery::Owner {
             const OrchardAccountDelivery::Applied& current,const RuntimeOutboxEvent& event,
             const OrchardBlockCandidate& block,const OrchardAccountDelivery::RestorePoint& parent){
         const auto parent_revision=current.account.ParentSnapshotRevision();
-        Check(parent_revision&&parent_revision<current.revision);
+        if(!parent_revision)throw std::runtime_error(OrchardAccountDelivery::kRewindBeyondWindow);
+        Check(parent_revision<current.revision);
         auto retained=store.ReadRetained(parent_revision);
         auto prior=OrchardAccountState::Restore(retained.state,p.domain,fvk.bytes,p.activation,parent.checkpoint,parent.lookups);
         Check(prior.ParentSnapshotRevision()<parent_revision);
@@ -489,6 +490,9 @@ struct OrchardAccountDelivery::Owner {
             }
         }
         CatalogEnrolled Restore(const std::function<RestorePoint(RuntimeOutboxCursor)>& points) const {
+            // Every retained revision of an account restores with the same
+            // viewing key; prove it once per call, not once per revision.
+            const ValidatedViewingKeyScope viewing_once;
             const auto origin=points({}).checkpoint.block_hash;
             CatalogEnrolled result{ownership.catalog,{}};
             result.accounts.reserve(bytes.size());
@@ -531,6 +535,7 @@ struct OrchardAccountDelivery::Owner {
         }
     };
     static std::unique_ptr<CapturedCatalog> CaptureCatalog(WalletManager& wallet,uint64_t session,const Profile& profile){
+        const ValidatedViewingKeyScope viewing_once; // one proof per key per capture
         auto lease=wallet.AcquireDatabaseLease();
         Check(lease->Session()==session&&lease->Database()&&!sqlite3_get_autocommit(lease->Database()));
         auto seed=lease->CopyRecoverySeed(session);
@@ -999,7 +1004,10 @@ void OrchardAccountDelivery::CompleteCatalogRecoveryWithPoints(OrchardCatalogRec
                 const auto block=view.Block(sequence);const auto state=view.State(sequence);const auto auth=view.Authorizations(sequence);
                 replace(current.account.AdvanceDelivery(*event,*block,*state,*auth).WithParentSnapshotRevision(current.revision),true);
             }else{
-                const auto revision=current.account.ParentSnapshotRevision();Check(revision&&revision<current.revision);
+                const auto revision=current.account.ParentSnapshotRevision();
+                // A bounded window cut this link: refuse clearly (v8.2.4).
+                if(!revision)throw std::runtime_error(kRewindBeyondWindow);
+                Check(revision<current.revision);
                 const auto found=std::find_if(payload.retained.begin(),payload.retained.end(),
                     [&](const auto& saved){return saved.revision==revision;});Check(found!=payload.retained.end());
                 const auto parent=points(event->cursor);const auto block=view.Block(sequence);
@@ -1350,6 +1358,7 @@ OrchardAccountDelivery::IssuedReceiver OrchardAccountDelivery::IssueCatalogWithR
     std::unique_ptr<Owner::CapturedCatalog> captured;
     std::unique_ptr<Owner::ViewingKey> viewing;
     orchard::WalletStorageIdentity identity;
+    std::optional<uint32_t> fresh_birth;
     {
         auto lease=w.AcquireDatabaseLease();
         Check(lease->Session()==session&&lease->Database()&&w.database_leases_==1);
@@ -1358,6 +1367,7 @@ OrchardAccountDelivery::IssuedReceiver OrchardAccountDelivery::IssueCatalogWithR
         // Derive only viewing authority while the existing seed is pinned.
         // No first-account schema or new identity is initialized by capture.
         auto seed=lease->CopyRecoverySeed(session);
+        fresh_birth=lease->SealedFreshBirthHeight(session);
         const auto keys=orchard::WalletKeys::FromSeed(seed->Bytes(),p.account);
         viewing=std::make_unique<Owner::ViewingKey>(keys);
         identity=ExistingIdentity(lease->Database(),p,false);tx.Commit();
@@ -1368,7 +1378,9 @@ OrchardAccountDelivery::IssuedReceiver OrchardAccountDelivery::IssueCatalogWithR
     Check(creating?found==inventory.accounts.end():found!=inventory.accounts.end());
     auto expected_catalog=inventory.catalog;
     if(creating){
+        // Bounded retention shares one row budget across accounts (v8.2.4).
         Check(scope==orchard::WalletScope::External&&expected_catalog.accounts.size()<OrchardAccountCatalog::kMaxAccounts&&
+            expected_catalog.accounts.size()<kMaxRetainedAccounts&&
             expected_catalog.revision<uint64_t(INT64_MAX));
         expected_catalog.accounts.push_back({p.account,static_cast<uint8_t>(p.domain.network_code),
             p.domain.genesis_wire,p.domain.branch_id,p.activation});
@@ -1378,8 +1390,30 @@ OrchardAccountDelivery::IssuedReceiver OrchardAccountDelivery::IssueCatalogWithR
     auto account=[&]{
         if(!creating)return found->state.account;
         const auto origin=points({});
-        const auto initial=OrchardAccountState::Begin(p.domain,viewing->bytes,p.activation,origin.checkpoint.block_hash);
-        return OrchardAccountState::Restore(initial.Encode(),p.domain,viewing->bytes,p.activation,origin.checkpoint,origin.lookups);
+        const bool post_activation=origin.checkpoint.height>=p.activation;
+        // A generated catalog alone does not prove the seed was born after a
+        // late snapshot: an older generated seed may already own Orchard notes.
+        // Only the seed- and wallet-identity-sealed creation height permits an
+        // empty scan at the authenticated snapshot frontier. Every other seed
+        // scans the complete verified activation prefix before issuance.
+        const bool new_after_origin=post_activation&&inventory.catalog.generated&&
+            fresh_birth&&*fresh_birth>=origin.checkpoint.height;
+        auto initial=[&]{
+            if(new_after_origin)return OrchardAccountState::BeginFreshAtCheckpoint(
+                p.domain,viewing->bytes,p.activation,origin.checkpoint);
+            const auto activation=view.ActivationOrigin().checkpoint;
+            Check(activation.height+1==p.activation);
+            auto state=OrchardAccountState::Begin(
+                p.domain,viewing->bytes,p.activation,activation.block_hash);
+            for(uint32_t height=p.activation;height<=view.ActivationPrefixHeight();++height){
+                const auto step=view.PrefixStep(height);
+                state=state.Advance(step.context,*step.block,*step.state,*step.authorizations);
+            }
+            return state;
+        }();
+        Check(initial.Scan().Checkpoint()==origin.checkpoint);
+        return OrchardAccountState::Restore(initial.Encode(),p.domain,viewing->bytes,
+            p.activation,origin.checkpoint,origin.lookups);
     }();
     auto issued=account.IssueReceiver(scope);auto encoded=issued.first.Encode();
     const auto expected_revision=creating?0:found->state.revision;
@@ -2540,5 +2574,87 @@ OrchardAccountDelivery::Applied OrchardAccountDelivery::Historical(WalletManager
         const RestorePoint& point,const RuntimeOutboxEvent& event){
     Owner owner(w,s,p);Transaction tx(owner.lease->Database());auto current=owner.Restore(p,point);Check(current.revision==expected);
     auto result=owner.Replace(expected,current.account.ApplyHistoricalDelivery(event));tx.Commit();return result;
+}
+size_t OrchardAccountDelivery::BoundRetainedHistory(WalletManager& w,uint64_t session,const RuntimeAccountReplay& view,
+        size_t window_for_test){
+    Check(window_for_test<=kRetainedWindow);
+    struct Statement {
+        sqlite3_stmt* p=nullptr;
+        Statement(sqlite3* db,const char* sql){Check(sqlite3_prepare_v2(db,sql,-1,&p,nullptr)==SQLITE_OK);}
+        ~Statement(){sqlite3_finalize(p);}
+        Statement(const Statement&)=delete;
+    };
+    auto lease=w.AcquireDatabaseLease();
+    Check(lease->Session()==session&&lease->Database());
+    auto* db=lease->Database();
+    {
+        // Cheap precheck without the seed: nothing to do below the threshold.
+        Statement exists(db,"SELECT 1 FROM sqlite_master WHERE type='table' AND name='orchard_wallet_retained'");
+        if(sqlite3_step(exists.p)!=SQLITE_ROW)return 0;
+        Statement most(db,"SELECT coalesce(max(n),0) FROM (SELECT count(*) AS n FROM orchard_wallet_retained GROUP BY wallet_id,account)");
+        Check(sqlite3_step(most.p)==SQLITE_ROW);
+        // The smallest possible per-account allowance (1,024 accounts) is 48.
+        const auto most_rows=uint64_t(sqlite3_column_int64(most.p,0));
+        if(window_for_test?most_rows<=window_for_test:most_rows<=RetainedShareFor(OrchardAccountCatalog::kMaxAccounts))return 0;
+    }
+    RequireShieldFullSync(db);Transaction tx(db);
+    auto seed=lease->CopyRecoverySeed(session);
+    const auto catalog=OrchardAccountCatalog::Read(db,seed->Bytes());Check(catalog&&catalog->KnownInventory());
+    const auto facts=view.Profile();
+    const auto origin=view.Point({}).checkpoint.block_hash;
+    const size_t window=window_for_test?window_for_test:RetainedWindowFor(catalog->accounts.size());
+    const size_t slack=window_for_test?0:RetainedSlackFor(catalog->accounts.size());
+    Check(window>0&&catalog->accounts.size()*(window+slack)<=kRetainedBudget);
+    // Every retained revision of an account restores with the same key.
+    const ValidatedViewingKeyScope viewing_once;
+    size_t deleted=0;
+    for(const auto& entry:catalog->accounts){
+        Check(entry.network==facts.domain.network_code&&entry.genesis==facts.domain.genesis_wire&&
+              entry.branch==facts.domain.branch_id&&entry.activation==facts.activation_height);
+        const Profile p{facts.domain,facts.activation_height,entry.account};
+        const auto identity=ExistingIdentity(db,p);
+        uint64_t rows=0;
+        {
+            Statement count(db,"SELECT count(*) FROM orchard_wallet_retained WHERE wallet_id=? AND account=?");
+            Check(sqlite3_bind_blob(count.p,1,identity.wallet_id.data(),32,SQLITE_STATIC)==SQLITE_OK&&
+                  sqlite3_bind_int64(count.p,2,sqlite3_int64(entry.account))==SQLITE_OK&&
+                  sqlite3_step(count.p)==SQLITE_ROW);
+            rows=uint64_t(sqlite3_column_int64(count.p,0));
+        }
+        if(rows<=window+slack)continue;
+        const auto keys=orchard::WalletKeys::FromSeed(seed->Bytes(),entry.account);
+        const Owner::ViewingKey fvk(keys);
+        orchard::WalletSnapshotStore store(db,identity,seed->Bytes());
+        const auto current=store.Read();Check(current.has_value());
+        auto parent=OrchardAccountMetadata::Read(current->state,p.domain,fvk.bytes,p.activation).ParentSnapshotRevision();
+        Check(parent<current->revision);
+        std::vector<uint64_t> keep;uint64_t cut=0;std::optional<orchard::WalletStateBytes> cut_state;
+        auto upper=current->revision;
+        while(parent&&keep.size()<window){
+            Check(parent<upper);
+            const auto row=store.ReadRetained(parent);
+            const auto metadata=OrchardAccountMetadata::Read(row.state,p.domain,fvk.bytes,p.activation);
+            keep.push_back(parent);
+            if(keep.size()==window&&metadata.ParentSnapshotRevision()){
+                // Restore the authenticated parent and re-encode it with no
+                // older link. Its own receipt still resolves in this view.
+                const auto receipt=OrchardAccountState::ReadDeliveryMetadata(row.state,p.domain,fvk.bytes,p.activation,origin);
+                const auto point=view.Point({receipt.sequence,receipt.digest});
+                const auto prior=OrchardAccountState::Restore(row.state,p.domain,fvk.bytes,p.activation,
+                    point.checkpoint,point.lookups);
+                Check(prior.ParentSnapshotRevision()==metadata.ParentSnapshotRevision());
+                cut=parent;cut_state=prior.WithParentSnapshotRevision(0).Encode();
+            }
+            upper=parent;parent=metadata.ParentSnapshotRevision();
+        }
+        // An empty keep (current has no parent link) means every retained row
+        // is unreachable from the current owner: authenticate, then delete.
+        store.PruneActive(keep,cut,cut_state?&*cut_state:nullptr);
+        deleted+=size_t(rows-keep.size());
+    }
+    // The pruned inventory must still authenticate as a whole.
+    (void)OrchardOwnershipInventory::Read(db,seed->Bytes());
+    tx.Commit();
+    return deleted;
 }
 } // namespace dinero::wallet

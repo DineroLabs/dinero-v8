@@ -11,6 +11,7 @@
 #include "consensus/header_chain.h"
 #include "consensus/pow_context.h"
 #include "consensus/pow.hpp"
+#include "mining/selected_header_work.h"
 #include "consensus/consensus.hpp"
 #include "primitives/block.h"
 #include <cstring>
@@ -389,6 +390,52 @@ TEST(ASERTDAA, SixtySecondActivationAllDifficultyPathsAndRollback) {
     full_boundary.bits = fork.header.difficulty;
     EXPECT_EQ(GetNextWorkRequiredForCandidate(20, fork.header.timestamp + 60, c,
         &full_boundary, nullptr, &db), 0x1c080000u);
+}
+
+TEST(ASERTDAA, SnapshotMiningUsesSelectedHeaderTimingAnchor) {
+    // Header-first snapshots retain authenticated ancestry even when ChainDB
+    // has no height-index entry for the pre-snapshot timing boundary.
+    const auto previous_network = dinero::Params().name;
+    struct RestoreNetwork {
+        std::string name;
+        ~RestoreNetwork() {
+            dinero::SelectParams(name == "regtest" ? dinero::Chain::REGTEST :
+                name == "testnet" ? dinero::Chain::TESTNET : dinero::Chain::MAINNET);
+        }
+    } restore{previous_network};
+    dinero::SelectParams(dinero::Chain::REGTEST);
+
+    dinero::consensus::HeaderChainSelector headers;
+    dinero::BlockHeader parent{};
+    for (uint32_t height = 0; height < 20; ++height) {
+        auto header = MakeHeader(1772496000 + height * 60, 0x1c123456);
+        header.prev_block_hash = height ? parent.GetHash() : dinero::uint256{};
+        header.nonce = height;
+        ASSERT_TRUE(headers.AddHeader(header)) << height;
+        parent = header;
+    }
+
+    Consensus rules;
+    rules.sixtySecondActivationHeight = 20;
+    rules.asertAnchorBits = 0x1c100000;
+    FakeChainDBForAsert snapshot_db; // no boundary height 19
+    const int64_t candidate_time = static_cast<int64_t>(parent.timestamp) + 60;
+    ASSERT_EQ(GetNextWorkRequiredWithChainDB(20, candidate_time, rules, &snapshot_db), 0u);
+
+    dinero::consensus::HeaderAsertContext context;
+    ASSERT_TRUE(headers.GetAsertContextByHash(parent.GetHash(), context, 19));
+    const auto expected_input = BuildAsertInputForCandidateTimes(
+        context.parent_mtp, context.block1_time, &snapshot_db,
+        20, candidate_time, rules, context.timing_anchor);
+    ASSERT_TRUE(expected_input.has_value());
+    const auto expected = ComputeAsertBits(*expected_input);
+    ASSERT_NE(expected, 0u);
+    EXPECT_EQ(dinero::mining::NextWorkRequiredForParent(
+        &headers, parent.GetHash(), 20, candidate_time, rules, &snapshot_db), expected);
+    EXPECT_EQ(dinero::mining::NextWorkRequiredForParent(
+        &headers, parent.GetHash(), 21, candidate_time, rules, &snapshot_db), 0u);
+    EXPECT_EQ(dinero::mining::NextWorkRequiredForParent(
+        &headers, dinero::uint256{}, 20, candidate_time, rules, &snapshot_db), 0u);
 }
 
 TEST(ASERTDAA, DebugSnapshotIncludesConsensusFields) {

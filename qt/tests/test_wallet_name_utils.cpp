@@ -72,11 +72,12 @@ void WalletNameUtilsTest::restoreErrorClassify() {
 }
 
 void WalletNameUtilsTest::rollbackOnlyWhatMightExist() {
-  // The node answered with an error: it created nothing, so cancelling must not
-  // delete a wallet of that name (it may be the user's existing wallet).
+  // A node error does not prove ownership of the requested name. It may be
+  // the user's existing wallet, so cancellation must preserve it.
   QVERIFY(!keepRollbackCandidateAfterRpc(/*daemonResponded=*/true, /*success=*/false));
-  // No answer (timeout): the wallet may exist now, so keep it for cleanup.
-  QVERIFY(keepRollbackCandidateAfterRpc(false, false));
+  // No answer (timeout): ownership is unknown, so preserve any wallet with
+  // this name instead of deleting an existing one during wizard cleanup.
+  QVERIFY(!keepRollbackCandidateAfterRpc(false, false));
   // Success: the provisional wallet is ours to roll back on cancel.
   QVERIFY(keepRollbackCandidateAfterRpc(true, true));
 }

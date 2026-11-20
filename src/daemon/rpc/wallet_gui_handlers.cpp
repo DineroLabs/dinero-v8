@@ -291,6 +291,7 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
         std::string bip39_passphrase = "";
         std::string encryption_password = "";
         std::string policy = "bip86";  // Default to BIP86 Taproot
+        int initial_taproot_addresses = 1;
         bool wallet_created = false;
 
         if (params.isArray()) {
@@ -316,6 +317,18 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
             if (params.isMember("passphrase")) bip39_passphrase = params["passphrase"].asString();
             if (params.isMember("password")) encryption_password = params["password"].asString();
             if (params.isMember("policy")) policy = params["policy"].asString();
+            if (params.isMember("initial_taproot_addresses")) {
+                if (!params["initial_taproot_addresses"].isInt()) {
+                    result["error"] = "initial_taproot_addresses must be an integer from 1 to 20";
+                    return result;
+                }
+                initial_taproot_addresses = params["initial_taproot_addresses"].asInt();
+            }
+        }
+
+        if (initial_taproot_addresses < 1 || initial_taproot_addresses > 20) {
+            result["error"] = "initial_taproot_addresses must be an integer from 1 to 20";
+            return result;
         }
         
         // Validate word count (12, 15, 18, 21, or 24)
@@ -435,6 +448,7 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
         // Persist canonical index-0 address via WalletManager so derivation metadata
         // is stored in DB (no sidecar files).
         std::string registered_address;
+        std::vector<std::string> registered_addresses;
         {
             bool relock_after_registration = false;
             try {
@@ -460,6 +474,17 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
                 }
 
                 registered_address = wallet_manager->getNewAddress("first", "taproot");
+                if (registered_address.empty() || registered_address != first_address) {
+                    throw std::runtime_error("First persisted Taproot address diverges from the seed");
+                }
+                registered_addresses.push_back(registered_address);
+                for (int i = 1; i < initial_taproot_addresses; ++i) {
+                    auto address = wallet_manager->getNewAddress("", "taproot");
+                    if (address.empty()) {
+                        throw std::runtime_error("Failed to register initial Taproot receive addresses");
+                    }
+                    registered_addresses.push_back(std::move(address));
+                }
 
                 if (relock_after_registration) {
                     wallet_manager->lockWallet();
@@ -504,6 +529,9 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
         result["mnemonic"] = mnemonic;  // GUI expects this field name
         result["fingerprint"] = fingerprint;
         result["first_address"] = first_address;
+        din::Json taproot_addresses(Json::arrayValue);
+        for (const auto& address : registered_addresses) taproot_addresses.append(address);
+        result["taproot_receive_addresses"] = std::move(taproot_addresses);
         result["word_count"] = word_count;
         result["wallet_name"] = wallet_name;
         result["policy"] = policy;  // BIP86

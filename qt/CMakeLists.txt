@@ -69,7 +69,19 @@ include(CTest)
 find_package(Git QUIET)
 
 function(resolve_git_identity REPO_PATH PREFIX)
-  if(GIT_FOUND AND EXISTS "${REPO_PATH}/.git")
+  # A monorepo subdirectory has no .git entry of its own, and a linked
+  # worktree uses a .git file. Ask Git whether the path belongs to a checkout.
+  set(_inside_worktree "")
+  if(GIT_FOUND AND IS_DIRECTORY "${REPO_PATH}")
+    execute_process(
+      COMMAND ${GIT_EXECUTABLE} rev-parse --is-inside-work-tree
+      WORKING_DIRECTORY ${REPO_PATH}
+      OUTPUT_VARIABLE _inside_worktree
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+    )
+  endif()
+  if(_inside_worktree STREQUAL "true")
     execute_process(
       COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
       WORKING_DIRECTORY ${REPO_PATH}
@@ -131,6 +143,13 @@ endif()
 
 set(DINERO_SOURCE_ROOT "${_DEFAULT_DINERO_SOURCE_ROOT}" CACHE PATH "Source checkout for bundled dinerod/gpu miner")
 set(DINERO_SOLO_MINER_SOURCE_ROOT "${_DEFAULT_DINERO_SOLO_MINER_SOURCE_ROOT}" CACHE PATH "Source checkout for embedded solo miner")
+if(PROJECT_IS_TOP_LEVEL)
+  file(REAL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/.." _DINERO_QT_PARENT)
+  file(REAL_PATH "${DINERO_SOURCE_ROOT}" _DINERO_CORE_ROOT)
+  if(_DINERO_QT_PARENT STREQUAL _DINERO_CORE_ROOT)
+    set(DINERO_QT_RELEASE_REPO "dinero-v8")
+  endif()
+endif()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PRE-v8.0.0 RELEASE BLOCKER (logged 2026-05-12, consolidation Phase 2)
@@ -597,6 +616,8 @@ set(GUI_SOURCES
   # Phase 5 — Shielded pool surface (re-introduced post-v7-cleanup,
   # tied to the new daemon shielded RPCs).
   src/shieldedwidget.cpp
+  src/bordercomet.cpp
+  src/bordercomet.h
   src/shieldedwidget.h
   # Track C — Liquidity Vault (production, daemon-side custodial vault).
   src/vaultpanel.cpp
@@ -1707,6 +1728,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_rpc_reply_alias PRIVATE Qt6::Core Qt6::Network Qt6::Test)
   target_compile_definitions(test_rpc_reply_alias PRIVATE QT_NO_KEYWORDS)
   add_test(NAME RpcReplyAlias COMMAND test_rpc_reply_alias)
+
+  add_executable(test_wallet_backup_lock tests/test_wallet_backup_lock.cpp)
+  target_link_libraries(test_wallet_backup_lock PRIVATE Qt6::Core Qt6::Test)
+  add_test(NAME WalletBackupLock COMMAND test_wallet_backup_lock)
 
   add_executable(test_mining_rewards tests/test_mining_rewards.cpp src/miningrewards.cpp src/chaintiming.cpp)
   target_include_directories(test_mining_rewards PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

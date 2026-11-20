@@ -231,13 +231,14 @@ jobs:
           log=open('snapshot-shutdown-execution.log').read()
           assert sorted(re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log))==['NotifyDrainWorker','OrchardSnapshotRuntime']
           for suite,cases in {
-              'OrchardSnapshotRuntime': ['FullNodeRejectsBadDnorst02WithCompactBootstrapOff','RealRegtestActivationFullAndCompactImportReopenAndFloor','DeferredV5WaitsForBurialBeforeLoaderAttempt','ActualServiceBootstrapExportAndRestartBothProfiles','IndependentLaterRegtestGatePreservesRoot1ThenExportsRoot2','DormantCoinbaseProfileV6FileImportsUnderH1Schedule','QueuedDownloadedHeaderIsRevalidatedWithoutSelectedPublication','UnmarkedEmptyReadyStoreCannotSelfInitializeGenesis'],
+              'OrchardSnapshotRuntime': ['FullNodeRejectsBadDnorst02WithCompactBootstrapOff','RealRegtestActivationFullAndCompactImportReopenAndFloor','DeferredV5WaitsForBurialBeforeLoaderAttempt','CompactPreloadedHeadersDeferImportUntilStart','ActualServiceBootstrapExportAndRestartBothProfiles','IndependentLaterRegtestGatePreservesRoot1ThenExportsRoot2','DormantCoinbaseProfileV6FileImportsUnderH1Schedule','QueuedDownloadedHeaderIsRevalidatedWithoutSelectedPublication','UnmarkedEmptyReadyStoreCannotSelfInitializeGenesis'],
               'NotifyDrainWorker': ['NotifierNeverBlocksOnSlowDrain','DrainRunsOnWorkerThread','NotifyDuringDrainIsNotLost','DrainsAllQueuedWorkWithoutFurtherNotifies','StopInterruptsContinuousProgress','StopJoinsPromptly'],
           }.items():
               assert sorted(re.findall(r'\[       OK \] '+suite+r'\.(\w+)',log))==sorted(cases),suite
           PYSNAPSHOT
       - name: Preflight compiled workflow case inventories
         run: |
+          cmake --build build-orchard-root --target test_rpc_request_framing --parallel 2
           python3 -m unittest discover -s scripts/ci -p test_check_workflow_gtest_cases.py
           python3 scripts/ci/check_workflow_gtest_cases.py --build-dir build-orchard-root --workflow .github/workflows/orchard-backend.yml
       - name: Recover legacy spent wallet rows from proved v3 replay

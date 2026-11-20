@@ -1095,6 +1095,11 @@ public:
     }
     // Full outbox material reads by getRuntimeAccountReplay (diagnostics/tests).
     uint64_t PhoneReplaySourceReads() const{return phone_replay_source_reads_.load();}
+    // Full-archive replay uses the same immutable prefix/tail contract as the
+    // phone reader. These counters expose full rebuilds versus tail extension.
+    std::pair<uint64_t,uint64_t> FullReplayCaptureCounts() const{
+        return {full_replay_full_builds_.load(),full_replay_extensions_.load()};
+    }
     // Read-only archival source. No selected lock during proof work; a real
     // service-use pins DB/header lifetimes through shutdown and rechecks them.
     StatusOr<std::shared_ptr<const consensus::OrchardSnapshotSection>> captureOrchardActivationProof(
@@ -1119,6 +1124,7 @@ public:
     // On-demand below-snapshot history DATA only. Never publishes chainstate,
     // an outbox event, lifecycle flag, wallet owner or applied scan cursor.
     std::optional<p2p::OrchardPhoneHistoryTarget> PhoneHistoryTarget(bool require_request=true);
+    bool HasOrchardSnapshotHistorySource();
     // Scheduling PUBLIC cached bytes only, not wallet/state authority. A warm
     // cache still passes the same proof/body/selected-target constructors.
     void RequestRetainedPhoneHistoryData(){orchard_phone_history_requested_.store(true);}
@@ -1202,9 +1208,12 @@ public:
     // Enrolls one authenticated named wallet, restores its transparent history
     // from a checked source prefix, then resumes both owner-scoped stores.
     // A captured prefix is progress only; it is not whole-wallet readiness.
+    // advanced_partial is set only when this call durably advanced a bounded
+    // ordinary or Orchard prefix but did not complete the captured head.
     StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
         resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager&, UTXOIndex& metadata_index,
-            uint64_t expected_session = 0, size_t material_limit_bytes = 128*1024*1024);
+            uint64_t expected_session = 0, size_t material_limit_bytes = 128*1024*1024,
+            size_t orchard_events_per_pass = 0, bool* advanced_partial = nullptr);
     // Distinct automatic Orchard-only delivery for the authenticated completed
     // imported owner. Null success means NOT this source composition; failure
     // never falls back to mixed replay or earns missing transparent baselines.
@@ -1837,7 +1846,10 @@ private:
         bool fresh_empty_prefix = false) const;
     // #939 phase 3: Orchard account delivery for a native-complete wallet on a
     // full-archive v3 source. Writes Orchard account state only.
-    Status resumeRuntimeOrchardDeliveryV3(WalletManager&,UTXOIndex& metadata_index,uint64_t session);
+    // False success means a bounded, durable Orchard prefix was applied and
+    // the worker should revisit it after serving the transparent wallet.
+    StatusOr<bool> resumeRuntimeOrchardDeliveryV3(WalletManager&,UTXOIndex& metadata_index,
+        uint64_t session,size_t max_events);
     StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> captureRuntimeWalletCoverage(
         WalletManager&,uint64_t,UTXOIndex&,bool public_history,bool& body_data_pending,
         bool retained_history = false,size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes) const;
@@ -2184,6 +2196,13 @@ private:
     mutable std::shared_ptr<const RuntimeAccountReplay> phone_replay_;
     mutable std::optional<std::pair<uint32_t,uint256>> phone_replay_base_;
     mutable std::atomic<uint64_t> phone_replay_full_builds_{0},phone_replay_extensions_{0},phone_replay_source_reads_{0};
+    // Full activation-origin sources previously rebuilt and reverified the
+    // entire retained outbox for each wallet delivery and Orchard RPC. The
+    // immutable view may be shared while current; tail extension requires its
+    // sole owner and otherwise falls back to a fresh verified capture.
+    mutable std::mutex full_replay_mutex_;
+    mutable std::shared_ptr<const RuntimeAccountReplay> full_replay_;
+    mutable std::atomic<uint64_t> full_replay_full_builds_{0},full_replay_extensions_{0};
     // Outbox head whose material needs the phone activation prefix while no
     // verified history is available. Until the head changes or history is
     // ready, a capture refuses without re-reading the whole outbox.

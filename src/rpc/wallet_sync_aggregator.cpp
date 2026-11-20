@@ -11,6 +11,7 @@
 #include "consensus/header_sync_manager.h"  // For HeaderSyncManager (Phase W.2.6 Enhancement #2)
 #include "consensus/block_download_scheduler.h"  // For BlockDownloadScheduler (Phase W.2.6 Enhancement #3)
 #include "common/logger.h"
+#include <algorithm>
 #include <chrono>
 
 namespace dinero {
@@ -88,6 +89,10 @@ WalletSyncStatus BuildWalletSyncStatusFromContext(const ::ExecutionContext& ctx)
             status.headers_synced = static_cast<uint64_t>(tip.height);
             dinero::g_logger.debug("BuildWalletSyncStatus: no best header available, using blocks as headers");
         }
+        // A downloaded header is the block target, even before its body has
+        // connected. Otherwise blocks_synced == blocks_total at the active tip
+        // and an idle scheduler can report a false fully-synced wallet.
+        status.blocks_total = std::max(status.blocks_total, status.headers_total);
     }
 
     // ========================================================================

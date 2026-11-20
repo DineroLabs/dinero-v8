@@ -6384,10 +6384,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(WalletFundingDownload PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;inputproof")
   add_test(NAME OrchardLegacyMobileParent COMMAND test_assumeutxo_replay --gtest_filter=OrchardLegacyMobileParent.*)
   set_tests_properties(OrchardLegacyMobileParent PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;wallet;mandatory")
-  if(UNIX)
-    add_test(NAME OrchardHistoryCache COMMAND test_assumeutxo_replay --gtest_filter=OrchardHistoryCache.*)
-    set_tests_properties(OrchardHistoryCache PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;p2p;recovery;restart")
-  endif()
+  add_test(NAME OrchardHistoryCache COMMAND test_assumeutxo_replay --gtest_filter=OrchardHistoryCache.*)
+  set_tests_properties(OrchardHistoryCache PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;p2p;recovery;restart;mandatory")
   if(UNIX)
     add_test(NAME OrchardActivationParent COMMAND test_assumeutxo_replay --gtest_filter=OrchardActivationParent.*)
     add_test(NAME OrchardActivationHandoff COMMAND test_assumeutxo_replay --gtest_filter=OrchardActivationHandoff.*)
@@ -12919,6 +12917,37 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_sidebranch_bound.cpp)
   add_test(NAME HeaderSideBranchBound COMMAND test_header_sidebranch_bound)
   set_tests_properties(HeaderSideBranchBound PROPERTIES
     LABELS "headers;security;dos;sidebranch-eviction"
+  )
+endif()
+
+# Header skip pointers: logarithmic GetAncestor with parent-walk parity.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_skip_pointers.cpp)
+  add_executable(test_header_skip_pointers
+    tests/consensus/test_header_skip_pointers.cpp
+    src/consensus/header_chain.cpp
+    src/consensus/header_store.cpp
+  )
+  target_link_libraries(test_header_skip_pointers PRIVATE
+    dinero_consensus
+    dinero_wallet
+    dinero_crypto
+    secp256k1
+    RocksDB::rocksdb
+  )
+  link_zstd_if_needed(test_header_skip_pointers)
+  target_include_directories(test_header_skip_pointers PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_header_skip_pointers PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+    )
+  endif()
+  add_test(NAME HeaderSkipPointers COMMAND test_header_skip_pointers)
+  set_tests_properties(HeaderSkipPointers PROPERTIES
+    TIMEOUT 300 LABELS "headers;performance;mandatory"
   )
 endif()
 

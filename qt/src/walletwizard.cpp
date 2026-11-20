@@ -722,9 +722,11 @@ CreateSeedPage::CreateSeedPage(ConnectionManager* connMgr, QWidget* parent)
     , connMgr_(connMgr)
     , rpcTimeout_(new QTimer(this))
     , seedGenerated_(false)
-    , seedVisible_(false) {
+    , seedVisible_(false)
+    , rpcPending_(false) {
 
-  // Configure timeout timer (30 seconds)
+  // A verified Orchard replay can outlast this status timer. It must never
+  // cancel the in-flight creation request or encourage a duplicate request.
   rpcTimeout_->setSingleShot(true);
   rpcTimeout_->setInterval(30000);
   setTitle("Your Seed Phrase");
@@ -764,6 +766,10 @@ CreateSeedPage::CreateSeedPage(ConnectionManager* connMgr, QWidget* parent)
   btnReveal_->setEnabled(false);
   connect(btnReveal_, &QPushButton::clicked, this, &CreateSeedPage::onRevealClicked);
   layout->addWidget(btnReveal_);
+  btnRetry_ = new QPushButton("Retry wallet creation", this);
+  btnRetry_->setVisible(false);
+  connect(btnRetry_, &QPushButton::clicked, this, &CreateSeedPage::onGenerateSeed);
+  layout->addWidget(btnRetry_);
   
   // Compatibility info
   auto* compatGroup = new QGroupBox("📱 Seed & Address Compatibility");
@@ -771,11 +777,11 @@ CreateSeedPage::CreateSeedPage(ConnectionManager* connMgr, QWidget* parent)
   compatGroup->setStyleSheet("QGroupBox { background: #e7f5ff; padding: 10px; border-radius: 8px; }");
   
   auto* compatInfo = new QLabel(
-    "<b>Your BIP39 seed phrase works across Dinero wallets.</b><br><br>"
+    "<b>Your BIP39 seed phrase restores Taproot addresses on supported Dinero wallets.</b><br><br>"
     "✅ <b>Taproot lane:</b> BIP86 <code>din1p...</code> addresses for mobile-friendly payments<br>"
     "✅ <b>Quantum-safe lane:</b> purpose 88 P2MR <code>din1r...</code> addresses using ML-DSA-65 in Qt<br><br>"
-    "Mobile restore uses the same seed for Taproot payments. P2MR keys derive from that same seed as mobile support expands.<br><br>"
-    "<i>One seed phrase, clear address lanes.</i>"
+    "P2MR keys are generated separately. A seed phrase alone cannot restore them or their funds. "
+    "Keep a separate wallet backup before receiving to a P2MR address."
   );
   compatInfo->setWordWrap(true);
   compatLayout->addWidget(compatInfo);
@@ -807,6 +813,7 @@ void CreateSeedPage::initializePage() {
 
 void CreateSeedPage::onGenerateSeed() {
   // 🛡️ Bulletproof wallet creation via ConnectionManager
+  if (rpcPending_) return;
   if (!connMgr_) {
     lblSeed_->setText("❌ Error: Connection manager not available");
     return;
@@ -818,6 +825,7 @@ void CreateSeedPage::onGenerateSeed() {
   lblSeed_->setProperty("actualSeed", QString());
   btnReveal_->setEnabled(false);
   btnReveal_->setText("👁️ Reveal Seed");
+  btnRetry_->setVisible(false);
 
   const QString walletName = currentWizardWalletName(wizard());
   if (walletName.isEmpty()) {
@@ -827,7 +835,7 @@ void CreateSeedPage::onGenerateSeed() {
   }
 
   // Show generating status
-  lblSeed_->setText(QString("🔄 Generating secure seed phrase for wallet '%1'...").arg(walletName));
+  lblSeed_->setText(QString("🔄 Preparing wallet '%1' and verifying Orchard history. This can take a few minutes...").arg(walletName));
   lblSeed_->setStyleSheet(
     "QLabel { "
     "  background: #2b2b2b; "
@@ -844,31 +852,31 @@ void CreateSeedPage::onGenerateSeed() {
   QJsonObject params;
   params["name"] = walletName;
   params["word_count"] = 12;
+  // Give a new desktop wallet twenty distinct ready-to-use Taproot receivers.
+  // PQ keeps one issued receiver; its watch-only reserve is not shown as issued.
+  params["initial_taproot_addresses"] = 20;
   if (auto* walletWizard = qobject_cast<WalletWizard*>(wizard())) {
     walletWizard->setProperty("walletRollbackCandidateName", walletName);
     walletWizard->setProperty("provisionedWalletName", QString());
     walletWizard->setProperty("provisionedMode", QString());
   }
 
-  // Start timeout timer (30 seconds)
+  // This timer only changes the status text; the RPC remains in flight.
   rpcTimeout_->start();
   connect(rpcTimeout_, &QTimer::timeout, this, [this]() {
-    lblSeed_->setText("⏱️ Request timed out after 30 seconds.\n\n"
-                      "Please check that:\n"
-                      "• Daemon is running\n"
-                      "• ConnectionManager is connected\n\n"
-                      "Click 'Generate Seed' to try again.");
-    lblSeed_->setStyleSheet("QLabel { color: #ff6b6b; background: #ffe3e3; padding: 20px; }");
-    btnReveal_->setEnabled(false);
-    qWarning() << "CreateSeedPage: RPC call timed out after 30 seconds";
+    if (!rpcPending_) return;
+    lblSeed_->setText("Still verifying Orchard history. Keep this window open; the wallet creation request is still running.");
+    lblSeed_->setStyleSheet("QLabel { color: #f59f00; background: #2b2b2b; padding: 20px; }");
   }, Qt::SingleShotConnection);
 
   // Call via ConnectionManager (automatically queued if daemon not ready)
+  rpcPending_ = true;
   connMgr_->callNamed("wallet.createhd", params,
     // Success callback
     [this, walletName](QJsonObject result) {
       // Stop timeout timer
       rpcTimeout_->stop();
+      rpcPending_ = false;
 
       QJsonObject payload = result;
       if (payload.contains("result") && payload.value("result").isObject()) {
@@ -889,12 +897,16 @@ void CreateSeedPage::onGenerateSeed() {
           wizard()->setProperty("walletRollbackCandidateName", QString());
         QString rollbackError;
         rollbackProvisionedWallet(wizard(), &rollbackError);
-        lblSeed_->setText("❌ Error generating seed: " + errorText +
-                          (rollbackError.isEmpty()
-                            ? QString()
-                            : "\n\nRollback warning:\n" + rollbackError));
-        lblSeed_->setStyleSheet("QLabel { color: #ff6b6b; background: #ffe3e3; padding: 20px; }");
+        const bool historyPending = payload.value("error_code").toString() == "orchard_history_pending";
+        lblSeed_->setText(historyPending
+            ? "Orchard history is still downloading and verifying. No wallet was created. Retry after sync progresses."
+            : "❌ Error generating seed: " + errorText +
+                (rollbackError.isEmpty() ? QString() : "\n\nRollback warning:\n" + rollbackError));
+        lblSeed_->setStyleSheet(historyPending
+            ? "QLabel { color: #f59f00; background: #2b2b2b; padding: 20px; }"
+            : "QLabel { color: #ff6b6b; background: #ffe3e3; padding: 20px; }");
         btnReveal_->setEnabled(false);
+        btnRetry_->setVisible(historyPending);
         qWarning() << "CreateSeedPage: wallet.createhd returned application error:"
                    << QJsonDocument(payload).toJson(QJsonDocument::Compact);
         return;
@@ -1019,19 +1031,28 @@ void CreateSeedPage::onGenerateSeed() {
     [this](QString error) {
       // Stop timeout timer
       rpcTimeout_->stop();
+      rpcPending_ = false;
 
-      // A name collision means the node created nothing under this name: keep
-      // the existing wallet. Transport failures keep the name for cleanup.
-      if (wizard() && classifyRestoreError(error) == RestoreErrorKind::NameExists)
+      // The HTTP RPC envelope promotes handler errors to this callback. A
+      // transport error can also leave creation's outcome unknown. Neither
+      // proves that this wizard owns a wallet with the requested name.
+      const bool historyPending = error.contains(
+          "Orchard history is not ready; wallet was not created", Qt::CaseInsensitive);
+      if (wizard())
         wizard()->setProperty("walletRollbackCandidateName", QString());
       QString rollbackError;
       rollbackProvisionedWallet(wizard(), &rollbackError);
-      lblSeed_->setText("❌ Error generating seed: " + error + "\n\nPlease ensure daemon is running."
-                        + (rollbackError.isEmpty()
-                           ? QString()
-                           : "\n\nRollback warning:\n" + rollbackError));
-      lblSeed_->setStyleSheet("QLabel { color: #ff6b6b; background: #ffe3e3; padding: 20px; }");
+      lblSeed_->setText(historyPending
+          ? "Orchard history is still downloading and verifying. No wallet was created. Retry after sync progresses."
+          : "❌ Error generating seed: " + error + "\n\nPlease ensure daemon is running."
+                + (rollbackError.isEmpty()
+                   ? QString()
+                   : "\n\nRollback warning:\n" + rollbackError));
+      lblSeed_->setStyleSheet(historyPending
+          ? "QLabel { color: #f59f00; background: #2b2b2b; padding: 20px; }"
+          : "QLabel { color: #ff6b6b; background: #ffe3e3; padding: 20px; }");
       btnReveal_->setEnabled(false);
+      btnRetry_->setVisible(historyPending);
       qWarning() << "CreateSeedPage: Failed to generate seed:" << error;
     }
   );
@@ -1328,7 +1349,9 @@ bool RestoreSeedPage::validatePage() {
     "Restore Wallet Confirmation",
     QString("Restore seed phrase into wallet '%1'?\n\n"
             "This creates a new named wallet for migration or recovery.\n"
-            "If you already have this wallet locally, cancel and use Load + Unlock + Rescan instead.\n\n"
+            "If you already have this wallet locally, cancel and use Load + Unlock + Rescan instead.\n"
+            "A seed phrase does not recover separately generated P2MR keys or funds. "
+            "Use your full wallet backup if you received to P2MR addresses.\n\n"
             "Continue with restore?")
       .arg(walletName),
     QMessageBox::Yes | QMessageBox::Cancel,
@@ -1493,7 +1516,8 @@ SetPasswordPage::SetPasswordPage(QWidget* parent) : QWizardPage(parent) {
   layout->addWidget(lblMatch_);
   
   auto* warning = new QLabel(
-    "⚠️ <b>Important:</b> If you forget this password, you'll need your seed phrase to restore your wallet."
+    "⚠️ <b>Important:</b> Keep your seed phrase and a separate wallet backup. "
+    "The seed can restore Taproot addresses, but not separately generated P2MR keys."
   );
   warning->setWordWrap(true);
   warning->setStyleSheet("QLabel { background: #fab005; padding: 8px; border-radius: 4px; margin-top: 10px; }");
@@ -1801,7 +1825,7 @@ void CompletionPage::initializePage() {
         }
 
         if (!creationAddressesReady) {
-          lblStatus_->setText(QString("⚠️ Wallet %1 and unlocked, but one or more receive addresses could not be prepared. Check the Wallet tab before sharing an address.").arg(walletAction));
+          lblStatus_->setText(QString("⚠️ Wallet %1 and unlocked, but a receive address is still missing. Check Wallet for Taproot and P2MR, then open Shielded → Orchard → Set up Orchard account after history verification finishes.").arg(walletAction));
         } else {
           lblStatus_->setText(QString("✅ Wallet %1, encrypted, and unlocked.").arg(walletAction));
         }

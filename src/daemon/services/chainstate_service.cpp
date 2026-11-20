@@ -22,6 +22,7 @@
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/csn_replay_data.h"
 #include "daemon/services/chainstate_service.h"
+#include "daemon/runtime_replay_cancellation.h"
 #include "consensus/candidate_ancestry.h"
 #include "daemon/runtime_reorg_readmission.h"
 #include "daemon/utreexo_tx_reader.h"
@@ -1177,6 +1178,10 @@ struct ChainstateService::CompactStartupState {
 struct ChainstateService::OrchardSnapshotStartupState {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     OrchardSnapshotStore::StartupReads reads;
+    // Only valid inside this process, between Init's full authentication and
+    // Start. A changed ChainDB sequence or header ancestry forces Restore.
+    std::optional<std::pair<uint64_t,uint64_t>> authenticated_db_fence;
+    std::vector<consensus::HeaderIndexEntry> authenticated_headers;
     storage::OrchardSnapshotBase base;
     storage::OrchardStoredState state;
     storage::LegacyRetirementState retirement;
@@ -7448,8 +7453,8 @@ ChainstateService::resumeRuntimeWalletRecoveryIfNeededImpl(WalletManager& wallet
       catch (...) { return Status::Internal; }
 }
 
-Status ChainstateService::resumeRuntimeOrchardDeliveryV3(WalletManager& wallet,UTXOIndex& metadata_index,
-        uint64_t session) {
+StatusOr<bool> ChainstateService::resumeRuntimeOrchardDeliveryV3(WalletManager& wallet,UTXOIndex& metadata_index,
+        uint64_t session,size_t max_events) {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     // #939 phase 3: deliver a native-complete wallet's Orchard accounts on a
     // full-archive v3 source. Orchard account state only: no transparent,
@@ -7469,25 +7474,25 @@ Status ChainstateService::resumeRuntimeOrchardDeliveryV3(WalletManager& wallet,U
             return Status::Invalid;
         std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> table(raw,sqlite3_finalize);
         int rc=sqlite3_step(raw);
-        if(rc==SQLITE_DONE)return Status::Ok; // No Orchard account: nothing to deliver.
+        if(rc==SQLITE_DONE)return true; // No Orchard account: nothing to deliver.
         if(rc!=SQLITE_ROW)return Status::Invalid;
         raw=nullptr;
         if(sqlite3_prepare_v2(lease->Database(),"SELECT 1 FROM orchard_wallet_snapshots LIMIT 1",-1,&raw,nullptr)!=SQLITE_OK)
             return Status::Invalid;
         std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> rows(raw,sqlite3_finalize);
         rc=sqlite3_step(raw);
-        if(rc==SQLITE_DONE)return Status::Ok;
+        if(rc==SQLITE_DONE)return true;
         if(rc!=SQLITE_ROW)return Status::Invalid;
     }
     // Orchard catalog/account restoration needs the seed. A locked wallet
     // keeps its transparent delivery; its Orchard accounts catch up on unlock.
-    if(wallet.isWalletLocked())return Status::Ok;
+    if(wallet.isWalletLocked())return true;
     try {
         const auto captured=getRuntimeAccountReplayForWallet(wallet,session);
         if(!captured.ok())return captured.status();
         const auto& replay=**captured;
         const auto head=replay.Head();
-        if(!head.sequence)return Status::Ok;
+        if(!head.sequence)return true;
         const auto point=replay.Point(head).checkpoint;
         const RuntimeWalletRecovery::OrchardSourceOwner bind=[&](const auto& write){
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
@@ -7508,8 +7513,11 @@ Status ChainstateService::resumeRuntimeOrchardDeliveryV3(WalletManager& wallet,U
             fence();write(fence);
         };
         const ChainstateRuntimeRecoverySource recovery_source(*this);
-        (void)RuntimeWalletRecovery::ResumePreparedOrchardCatalogStores(replay,recovery_source,wallet,session,bind);
-        return Status::Ok;
+        if(max_events) return RuntimeWalletRecovery::AdvancePreparedOrchardCatalogStores(
+            replay,recovery_source,wallet,session,bind,max_events).has_value();
+        (void)RuntimeWalletRecovery::ResumePreparedOrchardCatalogStores(
+            replay,recovery_source,wallet,session,bind);
+        return true;
     } catch(const consensus::OrchardStateLookupError& e) { return e.SourceStatus(); }
       catch(...) { return Status::Internal; }
 #else
@@ -7576,7 +7584,9 @@ void FillNativeP2MRTargetsV3(WalletManager& wallet,uint64_t session) {
 
 StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
 ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,UTXOIndex& metadata_index,
-        uint64_t expected_session,size_t material_limit_bytes) {
+        uint64_t expected_session,size_t material_limit_bytes,size_t orchard_events_per_pass,
+        bool* advanced_partial) {
+    if(advanced_partial)*advanced_partial=false;
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     if(activation_mutex_.HeldByCurrentThread() || !material_limit_bytes ||
        material_limit_bytes>128*1024*1024)return Status::Invalid;
@@ -7703,8 +7713,13 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 source.TipHash(),source.Origin().OriginHeight(),source.TipHeight()};
             wallet.PublishRecoveredBlockchainHeight(wallet.getBlockchainHeight(),applied.tip_height,session);
             if(native) {
-                const auto orchard=resumeRuntimeOrchardDeliveryV3(wallet,metadata_index,session);
-                if(orchard!=Status::Ok)return orchard;
+                const auto orchard=resumeRuntimeOrchardDeliveryV3(
+                    wallet,metadata_index,session,orchard_events_per_pass);
+                if(!orchard.ok())return orchard.status();
+                if(!*orchard){
+                    if(advanced_partial)*advanced_partial=true;
+                    return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
+                }
                 continue_restored_account0();
             }
             return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
@@ -7761,9 +7776,22 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 return Status::Invalid;
         }
         wallet.PublishRecoveredBlockchainHeight(wallet.getBlockchainHeight(),applied.tip_height,session);
+        // A worker pass carries at most 32 ordinary events. Finish every
+        // available ordinary page before beginning an expensive Orchard
+        // account step, so mining rewards cannot wait behind old account
+        // history when this page already proves transparent backlog.
+        if(orchard_events_per_pass && applied.cursor!=(*page)->head) {
+            if(advanced_partial)*advanced_partial=true;
+            return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
+        }
         if(native) {
-            const auto orchard=resumeRuntimeOrchardDeliveryV3(wallet,metadata_index,session);
-            if(orchard!=Status::Ok)return orchard;
+            const auto orchard=resumeRuntimeOrchardDeliveryV3(
+                wallet,metadata_index,session,orchard_events_per_pass);
+            if(!orchard.ok())return orchard.status();
+            if(!*orchard){
+                if(advanced_partial)*advanced_partial=true;
+                return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
+            }
         }
         return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
             RuntimeEnrolledWalletRecoveryResult{applied,{},(*page)->head,std::nullopt});
@@ -7772,6 +7800,7 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
       catch(...) { return Status::Internal; }
 #else
     (void)wallet;(void)metadata_index;(void)expected_session;(void)material_limit_bytes;
+    (void)orchard_events_per_pass;(void)advanced_partial;
     return Status::Internal;
 #endif
 }
@@ -7994,7 +8023,11 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             auto* self=const_cast<ChainstateService*>(this);
             std::unique_lock<std::mutex> snapshot(self->snapshot_load_mutex_);
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
-            if(assumeutxo_active_&&!compact_startup_&&!IsBackgroundValidationComplete()){
+            // Only the pre-Orchard stateless imported parent has an empty
+            // activation replay. A full-v6 snapshot already has Orchard state
+            // and must use the separately authenticated activation prefix.
+            if(assumeutxo_active_&&!compact_startup_&&!orchard_snapshot_startup_&&
+               GetConfig().utreexo_stateless&&!IsBackgroundValidationComplete()){
                 auto imported=self->CaptureImportedWalletSourceUnderLock(snapshot,*expected_index);
                 if(!imported.ok())return imported.status();
                 return RuntimeAccountReplay::EmptyActivationParent((*imported)->next);
@@ -8232,7 +8265,35 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             if(!captured_head)captured_head=(*page)->head;
             return **page;
         };
-        // Only phone nodes retain a replay; ordinary captures stay concurrent.
+        // A full activation-origin outbox is already authenticated after its
+        // first capture. Share that immutable view while the head is the same;
+        // extend only the new tail after all earlier readers release it. The
+        // fixed-prefix reader rechecks continuity and the selected after-tip.
+        std::unique_lock<std::mutex> full_retained(full_replay_mutex_,std::defer_lock);
+        if(!orchard_phone_history_requested_.load())full_retained.lock();
+        if(full_retained.owns_lock()&&full_replay_){
+            if(full_replay_->Head()==outbox_head){
+                const auto final=getRuntimeDeliveryPageAtPrefix(outbox_head,outbox_head,1,16*1024*1024);
+                if(!final.ok())return final.status();
+                const auto point=full_replay_->Point(outbox_head).checkpoint;
+                if((*final)->head!=outbox_head||(*final)->next!=outbox_head||!(*final)->events.empty()||
+                   !(*final)->after_tip||(*final)->after_tip->first!=point.block_hash||
+                   (*final)->after_tip->second!=point.height){
+                    full_replay_.reset();return Status::Invalid;
+                }
+                return full_replay_;
+            }
+            std::shared_ptr<const RuntimeAccountReplay> extended;
+            try{extended=RuntimeAccountReplay::ExtendTail(std::move(full_replay_),read);}
+            catch(const consensus::OrchardStateLookupError&){if(full_replay_)throw;captured_head.reset();}
+            catch(...){full_replay_.reset();captured_head.reset();}
+            if(extended){full_replay_=extended;++full_replay_extensions_;return extended;}
+            // A concurrent reader still owns the old immutable view. A new
+            // full capture keeps this call's semantics and becomes the cache.
+            captured_head.reset();
+        }
+        // Phone activation-prefix material has its own retained view and
+        // remains independent of the full activation-origin cache above.
         std::unique_lock<std::mutex> retained(phone_replay_mutex_,std::defer_lock);
         if(orchard_phone_history_requested_.load())retained.lock();
         // Same adoption checks for a fresh or an extended replay; neither is
@@ -8310,7 +8371,9 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             ++phone_replay_full_builds_;
             return adopt(replay,source,target,download);
         }
-        return RuntimeAccountReplay::Build(std::move(material));
+        auto replay=RuntimeAccountReplay::Build(std::move(material));
+        if(full_retained.owns_lock()){full_replay_=replay;++full_replay_full_builds_;}
+        return replay;
     } catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
       catch(...){return Status::Internal;}
 #else
@@ -8350,6 +8413,7 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
             // Retains hashes only; full bodies are read/validated one at a time.
             if(first.context.height>1000000)return Status::Invalid;
             for(uint32_t remaining=first.context.height;remaining;--remaining) {
+                RuntimeReplayCancellationScope::ThrowIfCancelled();
                 const auto header=chain_db_->getHeader(expected);
                 const auto height=chain_db_->getBlockHeight(expected);
                 if(!header.ok() || !height.ok() || *height<0 || uint32_t(*height)!=remaining-1 ||
@@ -8395,6 +8459,7 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
             // entries still fill the unchanged actor workset. Never catch or
             // relax that capacity guard as an acquisition retry.
             for(uint32_t height=0;height<ancestry.size();++height){
+                RuntimeReplayCancellationScope::ThrowIfCancelled();
                 const auto body=read_body(height);
                 if(!body){if(++missing==1)break;continue;}
                 const auto size=body->Serialize().size();
@@ -8411,6 +8476,7 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
         // would only confirm that is skipped (#939). Ancestry, the first event
         // and every prefix/domain check above and below still run.
         for(uint32_t height=0;!fresh_empty_prefix && height<ancestry.size();++height) {
+            RuntimeReplayCancellationScope::ThrowIfCancelled();
             const auto owned=read_body(height);if(!owned){body_data_pending=true;return Status::NotFound;}
             std::string error;
             if(height==0 ? !replay.SeedGenesis(*owned,error) :
@@ -10139,6 +10205,19 @@ consensus::ConnectBlockResult ChainstateService::ProcessIncomingStoredBlock(cons
 
         // P2 Fix: Reset stall tracking when blocks from a better chain arrive.
         ResetTrackedStallForBlock(hash_hex, "tracked stored block received");
+
+        // A v6 snapshot fixes the selected branch at and below its authenticated
+        // base. Background validation still consumes these bodies. The acceptor
+        // has already considered activation; avoid this wrapper's second
+        // ActivateBestChain pass for historical bodies that cannot change the
+        // selected snapshot tip. Above the floor, keep the ordinary path.
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        {
+            std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+            if (orchard_snapshot_startup_ && result.height <= orchard_snapshot_startup_->base.height)
+                return consensus::ConnectBlockResult::ACCEPTED_NOT_ACTIVE;
+        }
+#endif
 
         // P2 Fix: Trigger ActivateBestChain after every accepted stored block.
         // Fork blocks from the scheduler-drain path need immediate reorg
@@ -15193,8 +15272,10 @@ bool ChainstateService::InitOrchardSnapshotStorage() {
         ChainWriteToken recovery_token;
         (void)OrchardSnapshotStore::RecoverBaseMarkers(activation_mutex_,*chain_db_,recovery_token,*verification);
         auto publication=OrchardSnapshotStore::Restore(activation_mutex_,*chain_db_,*verification);
+        const auto authenticated_db_fence=chain_db_->startupWriteFence();
         const auto& proof=*publication.reads.baseline;
         auto saved=std::make_unique<OrchardSnapshotStartupState>();saved->base=*base;saved->state=proof.state;
+        saved->authenticated_db_fence=authenticated_db_fence;
         saved->reads=std::move(publication.reads);
         saved->retirement=proof.retirement;saved->sets=consensus::ComputeOrchardSnapshotSets(proof);
         saved->catalog=proof.base_catalog;saved->profile=consensus::ValidatedOrchardBlock::CaptureProfile();
@@ -15211,6 +15292,9 @@ bool ChainstateService::InitOrchardSnapshotStorage() {
             history[remaining-1]={header->header,header->height,header->chainwork,
                 metadata->file_number,metadata->data_pos,metadata->data_size};hash=header->prev_hash;
         }
+        saved->authenticated_headers.reserve(history.size());
+        for(const auto& entry:history)
+            saved->authenticated_headers.push_back(CompactHeaderBindingValue(entry.header,entry.height,entry.work));
         if(publication.compact) {
             auto handoff=std::unique_ptr<OrchardCompactStartup>(new OrchardCompactStartup());
             handoff->source_=chain_db_;handoff->mutex_=&activation_mutex_;handoff->owner_=std::move(publication.compact);
@@ -15276,7 +15360,13 @@ bool ChainstateService::InitOrchardSnapshotStorage() {
             !assumeutxo_lifecycle_->OnSnapshotLoaded(base->block,base->height))
             throw std::runtime_error("v6 AssumeUTXO lifecycle refused restored base");
         return true;
-    } catch(const std::exception& error){if(logger_)logger_->error(std::string("[v6 startup] ")+error.what());return false;}
+    } catch(const std::exception& error){
+        if(orchard_snapshot_startup_) {
+            orchard_snapshot_startup_->authenticated_db_fence.reset();
+            orchard_snapshot_startup_->authenticated_headers.clear();
+        }
+        if(logger_)logger_->error(std::string("[v6 startup] ")+error.what());return false;
+    }
 #else
     if(logger_)logger_->error("Orchard v6 snapshot runtime backend unavailable");return false;
 #endif
@@ -15290,13 +15380,61 @@ bool ChainstateService::StartOrchardSnapshotStorage() {
         if(!context||context->chainstate.get()!=this||context->config!=config_||context->logger!=logger_||
             context->block_storage!=block_storage_||
             (compact_startup_&&pending_validation_mode_&&*pending_validation_mode_!=consensus::ValidationMode::STATELESS))return false;
-        // Both profiles rebind the durable proof to the application's actual
-        // header selector, rather than enrolling from Init's local metadata.
+        // Both profiles bind to the application's actual header selector.
+        // Init already performed the expensive full Restore. If the same
+        // ChainDB engine has had no writes and the complete authenticated
+        // ancestry matches the real selector, its publication can be reused.
+        // Uncertainty at binding takes the original full-Restore path.
+        std::unique_ptr<consensus::HeaderChainSelector::AncestryRetention> startup_header_retention;
+        bool reused_authenticated_init=false;
+        uint64_t bound_eligibility=0;
+        uint256 bound_best_hash;
         {
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
-            auto checked=OrchardSnapshotStore::Restore(activation_mutex_,*chain_db_,*header_chain_selector_,
-                orchard_snapshot_startup_->reads);
-            if(bool(checked.compact)!=bool(compact_startup_))return false;
+            bool reused=false;
+            const auto& startup=*orchard_snapshot_startup_;
+            const auto current_base=storage::ReadOrchardSnapshotBase(*chain_db_);
+            const bool fence_matches=startup.authenticated_db_fence &&
+                chain_db_->startupWriteFence()==startup.authenticated_db_fence;
+            const bool base_matches=current_base && *current_base==startup.base;
+            if(startup.authenticated_db_fence &&
+                fence_matches && base_matches &&
+                !startup.authenticated_headers.empty()) {
+                const auto eligibility=header_chain_selector_->GetEligibilityGeneration();
+                startup_header_retention=consensus::HeaderChainSelector::RetainAncestry(
+                    header_chain_selector_,startup.authenticated_headers);
+                if(startup_header_retention) {
+                    consensus::HeaderIndexEntry best;
+                    uint256 ancestor;uint32_t best_height=0;
+                    // GetBestHeaderCopy is the eligible chain: a failed root
+                    // anywhere on this ancestry cannot qualify for reuse.
+                    reused=header_chain_selector_->GetBestHeaderCopy(best) &&
+                        best.height>=startup.authenticated_headers.back().height &&
+                        header_chain_selector_->GetAncestorHashByHash(best.hash,
+                            startup.authenticated_headers.back().height,ancestor,best_height) &&
+                        best_height==best.height && ancestor==startup.authenticated_headers.back().hash &&
+                        eligibility==header_chain_selector_->GetEligibilityGeneration();
+                    if(reused) {
+                        reused_authenticated_init=true;
+                        bound_eligibility=eligibility;
+                        bound_best_hash=best.hash;
+                    }
+                }
+            }
+            if(reused) {
+                if((startup.base.profile==uint8_t(consensus::OrchardSnapshotProfile::Compact))!=
+                    bool(compact_startup_))return false;
+                if(logger_)logger_->info("[v6 start] Reused authenticated Init publication after exact selector and unchanged ChainDB checks");
+            } else {
+                const bool ancestry_matched=bool(startup_header_retention);
+                startup_header_retention.reset();
+                if(logger_)logger_->info("[v6 start] Rechecking snapshot with actual selector (fence="+
+                    std::to_string(fence_matches)+", base="+std::to_string(base_matches)+
+                    ", ancestry="+std::to_string(ancestry_matched)+")");
+                auto checked=OrchardSnapshotStore::Restore(activation_mutex_,*chain_db_,*header_chain_selector_,
+                    startup.reads);
+                if(bool(checked.compact)!=bool(compact_startup_))return false;
+            }
         }
         if(compact_startup_) {
             // Uses detached current-tip inverse verification above the floor;
@@ -15324,8 +15462,25 @@ bool ChainstateService::StartOrchardSnapshotStorage() {
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
             std::lock_guard<std::mutex> lifetime(wallet_index_use_mutex_);
             if(wallet_index_stopping_||selected_read_uses_||wallet_index_uses_||compact_startup_uses_||active_tip_)return false;
+            if(reused_authenticated_init) {
+                // DaemonApp starts chainstate before P2P/header sync; all
+                // selected ChainDB writers take activation_mutex_. Still
+                // recheck at the final handoff so a direct test/harness
+                // mutation cannot publish a stale fast-path selection.
+                // The tip audit has already run; a change here aborts startup
+                // rather than publishing an audit of a different database.
+                consensus::HeaderIndexEntry best;
+                if(chain_db_->startupWriteFence()!=orchard_snapshot_startup_->authenticated_db_fence ||
+                    header_chain_selector_->GetEligibilityGeneration()!=bound_eligibility ||
+                    !header_chain_selector_->GetBestHeaderCopy(best) || best.hash!=bound_best_hash) {
+                    if(logger_)logger_->error("[v6 start] Authenticated Init selection changed after tip audit; refusing startup");
+                    return false;
+                }
+            }
             BlockAcceptor::SetContext(DaemonContext::instance());p2p_orphan_pool_=std::move(orphans);
             orchard_snapshot_startup_->reads={}; // Startup-only DATA, never a running-state certificate.
+            orchard_snapshot_startup_->authenticated_headers.clear();
+            orchard_snapshot_startup_->authenticated_db_fence.reset();
             PublishActiveTipLocked(orchard_snapshot_startup_->tip,TipPublishReason::kStartupLoad);
             wallet_index_accepting_=true;selected_read_accepting_=true;started_=true;started_flag_.store(true);
         }
@@ -17876,9 +18031,6 @@ CBlockIndex* ChainstateService::AddBlockIndex(const BlockHeader& header, uint32_
     // - pprev linking
     // - Chainwork calculation
     // - Storage in g_block_index
-    std::cout << "[CS::AddBlockIndex] ENTRY: height=" << height << std::endl;
-    std::cout << std::flush;
-
     CBlockIndex* result = dinero::AddBlockIndex(header, height);
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -17892,19 +18044,6 @@ CBlockIndex* ChainstateService::AddBlockIndex(const BlockHeader& header, uint32_
         assert(lookup == result && "ONE BlockIndex per hash invariant violated!");
     }
 #endif
-
-    std::cout << "[CS::AddBlockIndex] global returned: " << (result ? "OK" : "NULL") << std::endl;
-    std::cout << std::flush;
-
-    if (result && logger_) {
-        // Note: logger_ may be null during early genesis init (before Init() is called)
-        logger_->info("[BlockIndex] Added block (global): height=" + std::to_string(height) +
-                     " hash=" + header.GetHash().GetHex().substr(0, 16) + "... pprev=" +
-                     (result->pprev ? "SET" : "NULL"));
-    }
-
-    std::cout << "[CS::AddBlockIndex] EXIT: returning " << (result ? "OK" : "NULL") << std::endl;
-    std::cout << std::flush;
 
     return result;
 }
@@ -20878,16 +21017,21 @@ std::optional<p2p::OrchardPhoneHistoryTarget> ChainstateService::PhoneHistoryTar
     if(activation_mutex_.HeldByCurrentThread()||(require_request&&!orchard_phone_history_requested_.load()))return {};
     try{
         std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+        const bool compact_snapshot=compact_startup_&&compact_startup_->owner&&
+            !consensus_utxo_set_&&GetConfig().utreexo_stateless;
+        const bool full_snapshot=!compact_startup_&&consensus_utxo_set_&&
+            !GetConfig().utreexo_stateless;
         if(!IsStarted()||safe_mode_active_||!selected_read_accepting_||!chain_db_||!active_tip_||
-            !compact_startup_||!compact_startup_->owner||!orchard_snapshot_startup_||
-            !header_chain_selector_||consensus_utxo_set_||!GetConfig().utreexo_stateless||
+            !orchard_snapshot_startup_||!header_chain_selector_||
+            (!compact_snapshot&&!full_snapshot)||
             !consensus::OrchardProfileConfigurationValid(Params()))return {};
         const auto activation=Params().orchard_activation_height;
         if(!activation||activation==UINT32_MAX||Params().orchard_catalog_commitment_activation_height!=activation||
             orchard_snapshot_startup_->base.height<activation||active_tip_->height<activation||
             active_tip_->height>=uint32_t(INT32_MAX))return {};
         const auto selected=UtreexoRpcSnapshotUnderLock();const auto sync=GetSyncSnapshot();
-        if(!selected.ok()||!selected->compact||selected->height!=active_tip_->height||selected->block_hash!=active_tip_->hash)return {};
+        if(!selected.ok()||selected->compact!=compact_snapshot||
+            selected->height!=active_tip_->height||selected->block_hash!=active_tip_->hash)return {};
         // The initial explicit wallet request requires convergence. Ongoing
         // DATA acquisition must not discard its authenticated prefix whenever
         // a new header briefly leads the canonical tip. Final wallet adoption
@@ -20901,6 +21045,11 @@ std::optional<p2p::OrchardPhoneHistoryTarget> ChainstateService::PhoneHistoryTar
 #else
     (void)require_request;return {};
 #endif
+}
+
+bool ChainstateService::HasOrchardSnapshotHistorySource() {
+    std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+    return bool(orchard_snapshot_startup_);
 }
 
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
@@ -27910,8 +28059,11 @@ void ChainstateService::BackgroundValidationWorker() {
                 if(!db||db.get()!=chain_db_||!headers||compact_startup_)
                     throw std::runtime_error("v6 archival replay owner unavailable");
             }
+            if(bg_validation_should_stop_.load())throw std::runtime_error("Validation stopped by user");
             const auto baseline=OrchardSnapshotStore::ReadBaseline(*db);
+            if(bg_validation_should_stop_.load())throw std::runtime_error("Validation stopped by user");
             OrchardSnapshotStore::Authenticate(baseline,*headers,0);
+            if(bg_validation_should_stop_.load())throw std::runtime_error("Validation stopped by user");
             const auto activation=Params().orchard_activation_height;
             const auto parent_height=activation-1;
             const auto selected_header=[&](const uint256& hash,uint32_t height) {
@@ -27924,6 +28076,7 @@ void ChainstateService::BackgroundValidationWorker() {
             std::vector<OrchardHistoryCapture::Header> suffix(baseline.state.height-parent_height);
             auto previous=baseline.state.block_hash;
             for(size_t remaining=suffix.size();remaining;--remaining) {
+                if(bg_validation_should_stop_.load())throw std::runtime_error("Validation stopped by user");
                 const auto h=uint32_t(parent_height+remaining);
                 suffix[remaining-1]=selected_header(previous,h);previous=suffix[remaining-1].header.prev_block_hash;
             }
@@ -27931,6 +28084,7 @@ void ChainstateService::BackgroundValidationWorker() {
             OrchardHistoryCapture history(parent_height,previous);
             std::vector<OrchardHistoryCapture::Header> page;page.reserve(OrchardHistoryCapture::HeaderBatchLimit);
             for(uint64_t remaining=uint64_t(parent_height)+1;remaining;--remaining) {
+                if(bg_validation_should_stop_.load())throw std::runtime_error("Validation stopped by user");
                 const auto row=selected_header(previous,uint32_t(remaining-1));page.push_back(row);previous=row.header.prev_block_hash;
                 if(page.size()==OrchardHistoryCapture::HeaderBatchLimit||remaining==1){history.CaptureReverse(page);page.clear();}
             }
@@ -29996,6 +30150,14 @@ bool ChainstateService::TrySnapshotBootstrap(const std::filesystem::path& snapsh
 }
 
 void ChainstateService::TryDeferredSnapshotBootstrap() {
+    // A compact bootstrap installs its genesis owner and runtime consumers in
+    // StartCompactSnapshotBootstrap before importing the snapshot. Header
+    // callbacks can run during DaemonApp::Init when a retained header store
+    // already contains the buried base. Importing then publishes an active
+    // tip before StartOrchardSnapshotStorage's unpublished-tip audit, causing
+    // the first launch to refuse even though a second launch would succeed.
+    // StartCompactSnapshotBootstrap drives this pending load after it starts.
+    if(orchard_compact_bootstrap_pending_.load() && !IsStarted())return;
     // FIX 2 (issue #186) + rc24.1 single-flight guard. Driven concurrently from
     // the header-processing path AND the periodic daemon thread. Only ONE thread
     // may transition Pending -> Loading and call the loader; all others return.

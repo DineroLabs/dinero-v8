@@ -64,6 +64,10 @@ TEST(OrchardAccountCreation, ActualRpcAllocatesNonconsecutiveOwnersAtOriginAndRe
     OrchardCreationFixture f;const auto initial=f.Catalog();ASSERT_TRUE(initial);ASSERT_TRUE(initial->generated);ASSERT_TRUE(initial->accounts.empty());
     RegisterOrchardAccountRpc();const auto* method=g_rpcRegistry.lookup("wallet.orchard.createaccount");ASSERT_NE(method,nullptr);
     const auto first=(*method)(f.RequestContext(),OrchardBoundParamsForTest(f.RequestContext(),OrchardCreationRequest()));ASSERT_FALSE(first.isMember("error"))<<first["error"].asString();EXPECT_EQ(first["revision"].asUInt64(),1u);EXPECT_TRUE(first["requires_sync"].asBool());
+    const auto listed=rpc_context_wallet_orchard_listaccounts(f.RequestContext(),din::obj());
+    ASSERT_FALSE(listed.isMember("error")) << listed.toStyledString();
+    ASSERT_EQ(listed["accounts"].size(),1u);
+    EXPECT_EQ(listed["accounts"][0]["first_receive_address"].asString(),first["address"].asString());
     const auto account=f.Account();EXPECT_EQ(account.account.Delivery().sequence,0u);EXPECT_EQ(account.account.Scan().Checkpoint().height,101u);EXPECT_EQ(account.account.Scan().Checkpoint().block_hash,f.parent->hash);EXPECT_EQ(account.account.Scan().BalanceUna(),0u);
     const auto keys=f.AccountKeys();const auto expected=wallet::OrchardAccountState::Begin(f.Domain(),keys.ExportFullViewingKey(),102,f.parent->hash).IssueReceiver(orchard::WalletScope::External);
     EXPECT_EQ(first["address"].asString(),expected.second.EncodeAddress(orchard::WalletNetwork::Regtest));EXPECT_EQ(OrchardCreationBytes(account.account),OrchardCreationBytes(expected.first));

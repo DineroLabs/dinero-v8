@@ -1,4 +1,5 @@
 #include "daemon/runtime_delivery_worker.h"
+#include "daemon/runtime_replay_cancellation.h"
 #include "daemon/runtime_reorg_readmission.h"
 #include "daemon/services/chainstate_service.h"
 #include "daemon/services/wallet_service.h"
@@ -42,10 +43,17 @@ void RuntimeDeliveryWorker::Start() {
         std::lock_guard lock(state_->mutex);state_->stopping=true;state_->requested=false;state_->report.running=false;throw;
     }
 }
-void RuntimeDeliveryWorker::Stop() {
-    std::lock_guard lifecycle(lifecycle_);
+void RuntimeDeliveryWorker::SignalStop() noexcept {
     {std::lock_guard lock(state_->mutex);state_->stopping=true;state_->requested=false;}
     state_->wake.notify_one();
+}
+void RuntimeDeliveryWorker::RequestStop() {
+    std::lock_guard lifecycle(lifecycle_);
+    SignalStop();
+}
+void RuntimeDeliveryWorker::Stop() {
+    std::lock_guard lifecycle(lifecycle_);
+    SignalStop();
     // No consumer mutex or selected/wallet owner is held while joining.
     if (thread_.joinable()) thread_.join();
     std::lock_guard lock(state_->mutex);state_->report.running=false;
@@ -101,6 +109,12 @@ void RuntimeDeliveryWorker::RecoverWallet(Report& report,
     report.wallet=WalletOutcome::Deferred;report.wallet_head.reset();
     report.wallet_recovery_attempts=recovery_attempts;
     if (!wallet_) {report.wallet=WalletOutcome::ExplicitlyAbsent;return;}
+    // A stop request cancels long chain-length replays on this thread, so Stop
+    // can join promptly; the cancelled attempt fails before any projection and
+    // its committed per-store prefixes stay retryable.
+    const RuntimeReplayCancellationScope cancellation([state=state_] {
+        std::lock_guard lock(state->mutex);return state->stopping;
+    });
     try {
         auto recovery_owner=wallet_->AcquireCreationReader();
         auto use=WalletService::AcquireWalletUse(wallet_);
@@ -157,13 +171,17 @@ void RuntimeDeliveryWorker::RecoverWallet(Report& report,
             }
         }
 #endif
+        bool advanced_partial=false;
         const auto recovered=full_archive_v3 ?
             source_->resumeRuntimeWalletRecoveryV3IfNeeded(use->Wallet(),index->Index(),session,
-                limits_.legacy_material_limit_bytes) :
+                limits_.legacy_material_limit_bytes,1,&advanced_partial) :
             source_->resumeRuntimeWalletRecoveryIfNeeded(use->Wallet(),index->Index(),session,
                 limits_.legacy_material_limit_bytes);
         if (!recovered.ok()){refuse_resource_limit(recovered.status());return;}
-        if (!*recovered) {report.wallet=WalletOutcome::NoLog;return;}
+        if (!*recovered) {
+            report.wallet=advanced_partial?WalletOutcome::AdvancedPending:WalletOutcome::NoLog;
+            return;
+        }
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
         report.wallet=WalletOutcome::AppliedPrefix;report.wallet_head=(*recovered)->observed_head;
 #endif
@@ -224,13 +242,20 @@ void RuntimeDeliveryWorker::Run() noexcept {
             bool restart=false;
             {
                 std::unique_lock lock(state_->mutex);
-                if (!continue_pass) state_->wake.wait_for(lock,limits_.retry_interval,[&]{return state_->stopping||state_->requested;});
+                // A bounded v3 prefix just committed and more work is known.
+                // Revisit it promptly while yielding between durable writes;
+                // ordinary no-work and locked-wallet retries keep their normal interval.
+                const auto retry=pass.wallet==WalletOutcome::AdvancedPending?
+                    std::min(limits_.retry_interval,std::chrono::milliseconds(10)):
+                    limits_.retry_interval;
+                if (!continue_pass) state_->wake.wait_for(lock,retry,[&]{return state_->stopping||state_->requested;});
                 if (state_->stopping) break;
                 restart=state_->requested||!continue_pass;state_->requested=false;
             }
             if (restart) {
                 pass=Report{};
                 RecoverWallet(pass,resource_blocked_session,recovery_attempts);
+                if (Stopping()) break;
                 try { RestoreRetiredLegacyPendingNotes(); }
                 catch (...) { /* Keep the durable note state for the next retry. */ }
                 ObserveVault(pass,vault_observation);
