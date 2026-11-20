@@ -11572,8 +11572,9 @@ void MainWindow::updateMiningOutputCinematicFrame() {
     const int y = row * rowHeight - pixelOffset + hashMetrics.ascent();
     const QString line = lineForRow(rowIndex);
     const quint64 rowTintSeed = static_cast<quint64>(rowIndex) * 0xBF58476D1CE4E5B9ULL;
-    const int alpha = 74 + static_cast<int>((rowTintSeed >> 19) % 34ULL);
-    painter.setPen(QColor(174, 184, 194, qBound(60, alpha, 112)));
+    // Keep the fallback pool-mode field in the same terminal green palette.
+    const int alpha = 175 + static_cast<int>((rowTintSeed >> 19) % 25ULL);
+    painter.setPen(QColor(0, 255, 0, alpha));
     painter.drawText(0, y, line);
   }
 
