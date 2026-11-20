@@ -62,13 +62,15 @@ struct HashRowColor {
   int r = 0, g = 0, b = 0, a = 0;
 };
 
-// The terminal pool miner uses ANSI bright green for its active accents.
-// All regular hash rows use that hue, including the first row of a new
-// template. Only the most recent found candidate is orange; older finds
-// return to green while the session history retains every find.
-inline HashRowColor hashRowColor(bool block_found, bool found_highlight_active) {
+// Green matches the terminal miner and is the default on every app launch.
+// The user's session color applies to regular rows, including old finds.
+// The current block find always stays orange.
+inline HashRowColor hashRowColor(bool block_found, bool found_highlight_active,
+                                 quint32 normal_rgb = 0x00ff00) {
   if (block_found) return {255, 176, 48, found_highlight_active ? 255 : 225};
-  return {0, 255, 0, 210};
+  return {static_cast<int>((normal_rgb >> 16) & 0xff),
+          static_cast<int>((normal_rgb >> 8) & 0xff),
+          static_cast<int>(normal_rgb & 0xff), 210};
 }
 
 inline int hashSampleCapacity(int viewport_height, int row_height) {
