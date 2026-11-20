@@ -52,6 +52,10 @@ public:
 
     // The running instance (for the swap.* RPCs); nullptr when disabled.
     static SwapService* Active();
+    // False when no service runs, and also when it runs for the built-in
+    // Bitcoin wallet alone (swap.btc_wallet=1 without swap.enable=1): then
+    // the manager exists, and every swap.* request is refused as "disabled".
+    static bool SwapsOn();
 
     // Why swap.enable=1 did not turn swaps on (swap.optional=1 kept the node
     // running); empty when swaps are on or were never asked for.
@@ -90,6 +94,7 @@ public:
     static void SetTowerUrlInstaller(TowerUrlInstaller installer);
 
 private:
+    bool bitcoin_wallet_only_{false};
     bool Setup(DaemonContext& ctx);
     void Loop();
 

@@ -14798,7 +14798,8 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
     args << "--portmap=auto";
   }
   // The Swap tab's "Enable swaps" switch.
-  args << SwapLaunchPolicy::daemonArgs(QSettings().value(SwapLaunchPolicy::enabledKey(), false).toBool());
+  args << SwapLaunchPolicy::daemonArgs(QSettings().value(SwapLaunchPolicy::enabledKey(), false).toBool(),
+                                        QSettings().value(SwapLaunchPolicy::bitcoinWalletKey(), false).toBool());
   args << "-addnode=173.249.200.59:20999";
   args << "-addnode=172.93.167.32:20999";
   args << "-addnode=92.118.190.62:20999";
