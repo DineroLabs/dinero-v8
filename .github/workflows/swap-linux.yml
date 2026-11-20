@@ -134,7 +134,7 @@ jobs:
           failed=0
           for t in $tests; do
             ctest --test-dir build-swap --output-on-failure --no-tests=error -R "^${t}$" | tee "ctest-${t}.log" || failed=1
-            grep -q '100% tests passed, 0 tests failed out of 1' "ctest-${t}.log" || { echo "::error::${t} did not run and pass exactly once"; failed=1; }
+            grep -qE '100% tests passed(, 0 tests failed)? out of 1$' "ctest-${t}.log" || { echo "::error::${t} did not run and pass exactly once"; failed=1; }
             if grep -qiE 'Skipped|Not Run' "ctest-${t}.log"; then echo "::error::${t} was skipped"; failed=1; fi
           done
           exit $failed
