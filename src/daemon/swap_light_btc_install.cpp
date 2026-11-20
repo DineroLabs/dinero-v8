@@ -31,6 +31,8 @@
 #include "wallet/swap/btc_http_curl.h"
 #include "wallet/swap/tower_http.h"
 
+#include <thread>
+#include <chrono>
 #include <algorithm>
 #include <filesystem>
 #include <iostream>
@@ -137,11 +139,20 @@ std::function<void(uint32_t)> InstallLightBitcoin(swap::SwapManager& manager, co
     };
     auto watched = std::make_shared<Watched>();
     support.script_activity = [backend, watched](const std::vector<uint8_t>& script) {
-        std::lock_guard<std::mutex> one(watched->mu);
-        const auto chain_lock = backend->Lock();
-        auto& watcher = watched->watchers[script];
-        if (!watcher) watcher = std::make_unique<swap::BtcDepositWatcher>(backend->chain(), backend->servers(), script);
-        const swap::BtcDepositView view = watcher->Observe();
+        // The wallet reads some forty addresses in a row, and a public server
+        // that is busy for a moment answers one of them with nothing. Ask that
+        // one again, with the locks released in between, before giving up on
+        // the whole reading.
+        swap::BtcDepositView view;
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            if (attempt) std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+            std::lock_guard<std::mutex> one(watched->mu);
+            const auto chain_lock = backend->Lock();
+            auto& watcher = watched->watchers[script];
+            if (!watcher) watcher = std::make_unique<swap::BtcDepositWatcher>(backend->chain(), backend->servers(), script);
+            view = watcher->Observe();
+            if (view.ok) break;
+        }
         if (!view.ok) throw std::runtime_error("cannot reach any Bitcoin server");
         swap::BtcScriptActivity activity{view.seen_sat, view.ever_paid, {}, {}};
         for (const auto& coin : view.coins) activity.coins.push_back({coin.txid, coin.vout, coin.value_sat});
