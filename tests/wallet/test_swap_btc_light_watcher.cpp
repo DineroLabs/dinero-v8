@@ -717,9 +717,11 @@ TEST(BtcDepositWatcher, CountsOnlyProvenUnspentPayments) {
     const Bytes first = PayTo(kDepositScript, 700'000, 0x71);
     world.Broadcast(first);
     EXPECT_EQ(watcher.Observe().seen_sat, 0u);
+    EXPECT_FALSE(watcher.Observe().ever_paid);  // nothing proven yet
     world.Mine({first});
     node.Sync(world);
     v = watcher.Observe();
+    EXPECT_TRUE(v.ever_paid);
     EXPECT_EQ(v.seen_sat, 700'000u);
     EXPECT_EQ(v.confirmed_sat, 0u);
     EXPECT_EQ(v.newest_confirmations, 1u);
@@ -749,6 +751,19 @@ TEST(BtcDepositWatcher, CountsOnlyProvenUnspentPayments) {
     EXPECT_EQ(v.seen_sat, 450'000u);
     ASSERT_EQ(v.coins.size(), 1u);
     EXPECT_EQ(v.coins[0].txid, TxidOf(second));
+
+    // Both spent: nothing held, but the address was used (the built-in wallet
+    // must not hand it out again, and looks past it when restoring).
+    world.Broadcast(SpendOf(second, 0x74));
+    v = watcher.Observe();
+    EXPECT_EQ(v.seen_sat, 0u);
+    EXPECT_TRUE(v.coins.empty());
+    EXPECT_TRUE(v.ever_paid);
+    // A fresh watcher (a restore) learns the same from the chain.
+    BtcDepositWatcher restored(node.chain, {&server.api}, kDepositScript);
+    v = restored.Observe();
+    EXPECT_EQ(v.seen_sat, 0u);
+    EXPECT_TRUE(v.ever_paid);
 }
 
 TEST(BtcDepositWatcher, ServersCannotInflateOrHideADeposit) {

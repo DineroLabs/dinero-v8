@@ -324,7 +324,23 @@ bool SwapService::Setup(DaemonContext& ctx) {
         }
         return result;
     };
+    // The built-in Bitcoin wallet's account, m/84'/coin'/0' of the same seed
+    // (swap/btc_wallet_keys.h). Only its public half leaves this lease.
+    swap::BtcAccountSource btc_account = [&ctx](uint32_t coin_type) -> std::optional<swap::BtcWalletAccount> {
+        if (!ctx.wallet) return std::nullopt;
+        auto wallet_use = WalletService::AcquireWalletUse(ctx.wallet);
+        if (wallet_use->Wallet().isWalletLocked()) return std::nullopt;
+        auto lease = wallet_use->Wallet().AcquireDatabaseLease();
+        auto seed = lease->CopyRecoverySeed(lease->Session());
+        BIP32Deriver deriver(seed->Bytes().data(), seed->Bytes().size());
+        deriver.deriveHardened(swap::kBtcWalletPurpose);
+        deriver.deriveHardened(coin_type);
+        deriver.deriveHardened(0);
+        return swap::BtcWalletAccountFromSecret(deriver.getPrivateKey(), deriver.getChainCode());
+    };
+    mc.btc_wallet_on_mainnet = config->GetBool("swap.btc_wallet_mainnet", false);
     manager_ = std::make_unique<swap::SwapManager>(mc, derive, InProcessRpc(&ctx), btc_rpc, MakeRetainedSwapFundingOwner(ctx));
+    manager_->SetBtcAccountSource(btc_account);
     if (zec_wanted && !ZecInstallerSlot()(*manager_, *config, mc.network, InProcessRpc(&ctx))) {
         manager_.reset();
         return false;

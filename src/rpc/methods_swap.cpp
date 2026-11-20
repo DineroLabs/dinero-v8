@@ -396,6 +396,74 @@ din::Json RpcBtcHoldings(const ExecutionContext& ctx, const din::Json&) {
     }
 }
 
+// ---- The built-in Bitcoin wallet (docs/design/multi-coin-wallet.md) ----------
+
+din::Json BtcWalletStatusJson(const swap::SwapManager::BtcWalletState& st) {
+    din::Json out(Json::objectValue);
+    out["offered"] = st.offered;
+    out["enabled"] = st.enabled;
+    out["can_send"] = false;  // receiving and balances only, for now
+    if (!st.why_not.empty()) out["why_not"] = st.why_not;
+    if (st.enabled) {
+        out["address"] = st.address;
+        out["addresses_handed_out"] = st.handed_out;
+    }
+    return out;
+}
+
+din::Json RpcBtcStatus(const ExecutionContext& ctx, const din::Json&) {
+    if (auto e = Refuse(ctx, false)) return *e;
+    try {
+        return BtcWalletStatusJson(SwapService::Active()->manager()->BtcWalletStatus());
+    } catch (const std::exception& e) {
+        return Error(e.what());
+    }
+}
+
+// Turns the wallet on. The wallet must be unlocked: the account comes from the seed.
+din::Json RpcBtcEnable(const ExecutionContext& ctx, const din::Json&) {
+    if (auto e = Refuse(ctx, true)) return *e;
+    try {
+        SwapService::Active()->manager()->EnableBtcWallet();
+        return BtcWalletStatusJson(SwapService::Active()->manager()->BtcWalletStatus());
+    } catch (const std::exception& e) {
+        return Error(e.what());
+    }
+}
+
+din::Json RpcBtcNewAddress(const ExecutionContext& ctx, const din::Json&) {
+    if (auto e = Refuse(ctx, false)) return *e;
+    try {
+        din::Json out(Json::objectValue);
+        out["address"] = SwapService::Active()->manager()->BtcWalletNewAddress();
+        return out;
+    } catch (const std::exception& e) {
+        return Error(e.what());
+    }
+}
+
+din::Json RpcBtcBalance(const ExecutionContext& ctx, const din::Json&) {
+    if (auto e = Refuse(ctx, false)) return *e;
+    try {
+        const auto b = SwapService::Active()->manager()->BtcWalletBalance();
+        din::Json out(Json::objectValue);
+        out["sat"] = Json::UInt64(b.sat);
+        out["addresses_read"] = b.addresses_read;
+        out["addresses"] = Json::Value(Json::arrayValue);
+        for (const auto& row : b.rows) {
+            din::Json j(Json::objectValue);
+            j["address"] = row.address;
+            j["sat"] = Json::UInt64(row.sat);
+            j["change"] = row.branch == 1;
+            j["index"] = row.index;
+            out["addresses"].append(j);
+        }
+        return out;
+    } catch (const std::exception& e) {
+        return Error(e.what());
+    }
+}
+
 din::Json RpcCancel(const ExecutionContext& ctx, const din::Json& params) {
     if (auto e = Refuse(ctx, false)) return *e;
     const din::Json& id = params.isArray() && params.size() == 1 && params[0].isString() ? params[0] : Arg(params, "id");
@@ -422,6 +490,10 @@ void registerSwapMethods() {
     g_rpcRegistry.registerHandler("swap.refund", RpcRefund, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.recoverdeposits", RpcRecoverDeposits, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.btcholdings", RpcBtcHoldings, RegisterMode::Overwrite, "context-aware");
+    g_rpcRegistry.registerHandler("btc.status", RpcBtcStatus, RegisterMode::Overwrite, "context-aware");
+    g_rpcRegistry.registerHandler("btc.enable", RpcBtcEnable, RegisterMode::Overwrite, "context-aware");
+    g_rpcRegistry.registerHandler("btc.getnewaddress", RpcBtcNewAddress, RegisterMode::Overwrite, "context-aware");
+    g_rpcRegistry.registerHandler("btc.getbalance", RpcBtcBalance, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.deposit", RpcDeposit, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.capabilities", RpcCapabilities, RegisterMode::Overwrite, "context-aware");
 }
