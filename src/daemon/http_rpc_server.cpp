@@ -67,6 +67,7 @@ static const std::unordered_set<std::string> ADMIN_METHODS = {
     "btc.enable",            // stores the Bitcoin wallet's account (its addresses become readable)
     "btc.getnewaddress",     // hands out and records the next Bitcoin receive address
     "btc.send",              // signs and broadcasts a Bitcoin payment from this wallet
+    "btc.bumpfee",           // re-sends a Bitcoin payment with a higher fee
     "wallet.importprivkey",
     "wallet.importmnemonic",
     "wallet.exportmnemonic",

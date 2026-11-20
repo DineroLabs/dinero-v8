@@ -57,6 +57,17 @@ struct BtcSendPlan {
 // std::runtime_error("not enough bitcoin: …") with the shortfall.
 BtcSendPlan PlanBtcSend(const std::vector<BtcWalletCoin>& coins, const BtcSendRequest& request);
 
+// The same payment with a higher fee, taken from its change: the same coins,
+// the same destination and amount, so the network replaces the old one
+// (BIP125). `sent` is the payment as it was broadcast, `coins` its inputs in
+// order. The new fee is the larger of the new rate times the size and the old
+// fee plus one sat per virtual byte (what nodes ask of a replacement). Throws
+// std::runtime_error when the payment has no change, or its change cannot
+// carry the higher fee, and std::invalid_argument when the fee would be above
+// max_fee_sat or `sent` is not a payment of this shape.
+BtcSendPlan PlanBtcFeeBump(const BtcTx& sent, const std::vector<BtcWalletCoin>& coins, double feerate_sat_per_vb,
+                           uint64_t max_fee_sat);
+
 struct BtcSignedSend {
     std::vector<uint8_t> raw;  // with witnesses
     Bytes32 txid{};            // wire byte order

@@ -7,6 +7,7 @@
 #include "wallet/swap/swap_crypto.h"
 #include "wallet/swap/tower.h"
 
+#include <set>
 #include <openssl/crypto.h>
 
 #include <algorithm>
@@ -1411,7 +1412,7 @@ SwapManager::BtcPayment SwapManager::SendBtc(const std::string& to_address, uint
     sent.amount_sat = planned.plan.amount_sat;
     sent.fee_sat = planned.plan.fee_sat;
     sent.change_sat = planned.plan.change_sat;
-    for (const BtcWalletCoin& c : planned.plan.used) sent.spent.push_back({c.txid, c.vout, c.value_sat});
+    sent.spent = planned.plan.used;
     wallet.RecordSent(sent, planned.plan.change_sat > 0);
     try {
         broadcast(signed_tx.raw);
@@ -1422,6 +1423,115 @@ SwapManager::BtcPayment SwapManager::SendBtc(const std::string& to_address, uint
         throw;
     }
     return planned.shown;
+}
+
+SwapManager::BtcPayment SwapManager::BumpBtcFee(const std::string& txid, uint32_t target_blocks,
+                                                const std::string& expected_new_txid) {
+    if (const std::string why = BtcWalletWhyNot(); !why.empty()) throw std::runtime_error(why);
+    if (target_blocks == 0 || target_blocks > 144) throw std::invalid_argument("the fee target must be 1 to 144 blocks");
+    BtcAccountSecretSource secret_source;
+    std::function<std::string(const std::vector<uint8_t>&)> broadcast;
+    std::function<std::optional<double>(uint32_t)> fee_rate;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!light_btc_->fee_rate || !light_btc_->broadcast) throw std::runtime_error("this node cannot send Bitcoin");
+        secret_source = btc_account_secret_;
+        broadcast = light_btc_->broadcast;
+        fee_rate = light_btc_->fee_rate;
+    }
+    std::lock_guard<std::mutex> file(btc_wallet_mu_);
+    BtcWallet wallet(config_.dir, config_.runner.btc_hrp);
+    std::optional<BtcWallet::Sent> old;
+    for (const auto& p : wallet.SentPayments()) {
+        if (p.txid_hex == txid) old = p;
+    }
+    if (!old) throw std::runtime_error("no payment " + txid + " was sent from this Bitcoin wallet");
+    const auto rate = fee_rate(target_blocks);
+    if (!rate) throw std::runtime_error("cannot reach any Bitcoin server for the network fee");
+    const BtcSendPlan plan = PlanBtcFeeBump(ParseBtcTx(old->raw), old->spent, *rate, kBtcWalletMaxFeeSat);
+    BtcPayment shown;
+    Bytes32 id = BtcTxid(plan.tx);
+    std::reverse(id.begin(), id.end());
+    shown.txid = ToHex(std::vector<uint8_t>(id.begin(), id.end()));
+    shown.to_address = BtcAddressFromPayoutScript(plan.tx.vout[0].script_pubkey, config_.runner.btc_hrp);
+    shown.amount_sat = plan.amount_sat;
+    shown.fee_sat = plan.fee_sat;
+    shown.change_sat = plan.change_sat;
+    shown.vsize = plan.vsize;
+    shown.feerate_sat_per_vb = *rate;
+    shown.inputs = plan.used.size();
+    if (expected_new_txid.empty()) return shown;
+    if (shown.txid != expected_new_txid) {
+        throw std::runtime_error("the higher fee is no longer the one that was shown: review it again");
+    }
+    if (!secret_source) throw std::runtime_error("this node cannot send Bitcoin");
+    auto secret = secret_source(config_.network == SwapNetwork::Mainnet ? 0u : 1u);
+    if (!secret) throw std::runtime_error("wallet is locked: unlock it to send Bitcoin");
+    BtcSignedSend signed_tx;
+    try {
+        signed_tx = SignBtcSend(plan, wallet.account(), [&secret](uint32_t branch, uint32_t index) {
+            return BtcWalletSecretKey(secret->key, secret->chain_code, branch, index);
+        });
+    } catch (...) {
+        secret->key.fill(0);
+        throw;
+    }
+    secret->key.fill(0);
+    secret->chain_code.fill(0);
+    BtcWallet::Sent sent;
+    sent.txid_hex = shown.txid;
+    sent.raw = signed_tx.raw;
+    sent.amount_sat = plan.amount_sat;
+    sent.fee_sat = plan.fee_sat;
+    sent.change_sat = plan.change_sat;
+    sent.spent = plan.used;
+    wallet.RecordSent(sent, false);  // both are kept until the network has taken the new one
+    try {
+        broadcast(signed_tx.raw);
+    } catch (const std::exception& e) {
+        if (std::string(e.what()).rfind("Bitcoin transaction refused", 0) == 0) wallet.ForgetSent(sent.txid_hex);
+        throw;
+    }
+    wallet.ForgetSent(txid);  // replaced
+    return shown;
+}
+
+std::vector<SwapManager::BtcWalletTx> SwapManager::BtcWalletHistory() {
+    if (const std::string why = BtcWalletWhyNot(); !why.empty()) throw std::runtime_error(why);
+    BtcWallet::ScriptReader read;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        read = light_btc_->script_activity;
+    }
+    std::lock_guard<std::mutex> file(btc_wallet_mu_);
+    BtcWallet wallet(config_.dir, config_.runner.btc_hrp);
+    const BtcWallet::Balance balance = wallet.ReadBalance(read);
+    std::vector<BtcWalletTx> out;
+    std::set<std::string> ours;
+    for (const auto& p : wallet.SentPayments()) {
+        BtcWalletTx t;
+        t.txid = p.txid_hex;
+        t.amount_sat = p.amount_sat;
+        t.fee_sat = p.fee_sat;
+        for (const auto& r : balance.received) {
+            if (r.txid_hex == p.txid_hex) t.confirmations = std::max(t.confirmations, r.confirmations);
+        }
+        ours.insert(p.txid_hex);
+        out.push_back(t);
+    }
+    for (const auto& r : balance.received) {
+        if (r.branch == 1 && ours.count(r.txid_hex)) continue;  // our own change: part of the payment above
+        BtcWalletTx t;
+        t.txid = r.txid_hex;
+        t.received = true;
+        t.amount_sat = r.sat;
+        t.address = r.address;
+        t.confirmations = r.confirmations;
+        out.push_back(t);
+    }
+    // Fewest confirmations first: the newest on top.
+    std::stable_sort(out.begin(), out.end(), [](const BtcWalletTx& a, const BtcWalletTx& b) { return a.confirmations < b.confirmations; });
+    return out;
 }
 
 bool SwapManager::TickAll(uint32_t now) {

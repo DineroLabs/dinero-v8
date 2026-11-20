@@ -297,6 +297,42 @@ check "and the destination holds both payments" '(( $(sats "$PAY_TO") == 20000 +
 out=$(rpc $APORT btc.preview "{\"address\":\"$PAY_TO\",\"amount_sat\":1000}" 2>&1 || true)
 check "an empty wallet says it has not enough (${out:0:80})" '[[ "$out" == *"not enough bitcoin"* ]]'
 
+echo "=== a stuck payment is re-sent with a higher fee; the list shows what happened ==="
+WADDR4=$(jget "$(rpc $APORT btc.getnewaddress '{}')" address)
+"${BCLI[@]}" sendtoaddress "$WADDR4" 0.0005 >/dev/null
+mine_btc 1; sleep 3
+PVS=$(rpc $APORT btc.preview "{\"address\":\"$PAY_TO\",\"amount_sat\":10000,\"target_blocks\":24}")
+rpc $APORT btc.send "{\"address\":\"$PAY_TO\",\"amount_sat\":10000,\"target_blocks\":24,\"txid\":\"$(jget "$PVS" txid)\"}" >/dev/null
+OLD=$(jget "$PVS" txid)
+for _ in $(seq 1 20); do "${BCLI[@]}" getmempoolentry "$OLD" >/dev/null 2>&1 && break; sleep 1; done
+BS=$(rpc $APORT btc.bumpfee "{\"txid\":\"$OLD\"}"); echo "  $BS" | cut -c1-220
+NEW=$(jget "$BS" txid)
+check "the higher fee is shown first, and nothing is sent" '[[ "$(jget "$BS" sent)" == False && "$NEW" != "$OLD" ]] && "${BCLI[@]}" getmempoolentry "$OLD" >/dev/null 2>&1'
+check "same amount, higher fee, less change" '(( $(jget "$BS" amount_sat) == 10000 && $(jget "$BS" fee_sat) > $(jget "$PVS" fee_sat) && $(jget "$BS" change_sat) == $(jget "$PVS" change_sat) - ($(jget "$BS" fee_sat) - $(jget "$PVS" fee_sat)) ))'
+BD=$(rpc $APORT btc.bumpfee "{\"txid\":\"$OLD\",\"new_txid\":\"$NEW\"}")
+check "sent" '[[ "$(jget "$BD" sent)" == True ]]'
+for _ in $(seq 1 20); do "${BCLI[@]}" getmempoolentry "$NEW" >/dev/null 2>&1 && break; sleep 1; done
+check "Bitcoin Core replaced the old payment with the new one" '"${BCLI[@]}" getmempoolentry "$NEW" >/dev/null 2>&1 && ! "${BCLI[@]}" getmempoolentry "$OLD" >/dev/null 2>&1'
+BEFORE_TO=$(sats "$PAY_TO")
+mine_btc 1; sleep 3
+check "the destination was paid once, 10,000 sat" '(( $(sats "$PAY_TO") - BEFORE_TO == 10000 ))'
+check "the wallet holds the rest: 50,000 less the payment and the higher fee" '(( $(jget "$(rpc $APORT btc.getbalance "{}")" sat) == 50000 - 10000 - $(jget "$BS" fee_sat) ))'
+TXS=$(rpc $APORT btc.listtransactions '{}'); echo "  $TXS" | cut -c1-260
+check "the list has the replacement as sent and confirmed, not the replaced one" '[[ "$(python3 -c "import sys,json
+t=json.loads(sys.argv[1]); new=[x for x in t if x[\"txid\"]==sys.argv[2]]; old=[x for x in t if x[\"txid\"]==sys.argv[3]]
+print(len(new)==1 and not new[0][\"received\"] and new[0][\"confirmed\"] and new[0][\"amount_sat\"]==10000 and not old)" "$TXS" "$NEW" "$OLD")" == True ]]'
+check "and the payments received, with their addresses" '[[ "$(python3 -c "import sys,json
+t=json.loads(sys.argv[1]); r=[x for x in t if x[\"received\"]]
+print(sorted(x[\"amount_sat\"] for x in r)==[10000,31817,50000] and any(x.get(\"address\")==sys.argv[2] for x in r))" "$TXS" "$WADDR4")" == True ]]'
+
+echo "=== with the Bitcoin wallet on, selling DIN needs no pasted address ==="
+ONOADDR=$(rpc $APORT swap.offer '{"din_amount_una":1000000000,"btc_amount_sat":1000000,"din_funding_fee_rate_hint":2,"din_funding_maximum_fee_una":5000000}' 2>&1 || true)
+check "an offer without btc_address is made (${ONOADDR:0:60})" '[[ -n "$(field "$ONOADDR" offer)" ]]'
+DEC=$(rpc $APORT swap.decode "{\"text\":\"$(field "$ONOADDR" offer)\"}" 2>&1 || true)
+HNOW=$(rpc $APORT btc.status '{}')
+rpc $APORT swap.cancel "{\"id\":\"$(field "$ONOADDR" id)\"}" >/dev/null 2>&1 || true
+check "the wallet did not use up an address for it" '[[ "$(jget "$HNOW" address)" == "$WADDR4" ]]'
+
 echo "=== BTC that reaches a deposit address late is recovered ==="
 # A second withdrawal from an exchange arrives after the swap is over, and something lands on the first, cancelled address.
 "${BCLI[@]}" sendtoaddress "$ADDR" 0.0006 >/dev/null

@@ -34,6 +34,12 @@ struct BtcDepositView {
     uint64_t confirmed_sat{0};         // sum of `deep_coins`
     uint32_t newest_confirmations{0};  // of the newest payment (0: none)
     bool ever_paid{false};             // a proven payment to the script exists, spent or not (Observe only)
+    struct Paid {
+        Bytes32 txid{};
+        uint64_t sat{};
+        uint32_t confirmations{};
+    };
+    std::vector<Paid> payments;        // every proven payment to the script, spent or not (Observe only)
 };
 
 class BtcDepositWatcher {
