@@ -837,6 +837,16 @@ QString miningButtonStyle() {
     "border-color: #252c31; }");
 }
 
+QString miningStatStyle(const char* color = "#bec8d0", bool strong = false,
+                        bool italic = false) {
+  // Match the 12 px text in the adjacent Session Finds button, including
+  // values whose color or emphasis changes as mining state changes.
+  return QStringLiteral(
+    "QLabel { font-size: 12px; color: %1; font-weight: %2; font-style: %3; }")
+    .arg(QString::fromLatin1(color), strong ? QStringLiteral("600") : QStringLiteral("400"),
+         italic ? QStringLiteral("italic") : QStringLiteral("normal"));
+}
+
 QString miningComboStyle() {
   return QStringLiteral(
     "QComboBox { background: #000000; color: #c2cbd2; border: 1px solid #303940; "
@@ -4921,33 +4931,42 @@ void MainWindow::setupUI() {
 
     // Tiny stats
     lblBlocksFound_ = new QLabel("0");
-    lblBlocksFound_->setStyleSheet("QLabel { font-weight: bold; color: #bec8d0; }");
-    row2->addWidget(new QLabel("Blocks:"));
+    lblBlocksFound_->setStyleSheet(miningStatStyle("#bec8d0", true));
+    auto* lblBlocksCaption = new QLabel("Blocks:");
+    lblBlocksCaption->setStyleSheet(miningStatStyle());
+    row2->addWidget(lblBlocksCaption);
     row2->addWidget(lblBlocksFound_);
 
-    row2->addWidget(new QLabel("Height:"));
+    auto* lblHeightCaption = new QLabel("Height:");
+    lblHeightCaption->setStyleSheet(miningStatStyle());
+    row2->addWidget(lblHeightCaption);
     lblMiningHeight_ = new QLabel("-");
-    lblMiningHeight_->setStyleSheet("QLabel { font-weight: bold; color: #bec8d0; }");
+    lblMiningHeight_->setStyleSheet(miningStatStyle("#bec8d0", true));
     row2->addWidget(lblMiningHeight_);
 
-    row2->addWidget(new QLabel("Difficulty:"));
+    auto* lblTargetBitsCaption = new QLabel("Target Bits:");
+    lblTargetBitsCaption->setStyleSheet(miningStatStyle());
+    lblTargetBitsCaption->setToolTip("Compact proof-of-work target (nBits).");
+    row2->addWidget(lblTargetBitsCaption);
     lblMiningDifficulty_ = new QLabel("-");
-    lblMiningDifficulty_->setStyleSheet(
-      "QLabel { font-family: monospace; font-weight: bold; color: #bec8d0; }");
+    lblMiningDifficulty_->setStyleSheet(miningStatStyle("#bec8d0", true));
     row2->addWidget(lblMiningDifficulty_);
     
     lblCurrentHash_ = new QLabel("0.00");
-    lblCurrentHash_->setStyleSheet("QLabel { font-weight: bold; color: #bec8d0; font-size: 10px; }");
-    row2->addWidget(new QLabel("MH/s:"));
+    lblCurrentHash_->setStyleSheet(miningStatStyle("#bec8d0", true));
+    auto* lblHashrateCaption = new QLabel("MH/s:");
+    lblHashrateCaption->setStyleSheet(miningStatStyle());
+    row2->addWidget(lblHashrateCaption);
     row2->addWidget(lblCurrentHash_);
     
     lblMiningUptime_ = new QLabel("-");
-    lblMiningUptime_->setStyleSheet("QLabel { font-size: 10px; }");
+    lblMiningUptime_->setStyleSheet(miningStatStyle("#bec8d0", true));
     lblMiningUptimeCaption_ = new QLabel("Run:");
+    lblMiningUptimeCaption_->setStyleSheet(miningStatStyle());
     row2->addWidget(lblMiningUptimeCaption_);
     row2->addWidget(lblMiningUptime_);
 
-    btnMiningSessionFinds_ = new QPushButton("Session finds");
+    btnMiningSessionFinds_ = new QPushButton("Session Finds");
     btnMiningSessionFinds_->setStyleSheet(miningButtonStyle());
     btnMiningSessionFinds_->setFixedHeight(miningControlHeight);
     btnMiningSessionFinds_->setEnabled(false);
@@ -4956,11 +4975,11 @@ void MainWindow::setupUI() {
 
       auto* dialog = new QDialog(this);
       dialog->setAttribute(Qt::WA_DeleteOnClose);
-      dialog->setWindowTitle("Blocks found this session");
+      dialog->setWindowTitle("Blocks Found This Session");
       auto* dialogLayout = new QVBoxLayout(dialog);
       auto* table = new QTableWidget(miningSessionFinds_.size(), 6, dialog);
       table->setHorizontalHeaderLabels(
-        {"Height", "Hash", "Merkle root", "Utreexo root", "Nonce", "Difficulty"});
+        {"Height", "Hash", "Merkle Root", "Utreexo Root", "Nonce", "Target Bits"});
       table->setEditTriggers(QAbstractItemView::NoEditTriggers);
       table->setSelectionBehavior(QAbstractItemView::SelectRows);
       table->setWordWrap(false);
@@ -5000,8 +5019,7 @@ void MainWindow::setupUI() {
     // SV2-only: live share counter. Updated in place so we never spam
     // the mining-output panel with one line per accept.
     lblSv2Shares_ = new QLabel("Shares: 0");
-    lblSv2Shares_->setStyleSheet(
-      "QLabel { font-size: 10px; color: #bec8d0; font-weight: bold; }");
+    lblSv2Shares_->setStyleSheet(miningStatStyle("#bec8d0", true));
     lblSv2Shares_->setVisible(false);
     row2->addWidget(lblSv2Shares_);
 
@@ -5285,7 +5303,7 @@ void MainWindow::setupUI() {
       if (btnMiningSessionFinds_) {
         btnMiningSessionFinds_->setEnabled(true);
         btnMiningSessionFinds_->setText(
-          QString("Session finds (%1)").arg(miningSessionFinds_.size()));
+          QString("Session Finds (%1)").arg(miningSessionFinds_.size()));
       }
       miningFoundPendingTemplate_ = true;
       // The live hash field is only for the visible mining session. Keeping
@@ -5333,7 +5351,7 @@ void MainWindow::setupUI() {
             miningSessionFinds_.clear();
             miningHashSamples_.clear();
             if (btnMiningSessionFinds_) {
-                btnMiningSessionFinds_->setText("Session finds");
+                btnMiningSessionFinds_->setText("Session Finds");
                 btnMiningSessionFinds_->setEnabled(false);
             }
             if (mining_stats_.mining_started <= 0) {
@@ -5367,7 +5385,7 @@ void MainWindow::setupUI() {
             mining_stats_.mining_started = 0;
             if (lblMiningUptime_) {
                 lblMiningUptime_->setText("-");
-                lblMiningUptime_->setStyleSheet("QLabel { color: #868e96; }");
+                lblMiningUptime_->setStyleSheet(miningStatStyle("#868e96"));
             }
             setMiningModeControlsLocked(false);
             resetOverviewMiningTelemetry();
@@ -12002,7 +12020,7 @@ void MainWindow::updateMiningRuntimeLabel() {
 
   if (mining_stats_.mining_started <= 0) {
     lblMiningUptime_->setText("-");
-    lblMiningUptime_->setStyleSheet("QLabel { color: #868e96; }");
+    lblMiningUptime_->setStyleSheet(miningStatStyle("#868e96"));
     return;
   }
 
@@ -12023,7 +12041,7 @@ void MainWindow::updateMiningRuntimeLabel() {
   }
 
   lblMiningUptime_->setText(runtime);
-  lblMiningUptime_->setStyleSheet("QLabel { color: #bec8d0; font-weight: bold; }");
+  lblMiningUptime_->setStyleSheet(miningStatStyle("#bec8d0", true));
 }
 
 // Handle external miner stats response from daemon
@@ -12077,15 +12095,15 @@ void MainWindow::handleExternalMinerStats(const QJsonObject& stats) {
 
     // Color: green if accepted, red if rejections, neutral otherwise
     if (acceptedBlocks > 0 && rejectedBlocks == 0) {
-      lblBlocksFound_->setStyleSheet("QLabel { color: #bec8d0; font-weight: bold; }");
+      lblBlocksFound_->setStyleSheet(miningStatStyle("#bec8d0", true));
     } else if (rejectedBlocks > 0) {
-      lblBlocksFound_->setStyleSheet("QLabel { color: #b7c0ca; }");
+      lblBlocksFound_->setStyleSheet(miningStatStyle("#b7c0ca"));
     } else {
-      lblBlocksFound_->setStyleSheet("");
+      lblBlocksFound_->setStyleSheet(miningStatStyle());
     }
   } else {
     lblBlocksFound_->setText("No block submissions yet");
-    lblBlocksFound_->setStyleSheet("QLabel { color: #868e96; font-style: italic; }");
+    lblBlocksFound_->setStyleSheet(miningStatStyle("#868e96", false, true));
   }
 
   // Build detailed tooltip with rejection reasons breakdown
@@ -13976,7 +13994,7 @@ void MainWindow::stopExternalMiner() {
   }
   if (lblMiningUptime_) {
     lblMiningUptime_->setText("-");
-    lblMiningUptime_->setStyleSheet("QLabel { color: #868e96; }");
+    lblMiningUptime_->setStyleSheet(miningStatStyle("#868e96"));
   }
   resetOverviewMiningTelemetry();
 }
