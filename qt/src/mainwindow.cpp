@@ -6683,6 +6683,7 @@ void MainWindow::refreshShieldedBalanceSummary() {
     updateWalletBalanceDisplay();
     return;
   }
+  if (legacyShieldedBalanceUnsupported_) return;
   rpc_->call("wallet.shieldedbalance", QJsonArray());
 }
 
@@ -7128,6 +7129,15 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
           (sendReady.isBool() && sendReady.toBool());
       walletTransparentV3SendReady_ = walletSendReady_ &&
           obj.value("send_scope").toString() == "transparent_recovered_v3";
+      const QString sendScope = obj.value("send_scope").toString();
+      const bool nativeOrTransparentOnly =
+          sendScope == "transparent_native_v3" ||
+          obj.value("wallet_scope").toString() == "legacy_transparent_only" ||
+          obj.value("send_unavailable_code").toString() == "wallet_native_send_unavailable_on_v3";
+      if (nativeOrTransparentOnly) legacyShieldedBalanceUnsupported_ = true;
+      else if (!sendScope.isEmpty() || obj.contains("wallet_scope"))
+        legacyShieldedBalanceUnsupported_ = false;
+      if (legacyShieldedBalanceUnsupported_) cachedShieldedBalance_ = 0.0;
       walletSendUnavailableReason_ = walletSendReady_ ? QString() :
           obj.value("send_unavailable_reason").toString(
               "Sending is unavailable for this wallet");
@@ -8935,12 +8945,20 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
   // state and explains it there. A poll failing every few seconds must not
   // become a sticky global "Error" bar.
   if (method.startsWith(QStringLiteral("orchardtab|")) ||
-      method == QStringLiteral("wallet.shieldedbalance") ||
       method == QStringLiteral("wallet.getshieldedaddress") ||
       method == QStringLiteral("wallet.listshielded") ||
       method == QStringLiteral("orchard.getactivationstatus"))
     return;
 
+  if (method == QStringLiteral("wallet.shieldedbalance")) {
+    if (!walletSwitchInFlight_ && code == -32603 &&
+        message.contains("wallet index v3", Qt::CaseInsensitive)) {
+      legacyShieldedBalanceUnsupported_ = true;
+      cachedShieldedBalance_ = 0.0;
+      updateWalletBalanceDisplay();
+    }
+    return;
+  }
   if (method.startsWith(QLatin1String("overview.miningrewards:"))) {
     if (!walletSwitchInFlight_ && method == miningRewardsReplyAlias()) {
       // The HTTP dispatcher normalizes a wallet_balance_not_current result to
@@ -15363,6 +15381,7 @@ void MainWindow::clearWalletScopedUiState() {
   walletBalanceVerifiedAtMs_ = 0;
   walletSendReady_ = false;
   walletTransparentV3SendReady_ = false;
+  legacyShieldedBalanceUnsupported_ = false;
   walletSendUnavailableReason_ = "Waiting for the selected wallet balance";
   if (btnSend_) btnSend_->setEnabled(false);
   if (privateCovenantWidget_) privateCovenantWidget_->setWalletScope({});
