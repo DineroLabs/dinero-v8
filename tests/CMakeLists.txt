@@ -6262,6 +6262,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
         --gtest_filter=${_native_v3_suite}.*)
       set_tests_properties(${_native_v3_suite} PROPERTIES TIMEOUT 300 LABELS "daemon;orchard;wallet;wallet-index-v3;mandatory")
     endforeach()
+    # The Orchard suite includes two full-window retention cases; together
+    # they exceed five minutes on the Linux CI runner even when both progress.
+    set_tests_properties(WalletV3NativeOrchard PROPERTIES TIMEOUT 900)
   endif()
   add_test(NAME VaultCanonicalObservation COMMAND test_assumeutxo_replay --gtest_filter=VaultCanonicalObservation.*)
   set_tests_properties(VaultCanonicalObservation PROPERTIES TIMEOUT 120 LABELS "daemon;vault;mandatory")
