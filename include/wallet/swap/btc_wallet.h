@@ -14,6 +14,7 @@
 // its coins without any record of them.
 
 #include "wallet/swap/btc_wallet_keys.h"
+#include "wallet/swap/btc_wallet_send.h"
 
 #include <cstdint>
 #include <functional>
@@ -22,9 +23,15 @@
 
 namespace dinero::swap {
 
+struct BtcScriptCoin {
+    Bytes32 txid{};  // wire byte order
+    uint32_t vout{};
+    uint64_t value_sat{};
+};
 struct BtcScriptActivity {
     uint64_t sat{};          // unspent, proven, at least one confirmation
     bool ever_paid{false};   // a proven payment exists, spent or not
+    std::vector<BtcScriptCoin> coins;  // the unspent outputs making up `sat` (may be left empty by a reader that only counts)
 };
 
 class BtcWallet {
@@ -62,10 +69,32 @@ public:
         uint64_t sat{};
         std::vector<Row> rows;       // the addresses holding coins
         uint32_t addresses_read{};
+        std::vector<BtcWalletCoin> coins;  // what a payment can spend: every coin the reader listed
     };
     // Reads every address the wallet may own. Remembers what it learns: after
     // a restore, the next receive address is one past the last address paid.
     Balance ReadBalance(const ScriptReader& read);
+
+    // Where a payment's change goes: the first change address never used.
+    // Planning does not use it up; RecordSent does.
+    uint32_t change_index() const { return paid_change_; }
+    std::vector<uint8_t> ChangeScript() const { return BtcWalletScript(account_, 1, paid_change_); }
+
+    // A payment this wallet broadcast: kept until its coins are seen spent, so
+    // they are not chosen again in the moments before the servers know, and so
+    // the bytes can be sent again. `used_change`: its change address is taken.
+    struct Sent {
+        std::string txid_hex;         // as explorers show it
+        std::vector<uint8_t> raw;
+        uint64_t amount_sat{}, fee_sat{}, change_sat{};
+        std::vector<BtcScriptCoin> spent;  // value_sat unused
+    };
+    void RecordSent(const Sent& sent, bool used_change);
+    std::vector<Sent> SentPayments() const;
+    // The network refused this payment outright: its coins are free again.
+    void ForgetSent(const std::string& txid_hex);
+    // Drops from `coins` what a recorded payment already spends.
+    std::vector<BtcWalletCoin> WithoutSpent(std::vector<BtcWalletCoin> coins) const;
 
 private:
     void Save() const;

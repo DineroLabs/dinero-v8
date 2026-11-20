@@ -107,7 +107,18 @@ struct LightBtcSupport {
     // built-in Bitcoin wallet reads its addresses with. Optional: without it
     // the wallet is not offered.
     std::function<BtcScriptActivity(const std::vector<uint8_t>& script_pubkey)> script_activity;
+    // For payments from the built-in wallet. sat/vB to confirm within
+    // `target_blocks` (nullopt: no server answered); and handing a signed
+    // transaction to the network (returns its id, throws with the reason).
+    std::function<std::optional<double>(uint32_t target_blocks)> fee_rate;
+    std::function<std::string(const std::vector<uint8_t>& raw_tx)> broadcast;
 };
+
+// The private half of the same account, for signing. nullopt while locked.
+struct BtcAccountSecret {
+    Bytes32 key{}, chain_code{};
+};
+using BtcAccountSecretSource = std::function<std::optional<BtcAccountSecret>(uint32_t coin_type)>;
 
 // The public half of the wallet's BIP84 account m/84'/coin'/0', from the seed.
 // nullopt while the wallet is locked.
@@ -212,7 +223,10 @@ struct SwapManagerConfig {
     // can send: coins received before then could only be moved with the
     // recovery words in another Bitcoin wallet.
     bool btc_wallet_on_mainnet{false};
+    uint64_t btc_wallet_max_send_sat{0};  // the most one payment may send (0: no limit)
 };
+
+inline constexpr uint64_t kBtcWalletMaxFeeSat = 50'000;  // no payment pays more network fee than this
 
 class SwapManager {
 public:
@@ -315,6 +329,28 @@ public:
     std::string BtcWalletNewAddress();   // throws when not enabled, or see BtcWallet::NewReceiveAddress
     BtcWallet::Balance BtcWalletBalance();  // throws when not enabled or no server answers
 
+    // A payment from the wallet. Preview plans it and signs nothing; Send
+    // plans it again, refuses if that is no longer the payment that was shown
+    // (`expected_txid`: the fee or the coins changed meanwhile), signs,
+    // checks the signed bytes against the plan and broadcasts. `target_blocks`
+    // picks the fee: 1 fast, 6 normal, 24 slow.
+    void SetBtcAccountSecretSource(BtcAccountSecretSource source);
+    struct BtcPayment {
+        std::string txid;        // as explorers show it
+        std::string to_address;
+        uint64_t amount_sat{};   // what arrives
+        uint64_t fee_sat{};
+        uint64_t change_sat{};
+        uint64_t dust_to_fee_sat{};
+        uint64_t vsize{};
+        double feerate_sat_per_vb{};
+        uint64_t balance_before_sat{};
+        size_t inputs{};
+    };
+    BtcPayment PreviewBtcSend(const std::string& to_address, uint64_t amount_sat, bool send_all, uint32_t target_blocks);
+    BtcPayment SendBtc(const std::string& to_address, uint64_t amount_sat, bool send_all, uint32_t target_blocks,
+                       const std::string& expected_txid);
+
     // One tick of every unfinished swap. Returns false (and does nothing) when
     // the wallet is locked: swaps are paused, not failed.
     bool TickAll(uint32_t now_unix);
@@ -376,6 +412,10 @@ private:
     std::optional<ZecSupport> zec_;
     std::optional<LightBtcSupport> light_btc_;
     BtcAccountSource btc_account_;
+    BtcAccountSecretSource btc_account_secret_;
+    struct PlannedBtcPayment;
+    PlannedBtcPayment PlanBtcPayment(BtcWallet& wallet, const std::string& to_address, uint64_t amount_sat, bool send_all,
+                                     uint32_t target_blocks);  // btc_wallet_mu_ held
     std::mutex btc_wallet_mu_;  // the wallet's file; never taken while holding mu_
     std::string BtcWalletWhyNot();  // empty when this node offers the wallet; takes mu_
     std::optional<Bytes32> store_key_;  // kept while the daemon runs: live swaps survive a relock

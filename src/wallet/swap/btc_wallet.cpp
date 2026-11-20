@@ -148,6 +148,15 @@ BtcWallet::Balance BtcWallet::ReadBalance(const ScriptReader& read) {
                 out.rows.push_back({branch, index, BtcWalletAddress(account_, branch, index, hrp_), activity.sat});
                 out.sat += activity.sat;
             }
+            for (const BtcScriptCoin& c : activity.coins) {
+                BtcWalletCoin coin;
+                coin.txid = c.txid;
+                coin.vout = c.vout;
+                coin.value_sat = c.value_sat;
+                coin.branch = branch;
+                coin.index = index;
+                out.coins.push_back(coin);
+            }
         }
     }
     const uint32_t next = std::max(next_receive_, paid[0]);  // never hand out an address that was paid
@@ -158,6 +167,88 @@ BtcWallet::Balance BtcWallet::ReadBalance(const ScriptReader& read) {
         Save();
     }
     return out;
+}
+
+namespace {
+
+std::string SentPath(const std::string& dir) { return dir + "/btc-wallet.sent"; }
+
+// One line per payment: txid amount fee change raw-hex outpoint,outpoint,…
+std::string SentLine(const BtcWallet::Sent& p) {
+    std::ostringstream out;
+    out << p.txid_hex << ' ' << p.amount_sat << ' ' << p.fee_sat << ' ' << p.change_sat << ' ' << detail::ToHex(p.raw) << ' ';
+    for (size_t i = 0; i < p.spent.size(); ++i) {
+        out << (i ? "," : "") << detail::ToHex(std::vector<uint8_t>(p.spent[i].txid.begin(), p.spent[i].txid.end())) << ':'
+            << p.spent[i].vout;
+    }
+    return out.str();
+}
+
+}  // namespace
+
+std::vector<BtcWallet::Sent> BtcWallet::SentPayments() const {
+    std::vector<Sent> out;
+    std::ifstream in(SentPath(dir_));
+    std::string line;
+    while (std::getline(in, line)) {
+        std::istringstream fields(line);
+        Sent p;
+        std::string raw_hex, outpoints;
+        if (!(fields >> p.txid_hex >> p.amount_sat >> p.fee_sat >> p.change_sat >> raw_hex >> outpoints)) continue;
+        try {
+            p.raw = detail::FromHex(raw_hex);
+            std::istringstream list(outpoints);
+            std::string one;
+            while (std::getline(list, one, ',')) {
+                const size_t colon = one.find(':');
+                if (colon == std::string::npos) throw std::invalid_argument("outpoint");
+                const auto txid = detail::FromHex(one.substr(0, colon));
+                if (txid.size() != 32) throw std::invalid_argument("outpoint");
+                BtcScriptCoin c;
+                std::copy(txid.begin(), txid.end(), c.txid.begin());
+                c.vout = static_cast<uint32_t>(std::stoul(one.substr(colon + 1)));
+                p.spent.push_back(c);
+            }
+        } catch (const std::exception&) {
+            continue;  // a torn last line: the payment itself is on the network or it is not
+        }
+        out.push_back(std::move(p));
+    }
+    return out;
+}
+
+void BtcWallet::RecordSent(const Sent& sent, bool used_change) {
+    std::string text;
+    for (const Sent& p : SentPayments()) text += SentLine(p) + "\n";
+    text += SentLine(sent) + "\n";
+    detail::WriteFileAtomically(SentPath(dir_), text);
+    if (used_change) {
+        ++paid_change_;  // its change address is taken, confirmed or not
+        Save();
+    }
+}
+
+void BtcWallet::ForgetSent(const std::string& txid_hex) {
+    std::string text;
+    for (const Sent& p : SentPayments()) {
+        if (p.txid_hex != txid_hex) text += SentLine(p) + "\n";
+    }
+    detail::WriteFileAtomically(SentPath(dir_), text);
+}
+
+std::vector<BtcWalletCoin> BtcWallet::WithoutSpent(std::vector<BtcWalletCoin> coins) const {
+    const auto sent = SentPayments();
+    coins.erase(std::remove_if(coins.begin(), coins.end(),
+                               [&sent](const BtcWalletCoin& c) {
+                                   for (const Sent& p : sent) {
+                                       for (const BtcScriptCoin& s : p.spent) {
+                                           if (s.txid == c.txid && s.vout == c.vout) return true;
+                                       }
+                                   }
+                                   return false;
+                               }),
+                coins.end());
+    return coins;
 }
 
 }  // namespace dinero::swap
