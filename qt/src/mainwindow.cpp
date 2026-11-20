@@ -1660,8 +1660,8 @@ QString ensureDineroBlockCoinGlyphPath() {
 
 constexpr char kMiningBlockCardProperty[] = "_dineroMiningBlockCardLines";
 constexpr char kMiningOutputTextColor[] = "#f1f4f7";
-constexpr char kMiningOutputIdleBackground[] = "#181c22";
-constexpr char kMiningOutputMatrixBackground[] = "#14181e";
+constexpr char kMiningOutputIdleBackground[] = "#000000";
+constexpr char kMiningOutputMatrixBackground[] = "#000000";
 
 bool isMiningBlockFoundHeader(const QString& line) {
   return line.contains(QStringLiteral("BLOCK FOUND"), Qt::CaseInsensitive) ||
@@ -11448,8 +11448,6 @@ void MainWindow::updateMiningOutputCinematicFrame() {
           miningHashSamples_.constLast().hash != hash) {
         MiningHashSample liveSample;
         liveSample.nonce = nonce;
-        liveSample.startsNewBlock = dinero::qt::startsNewBlock(miningTipHeight_, height);
-        miningTipHeight_ = height;
         liveSample.hash = hash;
         liveSample.headerFields = headerFields;
         liveSample.renderedLine.setText(headerFields);
@@ -11484,10 +11482,10 @@ void MainWindow::updateMiningOutputCinematicFrame() {
     for (int visual = 0; visual < count; ++visual) {
       const int sampleIndex = count - 1 - visual;
       const MiningHashSample& sample = miningHashSamples_.at(sampleIndex);
-      // Normal rows are grey. The one current find is orange; older finds
-      // return to grey while Session finds retains their full history.
-      const auto colour = dinero::qt::hashRowColor(sample.blockFound, sample.highlightUntilMs > nowMs,
-                                                   sample.startsNewBlock);
+      // Every regular row is terminal green. Only the current find is orange;
+      // older finds return to green while Session finds retains their history.
+      const auto colour = dinero::qt::hashRowColor(
+        sample.blockFound, sample.highlightUntilMs > nowMs);
       int alpha = colour.a;
       // A solved template is retired during submission. Pulse only its text
       // during this real handoff; never invent candidate hashes to fill it.
@@ -11574,8 +11572,9 @@ void MainWindow::updateMiningOutputCinematicFrame() {
     const int y = row * rowHeight - pixelOffset + hashMetrics.ascent();
     const QString line = lineForRow(rowIndex);
     const quint64 rowTintSeed = static_cast<quint64>(rowIndex) * 0xBF58476D1CE4E5B9ULL;
-    const int alpha = 74 + static_cast<int>((rowTintSeed >> 19) % 34ULL);
-    painter.setPen(QColor(174, 184, 194, qBound(60, alpha, 112)));
+    // Keep the fallback pool-mode field in the same terminal green palette.
+    const int alpha = 175 + static_cast<int>((rowTintSeed >> 19) % 25ULL);
+    painter.setPen(QColor(0, 255, 0, alpha));
     painter.drawText(0, y, line);
   }
 
