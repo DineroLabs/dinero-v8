@@ -1660,8 +1660,8 @@ QString ensureDineroBlockCoinGlyphPath() {
 
 constexpr char kMiningBlockCardProperty[] = "_dineroMiningBlockCardLines";
 constexpr char kMiningOutputTextColor[] = "#f1f4f7";
-constexpr char kMiningOutputIdleBackground[] = "#181c22";
-constexpr char kMiningOutputMatrixBackground[] = "#14181e";
+constexpr char kMiningOutputIdleBackground[] = "#000000";
+constexpr char kMiningOutputMatrixBackground[] = "#000000";
 
 bool isMiningBlockFoundHeader(const QString& line) {
   return line.contains(QStringLiteral("BLOCK FOUND"), Qt::CaseInsensitive) ||
@@ -11448,8 +11448,6 @@ void MainWindow::updateMiningOutputCinematicFrame() {
           miningHashSamples_.constLast().hash != hash) {
         MiningHashSample liveSample;
         liveSample.nonce = nonce;
-        liveSample.startsNewBlock = dinero::qt::startsNewBlock(miningTipHeight_, height);
-        miningTipHeight_ = height;
         liveSample.hash = hash;
         liveSample.headerFields = headerFields;
         liveSample.renderedLine.setText(headerFields);
@@ -11484,10 +11482,10 @@ void MainWindow::updateMiningOutputCinematicFrame() {
     for (int visual = 0; visual < count; ++visual) {
       const int sampleIndex = count - 1 - visual;
       const MiningHashSample& sample = miningHashSamples_.at(sampleIndex);
-      // Normal rows are grey. The one current find is orange; older finds
-      // return to grey while Session finds retains their full history.
-      const auto colour = dinero::qt::hashRowColor(sample.blockFound, sample.highlightUntilMs > nowMs,
-                                                   sample.startsNewBlock);
+      // Every regular row is terminal green. Only the current find is orange;
+      // older finds return to green while Session finds retains their history.
+      const auto colour = dinero::qt::hashRowColor(
+        sample.blockFound, sample.highlightUntilMs > nowMs);
       int alpha = colour.a;
       // A solved template is retired during submission. Pulse only its text
       // during this real handoff; never invent candidate hashes to fill it.

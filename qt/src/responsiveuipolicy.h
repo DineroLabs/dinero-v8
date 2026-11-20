@@ -62,20 +62,13 @@ struct HashRowColor {
   int r = 0, g = 0, b = 0, a = 0;
 };
 
-// True when a sample at `height` is the first one on a new block. The first
-// sample of a session (no previous height) is not a new block.
-inline bool startsNewBlock(int previous_height, int height) {
-  return previous_height >= 0 && height != previous_height;
-}
-
-// Only the most recent found candidate is marked. Older candidates return to
-// grey when a newer one arrives; the session history retains every find.
-// A new template starts with a slightly lighter grey row.
-inline HashRowColor hashRowColor(bool block_found, bool found_highlight_active,
-                                 bool starts_new_block) {
+// The terminal pool miner uses ANSI bright green for its active accents.
+// All regular hash rows use that hue, including the first row of a new
+// template. Only the most recent found candidate is orange; older finds
+// return to green while the session history retains every find.
+inline HashRowColor hashRowColor(bool block_found, bool found_highlight_active) {
   if (block_found) return {255, 176, 48, found_highlight_active ? 255 : 225};
-  if (starts_new_block) return {196, 208, 219, 205};
-  return {151, 163, 174, 150};
+  return {0, 255, 0, 210};
 }
 
 inline int hashSampleCapacity(int viewport_height, int row_height) {
