@@ -536,7 +536,7 @@ What it found, none of it visible on regtest or testnet4:
 | Found | Effect | State |
 |---|---|---|
 | A build without the Orchard backend cannot join mainnet (peers answer "upgrade-required"). Every earlier test of this branch was such a build. | The whole suite was re-run with the backend on (46 of 46) before any coin moved. | Release builds turn it on; CI for this branch should too. |
-| The release recipes do not pass `DINERO_SWAP_LIGHT_BTC=ON`. | Swaps without Bitcoin Core would not be in a shipped app. | Open: release recipes. |
+| The release recipes do not pass `DINERO_SWAP_LIGHT_BTC=ON`. | Swaps without Bitcoin Core would not be in a shipped app. | The five release recipes pass it since v8.2.4; the Windows swap job builds `dinerod` with it. A Windows party in a swap is still not rehearsed. |
 | The public tower's Dinero node was an old, stuck one (44,000 blocks behind). I had not checked its height. | The tower could not have confirmed any swap. | Given its own current node before the swap. |
 | On Linux, the tower crashed on its first HTTPS request: its static OpenSSL was exported and the system's libssl bound to it. | 42 restarts. The buyer's node held its BTC lock back until the tower confirmed, as designed. | Fixed (`--exclude-libs,ALL`), with a check; section 13's "static Linux builds take libcurl cleanly" is no longer unverified, it was false. |
 | `swap.accept` took a wallet address on every refused attempt. | The buyer's payout landed at address 61, past the usual restore gap. | Fixed, tested at the manager and through the RPC. |
