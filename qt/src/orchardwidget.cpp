@@ -126,7 +126,6 @@ void OrchardWidget::setupUi() {
     accountGrid->addWidget(accountSelector_,0,0);
     accountGrid->addWidget(accountStatus_, 1, 0);
     accountGrid->addWidget(createAccount_, 2, 0, Qt::AlignLeft);
-    accountGrid->addWidget(Muted("After setup the account needs to synchronize before it can spend.", account), 3, 0);
     connect(accountSelector_,&QComboBox::currentIndexChanged,this,&OrchardWidget::onAccountChanged);
 
     auto* balanceCard = new QGroupBox("Orchard balance", this);
@@ -136,7 +135,6 @@ void OrchardWidget::setupUi() {
     balance_->setObjectName("orchardBalance");
     balance_->setToolTip("Shown as Unknown until the node can report it; never assumed to be zero");
     balanceLayout->addWidget(balance_);
-    balanceLayout->addWidget(Muted("Unknown means the node did not report a balance, not that it is empty.", balanceCard));
     auto* row1 = new QHBoxLayout;
     ShareRow(row1, account, balanceCard);
     root->addLayout(row1);
@@ -814,7 +812,7 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
         const auto state=observed?observed->state:QString();
         activationObserved_=observed && observed->activeAtTip && observed->walletBackend && observed->nodeSupported;
         auto* intro=findChild<QLabel*>("orchardIntro");
-        if (intro) intro->setText(activationObserved_ ? "Orchard rules are active. Wallet synchronization is still required."
+        if (intro) intro->setText(activationObserved_ ? "Orchard rules are active."
             : observed && !observed->nodeSupported ? observed->nodeNotice
             : state=="unscheduled" ? "Orchard activation is not scheduled on this node."
             : state=="scheduled" ? "Orchard is scheduled but not active on this node."
