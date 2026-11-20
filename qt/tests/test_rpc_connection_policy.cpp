@@ -5,6 +5,14 @@
 class RpcConnectionPolicyTest : public QObject {
     Q_OBJECT
 private Q_SLOTS:
+    void startupRefusalOnlyBeforeFirstConnection() {
+        QVERIFY(RpcConnectionPolicy::ShouldSuppressStartupRefusal(false,false,-1,"Connection refused"));
+        QVERIFY(RpcConnectionPolicy::ShouldSuppressStartupRefusal(false,false,-1,"connection REFUSED"));
+        QVERIFY(!RpcConnectionPolicy::ShouldSuppressStartupRefusal(false,true,-1,"Connection refused"));
+        QVERIFY(!RpcConnectionPolicy::ShouldSuppressStartupRefusal(true,false,-1,"Connection refused"));
+        QVERIFY(!RpcConnectionPolicy::ShouldSuppressStartupRefusal(false,false,401,"Connection refused"));
+        QVERIFY(!RpcConnectionPolicy::ShouldSuppressStartupRefusal(false,false,-1,"Unauthorized"));
+    }
     void onlyTheDispatchContextCanPublishAReply() {
         const QUrl a("http://node-a.invalid/"),b("http://node-b.invalid/");
         QVERIFY(RpcConnectionPolicy::MatchesOrigin("one",a,"one",a));

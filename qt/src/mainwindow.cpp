@@ -22,6 +22,7 @@
 #include "responsiveuipolicy.h"
 #include "walletbackuplock.h"
 #include "rpcclient.h"
+#include "rpcconnectionpolicy.h"
 #include <QMenu>
 #include <QMenuBar>
 #include <QAction>
@@ -8874,6 +8875,12 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
   if (method == "wallet.sendtoaddress" || method == "sendtoaddress" || method == "wallet.covenant.ctvfund")
     sendSubmissionPending_ = false;
   if (!rpc_) return;  // Guard: shutting down
+  // A background probe can race the embedded daemon's first RPC listener.
+  // The startup dialog already explains this state; don't turn it into a
+  // frightening global error. After the first connection, show refusals.
+  if (RpcConnectionPolicy::ShouldSuppressStartupRefusal(
+        daemonEverConnected_, connectionMgr_ && connectionMgr_->isConnected(),
+        code, message)) return;
   if (method == "wallet.encrypt" && btnEncryptWallet_ &&
       message.contains("already encrypted", Qt::CaseInsensitive))
     btnEncryptWallet_->setVisible(false);
@@ -17903,6 +17910,7 @@ void MainWindow::onToggleAiPanel() {
 
 void MainWindow::onDaemonConnected() {
   qDebug() << "MainWindow: Daemon connected ✅";
+  daemonEverConnected_ = true;
   daemonLaunchRetries_ = 0;  // connected — reset the launch-retry budget
   autoLoadDefaultAttempted_ = false;
   walletReorgInfoSupported_ = true;
