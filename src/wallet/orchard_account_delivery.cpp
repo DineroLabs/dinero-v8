@@ -2593,9 +2593,17 @@ size_t OrchardAccountDelivery::BoundRetainedHistory(WalletManager& w,uint64_t se
         if(sqlite3_step(exists.p)!=SQLITE_ROW)return 0;
         Statement most(db,"SELECT coalesce(max(n),0) FROM (SELECT count(*) AS n FROM orchard_wallet_retained GROUP BY wallet_id,account)");
         Check(sqlite3_step(most.p)==SQLITE_ROW);
-        // The smallest possible per-account allowance (1,024 accounts) is 48.
+        // A catalog with at most 128 accounts has the full 256-parent window
+        // plus 64 rows of slack. Every catalog account needs a current row, so
+        // <=128 current rows is a safe cheap upper bound on account count.
+        // Larger (older) catalogs use the minimum 1,024-account allowance.
+        Statement current(db,"SELECT count(*) FROM orchard_wallet_snapshots");
+        Check(sqlite3_step(current.p)==SQLITE_ROW);
+        const auto current_rows=uint64_t(sqlite3_column_int64(current.p,0));
+        const auto allowance=current_rows<=kMaxRetainedAccounts?
+            kRetainedWindow+kRetainedSlack:RetainedShareFor(OrchardAccountCatalog::kMaxAccounts);
         const auto most_rows=uint64_t(sqlite3_column_int64(most.p,0));
-        if(window_for_test?most_rows<=window_for_test:most_rows<=RetainedShareFor(OrchardAccountCatalog::kMaxAccounts))return 0;
+        if(window_for_test?most_rows<=window_for_test:most_rows<=allowance)return 0;
     }
     RequireShieldFullSync(db);Transaction tx(db);
     auto seed=lease->CopyRecoverySeed(session);
