@@ -5214,6 +5214,13 @@ void MainWindow::setupUI() {
         btnMiningSessionFinds_->setText(
           QString("Session finds (%1)").arg(miningSessionFinds_.size()));
       }
+      miningFoundPendingTemplate_ = true;
+      // The live hash field is only for the visible mining session. Keeping
+      // offscreen find rows made a return to this tab show hours of old hits
+      // as if they were live; Session finds already preserves their history.
+      const bool miningTabActive = mainTabs_ && miningTabWidget_ &&
+        mainTabs_->currentWidget() == miningTabWidget_;
+      if (!miningTabActive) return;
       const QString liveRecord = QString(
         "nonce=0x%1 hash=%2 prev=%3 merkle=%4 utreexo=%5 version=0x%6 "
         "time=%7 bits=0x%8 reserved=000000000000000000000000 height=%9")
@@ -5234,7 +5241,6 @@ void MainWindow::setupUI() {
       foundSample.highlightUntilMs = QDateTime::currentMSecsSinceEpoch() +
                                      dinero::qt::kBlockFoundHighlightMs;
       miningHashSamples_.append(std::move(foundSample));
-      miningFoundPendingTemplate_ = true;
     });
 
     // Forward embedded miner state into the daemon's relay auto-mode so
@@ -11462,6 +11468,8 @@ void MainWindow::setMiningOutputCinematicEnabled(bool enabled) {
     updateMiningOutputCinematicFrame();
     return;
   }
+
+  miningHashSamples_.clear();
 
   // Once a hidden cinematic has been stopped and restored to its idle
   // palette, mining-status polls must not repaint that hidden viewport.
