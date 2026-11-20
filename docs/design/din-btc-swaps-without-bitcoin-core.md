@@ -507,3 +507,48 @@ Not covered by this run: the refund paths on testnet4 (they need the deadlines t
 at the defaults), a swap where the buyer's node is offline (covered on regtest only), the public
 tower at swaptower.dinerolabs.org (this run used a tower on the same machine, armed the same way),
 and a second server (testnet4 has one default). The mainnet rehearsal is step 4.
+
+## 16. The mainnet rehearsal (2026-11-19): passed, and what it found
+
+Step 4 of section 9. One swap of 30 DIN for 30,000 sat on Dinero mainnet and Bitcoin mainnet, with
+no Bitcoin Core anywhere.
+
+- **Seller:** the owner's everyday node and wallet (a full-archive, wallet-index-v3 datadir),
+  running this branch merged with the v8.2.4 wallet work, built with the Orchard backend. Swaps were
+  turned on with the Swap tab's switch.
+- **Buyer:** a new mainnet datadir started from the bundled snapshot, with a new wallet: what a new
+  desktop user has.
+- **Deposit:** paid by hand from a Coinbase withdrawal.
+- **Watchtower:** the public one, `https://swaptower.dinerolabs.org`.
+
+| Step | Bitcoin mainnet |
+|---|---|
+| Deposit of 33,000 sat from the exchange | `6f87cfdecbb8239bbf111197490102e57da37cc34da875638d96a9cc2ad00a29`, block 976,664 |
+| The buyer's lock, built by his node from the deposit (30,000 to the swap, 2,817 change, fee 183) | `cd1574e4ffb6dac6d704a57145e3cd93799a98cc755de88ff20fa35bc3bcc72e`, block 976,673 |
+| The seller's claim (29,000 sat to the seller's address, fee 1,000) | `237caf59b6f29da7bd8f4c28b42ed48c8b617b91420e186506a1bb86523967aa`, block 976,676 |
+
+On Dinero: the seller's lock `f8222f686252ee04c7c859424f3e1704c9b53cc844bfa5f9121319fa8a15b447`;
+the public tower's claim for the buyer `69490ea942b7737a9da7fd7ef3585b872b530b8496516ef7a1b0906f24a394f7`,
+swept on to the buyer's wallet address, where 29.99745 DIN is confirmed. Both nodes read "done"
+once the seller's claim was six blocks deep, 2 h 47 min after the deposit confirmed.
+
+What it found, none of it visible on regtest or testnet4:
+
+| Found | Effect | State |
+|---|---|---|
+| A build without the Orchard backend cannot join mainnet (peers answer "upgrade-required"). Every earlier test of this branch was such a build. | The whole suite was re-run with the backend on (46 of 46) before any coin moved. | Release builds turn it on; CI for this branch should too. |
+| The release recipes do not pass `DINERO_SWAP_LIGHT_BTC=ON`. | Swaps without Bitcoin Core would not be in a shipped app. | Open: release recipes. |
+| The public tower's Dinero node was an old, stuck one (44,000 blocks behind). I had not checked its height. | The tower could not have confirmed any swap. | Given its own current node before the swap. |
+| On Linux, the tower crashed on its first HTTPS request: its static OpenSSL was exported and the system's libssl bound to it. | 42 restarts. The buyer's node held its BTC lock back until the tower confirmed, as designed. | Fixed (`--exclude-libs,ALL`), with a check; section 13's "static Linux builds take libcurl cleanly" is no longer unverified, it was false. |
+| `swap.accept` took a wallet address on every refused attempt. | The buyer's payout landed at address 61, past the usual restore gap. | Fixed, tested at the manager and through the RPC. |
+| The Swap tab kept an old "Connection refused" after the node came back. | Confusing, not harmful. | Fixed. |
+| The main window raised every Swap tab refusal as a global error. | An error bar for every user with swaps off. | Fixed. |
+| A new snapshot node does not request the Orchard wallet history until it is restarted. | A new user cannot create a wallet in the first run. | A fix exists on its own branch; not yet proven end to end. |
+| A new wallet on a snapshot node never scans: its balance stays 0 with the coins on chain. | The buyer cannot see or spend what he bought. | Open, in the wallet code, not the swap code. The mainnet gate stays until this is fixed. |
+
+Not covered: a refund on mainnet, a buyer who goes offline on mainnet, a Windows party, and paying
+the deposit in several payments.
+
+**The gate.** `swap.btc_light_mainnet_rehearsal` is lifted after the fixes above have landed
+(owner's decision, 2026-11-19), and not before the last row is closed: a buyer who cannot see his
+DIN is not a working swap.
