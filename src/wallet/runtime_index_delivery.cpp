@@ -632,6 +632,15 @@ void RuntimeWalletOriginProjection::SetFirstEvent(const RuntimeOutboxEvent& firs
         Fail("Origin projection first event is not a checked activation origin");
     first_=first;
 }
+void RuntimeWalletOriginProjection::SetFirstSnapshotBaseEvent(const RuntimeOutboxEvent& first,
+        uint32_t base_height,const uint256& base_block) {
+    if(first_.cursor.sequence)Fail("Origin projection first event already set");
+    if(first.cursor.sequence!=1||first.direction!=RuntimeBlockDirection::Connect||!base_height||
+       base_block.IsNull()||first.context.height<=first.context.activation_height||
+       first.context.height!=uint64_t(base_height)+1||first.context.parent_hash!=base_block)
+        Fail("Origin projection first event is not the checked snapshot base successor");
+    first_=first;
+}
 void RuntimeWalletOriginProjection::AppendValidated(const Block& block,uint32_t height) {
     // Projection arithmetic only (see the header contract): the producer calls
     // this only AFTER owned consensus replay of this body, and body ordering /

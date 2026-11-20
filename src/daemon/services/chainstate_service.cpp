@@ -8440,11 +8440,16 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
 StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService::captureRuntimeWalletOrigin(
         WalletManager& wallet,uint64_t session,UTXOIndex* index,bool existing_identity_only,bool public_history,
         bool& body_data_pending,bool retained_history,size_t material_limit_bytes,
-        const std::optional<RuntimeOutboxCursor>& captured_head,bool fresh_empty_prefix) const {
+        const std::optional<RuntimeOutboxCursor>& captured_head,bool fresh_empty_prefix,
+        const std::optional<std::pair<uint32_t,uint256>>& snapshot_base_origin) const {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     // The empty-prefix origin is only for a wallet whose sealed fresh birth
     // proves it had no keys below activation; it never acquires history.
     if(fresh_empty_prefix && (public_history || retained_history))return Status::Invalid;
+    // A snapshot-base origin is the empty-prefix origin rooted at an
+    // authenticated full-v6 snapshot base instead of activation; the caller
+    // proved a sealed fresh birth at or above that base.
+    if(snapshot_base_origin && !fresh_empty_prefix)return Status::Invalid;
     try {
         auto result=RuntimeOrdinaryDelivery::CaptureOriginDomain(wallet,session,index,existing_identity_only,
             material_limit_bytes);
@@ -8456,10 +8461,25 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
             if(!page.ok())return page.status();
             if(safe_mode_active_ || (*page)->events.size()!=1)return Status::Invalid;
             const auto& first=(*page)->events.front();
-            if(first.cursor.sequence!=1 || first.direction!=RuntimeBlockDirection::Connect ||
-               first.context.height!=first.context.activation_height || !first.context.height)
-                return Status::Invalid;
-            result->SetFirstEvent(first);head=(*page)->head;
+            if(snapshot_base_origin) {
+                // Re-prove the base under the selected lock: still the
+                // authenticated snapshot base this node imported, and the
+                // outbox's first event is exactly its successor.
+                if(!orchard_snapshot_startup_ ||
+                   orchard_snapshot_startup_->base.height!=snapshot_base_origin->first ||
+                   orchard_snapshot_startup_->base.block!=snapshot_base_origin->second ||
+                   first.cursor.sequence!=1 || first.direction!=RuntimeBlockDirection::Connect ||
+                   first.context.height!=uint64_t(snapshot_base_origin->first)+1 ||
+                   first.context.parent_hash!=snapshot_base_origin->second)
+                    return Status::Invalid;
+                result->SetFirstSnapshotBaseEvent(first,snapshot_base_origin->first,snapshot_base_origin->second);
+            } else {
+                if(first.cursor.sequence!=1 || first.direction!=RuntimeBlockDirection::Connect ||
+                   first.context.height!=first.context.activation_height || !first.context.height)
+                    return Status::Invalid;
+                result->SetFirstEvent(first);
+            }
+            head=(*page)->head;
             auto expected=first.context.parent_hash;
             // Operational ancestry cap, not a resident-memory certificate.
             // Retains hashes only; full bodies are read/validated one at a time.
@@ -8669,8 +8689,45 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
         // authority; every projected coin is rebuilt from the owned source.
         const auto replay=getRuntimeAccountReplayForWallet(wallet,session);
         if(!replay.ok())return replay.status();
+        // On an authenticated full-v6 snapshot source the outbox starts at
+        // base+1, so an activation origin can never be captured. A wallet
+        // whose sealed fresh birth is at or above the base owned no script
+        // below it: root its ordinary origin at that base with an empty
+        // prefix. Restored/imported seeds, births below the base, compact
+        // sources and history acquisition keep the activation requirement.
+        std::optional<std::pair<uint32_t,uint256>> snapshot_base;
+        if(!public_history && !retained_history) {
+            {
+                std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+                if(orchard_snapshot_startup_ && !compact_startup_ &&
+                   orchard_snapshot_startup_->base.profile==uint8_t(consensus::OrchardSnapshotProfile::Full) &&
+                   orchard_snapshot_startup_->base.height>=Params().orchard_activation_height) {
+                    const auto first=getRuntimeDeliveryPage({},1);
+                    if(first.ok() && (*first)->events.size()==1 &&
+                       (*first)->events.front().context.height==uint64_t(orchard_snapshot_startup_->base.height)+1)
+                        snapshot_base=std::pair{orchard_snapshot_startup_->base.height,orchard_snapshot_startup_->base.block};
+                }
+            }
+            if(snapshot_base) {
+                std::optional<uint32_t> birth;
+                {
+                    const auto lease=wallet.AcquireDatabaseLease();
+                    if(lease->Session()!=session)return Status::Invalid;
+                    // The sealed record needs the seed: a locked wallet waits
+                    // for unlock instead of being treated as unproved.
+                    if(wallet.isWalletLocked())return Status::NotFound;
+                    birth=lease->SealedFreshBirthHeight(session);
+                }
+                // The replay's outbox origin (Point({})) must be the same base;
+                // receipts are bound to that point.
+                const auto root=(*replay)->Point({}).checkpoint;
+                if(!birth || *birth<snapshot_base->first ||
+                   root.height!=snapshot_base->first || root.block_hash!=snapshot_base->second)
+                    snapshot_base.reset();
+            }
+        }
         const auto origin=captureRuntimeWalletOrigin(wallet,session,&index,true,public_history,body_data_pending,
-            retained_history,material_limit_bytes);
+            retained_history,material_limit_bytes,std::nullopt,bool(snapshot_base),snapshot_base);
         if(!origin.ok())return origin.status();
         const auto result=RuntimeWalletCoverageProjection::Build(*origin,*replay,{},material_limit_bytes);
         {
