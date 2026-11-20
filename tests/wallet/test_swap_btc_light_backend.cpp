@@ -217,6 +217,45 @@ TEST(BtcLightBackend, ServersCarryHeadersWhenNoPeerCanBeReached) {
     EXPECT_EQ(bounded.chain().TipHeight(), 2 * c.max_server_headers_per_sync);
 }
 
+// What the built-in wallet waits for before it reads a balance: a chain that
+// is behind cannot prove recent payments and would show them as missing.
+TEST(BtcLightBackend, KnowsWhetherItHasCaughtUpWithTheChain) {
+    TempFile file("caughtup");
+    Net net;
+    net.Grow(250);
+    BtcLightBackendConfig c = Config();
+    c.header_file = file.path;
+    {
+        BtcLightBackend backend(c, net.Transport());
+        EXPECT_FALSE(backend.CaughtUp()) << "nothing asked yet";
+        backend.Sync(net.Now());
+        EXPECT_EQ(backend.chain().TipHeight(), 250u);
+        EXPECT_FALSE(backend.CaughtUp()) << "a round that brought hundreds of headers may not be the last";
+        backend.Sync(net.Now(), true);
+        EXPECT_TRUE(backend.CaughtUp()) << "a round that brought nothing new: at the tip";
+        net.Grow(2);  // new blocks arrive: still caught up
+        backend.Sync(net.Now(), true);
+        EXPECT_EQ(backend.chain().TipHeight(), 252u);
+        EXPECT_TRUE(backend.CaughtUp());
+    }
+    // A restart after hours away: the stored chain is behind, and nobody has been asked yet.
+    net.Grow(300);
+    BtcLightBackend restarted(c, net.Transport());
+    EXPECT_FALSE(restarted.CaughtUp());
+    // Nobody answers: what it knows may be stale, so it is not "caught up".
+    net.peers_reachable = false;
+    net.server_up["a"] = net.server_up["b"] = false;
+    restarted.Sync(net.Now());
+    EXPECT_EQ(restarted.chain().TipHeight(), 252u);
+    EXPECT_FALSE(restarted.CaughtUp());
+    net.peers_reachable = true;
+    restarted.Sync(net.Now(), true);
+    EXPECT_EQ(restarted.chain().TipHeight(), 552u);
+    EXPECT_FALSE(restarted.CaughtUp());
+    restarted.Sync(net.Now(), true);
+    EXPECT_TRUE(restarted.CaughtUp());
+}
+
 TEST(BtcLightBackend, SaysWhenNobodyAnswers) {
     Net net;
     net.Grow(5);

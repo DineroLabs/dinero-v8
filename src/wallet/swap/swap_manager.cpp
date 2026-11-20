@@ -1294,12 +1294,17 @@ std::string SwapManager::BtcWalletNewAddress() {
 
 BtcWallet::Balance SwapManager::BtcWalletBalance() {
     if (const std::string why = BtcWalletWhyNot(); !why.empty()) throw std::runtime_error(why);
+    std::function<uint32_t()> synced;
     BtcWallet::ScriptReader read;
     {
         std::lock_guard<std::mutex> lock(mu_);
         read = light_btc_->script_activity;
+        synced = light_btc_->tip_height;
     }
     // The servers are asked without the manager's lock: swaps keep ticking.
+    // Until the node has Bitcoin's headers up to now it cannot prove recent
+    // payments, and would show them as missing: say so instead (this throws).
+    synced();
     std::lock_guard<std::mutex> file(btc_wallet_mu_);
     return BtcWallet(config_.dir, config_.runner.btc_hrp).ReadBalance(read);
 }
@@ -1317,11 +1322,13 @@ struct SwapManager::PlannedBtcPayment {
 SwapManager::PlannedBtcPayment SwapManager::PlanBtcPayment(BtcWallet& wallet, const std::string& to_address,
                                                            uint64_t amount_sat, bool send_all, uint32_t target_blocks) {
     BtcWallet::ScriptReader read;
+    std::function<uint32_t()> synced;
     std::function<std::optional<double>(uint32_t)> fee_rate;
     {
         std::lock_guard<std::mutex> lock(mu_);
         if (!light_btc_->fee_rate || !light_btc_->broadcast) throw std::runtime_error("this node cannot send Bitcoin");
         read = light_btc_->script_activity;
+        synced = light_btc_->tip_height;
         fee_rate = light_btc_->fee_rate;
     }
     if (target_blocks == 0 || target_blocks > 144) throw std::invalid_argument("the fee target must be 1 to 144 blocks");
@@ -1334,6 +1341,7 @@ SwapManager::PlannedBtcPayment SwapManager::PlanBtcPayment(BtcWallet& wallet, co
         throw std::invalid_argument("one payment may send at most " + std::to_string(config_.btc_wallet_max_send_sat) +
                                     " sat while the Bitcoin wallet is new");
     }
+    synced();  // throws while Bitcoin's headers are not up to date
     const BtcWallet::Balance balance = wallet.ReadBalance(read);  // throws if no server answers
     const auto rate = fee_rate(target_blocks);
     if (!rate) throw std::runtime_error("cannot reach any Bitcoin server for the network fee");
@@ -1498,11 +1506,14 @@ SwapManager::BtcPayment SwapManager::BumpBtcFee(const std::string& txid, uint32_
 
 std::vector<SwapManager::BtcWalletTx> SwapManager::BtcWalletHistory() {
     if (const std::string why = BtcWalletWhyNot(); !why.empty()) throw std::runtime_error(why);
+    std::function<uint32_t()> synced;
     BtcWallet::ScriptReader read;
     {
         std::lock_guard<std::mutex> lock(mu_);
         read = light_btc_->script_activity;
+        synced = light_btc_->tip_height;
     }
+    synced();  // throws while Bitcoin's headers are not up to date
     std::lock_guard<std::mutex> file(btc_wallet_mu_);
     BtcWallet wallet(config_.dir, config_.runner.btc_hrp);
     const BtcWallet::Balance balance = wallet.ReadBalance(read);
