@@ -60,6 +60,9 @@ class AddressManagerService;
  * - Thread-safe async message sending
  */
 class P2PService : public IService {
+#ifdef DINERO_TEST_ORCHARD_ORIGIN
+    friend struct SnapshotImportedKeyHistoryTestAccess;
+#endif
 public:
     struct NetworkTotals {
         uint64_t bytes_recv{0};
