@@ -259,6 +259,10 @@ void DashboardActionController::stopSeeder() {
 }
 
 void DashboardActionController::refreshSeederStatus() {
+    // The dashboard exists before the embedded node starts listening. Wait for
+    // another RPC to establish the connection before polling this optional
+    // operator service, so startup does not show a misleading error.
+    if (!rpc_ || !rpc_->isConnected()) return;
     dispatchObject(QStringLiteral("seeder.status"), QJsonObject{});
 }
 
