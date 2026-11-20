@@ -1843,7 +1843,8 @@ private:
         WalletManager&,uint64_t,UTXOIndex*,bool existing_identity_only,bool public_history,bool& body_data_pending,
         bool retained_history = false,size_t material_limit_bytes = kWalletRecoveryMaterialLimitBytes,
         const std::optional<RuntimeOutboxCursor>& captured_head = std::nullopt,
-        bool fresh_empty_prefix = false) const;
+        bool fresh_empty_prefix = false,
+        const std::optional<std::pair<uint32_t,uint256>>& snapshot_base_origin = std::nullopt) const;
     // #939 phase 3: Orchard account delivery for a native-complete wallet on a
     // full-archive v3 source. Writes Orchard account state only.
     // False success means a bounded, durable Orchard prefix was applied and

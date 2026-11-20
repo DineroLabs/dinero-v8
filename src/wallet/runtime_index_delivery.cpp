@@ -632,6 +632,15 @@ void RuntimeWalletOriginProjection::SetFirstEvent(const RuntimeOutboxEvent& firs
         Fail("Origin projection first event is not a checked activation origin");
     first_=first;
 }
+void RuntimeWalletOriginProjection::SetFirstSnapshotBaseEvent(const RuntimeOutboxEvent& first,
+        uint32_t base_height,const uint256& base_block) {
+    if(first_.cursor.sequence)Fail("Origin projection first event already set");
+    if(first.cursor.sequence!=1||first.direction!=RuntimeBlockDirection::Connect||!base_height||
+       base_block.IsNull()||first.context.height<=first.context.activation_height||
+       first.context.height!=uint64_t(base_height)+1||first.context.parent_hash!=base_block)
+        Fail("Origin projection first event is not the checked snapshot base successor");
+    first_=first;
+}
 void RuntimeWalletOriginProjection::AppendValidated(const Block& block,uint32_t height) {
     // Projection arithmetic only (see the header contract): the producer calls
     // this only AFTER owned consensus replay of this body, and body ordering /
@@ -1710,6 +1719,7 @@ RuntimeIndexProgress RuntimeOrdinaryDelivery::AdvanceCoverage(WalletManager& wal
         RuntimeIndexDelivery::CheckCoverageImportedCohort(index,origin);
         transaction.Commit(); // Index's ACTUAL owners remain held through here.
     },&origin.historical_scripts_,previous.get(),&source,owners_current);
+    wallet.publishNativeDeliveredTipHeight(*lease,applied.tip_height);
     return applied;
 }
 
@@ -1889,6 +1899,7 @@ void RuntimeOrdinaryDelivery::ReconcileCoverage(WalletManager& wallet,UTXOIndex&
         if(source_before_commit)source_before_commit();
         transaction.Commit();
     },source_before_commit);
+    wallet.publishNativeDeliveredTipHeight(*lease,source.TipHeight());  // committed above; see the declaration
 }
 
 void RuntimeOrdinaryDelivery::ReconcileLegacyTransparentCoverage(WalletManager& wallet,UTXOIndex& index,
@@ -2313,7 +2324,9 @@ RuntimeIndexProgress RuntimeOrdinaryDelivery::Apply(WalletManager& wallet,uint64
     if(wallet.current_wallet_id_<0)Fail("Ordinary delivery wallet unavailable");
     OrdinaryTransaction transaction(db);
     const auto applied=ApplyInTransaction(wallet,lease.get(),identity,event,origin);
-    transaction.Commit();return applied;
+    transaction.Commit();
+    wallet.publishNativeDeliveredTipHeight(*lease,applied.tip_height);
+    return applied;
 }
 RuntimeIndexProgress RuntimeOrdinaryDelivery::ApplyInTransaction(WalletManager& wallet,WalletManager::DatabaseLease* lease,
         const std::string& identity,const RuntimeOutboxEvent& event,const RuntimeWalletOriginProjection* origin) {

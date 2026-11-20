@@ -28,6 +28,7 @@
 #include "wallet/bip32_deriver.h"  // For BIP32 derivation (canonical engine)
 #include "wallet/bip39.h"
 #include "wallet/v7_p2mr_store.h"
+#include "wallet/pq_derivation.h"
 #include "wallet/p2mr_address.h"
 #include "wallet/secure_keypair.h"
 #include "consensus/pq/scheme_registry.h"
@@ -4232,6 +4233,154 @@ WalletManager::DatabaseLease::SealedFreshBirthHeight(uint64_t expected_session) 
     if (height_hex.find_first_not_of("0123456789abcdef") != std::string::npos)
         throw std::runtime_error("Fresh birth height invalid");
     return static_cast<uint32_t>(std::stoul(height_hex, nullptr, 16));
+}
+
+std::optional<uint32_t>
+WalletManager::DatabaseLease::SealedFreshOrdinaryBirthHeight(uint64_t expected_session) const {
+    const auto birth=SealedFreshBirthHeight(expected_session);
+    if(!birth)return std::nullopt;
+    if(!sqlite3_get_autocommit(db_))
+        throw std::runtime_error("Fresh ordinary inventory requires its own transaction");
+    IssuedAddressTransaction transaction(db_);
+    const auto has_rows=[&](const char* table) {
+        if(!NativeTablePresent(db_,table))return false;
+        const std::string sql=std::string("SELECT 1 FROM ")+table+" LIMIT 1";
+        IssuedStatement q(db_,sql.c_str());
+        const int rc=sqlite3_step(q.value.get());
+        if(rc==SQLITE_ROW)return true;
+        IssuanceCheck(db_,rc,SQLITE_DONE);
+        return false;
+    };
+    // A recovery-word import into this wallet can only preserve the birth
+    // seal when it reproduces the active seed. These tables instead carry
+    // independently supplied keys or descriptors, including watch-only ones.
+    for(const char* table:{"imported_keys","taproot_keys","imported_descriptors",
+                           "imported_descriptor_addresses","covenant_descriptors"})
+        if(has_rows(table))return std::nullopt;
+
+    // Authenticate every HD path against the unlocked seed, including the
+    // address and watch-script companions. Then reject address rows without
+    // a proved HD path; imports must never inherit the wallet's birthday.
+    AuthenticateHdInventory(db_,owner_.master_seed_);
+    {
+        IssuedStatement extra(db_,"SELECT 1 FROM addresses a LEFT JOIN address_derivation_paths p "
+            "ON p.address=a.address WHERE p.address IS NULL LIMIT 1");
+        const int rc=sqlite3_step(extra.value.get());
+        if(rc==SQLITE_ROW)return std::nullopt;
+        IssuanceCheck(db_,rc,SQLITE_DONE);
+    }
+    std::map<std::vector<uint8_t>,std::string> proved_scripts;
+    {
+        IssuedStatement hd(db_,"SELECT script_pubkey,derivation_path FROM address_derivation_paths");
+        int rc;
+        while((rc=sqlite3_step(hd.value.get()))==SQLITE_ROW) {
+            auto* q=hd.value.get();
+            if(sqlite3_column_type(q,0)!=SQLITE_TEXT || sqlite3_column_type(q,1)!=SQLITE_TEXT)
+                throw std::runtime_error("Fresh ordinary HD path malformed");
+            const auto* script=static_cast<const char*>(sqlite3_column_blob(q,0));
+            const auto* path=static_cast<const char*>(sqlite3_column_blob(q,1));
+            const int script_len=sqlite3_column_bytes(q,0),path_len=sqlite3_column_bytes(q,1);
+            if(!script || !path || script_len<=0 || path_len<=0)
+                throw std::runtime_error("Fresh ordinary HD path empty");
+            std::vector<uint8_t> decoded;
+            if(!util::unhex(std::string(script,script_len),decoded) || decoded.empty())
+                throw std::runtime_error("Fresh ordinary HD script malformed");
+            proved_scripts.emplace(std::move(decoded),std::string(path,path_len));
+        }
+        IssuanceCheck(db_,rc,SQLITE_DONE);
+    }
+
+    // Generated P2MR addresses live in a separate key store and have only a
+    // watch-script companion. An imported P2MR seed can claim the same path,
+    // so a path string alone proves nothing: decrypt and rederive each seed.
+    const auto pq_path=owner_.GetV7P2MRStorePath();
+    if(pq_path.empty())throw std::runtime_error("Fresh ordinary PQ path unavailable");
+    std::error_code error;
+    const auto status=std::filesystem::symlink_status(pq_path,error);
+    if(error && error!=std::errc::no_such_file_or_directory)
+        throw std::runtime_error("Fresh ordinary PQ storage unavailable");
+    if(std::filesystem::exists(status)) {
+        wallet::V7P2MRStore store;
+        if(store.OpenExistingReadOnly(pq_path)!=wallet::V7P2MRStore::OpenResult::Ok)
+            throw std::runtime_error("Fresh ordinary PQ storage invalid");
+        const auto rows=store.CaptureKeysByWallet(owner_.current_wallet_id_);
+        if(!rows.empty()) {
+            auto initial=owner_.loadInitialPqMaster(owner_.master_seed_);
+            struct ClearInitial {std::optional<std::array<uint8_t,32>>& value;
+                ~ClearInitial(){if(value)OPENSSL_cleanse(value->data(),value->size());}} clear_initial{initial};
+            if(!initial || (owner_.pq_master_key_loaded_ &&
+                CRYPTO_memcmp(initial->data(),owner_.pq_master_key_.data(),32)!=0))
+                throw std::runtime_error("Fresh ordinary PQ master unavailable");
+            const auto parse_path=[](std::string_view path)->std::optional<std::array<uint32_t,3>> {
+                constexpr std::string_view prefix="m/88'/1448'/";
+                if(!path.starts_with(prefix))return std::nullopt;
+                path.remove_prefix(prefix.size());
+                std::array<uint32_t,3> parts{};
+                for(size_t i=0;i<parts.size();++i) {
+                    if(path.empty() || path.front()<'0' || path.front()>'9')return std::nullopt;
+                    uint64_t value=0;size_t digits=0;
+                    while(digits<path.size() && path[digits]>='0' && path[digits]<='9') {
+                        value=value*10+uint32_t(path[digits++]-'0');
+                        if(value>0x7fffffff)return std::nullopt;
+                    }
+                    if(digits>1 && path.front()=='0')return std::nullopt;
+                    parts[i]=uint32_t(value);path.remove_prefix(digits);
+                    const std::string_view separator=i==0?"'/":i==1?"/":"";
+                    if(!path.starts_with(separator))return std::nullopt;
+                    path.remove_prefix(separator.size());
+                }
+                if(!path.empty() || parts[1]>1)return std::nullopt;
+                return parts;
+            };
+            for(const auto& record:rows) {
+                const auto& row=record.metadata;
+                const auto parts=parse_path(row.derivation_path);
+                if(!parts || row.wallet_id!=owner_.current_wallet_id_)return std::nullopt;
+                auto material=owner_.DeriveV7Bip32Material((*parts)[0],(*parts)[1],(*parts)[2]);
+                if(!material)return std::nullopt;
+                struct ClearMaterial {WalletManager::V7Bip32Material& value;
+                    ~ClearMaterial(){OPENSSL_cleanse(value.private_key.data(),value.private_key.size());
+                        OPENSSL_cleanse(value.chain_code.data(),value.chain_code.size());}} clear_material{*material};
+                struct ClearSeed {std::array<uint8_t,32> value;
+                    ~ClearSeed(){OPENSSL_cleanse(value.data(),value.size());}} expected{
+                        wallet::pq::DerivePQSeed(material->private_key,material->chain_code,row.leaf_index)};
+                wallet::SecureSeed plaintext;
+                const auto& encrypted=record.encrypted_seed;
+                if(wallet::OpenSeedSecure(encrypted.ciphertext,encrypted.nonce,encrypted.tag,*initial,&plaintext)!=wallet::AeadOpenResult::Ok)
+                    throw std::runtime_error("Fresh ordinary PQ seed authentication failed");
+                if(CRYPTO_memcmp(plaintext.bytes().data(),expected.value.data(),32)!=0)
+                    return std::nullopt;
+                wallet::SecureKeypair pair(consensus::pq::ml_dsa_65::KeygenFromSeed(plaintext.bytes()));
+                const auto root=wallet::pq::ComputeSingleLeafMerkleRoot(consensus::pq::SCHEME_ID_ML_DSA_65,pair.pubkey());
+                const auto decoded=wallet::DecodeP2MRAddress(row.address);
+                if(pair.pubkey()!=row.pubkey || root!=row.merkle_root || !decoded || decoded->merkle_root!=root)
+                    throw std::runtime_error("Fresh ordinary PQ address binding invalid");
+                const auto script=wallet::BuildP2MRScriptPubKey(root);
+                if(!proved_scripts.emplace(script,row.derivation_path).second)
+                    throw std::runtime_error("Fresh ordinary PQ script collision");
+            }
+        }
+    }
+    {
+        IssuedStatement watch(db_,"SELECT script_pubkey,path,is_change FROM watch_scripts");
+        int rc;
+        while((rc=sqlite3_step(watch.value.get()))==SQLITE_ROW) {
+            auto* q=watch.value.get();
+            const auto* script=static_cast<const uint8_t*>(sqlite3_column_blob(q,0));
+            const auto* path=static_cast<const char*>(sqlite3_column_blob(q,1));
+            const int script_len=sqlite3_column_bytes(q,0),path_len=sqlite3_column_bytes(q,1);
+            if(sqlite3_column_type(q,0)!=SQLITE_BLOB || sqlite3_column_type(q,1)!=SQLITE_TEXT ||
+               sqlite3_column_type(q,2)!=SQLITE_INTEGER || !script || !path || script_len<=0 || path_len<=0)
+                throw std::runtime_error("Fresh ordinary watch script malformed");
+            const std::vector<uint8_t> key(script,script+script_len);
+            const auto proved=proved_scripts.find(key);
+            if(proved==proved_scripts.end() || proved->second!=std::string(path,path_len))
+                return std::nullopt;
+        }
+        IssuanceCheck(db_,rc,SQLITE_DONE);
+    }
+    transaction.Commit();
+    return birth;
 }
 
 std::optional<uint32_t>

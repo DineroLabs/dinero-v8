@@ -5515,6 +5515,16 @@ target_include_directories(test_cached_source BEFORE PRIVATE
   ${CMAKE_SOURCE_DIR}/include
 )
 target_link_libraries(test_cached_source PRIVATE GTest::gtest_main)
+add_executable(test_orchard_history_checkpoint tests/services/test_orchard_history_checkpoint.cpp
+  ${CMAKE_SOURCE_DIR}/src/primitives/uint256.cpp)
+add_dependencies(test_orchard_history_checkpoint gtest gtest_main)
+target_include_directories(test_orchard_history_checkpoint BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(test_orchard_history_checkpoint PRIVATE GTest::gtest_main)
+add_test(NAME OrchardHistoryCheckpoint COMMAND test_orchard_history_checkpoint)
+set_tests_properties(OrchardHistoryCheckpoint PROPERTIES LABELS "services-boundary-smoke;daemon;p2p;smoke" TIMEOUT 15)
 add_test(NAME CachedSource COMMAND test_cached_source)
 set_tests_properties(CachedSource PROPERTIES LABELS "services-boundary-smoke;daemon;p2p;smoke" TIMEOUT 60)
 

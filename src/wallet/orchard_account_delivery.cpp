@@ -1367,6 +1367,9 @@ OrchardAccountDelivery::IssuedReceiver OrchardAccountDelivery::IssueCatalogWithR
         // Derive only viewing authority while the existing seed is pinned.
         // No first-account schema or new identity is initialized by capture.
         auto seed=lease->CopyRecoverySeed(session);
+        // Orchard accounts currently derive their viewing/spending authority
+        // only from this pinned seed. Transparent and P2MR imports do not add
+        // Orchard keys, so their ordinary-history guard is separate.
         fresh_birth=lease->SealedFreshBirthHeight(session);
         const auto keys=orchard::WalletKeys::FromSeed(seed->Bytes(),p.account);
         viewing=std::make_unique<Owner::ViewingKey>(keys);

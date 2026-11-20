@@ -13,6 +13,7 @@
 #include "daemon/services/orchard_boundary_replay.h"
 #include "daemon/orchard_snapshot_store.h"
 #include "daemon/services/block_ingress_service.h"
+#include "daemon/services/p2p_service.h"
 #include "consensus/validation_queue.h"
 #include "daemon/reopen_candidate_journal.h"
 #include "daemon/datadir_guard.h"
@@ -29,6 +30,12 @@
 #endif
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
 namespace dinero {
+struct SnapshotImportedKeyHistoryTestAccess {
+    static void Attach(P2PService& peer,std::shared_ptr<p2p::OrchardPhoneHistoryDownload> history) {
+        std::lock_guard lock(peer.orchard_catalog_download_mutex_);
+        peer.orchard_phone_history_=std::move(history);
+    }
+};
 namespace outbox_detail {
 std::string Key(uint64_t);
 std::string Encode(const RuntimeOutboxEvent&);
@@ -2372,6 +2379,80 @@ TEST(OrchardPhoneHistory, SequentialBodiesExtendWithoutSkippingAndReadyDataIsNot
     EXPECT_FALSE(host.Enqueue({"archive",71,0},second->WireBytes()));
     EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(source.f.db),unchanged);
 }
+// A block arrives between the end of verification and the wallet's use of it.
+// The verified history is a checkpoint: it stays usable while the selected
+// chain extends it, and is withdrawn when a reorganisation replaces it.
+TEST(OrchardPhoneHistory, ABlockAfterVerificationKeepsTheCheckpointAndAReorganisationWithdrawsIt){
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;using Download=p2p::OrchardPhoneHistoryDownload;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    source.f.service->setRuntimeBlockNotifications(std::make_shared<CanonicalPoolNotices>());
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));
+    auto proof=std::make_shared<const OrchardSnapshotSection>(Access::CaptureActivation(source.f.db,*headers));
+    const auto a=source.f.db.getOrchardCatalogState(first->Header().GetHash());ASSERT_TRUE(a.ok());
+    BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+    const auto second=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(second);
+    ASSERT_TRUE(source.Submit(second->WireBytes()).connected);ASSERT_TRUE(headers->AddHeader(second->Header()));
+    const auto b=source.f.db.getOrchardCatalogState(second->Header().GetHash());ASSERT_TRUE(b.ok());
+    std::mutex mutex;std::condition_variable cv;std::deque<std::vector<uint8_t>> requests;
+    std::optional<Download::Target> target;
+    Download host(headers,source.f.path.parent_path(),[&]{std::lock_guard lock(mutex);return target;},[&]{return proof;},
+        [&](auto p,const auto& t){return Access::ReplayActivation(std::move(p),headers,t.height,t.hash);},
+        []{return std::vector<Download::Peer>{{"archive",71,ServiceFlags::NODE_NETWORK}};},
+        [&](const auto&,const auto&,const auto& bytes){std::lock_guard lock(mutex);requests.push_back(bytes);cv.notify_all();return true;});
+    const auto requested=[&]{std::unique_lock lock(mutex);
+        if(!cv.wait_for(lock,std::chrono::seconds(5),[&]{return !requests.empty();}))return false;requests.pop_front();return true;};
+    const auto until=[&](const auto& done){const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(std::chrono::steady_clock::now()<deadline){if(done())return true;std::this_thread::sleep_for(std::chrono::milliseconds(10));}return false;};
+    const Download::Target at_first{102,102,first->Header().GetHash(),storage::catalog::Hash(*a),first->Header().GetHash()};
+    const Download::Target at_second{102,103,second->Header().GetHash(),storage::catalog::Hash(*b),first->Header().GetHash()};
+
+    EXPECT_FALSE(host.ReadyCheckpoint());  // nothing verified yet
+    {std::lock_guard lock(mutex);target=at_first;}
+    ASSERT_TRUE(requested());ASSERT_TRUE(host.Enqueue({"archive",71,0},first->WireBytes()));
+    ASSERT_TRUE(until([&]{return bool(host.Ready());}));
+    auto verified=host.ReadyCheckpoint();ASSERT_TRUE(verified);EXPECT_EQ(verified->target,at_first);
+
+    // The next block arrives. Its body is requested but NOT delivered yet:
+    // this is the moment the wallet used to be refused in.
+    {std::lock_guard lock(mutex);target=at_second;}
+    ASSERT_TRUE(requested());
+    ASSERT_TRUE(until([&]{return !host.Ready();}));
+    EXPECT_FALSE(host.Ready()) << "the exact-tip answer is unchanged: not verified up to the new tip";
+    auto standing=host.ReadyCheckpoint();
+    ASSERT_TRUE(standing) << "the verified work is still there";
+    EXPECT_EQ(standing->target,at_first);
+    EXPECT_EQ(standing->Body(102),first->WireBytes());
+    EXPECT_ANY_THROW(standing->Body(103)) << "it vouches for nothing beyond what was verified";
+    EXPECT_EQ(host.ReadyCheckpointFor(at_second),standing);
+    EXPECT_TRUE(host.OnChainOf(at_second,102,first->Header().GetHash()));
+    EXPECT_FALSE(host.OnChainOf(at_second,102,second->Header().GetHash()));
+    EXPECT_FALSE(host.OnChainOf(at_first,103,second->Header().GetHash()));  // above the tip asked about
+
+    // Its body arrives and verifies: the checkpoint moves up with it.
+    ASSERT_TRUE(host.Enqueue({"archive",71,0},second->WireBytes()));
+    ASSERT_TRUE(until([&]{return bool(host.Ready());}));
+    auto moved=host.ReadyCheckpoint();ASSERT_TRUE(moved);EXPECT_EQ(moved->target,at_second);
+    EXPECT_EQ(moved->Body(103),second->WireBytes());
+
+    // A tip on a chain the headers do not connect to the checkpoint (a
+    // reorganisation): no checkpoint for it, from either question.
+    auto elsewhere=at_second;elsewhere.height=104;elsewhere.hash.data[0]^=1;
+    EXPECT_FALSE(host.ReadyCheckpointFor(elsewhere));
+    auto same_height_other_block=at_second;same_height_other_block.hash.data[0]^=1;
+    EXPECT_FALSE(host.ReadyCheckpointFor(same_height_other_block));
+    auto same_block_other_catalog=at_second;same_block_other_catalog.catalog.data[0]^=1;
+    EXPECT_FALSE(host.ReadyCheckpointFor(same_block_other_catalog));
+    auto other_base=at_second;other_base.base.data[0]^=1;
+    EXPECT_FALSE(host.ReadyCheckpointFor(other_base));
+    // And once the worker itself sees the selected target replaced, it withdraws what it had.
+    {std::lock_guard lock(mutex);target=same_height_other_block;}
+    ASSERT_TRUE(until([&]{return !host.ReadyCheckpoint();}));
+    EXPECT_FALSE(host.Ready());
+    host.Stop();EXPECT_FALSE(host.ReadyCheckpoint());
+}
 TEST(OrchardPhoneHistory, CorruptFirstBodyNeverPublishesAndStopDiscardsFlight){
     using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;using Download=p2p::OrchardPhoneHistoryDownload;
     CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
@@ -3370,6 +3451,128 @@ TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles)
         }
     }
 }
+// A key funded in the snapshot's base block must not inherit the later
+// birthday of a generated wallet that imports it. Exercise the full-v6
+// origin path, including its verified Orchard history checkpoint.
+TEST(OrchardSnapshotRuntime, ImportedPrebirthKeyCannotUseFreshSnapshotOrigin) {
+    using namespace consensus;
+    using Access=OrchardSnapshotStoreTestAccess;
+    struct ConfigurationScope {
+        std::string profile=GetConfig().sync_profile;
+        bool stateless=GetConfig().utreexo_stateless;
+        ~ConfigurationScope() {GetConfig().sync_profile=profile;GetConfig().utreexo_stateless=stateless;}
+    } configuration;
+    GetConfig().sync_profile.clear();GetConfig().utreexo_stateless=false;
+    OrchardCycleFixture source(true);
+    MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    std::array<uint8_t,32> secret{},internal{},output{};secret.back()=91;int parity=0;
+    ASSERT_TRUE(TaprootKeys::DeriveXOnlyPubkey(secret,internal,parity));
+    ASSERT_TRUE(TaprootKeys::ComputeTweakedPubkey(internal,output));
+    const auto funded_address=TaprootKeys::CreateTaprootAddress(output,"rdin");
+    ASSERT_FALSE(funded_address.empty());
+    BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+    const auto base=SolveCatalogTemplate(assembler.CreateOrchardBlock(funded_address));ASSERT_TRUE(base);
+    ASSERT_TRUE(source.Submit(base->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();
+    for(const auto& block:source.f.blocks)ASSERT_TRUE(headers->AddHeader(block.header));
+    ASSERT_TRUE(headers->AddHeader(base->Header()));
+    source.f.service->setHeaderChainSelector(headers);
+    shielded_store_fixture::TempDir exports;
+    const auto full_path=exports.path/"funded-base.v6";
+    ASSERT_TRUE(source.f.service->ExportSnapshot(full_path).success);
+    const auto proof=std::make_shared<const OrchardSnapshotSection>(Access::CaptureActivation(source.f.db,*headers));
+    const auto catalog=source.f.db.getOrchardCatalogState(base->Header().GetHash());ASSERT_TRUE(catalog.ok());
+    const auto next=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(next);
+    ASSERT_TRUE(source.Submit(next->WireBytes()).connected);
+    ASSERT_TRUE(headers->AddHeader(next->Header()));
+
+    shielded_store_fixture::TempDir directory;const auto path=directory.path/"chainstate";
+    Access::CreateFresh(path);
+    auto db=std::make_shared<ChainDB>();ASSERT_EQ(db->init(path),Status::Ok);
+    DaemonContext context;context.config=std::make_shared<ConfigService>();
+    context.config->Set("datadir",directory.path.string());
+    context.config->Set("assumeutxo_compact_bootstrap","0");
+    context.logger=std::make_shared<LoggerService>("");
+    context.logger_interface=source.f.logger.get();
+    context.block_storage=std::make_shared<BlockStorage>();
+    ASSERT_EQ(context.block_storage->init(directory.path/"files"),Status::Ok);
+    auto service=std::make_shared<ChainstateService>();context.chainstate=service;
+    struct ContextScope {
+        DaemonContext* prior=DaemonContext::instance();
+        ~ContextScope(){BlockAcceptor::SetContext(prior);DaemonContext::setInstance(prior);}
+    } context_scope;
+    DaemonContext::setInstance(&context);service->setOwnedChainDB(db);
+    ASSERT_TRUE(service->Init(context));
+    service->setHeaderChainSelector(headers);
+    service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
+    ASSERT_TRUE(service->Start());
+    struct StopScope {
+        std::shared_ptr<ChainstateService> service;DaemonContext& context;
+        ~StopScope(){
+            if(auto peer=std::dynamic_pointer_cast<P2PService>(context.p2p))peer->Stop();
+            context.p2p.reset();
+            if(auto wallet=std::dynamic_pointer_cast<WalletService>(context.wallet))wallet->Stop();
+            context.wallet.reset();
+            if(context.validation_queue)context.validation_queue->stop();
+            context.validation_queue.reset();context.block_ingress=nullptr;
+            if(auto pool=std::dynamic_pointer_cast<MempoolService>(context.mempool))pool->Stop();
+            context.mempool.reset();service->Stop();context.chainstate.reset();
+        }
+    } stop{service,context};
+    const auto loaded=service->LoadSnapshot(full_path);ASSERT_TRUE(loaded.success)<<loaded.error_message;
+    auto pool=std::make_shared<MempoolService>();ASSERT_TRUE(pool->Init(context));context.mempool=pool;
+    auto queue=ValidationQueue::CreateCanonicalOnly();context.validation_queue=queue;
+    auto ingress=std::make_shared<BlockIngressService>();ASSERT_TRUE(ingress->Init(context));
+    ASSERT_TRUE(ingress->Start());context.block_ingress=ingress.get();queue->start();
+    const auto connected=ingress->SubmitHex(util::hex(next->WireBytes()),BlockOrigin::P2P);
+    ASSERT_TRUE(connected.connected)<<connected.reason;
+    EXPECT_EQ(service->GetActiveTip()->hash,next->Header().GetHash());
+
+    // Supply the independently verified activation prefix through the same
+    // phone-history reader that a snapshot wallet uses in production.
+    service->RequestRetainedPhoneHistoryData();
+    const auto target=service->PhoneHistoryTarget();ASSERT_TRUE(target);
+    EXPECT_EQ(target->base,base->Header().GetHash());
+    auto peer=std::make_shared<P2PService>();context.p2p=peer;
+    std::mutex mutex;std::condition_variable cv;std::deque<std::vector<uint8_t>> requests;
+    auto history=std::make_shared<p2p::OrchardPhoneHistoryDownload>(headers,directory.path,
+        [service]{return service->PhoneHistoryTarget();},[proof]{return proof;},
+        [service](auto section,const auto& at){return service->PreparePhoneHistoryVerifier(std::move(section),at);},
+        []{return std::vector<p2p::OrchardPhoneHistoryDownload::Peer>{{"archive",71,ServiceFlags::NODE_NETWORK}};},
+        [&](const auto&,const auto&,const auto& bytes){std::lock_guard lock(mutex);requests.push_back(bytes);cv.notify_all();return true;});
+    SnapshotImportedKeyHistoryTestAccess::Attach(*peer,history);
+    const auto requested=[&]{std::unique_lock lock(mutex);
+        if(!cv.wait_for(lock,std::chrono::seconds(5),[&]{return !requests.empty();}))return false;
+        requests.pop_front();return true;};
+    ASSERT_TRUE(requested());ASSERT_TRUE(history->Enqueue({"archive",71,0},base->WireBytes()));
+    ASSERT_TRUE(requested());ASSERT_TRUE(history->Enqueue({"archive",71,0},next->WireBytes()));
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(!history->ReadyCheckpoint()&&std::chrono::steady_clock::now()<deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    ASSERT_TRUE(history->ReadyCheckpoint());
+    ASSERT_TRUE(service->getRuntimeAccountReplay().ok());
+
+    auto wallet=std::make_shared<WalletService>();context.wallet=wallet;
+    ASSERT_TRUE(wallet->Init(context));
+    auto use=WalletService::AcquireWalletUse(wallet);
+    auto index=ChainstateService::AcquireWalletIndexUse(service);ASSERT_TRUE(index);
+    auto& manager=use->Wallet();manager.setUTXOIndex(&index->Index());
+    manager.createFromGeneratedBip39("snapshot-import-guard",
+        WalletManager::GenerateBip39Identity(12,""),"",next->Height());
+    ASSERT_FALSE(manager.getNewAddress().empty());
+    const auto session=manager.AcquireDatabaseLease()->Session();
+    EXPECT_EQ(manager.AcquireDatabaseLease()->SealedFreshOrdinaryBirthHeight(session),
+        std::optional<uint32_t>(next->Height()));
+    const auto ordinary=service->getRuntimeWalletCoverage(manager,session,index->Index());
+    ASSERT_TRUE(ordinary.ok())<<StatusToString(ordinary.status());
+    ASSERT_EQ(manager.importPrivateKey(std::vector<uint8_t>(secret.begin(),secret.end()),"pre-birth"),
+        funded_address);
+    EXPECT_EQ(manager.AcquireDatabaseLease()->SealedFreshOrdinaryBirthHeight(session),std::nullopt);
+    const auto refused=service->getRuntimeWalletCoverage(manager,session,index->Index());
+    EXPECT_FALSE(refused.ok())<<"an imported base-block coin cannot use the fresh snapshot origin";
+}
+
 TEST(OrchardSnapshotRuntime, IndependentLaterRegtestGatePreservesRoot1ThenExportsRoot2) {
     using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
     CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=103;
