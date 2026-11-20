@@ -115,6 +115,20 @@ const din::Json& Arg(const din::Json& params, const char* key) {
     return null_value;
 }
 
+// A Bitcoin address the caller may leave out when the built-in Bitcoin wallet
+// is turned on: its current receive address then stands in. The address
+// handed out last is used, not a new one each time: a refused or repeated
+// request must not use up addresses. Empty when there is neither.
+std::string BtcAddressArg(const din::Json& params, const char* key) {
+    if (Arg(params, key).isString() && !Arg(params, key).asString().empty()) return Arg(params, key).asString();
+    try {
+        const auto st = SwapService::Active()->manager()->BtcWalletStatus();
+        if (st.enabled) return st.address;
+    } catch (const std::exception&) {
+    }
+    return {};
+}
+
 din::Json RpcOffer(const ExecutionContext& ctx, const din::Json& params) {
     if (auto e = Refuse(ctx, true)) return *e;
     try {
@@ -140,11 +154,12 @@ din::Json RpcOffer(const ExecutionContext& ctx, const din::Json& params) {
         } else if (chain != "btc") {
             return Error("unknown chain " + chain + " (btc or zec)");
         } else if (!Arg(params, "din_amount_una").isUInt64() || !Arg(params, "btc_amount_sat").isUInt64() ||
-                   !Arg(params, "btc_address").isString()) {
-            return Error("usage: swap.offer {din_amount_una, btc_amount_sat, btc_address, din_funding_fee_rate_hint, din_funding_maximum_fee_una, ...}");
+                   BtcAddressArg(params, "btc_address").empty()) {
+            return Error("usage: swap.offer {din_amount_una, btc_amount_sat, btc_address (not needed when this wallet's "
+                         "Bitcoin wallet is on), din_funding_fee_rate_hint, din_funding_maximum_fee_una, ...}");
         } else {
             r.btc_amount_sat = Arg(params, "btc_amount_sat").asUInt64();
-            r.btc_claim_address = Arg(params, "btc_address").asString();
+            r.btc_claim_address = BtcAddressArg(params, "btc_address");
         }
         r.din_amount_una = Arg(params, "din_amount_una").asUInt64();
         r.din_funding_fee_rate_hint = Arg(params, "din_funding_fee_rate_hint").asUInt64();
@@ -258,19 +273,24 @@ din::Json RpcDeposit(const ExecutionContext& ctx, const din::Json& params) {
     if (auto e = Refuse(ctx, true)) return *e;
     const bool zec_offer = Arg(params, "text").isString() && Arg(params, "text").asString().rfind(kOffer2Prefix, 0) == 0;
     const char* refund_name = zec_offer ? "zec_refund_address" : "btc_refund_address";
-    if (!Arg(params, "text").isString() || !Arg(params, refund_name).isString()) {
+    const std::string refund_address = !Arg(params, "text").isString() ? std::string()
+                                       : zec_offer ? (Arg(params, refund_name).isString() ? Arg(params, refund_name).asString() : std::string())
+                                                   : BtcAddressArg(params, refund_name);
+    if (refund_address.empty()) {
         return Error("usage: swap.deposit {text: <offer>, zec_refund_address | btc_refund_address}: where the deposit "
-                     "returns if the swap does not happen");
+                     "returns if the swap does not happen (a BTC refund address is not needed when this wallet's "
+                     "Bitcoin wallet is on)");
     }
     try {
         const auto d = SwapService::Active()->manager()->PrepareDeposit(
-            Arg(params, "text").asString(), Arg(params, refund_name).asString(),
+            Arg(params, "text").asString(), refund_address,
             static_cast<uint32_t>(std::time(nullptr)));
         din::Json out(Json::objectValue);
         out["id"] = d.id;
         out["deposit_address"] = d.address;
         out["deposit_coin"] = zec_offer ? "ZEC" : "BTC";
         out["deposit_due_zat"] = Json::UInt64(d.amount_due_zat);
+        out["refund_address"] = refund_address;
         out["confirmations_needed"] = zec_offer ? 10 : 2;
         if (!zec_offer) out["deposit_due_sat"] = Json::UInt64(d.amount_due_zat);
         if (d.status) {
@@ -533,6 +553,47 @@ din::Json RpcBtcSend(const ExecutionContext& ctx, const din::Json& params) {
     }
 }
 
+// A stuck payment again, with a higher fee taken from its change. Without
+// new_txid: what it would be. With the new_txid that showed: sent.
+din::Json RpcBtcBumpFee(const ExecutionContext& ctx, const din::Json& params) {
+    const bool send = Arg(params, "new_txid").isString();
+    if (auto e = Refuse(ctx, send)) return *e;
+    if (!Arg(params, "txid").isString()) {
+        return Error("usage: btc.bumpfee {txid, [target_blocks], [new_txid: from a first call, to send it]}");
+    }
+    const uint32_t target = Arg(params, "target_blocks").isUInt() ? Arg(params, "target_blocks").asUInt() : 1;
+    try {
+        din::Json out = BtcPaymentJson(SwapService::Active()->manager()->BumpBtcFee(
+            Arg(params, "txid").asString(), target, send ? Arg(params, "new_txid").asString() : std::string()));
+        out["replaces"] = Arg(params, "txid").asString();
+        out["sent"] = send;
+        return out;
+    } catch (const std::exception& e) {
+        return Error(e.what());
+    }
+}
+
+din::Json RpcBtcListTransactions(const ExecutionContext& ctx, const din::Json&) {
+    if (auto e = Refuse(ctx, false)) return *e;
+    try {
+        din::Json out(Json::arrayValue);
+        for (const auto& t : SwapService::Active()->manager()->BtcWalletHistory()) {
+            din::Json j(Json::objectValue);
+            j["txid"] = t.txid;
+            j["received"] = t.received;
+            j["amount_sat"] = Json::UInt64(t.amount_sat);
+            if (!t.received) j["fee_sat"] = Json::UInt64(t.fee_sat);
+            if (!t.address.empty()) j["address"] = t.address;
+            j["confirmed"] = t.confirmations > 0;
+            j["confirmations"] = t.confirmations;
+            out.append(j);
+        }
+        return out;
+    } catch (const std::exception& e) {
+        return Error(e.what());
+    }
+}
+
 din::Json RpcCancel(const ExecutionContext& ctx, const din::Json& params) {
     if (auto e = Refuse(ctx, false)) return *e;
     const din::Json& id = params.isArray() && params.size() == 1 && params[0].isString() ? params[0] : Arg(params, "id");
@@ -565,6 +626,8 @@ void registerSwapMethods() {
     g_rpcRegistry.registerHandler("btc.getbalance", RpcBtcBalance, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("btc.preview", RpcBtcPreview, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("btc.send", RpcBtcSend, RegisterMode::Overwrite, "context-aware");
+    g_rpcRegistry.registerHandler("btc.bumpfee", RpcBtcBumpFee, RegisterMode::Overwrite, "context-aware");
+    g_rpcRegistry.registerHandler("btc.listtransactions", RpcBtcListTransactions, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.deposit", RpcDeposit, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.capabilities", RpcCapabilities, RegisterMode::Overwrite, "context-aware");
 }

@@ -1557,6 +1557,42 @@ TEST(SwapManager, ABitcoinPaymentIsShownThenSentExactlyAsShown) {
     EXPECT_EQ(next.amount_sat + next.fee_sat + next.change_sat, 9'000u);
     EXPECT_THROW(m.PreviewBtcSend(to, 20'000, false, 6), std::runtime_error);  // only 9,000 left to spend
 
+    // Stuck? The same payment again with a higher fee, out of its change.
+    feerate = 6.0;
+    const auto bump_shown = m.BumpBtcFee(again.txid, 1, "");
+    EXPECT_EQ(broadcasts.size(), 1u) << "showing a higher fee sends nothing";
+    EXPECT_EQ(bump_shown.amount_sat, 20'000u);
+    EXPECT_GT(bump_shown.fee_sat, again.fee_sat);
+    EXPECT_EQ(bump_shown.change_sat, again.change_sat - (bump_shown.fee_sat - again.fee_sat));
+    EXPECT_EQ(bump_shown.to_address, to);
+    EXPECT_THROW(m.BumpBtcFee(again.txid, 1, std::string(64, '0')), std::runtime_error);  // not the one shown
+    EXPECT_THROW(m.BumpBtcFee(std::string(64, 'f'), 1, ""), std::runtime_error);          // not a payment of ours
+    const auto bumped = m.BumpBtcFee(again.txid, 1, bump_shown.txid);
+    ASSERT_EQ(broadcasts.size(), 2u);
+    const BtcTx replacement = ParseBtcTx(broadcasts[1]);
+    EXPECT_EQ(replacement.vin[0].prev_txid, c1.txid);            // the same coin: only one of the two can confirm
+    EXPECT_EQ(replacement.vout[0].value_sat, 20'000u);
+    EXPECT_EQ(replacement.vout[1].value_sat, bumped.change_sat);
+    EXPECT_THROW(m.BumpBtcFee(again.txid, 1, ""), std::runtime_error);  // the old one is gone from the record
+    feerate = 2.0;
+
+    // The list: what was sent, and what was received (our own change is not a receipt).
+    Bytes32 change_txid = BtcTxid(replacement);
+    at[BtcWalletScript(account, 1, 1)] = {bumped.change_sat, true, {}, {{change_txid, bumped.change_sat, 3}}};
+    at[BtcWalletScript(account, 0, 0)].payments = {{c1.txid, 60'000, 9}, {c2.txid, 9'000, 7}};
+    const auto history = m.BtcWalletHistory();
+    ASSERT_EQ(history.size(), 3u);
+    EXPECT_FALSE(history[0].received);
+    EXPECT_EQ(history[0].txid, bumped.txid);
+    EXPECT_EQ(history[0].amount_sat, 20'000u);
+    EXPECT_EQ(history[0].fee_sat, bumped.fee_sat);
+    EXPECT_EQ(history[0].confirmations, 3u);
+    EXPECT_TRUE(history[1].received);
+    EXPECT_EQ(history[1].amount_sat, 9'000u);
+    EXPECT_EQ(history[1].address, BtcWalletAddress(account, 0, 0, "bcrt"));
+    EXPECT_EQ(history[2].amount_sat, 60'000u);
+    EXPECT_EQ(history[2].confirmations, 9u);
+
     // "It may not have been sent": the record stays, the coin is not offered again.
     refusal = "Bitcoin transaction may not have been sent: no server answered";
     EXPECT_THROW(m.SendBtc(to, 5'000, false, 6, next.txid), std::runtime_error);

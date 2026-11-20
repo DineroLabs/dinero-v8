@@ -350,6 +350,23 @@ public:
     BtcPayment PreviewBtcSend(const std::string& to_address, uint64_t amount_sat, bool send_all, uint32_t target_blocks);
     BtcPayment SendBtc(const std::string& to_address, uint64_t amount_sat, bool send_all, uint32_t target_blocks,
                        const std::string& expected_txid);
+    // A payment of this wallet again with a higher fee, taken from its
+    // change (see PlanBtcFeeBump). With an empty `expected_new_txid`: what
+    // it would be, nothing signed. Otherwise sent, if it is still that.
+    BtcPayment BumpBtcFee(const std::string& txid, uint32_t target_blocks, const std::string& expected_new_txid);
+
+    // What the wallet received and sent, newest first where the chain says
+    // (unconfirmed payments of ours first). A sent payment's confirmations
+    // are those of its change; 0 while unconfirmed or when it had no change.
+    struct BtcWalletTx {
+        std::string txid;
+        bool received{false};
+        uint64_t amount_sat{};
+        uint64_t fee_sat{};      // sent only
+        std::string address;     // received: which address of ours
+        uint32_t confirmations{};
+    };
+    std::vector<BtcWalletTx> BtcWalletHistory();
 
     // One tick of every unfinished swap. Returns false (and does nothing) when
     // the wallet is locked: swaps are paused, not failed.

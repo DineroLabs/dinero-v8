@@ -138,6 +138,47 @@ BtcSendPlan PlanBtcSend(const std::vector<BtcWalletCoin>& all_coins, const BtcSe
                              " needed with the network fee)");
 }
 
+BtcSendPlan PlanBtcFeeBump(const BtcTx& sent, const std::vector<BtcWalletCoin>& coins, double feerate, uint64_t max_fee_sat) {
+    if (!(feerate > 0) || !std::isfinite(feerate)) throw std::invalid_argument("bitcoin fee rate must be positive");
+    if (sent.vin.empty() || sent.vin.size() != coins.size() || sent.vout.empty() || sent.vout.size() > 2) {
+        throw std::invalid_argument("not a payment of this wallet");
+    }
+    uint64_t in_total = 0, out_total = 0;
+    for (size_t i = 0; i < coins.size(); ++i) {
+        if (sent.vin[i].prev_txid != coins[i].txid || sent.vin[i].prev_vout != coins[i].vout) {
+            throw std::invalid_argument("the payment's inputs do not match its record");
+        }
+        if (sent.vin[i].sequence != kBtcReplaceableSequence) throw std::invalid_argument("the payment cannot be replaced");
+        in_total += coins[i].value_sat;
+    }
+    for (const auto& o : sent.vout) out_total += o.value_sat;
+    if (in_total <= out_total) throw std::invalid_argument("the payment's record does not add up");
+    if (sent.vout.size() != 2) {
+        throw std::runtime_error("this payment has no change to take a higher fee from");
+    }
+    const uint64_t old_fee = in_total - out_total;
+    BtcSendPlan plan;
+    plan.tx = sent;
+    for (auto& in : plan.tx.vin) in.witness.clear();
+    plan.used = coins;
+    plan.vsize = VsizeOf(coins.size(), sent.vout);
+    plan.fee_sat = std::max(FeeFor(feerate, plan.vsize, max_fee_sat), old_fee + plan.vsize);
+    if (plan.fee_sat > max_fee_sat) {
+        throw std::invalid_argument("the higher fee (" + std::to_string(plan.fee_sat) + " sat) is above the limit of " +
+                                    std::to_string(max_fee_sat) + " sat");
+    }
+    const uint64_t extra = plan.fee_sat - old_fee;
+    const uint64_t old_change = sent.vout[1].value_sat;
+    if (old_change < extra + kBtcWalletDustSat) {
+        throw std::runtime_error("the payment's change (" + std::to_string(old_change) + " sat) cannot carry the higher fee (" +
+                                 std::to_string(extra) + " sat more)");
+    }
+    plan.amount_sat = sent.vout[0].value_sat;
+    plan.change_sat = old_change - extra;
+    plan.tx.vout[1].value_sat = plan.change_sat;
+    return plan;
+}
+
 BtcSignedSend SignBtcSend(const BtcSendPlan& plan, const BtcWalletAccount& account,
                           const std::function<Bytes32(uint32_t, uint32_t)>& key_of) {
     if (plan.used.empty() || plan.used.size() != plan.tx.vin.size()) throw std::runtime_error("not a payment plan");

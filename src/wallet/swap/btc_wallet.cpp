@@ -148,6 +148,12 @@ BtcWallet::Balance BtcWallet::ReadBalance(const ScriptReader& read) {
                 out.rows.push_back({branch, index, BtcWalletAddress(account_, branch, index, hrp_), activity.sat});
                 out.sat += activity.sat;
             }
+            for (const auto& payment : activity.payments) {
+                Bytes32 id = payment.txid;
+                std::reverse(id.begin(), id.end());
+                out.received.push_back({detail::ToHex(std::vector<uint8_t>(id.begin(), id.end())), branch, index,
+                                        BtcWalletAddress(account_, branch, index, hrp_), payment.sat, payment.confirmations});
+            }
             for (const BtcScriptCoin& c : activity.coins) {
                 BtcWalletCoin coin;
                 coin.txid = c.txid;
@@ -179,7 +185,7 @@ std::string SentLine(const BtcWallet::Sent& p) {
     out << p.txid_hex << ' ' << p.amount_sat << ' ' << p.fee_sat << ' ' << p.change_sat << ' ' << detail::ToHex(p.raw) << ' ';
     for (size_t i = 0; i < p.spent.size(); ++i) {
         out << (i ? "," : "") << detail::ToHex(std::vector<uint8_t>(p.spent[i].txid.begin(), p.spent[i].txid.end())) << ':'
-            << p.spent[i].vout;
+            << p.spent[i].vout << ':' << p.spent[i].value_sat << ':' << p.spent[i].branch << ':' << p.spent[i].index;
     }
     return out.str();
 }
@@ -200,13 +206,19 @@ std::vector<BtcWallet::Sent> BtcWallet::SentPayments() const {
             std::istringstream list(outpoints);
             std::string one;
             while (std::getline(list, one, ',')) {
-                const size_t colon = one.find(':');
-                if (colon == std::string::npos) throw std::invalid_argument("outpoint");
-                const auto txid = detail::FromHex(one.substr(0, colon));
+                std::vector<std::string> part;
+                std::istringstream pieces(one);
+                std::string piece;
+                while (std::getline(pieces, piece, ':')) part.push_back(piece);
+                if (part.size() != 5) throw std::invalid_argument("outpoint");
+                const auto txid = detail::FromHex(part[0]);
                 if (txid.size() != 32) throw std::invalid_argument("outpoint");
-                BtcScriptCoin c;
+                BtcWalletCoin c;
                 std::copy(txid.begin(), txid.end(), c.txid.begin());
-                c.vout = static_cast<uint32_t>(std::stoul(one.substr(colon + 1)));
+                c.vout = static_cast<uint32_t>(std::stoul(part[1]));
+                c.value_sat = std::stoull(part[2]);
+                c.branch = static_cast<uint32_t>(std::stoul(part[3]));
+                c.index = static_cast<uint32_t>(std::stoul(part[4]));
                 p.spent.push_back(c);
             }
         } catch (const std::exception&) {
@@ -241,7 +253,7 @@ std::vector<BtcWalletCoin> BtcWallet::WithoutSpent(std::vector<BtcWalletCoin> co
     coins.erase(std::remove_if(coins.begin(), coins.end(),
                                [&sent](const BtcWalletCoin& c) {
                                    for (const Sent& p : sent) {
-                                       for (const BtcScriptCoin& s : p.spent) {
+                                       for (const BtcWalletCoin& s : p.spent) {
                                            if (s.txid == c.txid && s.vout == c.vout) return true;
                                        }
                                    }

@@ -255,7 +255,7 @@ TEST(BtcWallet, RemembersWhatItSentSoCoinsAreNotSpentTwice) {
         sent.txid_hex = std::string(64, 'a');
         sent.raw = {0x02, 0x00, 0x00, 0x00, 0xff};
         sent.amount_sat = 20'000; sent.fee_sat = 300; sent.change_sat = 39'700;
-        sent.spent = {c1};
+        sent.spent = {BtcWalletCoin{c1.txid, c1.vout, c1.value_sat, 0, 0}};
         w.RecordSent(sent, true);
         // The servers have not heard of the payment yet and still list c1: it is not offered again.
         const auto left = w.WithoutSpent(b.coins);
@@ -276,12 +276,13 @@ TEST(BtcWallet, RemembersWhatItSentSoCoinsAreNotSpentTwice) {
     EXPECT_EQ(sent[0].change_sat, 39'700u);
     ASSERT_EQ(sent[0].spent.size(), 1u);
     EXPECT_EQ(sent[0].spent[0].txid, c1.txid);
+    EXPECT_EQ(sent[0].spent[0].value_sat, 60'000u);
     EXPECT_EQ(again.change_index(), 1u);
     // A send-all (no change) leaves the change address alone; a torn line is skipped, not fatal.
     BtcWallet::Sent all;
     all.txid_hex = std::string(64, 'b');
     all.raw = {0x01};
-    all.spent = {c2};
+    all.spent = {BtcWalletCoin{c2.txid, c2.vout, c2.value_sat, 0, 0}};
     again.RecordSent(all, false);
     EXPECT_EQ(again.change_index(), 1u);
     { std::ofstream out(d.path + "/btc-wallet.sent", std::ios::app); out << "deadbeef 1 2"; }

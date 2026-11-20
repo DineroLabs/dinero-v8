@@ -32,6 +32,12 @@ struct BtcScriptActivity {
     uint64_t sat{};          // unspent, proven, at least one confirmation
     bool ever_paid{false};   // a proven payment exists, spent or not
     std::vector<BtcScriptCoin> coins;  // the unspent outputs making up `sat` (may be left empty by a reader that only counts)
+    struct Payment {
+        Bytes32 txid{};          // wire byte order
+        uint64_t sat{};          // what it paid this script
+        uint32_t confirmations{};
+    };
+    std::vector<Payment> payments;  // every proven payment to the script, spent or not (may be left empty likewise)
 };
 
 class BtcWallet {
@@ -70,6 +76,14 @@ public:
         std::vector<Row> rows;       // the addresses holding coins
         uint32_t addresses_read{};
         std::vector<BtcWalletCoin> coins;  // what a payment can spend: every coin the reader listed
+        struct Received {
+            std::string txid_hex;  // as explorers show it
+            uint32_t branch{}, index{};
+            std::string address;
+            uint64_t sat{};
+            uint32_t confirmations{};
+        };
+        std::vector<Received> received;    // every proven payment to an address of the wallet
     };
     // Reads every address the wallet may own. Remembers what it learns: after
     // a restore, the next receive address is one past the last address paid.
@@ -87,7 +101,7 @@ public:
         std::string txid_hex;         // as explorers show it
         std::vector<uint8_t> raw;
         uint64_t amount_sat{}, fee_sat{}, change_sat{};
-        std::vector<BtcScriptCoin> spent;  // value_sat unused
+        std::vector<BtcWalletCoin> spent;  // its inputs, with whose key each is
     };
     void RecordSent(const Sent& sent, bool used_change);
     std::vector<Sent> SentPayments() const;

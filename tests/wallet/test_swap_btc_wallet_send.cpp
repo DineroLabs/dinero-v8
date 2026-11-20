@@ -218,3 +218,43 @@ TEST(BtcWalletSend, SigningRefusesAPlanThatWasTamperedWith) {
     EXPECT_THROW(SignBtcSend(good, w.account, other.Keys()), std::runtime_error);
     EXPECT_THROW(SignBtcSend(good, w.account, [&](uint32_t b, uint32_t i) { return w.Keys()(b, i + 1); }), std::runtime_error);
 }
+
+TEST(BtcWalletSend, AStuckPaymentIsReSentWithAHigherFeeFromItsChange) {
+    Wallet w(0xa1);
+    const std::vector<BtcWalletCoin> coins{Coin(1, 60'000, 0, 4)};
+    const BtcSendPlan first = PlanBtcSend(coins, Request(w, 20'000, 1.0));
+    const BtcTx sent = ParseBtcTx(SignBtcSend(first, w.account, w.Keys()).raw);
+
+    const BtcSendPlan bumped = PlanBtcFeeBump(sent, first.used, 5.0, 50'000);
+    EXPECT_EQ(bumped.amount_sat, 20'000u);                       // the destination gets the same
+    EXPECT_EQ(bumped.tx.vout[0].script_pubkey, kTo);
+    EXPECT_EQ(bumped.tx.vout[0].value_sat, 20'000u);
+    EXPECT_EQ(bumped.fee_sat, 5 * bumped.vsize);
+    EXPECT_EQ(bumped.change_sat, first.change_sat - (bumped.fee_sat - first.fee_sat));  // the change pays the difference
+    EXPECT_EQ(bumped.amount_sat + bumped.fee_sat + bumped.change_sat, 60'000u);
+    ASSERT_EQ(bumped.tx.vin.size(), 1u);
+    EXPECT_EQ(bumped.tx.vin[0].prev_txid, sent.vin[0].prev_txid);  // the same coin: the two cannot both confirm
+    EXPECT_NE(BtcTxid(bumped.tx), BtcTxid(sent));
+    EXPECT_NO_THROW(SignBtcSend(bumped, w.account, w.Keys()));
+
+    // A rate no higher than before still pays what a replacement must: the old fee plus 1 sat/vB.
+    const BtcSendPlan minimal = PlanBtcFeeBump(sent, first.used, 1.0, 50'000);
+    EXPECT_EQ(minimal.fee_sat, first.fee_sat + minimal.vsize);
+
+    // What cannot be bumped says why.
+    EXPECT_THROW(PlanBtcFeeBump(sent, first.used, 5.0, 300), std::invalid_argument);            // above the fee limit
+    EXPECT_THROW(PlanBtcFeeBump(sent, first.used, 0, 50'000), std::invalid_argument);
+    BtcSendRequest all = Request(w, 0);
+    all.send_all = true;
+    const BtcSendPlan everything = PlanBtcSend(coins, all);
+    EXPECT_THROW(PlanBtcFeeBump(everything.tx, everything.used, 5.0, 50'000), std::runtime_error);  // no change
+    const BtcSendPlan tight = PlanBtcSend(coins, Request(w, 59'000, 1.0));                       // change of a few hundred sat
+    ASSERT_GT(tight.change_sat, 0u);
+    EXPECT_THROW(PlanBtcFeeBump(tight.tx, tight.used, 20.0, 50'000), std::runtime_error);        // change too small
+    std::vector<BtcWalletCoin> wrong = first.used;
+    wrong[0].vout += 1;
+    EXPECT_THROW(PlanBtcFeeBump(sent, wrong, 5.0, 50'000), std::invalid_argument);               // not this payment's coins
+    BtcTx final_tx = sent;
+    final_tx.vin[0].sequence = 0xffffffff;
+    EXPECT_THROW(PlanBtcFeeBump(final_tx, first.used, 5.0, 50'000), std::invalid_argument);      // a swap lock, say
+}
