@@ -443,6 +443,22 @@ din::Json BtcWalletStatusJson(const swap::SwapManager::BtcWalletState& st) {
     return out;
 }
 
+// Starts the Bitcoin wallet in the running node (no restart, no swaps). The
+// app calls it when the user switches the wallet on.
+din::Json RpcBtcStart(const ExecutionContext&, const din::Json&) {
+    std::string why;
+    if (!SwapService::StartBitcoinWalletNow(&why)) return Error("the Bitcoin wallet is not running on this node: " + why);
+    try {
+        return BtcWalletStatusJson(SwapService::Active()->manager()->BtcWalletStatus());
+    } catch (const std::exception& e) {
+        din::Json out(Json::objectValue);  // running; no wallet is open to describe
+        out["offered"] = true;
+        out["enabled"] = false;
+        out["note"] = e.what();
+        return out;
+    }
+}
+
 din::Json RpcBtcStatus(const ExecutionContext& ctx, const din::Json&) {
     if (auto e = Refuse(ctx, false, true)) return *e;
     try {
@@ -632,6 +648,7 @@ void registerSwapMethods() {
     g_rpcRegistry.registerHandler("swap.refund", RpcRefund, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.recoverdeposits", RpcRecoverDeposits, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("swap.btcholdings", RpcBtcHoldings, RegisterMode::Overwrite, "context-aware");
+    g_rpcRegistry.registerHandler("btc.start", RpcBtcStart, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("btc.status", RpcBtcStatus, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("btc.enable", RpcBtcEnable, RegisterMode::Overwrite, "context-aware");
     g_rpcRegistry.registerHandler("btc.getnewaddress", RpcBtcNewAddress, RegisterMode::Overwrite, "context-aware");

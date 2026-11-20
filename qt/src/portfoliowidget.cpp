@@ -21,6 +21,7 @@
 #include <QSettings>
 #include <QShowEvent>
 #include <QTableWidget>
+#include <QTimer>
 #include <QVBoxLayout>
 
 using PayCollectPolicy::Tone;
@@ -31,6 +32,7 @@ const QString kDin = "portfolio.din";
 const QString kStatus = "portfolio.btcstatus";
 const QString kBalance = "portfolio.btcbalance";
 const QString kHistory = "portfolio.btchistory";
+const QString kStart = "portfolio.btcstart";
 const QString kEnable = "portfolio.btcenable";
 const QString kNewAddress = "portfolio.btcnewaddress";
 const QString kPreview = "portfolio.btcpreview";
@@ -300,9 +302,11 @@ void PortfolioWidget::onTurnOn() {
     // Not running on this node yet: store the user's switch; the node gets it at its next start.
     if (PortfolioPolicy::bitcoinStartView(false, btcStatus_.value("why_not").toString()).notRunning &&
         !btcStatus_.value("offered").toBool()) {
+        // Remembered for every later start of Dinero; and started now, in
+        // the running node, so that one click is enough.
         QSettings().setValue(SwapLaunchPolicy::bitcoinWalletKey(), true);
-        showBitcoin();
-        showCoins();
+        turnOn_->setEnabled(false);
+        rpc_->callNamedAs("btc.start", QJsonObject{}, kStart);
         return;
     }
     turnOn_->setEnabled(false);
@@ -367,9 +371,28 @@ void PortfolioWidget::onRpcResult(const QString& method, const QJsonValue& resul
         }
         return;
     }
+    if (method == kStart) {
+        turnOn_->setEnabled(true);
+        if (!error.isEmpty()) {
+            // An older node, or one that cannot run it: the switch is stored,
+            // and the page says what happens next (or why not).
+            btcStatus_ = QJsonObject{{"offered", false}, {"why_not", error}};
+            showBitcoin();
+            return showCoins();
+        }
+        btcStatus_ = result.toObject();
+        showBitcoin();
+        showCoins();
+        // Running now. Give this wallet its Bitcoin account straight away
+        // (it needs the wallet unlocked; if it is locked, the node says so).
+        if (!btcStatus_.value("enabled").toBool()) return onTurnOn();
+        return refresh();
+    }
     if (method == kBalance) {
         btcProblem_ = error;
         if (error.isEmpty()) btcBalance_ = result.toObject();
+        // Just started: the node is still collecting Bitcoin's block headers. Look again shortly.
+        if (error.contains("catching up")) QTimer::singleShot(8000, this, &PortfolioWidget::refresh);
         return showCoins();
     }
     if (method == kHistory) {
@@ -430,6 +453,14 @@ void PortfolioWidget::onRpcError(const QString& method, int, const QString& mess
     // The node did not answer (starting, or restarting): what is on show
     // stays. A wallet that is on must not turn into "not available".
     if (method == kStatus || method == kDin || method == kHistory) return;
+    if (method == kStart) {
+        // The node does not know the request (an older node), or did not answer:
+        // the switch is stored and takes effect at the next start.
+        turnOn_->setEnabled(true);
+        btcStatus_ = QJsonObject{{"offered", false}, {"why_not", "the Bitcoin wallet is not running on this node"}};
+        showBitcoin();
+        return showCoins();
+    }
     if (method == kBalance) {
         if (btcBalance_.isEmpty()) btcProblem_ = message;  // a balance already read stays on show
         return showCoins();
