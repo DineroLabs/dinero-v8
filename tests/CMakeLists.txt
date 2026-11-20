@@ -17880,6 +17880,7 @@ add_executable(test_swap_manager
   src/wallet/swap/swap_manager.cpp
   src/wallet/swap/btc_wallet.cpp
   src/wallet/swap/btc_wallet_keys.cpp
+  src/wallet/swap/btc_wallet_send.cpp
   src/wallet/swap/encrypted_store.cpp
   src/crypto/wallet_crypto.cpp
   src/wallet/swap/tower.cpp
@@ -18040,6 +18041,24 @@ target_include_directories(test_swap_btc_wallet_keys PRIVATE
 )
 add_test(NAME SwapBtcWalletKeys COMMAND test_swap_btc_wallet_keys)
 set_tests_properties(SwapBtcWalletKeys PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 60)
+
+# The built-in Bitcoin wallet's payments: coin choice, fee, change, and that what is signed is what was planned.
+add_executable(test_swap_btc_wallet_send
+  tests/wallet/test_swap_btc_wallet_send.cpp
+  src/wallet/swap/btc_wallet_send.cpp
+  src/wallet/swap/btc_wallet_keys.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_btc_wallet_send gtest gtest_main)
+target_link_libraries(test_swap_btc_wallet_send PRIVATE dinero_wallet dinero_consensus dinero_crypto gtest gtest_main)
+link_zstd_if_needed(test_swap_btc_wallet_send)
+target_include_directories(test_swap_btc_wallet_send PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+)
+add_test(NAME SwapBtcWalletSend COMMAND test_swap_btc_wallet_send)
+set_tests_properties(SwapBtcWalletSend PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 60)
 
 # The built-in Bitcoin wallet: its file, receive addresses, and reading the balance of both branches.
 add_executable(test_swap_btc_wallet
