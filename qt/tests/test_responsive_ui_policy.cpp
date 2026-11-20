@@ -63,6 +63,15 @@ private Q_SLOTS:
     const auto mine = hashRowColor(true, true);
     QCOMPARE(mine.r, 255); QCOMPARE(mine.g, 176); QCOMPARE(mine.b, 48); QCOMPARE(mine.a, 255);
     QCOMPARE(hashRowColor(true, false).a, 225);
+    const auto blue = hashRowColor(false, false, 0x489cff);
+    QCOMPARE(blue.r, 0x48);
+    QCOMPARE(blue.g, 0x9c);
+    QCOMPARE(blue.b, 0xff);
+    QCOMPARE(blue.a, candidate.a);
+    const auto orangeFind = hashRowColor(true, true, 0xff5050);
+    QCOMPARE(orangeFind.r, mine.r);
+    QCOMPARE(orangeFind.g, mine.g);
+    QCOMPARE(orangeFind.b, mine.b);
   }
 
   void compactDifficultyMatchesMinerOutput() {

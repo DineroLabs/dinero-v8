@@ -66,6 +66,7 @@ class MainWindow : public QMainWindow {
   Q_OBJECT
   friend class OverviewColumnsTest;
   friend class WalletLayoutTest;
+  friend class MiningOutputZoomTest;
 public:
   explicit MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
                       QWidget* parent = nullptr);
@@ -572,6 +573,7 @@ private:
   QTextEdit* txtMiningOutput_ = nullptr;
   // Mining output text size: - / + in its top-right corner and Cmd -/+/=.
   int miningOutputFontPx_ = 10;
+  quint32 miningHashColorRgb_ = 0x00ff00;
   QPushButton* btnMiningZoomOut_ = nullptr;
   QPushButton* btnMiningZoomIn_ = nullptr;
   void applyMiningOutputFontSize(int px);

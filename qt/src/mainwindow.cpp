@@ -141,6 +141,15 @@
 
 namespace {
 
+// Leave a narrow black control strip above the document. Hashes and the
+// startup line begin below the swatches and zoom controls, without overlap.
+class MiningOutputEdit final : public QTextEdit {
+public:
+  explicit MiningOutputEdit(QWidget* parent = nullptr) : QTextEdit(parent) {
+    setViewportMargins(0, 26, 0, 0);
+  }
+};
+
 constexpr int kWalletUnlockTimeoutSeconds = 60 * 60;
 // A main tab's real name. Narrow windows show icon-only tabs (empty text, name
 // in the tooltip), so look tabs up through this, never through tabText().
@@ -5004,7 +5013,7 @@ void MainWindow::setupUI() {
     
     // Mining output (label intentionally removed for cleaner layout)
     
-    txtMiningOutput_ = new QTextEdit;
+    txtMiningOutput_ = new MiningOutputEdit;
     txtMiningOutput_->setObjectName("miningOutput");
     txtMiningOutput_->setReadOnly(true);
     txtMiningOutput_->setMinimumHeight(250); // Ensure minimum decent size
@@ -5038,9 +5047,42 @@ void MainWindow::setupUI() {
     miningHashOverlay_->setStyleSheet("background: transparent;");
     miningHashOverlay_->hide();
 
-    // Text size controls in the top-right corner, on the status line. They are
-    // children of the text edit (not its viewport) so the live hash overlay,
-    // which is raised on every frame, never covers them.
+    // These controls sit in the black strip above the document. They are
+    // children of the edit rather than its viewport, so the live hash overlay
+    // can be raised every frame without covering them.
+    const struct { const char* name; const char* label; quint32 rgb; } hashChoices[] = {
+      {"miningHashColorGreen", "Green", 0x00ff00},
+      {"miningHashColorBlue", "Blue", 0x489cff},
+      {"miningHashColorWhite", "White", 0xffffff},
+      {"miningHashColorRed", "Red", 0xff5050},
+    };
+    auto* hashColorGroup = new QButtonGroup(txtMiningOutput_);
+    hashColorGroup->setExclusive(true);
+    QVector<QPushButton*> hashColorButtons;
+    for (const auto& choice : hashChoices) {
+      auto* swatch = new QPushButton(txtMiningOutput_);
+      swatch->setObjectName(QString::fromLatin1(choice.name));
+      swatch->setToolTip(QString("%1 mining hashes").arg(QString::fromLatin1(choice.label)));
+      swatch->setAccessibleName(swatch->toolTip());
+      swatch->setFixedSize(22, 20);
+      swatch->setCheckable(true);
+      swatch->setCursor(Qt::PointingHandCursor);
+      swatch->setStyleSheet(QStringLiteral(
+        "QPushButton { background: #%1; border: 1px solid #5d6871; border-radius: 2px; padding: 0; } "
+        "QPushButton:hover { border: 2px solid #a9b4bb; } "
+        "QPushButton:checked { border: 2px solid #e1e8ed; } "
+        "QPushButton:focus { border: 2px solid #f0bf68; }")
+        .arg(QString::number(choice.rgb, 16).rightJustified(6, QLatin1Char('0'))));
+      hashColorGroup->addButton(swatch);
+      hashColorButtons.append(swatch);
+      connect(swatch, &QPushButton::clicked, this, [this, rgb = choice.rgb]() {
+        miningHashColorRgb_ = rgb;
+        updateMiningOutputCinematicFrame();
+      });
+    }
+    hashColorButtons.first()->setChecked(true);
+
+    // Text size controls stay in the top-right corner of the same strip.
     const QString zoomStyle = QStringLiteral(
       "QPushButton { background: transparent; color: #bec8d0; border: none; "
       "padding: 0; font-weight: 700; } "
@@ -5066,10 +5108,13 @@ void MainWindow::setupUI() {
             [this]() { applyMiningOutputFontSize(miningOutputFontPx_ + 1); });
     // Keeps the buttons in the corner on resize and handles Cmd -, Cmd + and
     // Cmd = while the mining output has focus (Ctrl on other platforms).
-    class MiningOutputZoomFilter : public QObject {
+    class MiningOutputControlsFilter : public QObject {
     public:
-      MiningOutputZoomFilter(QTextEdit* out, QPushButton* minus, QPushButton* plus, std::function<void(int)> step)
-          : QObject(out), out_(out), minus_(minus), plus_(plus), step_(std::move(step)) {
+      MiningOutputControlsFilter(QTextEdit* out, QVector<QPushButton*> swatches,
+                                 QPushButton* minus, QPushButton* plus,
+                                 std::function<void(int)> step)
+          : QObject(out), out_(out), swatches_(std::move(swatches)),
+            minus_(minus), plus_(plus), step_(std::move(step)) {
         out->installEventFilter(this);
         place();
       }
@@ -5088,19 +5133,27 @@ void MainWindow::setupUI() {
     private:
       void place() {
         const QRect area = out_->viewport()->geometry();
-        const int y = area.top() + 5;
+        const int y = 5;
+        int x = area.left() + 6;
+        for (QPushButton* swatch : swatches_) {
+          swatch->move(x, y);
+          swatch->raise();
+          x += swatch->width() + 4;
+        }
         plus_->move(area.right() - plus_->width() - 6, y);
         minus_->move(plus_->x() - minus_->width() - 4, y);
         minus_->raise();
         plus_->raise();
       }
       QTextEdit* out_;
+      QVector<QPushButton*> swatches_;
       QPushButton* minus_;
       QPushButton* plus_;
       std::function<void(int)> step_;
     };
-    new MiningOutputZoomFilter(txtMiningOutput_, btnMiningZoomOut_, btnMiningZoomIn_,
-                               [this](int delta) { applyMiningOutputFontSize(miningOutputFontPx_ + delta); });
+    new MiningOutputControlsFilter(txtMiningOutput_, std::move(hashColorButtons),
+                                   btnMiningZoomOut_, btnMiningZoomIn_,
+                                   [this](int delta) { applyMiningOutputFontSize(miningOutputFontPx_ + delta); });
     applyMiningOutputFontSize(QSettings().value("mining/outputFontPx", 10).toInt());
     layout->addWidget(txtMiningOutput_, 10); // HUGE stretch factor = takes all remaining space!
     setMiningOutputCinematicEnabled(false);
@@ -11525,10 +11578,10 @@ void MainWindow::updateMiningOutputCinematicFrame() {
     for (int visual = 0; visual < count; ++visual) {
       const int sampleIndex = count - 1 - visual;
       const MiningHashSample& sample = miningHashSamples_.at(sampleIndex);
-      // Every regular row is terminal green. Only the current find is orange;
-      // older finds return to green while Session finds retains their history.
+      // The chosen session hue applies to regular rows and older finds.
+      // Only the current find is orange.
       const auto colour = dinero::qt::hashRowColor(
-        sample.blockFound, sample.highlightUntilMs > nowMs);
+        sample.blockFound, sample.highlightUntilMs > nowMs, miningHashColorRgb_);
       int alpha = colour.a;
       // A solved template is retired during submission. Pulse only its text
       // during this real handoff; never invent candidate hashes to fill it.
@@ -11615,9 +11668,11 @@ void MainWindow::updateMiningOutputCinematicFrame() {
     const int y = row * rowHeight - pixelOffset + hashMetrics.ascent();
     const QString line = lineForRow(rowIndex);
     const quint64 rowTintSeed = static_cast<quint64>(rowIndex) * 0xBF58476D1CE4E5B9ULL;
-    // Keep the fallback pool-mode field in the same terminal green palette.
+    // Pool mode uses the same session color as the embedded miner.
     const int alpha = 175 + static_cast<int>((rowTintSeed >> 19) % 25ULL);
-    painter.setPen(QColor(0, 255, 0, alpha));
+    QColor rowColor = QColor::fromRgb(miningHashColorRgb_);
+    rowColor.setAlpha(alpha);
+    painter.setPen(rowColor);
     painter.drawText(0, y, line);
   }
 

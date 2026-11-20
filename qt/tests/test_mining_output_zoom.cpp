@@ -70,6 +70,47 @@ private Q_SLOTS:
         QVERIFY2(m.right() < p.left() && qAbs(m.top() - p.top()) <= 2, "- should sit just left of +");
     }
 
+    void hashColorsSwitchImmediatelyAndResetOnNewWindow() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        auto* out = output(*window);
+        auto* zoom = window->findChild<QPushButton*>("miningZoomIn");
+        QVERIFY(out && zoom);
+        const struct { const char* name; quint32 rgb; } choices[] = {
+            {"miningHashColorGreen", 0x00ff00},
+            {"miningHashColorBlue", 0x489cff},
+            {"miningHashColorWhite", 0xffffff},
+            {"miningHashColorRed", 0xff5050},
+        };
+        QPushButton* previous = nullptr;
+        for (const auto& choice : choices) {
+            auto* button = window->findChild<QPushButton*>(choice.name);
+            QVERIFY(button);
+            QVERIFY(button->isVisible());
+            QCOMPARE(button->size(), zoom->size());
+            QVERIFY(button->x() < out->width() / 2);
+            QVERIFY(button->geometry().bottom() < out->viewport()->geometry().top());
+            if (previous) QVERIFY(previous->geometry().right() < button->geometry().left());
+            previous = button;
+        }
+        QCOMPARE(window->miningHashColorRgb_, 0x00ff00u);
+        QVERIFY(window->findChild<QPushButton*>("miningHashColorGreen")->isChecked());
+        for (const auto& choice : choices) {
+            auto* button = window->findChild<QPushButton*>(choice.name);
+            QTest::mouseClick(button, Qt::LeftButton);
+            QCOMPARE(window->miningHashColorRgb_, choice.rgb);
+            QVERIFY(button->isChecked());
+        }
+        QTest::mouseClick(window->findChild<QPushButton*>("miningHashColorRed"), Qt::LeftButton);
+        QCOMPARE(window->miningHashColorRgb_, 0xff5050u);
+        window.reset();
+
+        auto again = makeWindow();
+        QVERIFY(again);
+        QCOMPARE(again->miningHashColorRgb_, 0x00ff00u);
+        QVERIFY(again->findChild<QPushButton*>("miningHashColorGreen")->isChecked());
+    }
+
     void buttonsChangeTheTextSizeAndRememberIt() {
         {
             auto window = makeWindow();
