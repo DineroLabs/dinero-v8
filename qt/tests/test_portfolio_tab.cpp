@@ -170,6 +170,14 @@ private Q_SLOTS:
         QCOMPARE(coins->item(1, 2)->text(), QString("Reading"));
         Q_EMIT rpc_->rpcResult("portfolio.btcbalance", QJsonObject{{"sat", 31817}, {"addresses", QJsonArray{}}});
         QCOMPARE(coins->item(1, 1)->text(), QString("0.00031817 BTC"));
+        QCOMPARE(coins->item(1, 2)->text(), QString("Proven against Bitcoin block headers"));
+        // A payment seen by the network but not yet in a block: said to be on its way, not added to the balance.
+        Q_EMIT rpc_->rpcResult("portfolio.btcbalance", QJsonObject{{"sat", 31817}, {"arriving_sat", 8200}});
+        QCOMPARE(coins->item(1, 1)->text(), QString("0.00031817 BTC"));
+        QVERIFY2(coins->item(1, 2)->text().startsWith("0.00008200 BTC on its way"), qPrintable(coins->item(1, 2)->text()));
+        // Just paid: the rest of the coin is change coming back, and the smaller balance is explained.
+        Q_EMIT rpc_->rpcResult("portfolio.btcbalance", QJsonObject{{"sat", 0}, {"returning_sat", 4761}});
+        QVERIFY2(coins->item(1, 2)->text().startsWith("0.00004761 BTC of yours comes back"), qPrintable(coins->item(1, 2)->text()));
         // Servers unreachable: "not read", never zero.
         Q_EMIT rpc_->rpcResult("portfolio.btcstatus", kOn);
         Q_EMIT rpc_->rpcResult("portfolio.btcbalance", QJsonObject{{"error", "cannot reach any Bitcoin server"}});

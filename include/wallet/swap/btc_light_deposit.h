@@ -40,6 +40,11 @@ struct BtcDepositView {
         uint32_t confirmations{};
     };
     std::vector<Paid> payments;        // every proven payment to the script, spent or not (Observe only)
+    // What transactions not yet in a block pay the script (Observe only). On a
+    // server's word: the bytes are hashed here and do pay the script, but
+    // nothing proves they will ever confirm. For telling the user a payment
+    // is on its way; never part of a balance, never spendable.
+    uint64_t arriving_sat{0};
 };
 
 class BtcDepositWatcher {

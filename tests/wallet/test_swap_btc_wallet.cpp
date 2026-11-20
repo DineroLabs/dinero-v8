@@ -146,6 +146,16 @@ TEST(BtcWallet, BalanceIsTheSumOfBothBranches) {
     EXPECT_EQ(b.rows[2].address, BtcWalletAddress(account, 1, 0, "bcrt"));
     // The next address is past everything that was ever paid, also the spent one.
     EXPECT_EQ(w.NewReceiveAddress(), BtcWalletAddress(account, 0, 4, "bcrt"));
+
+    // On its way to a receive address: told apart from the balance. The
+    // wallet's own change coming back is not a payment anyone waits for.
+    EXPECT_EQ(b.arriving_sat, 0u);
+    chain.at[BtcWalletScript(account, 0, 1)].arriving_sat = 8'200;
+    chain.at[BtcWalletScript(account, 1, 1)].arriving_sat = 999;
+    b = w.ReadBalance(chain.Reader());
+    EXPECT_EQ(b.arriving_sat, 8'200u);
+    EXPECT_EQ(b.returning_sat, 999u);
+    EXPECT_EQ(b.sat, 32'317u);
 }
 
 TEST(BtcWallet, ARestoredWalletFindsItsCoinsWithoutAnyRecord) {

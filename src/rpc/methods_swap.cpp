@@ -496,6 +496,8 @@ din::Json RpcBtcBalance(const ExecutionContext& ctx, const din::Json&) {
         const auto b = SwapService::Active()->manager()->BtcWalletBalance();
         din::Json out(Json::objectValue);
         out["sat"] = Json::UInt64(b.sat);
+        out["arriving_sat"] = Json::UInt64(b.arriving_sat);  // on its way, not in a block yet: not part of "sat"
+        out["returning_sat"] = Json::UInt64(b.returning_sat);  // own change of a payment not in a block yet: likewise
         out["addresses_read"] = b.addresses_read;
         out["addresses"] = Json::Value(Json::arrayValue);
         for (const auto& row : b.rows) {

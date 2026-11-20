@@ -61,6 +61,15 @@ inline QList<CoinRow> coinRows(double dinTotal, const QJsonObject& btcStatus, co
         } else {
             btc.amount = formatBtc(btcBalance.value("sat").toVariant().toLongLong());
             btc.note = "Proven against Bitcoin block headers";
+            // A payment the Bitcoin network has seen but not yet put in a block.
+            const qlonglong arriving = btcBalance.value("arriving_sat").toVariant().toLongLong();
+            const qlonglong returning = btcBalance.value("returning_sat").toVariant().toLongLong();
+            if (arriving > 0) {
+                btc.note = formatBtc(arriving) + " on its way: it counts after its first confirmation (about 10 minutes, sometimes longer)";
+            } else if (returning > 0) {
+                // After a payment the rest of the coin comes back as change; until then the balance looks too small.
+                btc.note = formatBtc(returning) + " of yours comes back when your payment confirms (about 10 minutes, sometimes longer)";
+            }
         }
     } else if (btcStatus.value("offered").toBool()) {
         btc.note = "Not turned on";

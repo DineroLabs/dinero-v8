@@ -144,6 +144,7 @@ BtcWallet::Balance BtcWallet::ReadBalance(const ScriptReader& read) {
                 paid[branch] = std::max(paid[branch], index + 1);
                 known = std::max(known, index + 1);
             }
+            (branch == 0 ? out.arriving_sat : out.returning_sat) += activity.arriving_sat;
             if (activity.sat > 0) {
                 out.rows.push_back({branch, index, BtcWalletAddress(account_, branch, index, hrp_), activity.sat});
                 out.sat += activity.sat;

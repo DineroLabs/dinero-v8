@@ -38,6 +38,7 @@ struct BtcScriptActivity {
         uint32_t confirmations{};
     };
     std::vector<Payment> payments;  // every proven payment to the script, spent or not (may be left empty likewise)
+    uint64_t arriving_sat{};  // paid by transactions not yet in a block, on a server's word: never spendable, never in `sat`
 };
 
 class BtcWallet {
@@ -84,6 +85,14 @@ public:
             uint32_t confirmations{};
         };
         std::vector<Received> received;    // every proven payment to an address of the wallet
+        // On its way to a receive address, not yet in a block (a server's
+        // word; see BtcScriptActivity). Not part of `sat`. The wallet's own
+        // change is not counted: it is not a payment anyone is waiting for.
+        uint64_t arriving_sat{};
+        // The wallet's own change on its way back from a payment not yet in
+        // a block (same standing). Without it a balance looks as if the
+        // whole coin had gone.
+        uint64_t returning_sat{};
     };
     // Reads every address the wallet may own. Remembers what it learns: after
     // a restore, the next receive address is one past the last address paid.

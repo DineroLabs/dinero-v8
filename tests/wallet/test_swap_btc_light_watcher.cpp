@@ -718,9 +718,12 @@ TEST(BtcDepositWatcher, CountsOnlyProvenUnspentPayments) {
     world.Broadcast(first);
     EXPECT_EQ(watcher.Observe().seen_sat, 0u);
     EXPECT_FALSE(watcher.Observe().ever_paid);  // nothing proven yet
+    EXPECT_EQ(watcher.Observe().arriving_sat, 700'000u);  // but it can be said to be on its way
+    EXPECT_TRUE(watcher.Observe().coins.empty());         // and is nothing a payment may spend
     world.Mine({first});
     node.Sync(world);
     v = watcher.Observe();
+    EXPECT_EQ(v.arriving_sat, 0u);  // arrived: counted once, as a balance
     EXPECT_TRUE(v.ever_paid);
     EXPECT_EQ(v.seen_sat, 700'000u);
     EXPECT_EQ(v.confirmed_sat, 0u);

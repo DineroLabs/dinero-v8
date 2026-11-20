@@ -72,17 +72,32 @@ BtcDepositView BtcDepositWatcher::Observe() {
     for (auto it = proven_.begin(); it != proven_.end();) {
         it = chain_.HeightOf(it->second.block_hash) ? std::next(it) : proven_.erase(it);
     }
-    std::vector<Bytes32> candidates;
+    std::vector<Bytes32> candidates, waiting;
     for (EsploraServer* server : servers_) {
         const auto history = server->ScriptHistory(script_pubkey_);
         if (!history) continue;
         view.ok = true;
         for (const EsploraScriptTx& entry : *history) {
-            if (!entry.status.confirmed || proven_.count(entry.txid)) continue;
-            if (std::find(candidates.begin(), candidates.end(), entry.txid) == candidates.end()) candidates.push_back(entry.txid);
+            if (proven_.count(entry.txid)) continue;
+            auto& list = entry.status.confirmed ? candidates : waiting;
+            if (std::find(list.begin(), list.end(), entry.txid) == list.end()) list.push_back(entry.txid);
         }
     }
     if (!view.ok) return view;
+    // Not in a block yet (by every server that lists it): what they would pay.
+    if (waiting.size() > 10) waiting.resize(10);
+    for (const Bytes32& txid : waiting) {
+        if (std::find(candidates.begin(), candidates.end(), txid) != candidates.end()) continue;
+        for (EsploraServer* server : servers_) {
+            const auto raw = server->RawTx(txid);
+            const auto tx = raw ? ParseBtcRawTx(*raw) : std::nullopt;
+            if (!tx || tx->txid != txid) continue;  // not that transaction's bytes
+            for (const auto& out : tx->vout) {
+                if (out.script_pubkey == script_pubkey_) view.arriving_sat += out.value_sat;
+            }
+            break;
+        }
+    }
     if (candidates.size() > 50) candidates.resize(50);  // an address used by one swap; the rest next time
     for (const Bytes32& txid : candidates) {
         for (EsploraServer* server : servers_) {

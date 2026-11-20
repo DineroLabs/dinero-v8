@@ -181,6 +181,7 @@ std::function<void(uint32_t)> InstallLightBitcoin(swap::SwapManager& manager, co
         }
         if (!view.ok) throw std::runtime_error("cannot reach any Bitcoin server");
         swap::BtcScriptActivity activity{view.seen_sat, view.ever_paid, {}, {}};
+        activity.arriving_sat = view.arriving_sat;
         for (const auto& coin : view.coins) activity.coins.push_back({coin.txid, coin.vout, coin.value_sat});
         for (const auto& paid : view.payments) activity.payments.push_back({paid.txid, paid.sat, paid.confirmations});
         return activity;
