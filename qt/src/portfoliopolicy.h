@@ -39,11 +39,15 @@ struct CoinRow {
 
 // One row per coin the app knows of. A coin it cannot serve is listed with
 // the reason, not hidden. `dinTotal` < 0: not known yet.
+// `withDinero` false: the other coins only, for the Wallet page, which shows
+// the DIN balance itself.
 inline QList<CoinRow> coinRows(double dinTotal, const QJsonObject& btcStatus, const QJsonObject& btcBalance,
-                               const QString& btcProblem) {
+                               const QString& btcProblem, bool withDinero = true) {
     QList<CoinRow> rows;
-    rows.append({"Dinero (DIN)", dinTotal < 0 ? QString() : QString::number(dinTotal, 'f', 8) + " DIN",
-                 dinTotal < 0 ? "Waiting for your node" : "Counted by your own node", true});
+    if (withDinero) {
+        rows.append({"Dinero (DIN)", dinTotal < 0 ? QString() : QString::number(dinTotal, 'f', 8) + " DIN",
+                     dinTotal < 0 ? "Waiting for your node" : "Counted by your own node", true});
+    }
     CoinRow btc{"Bitcoin (BTC)", {}, {}, true};
     if (btcStatus.isEmpty()) {
         btc.note = "Waiting for your node";

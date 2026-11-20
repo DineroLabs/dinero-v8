@@ -103,6 +103,30 @@ private Q_SLOTS:
         QVERIFY(coins->item(1, 1)->text() != QString("0.00000000 BTC"));
     }
 
+    // On the Wallet page the section lists the other coins only.
+    void withinTheWalletPageItListsTheOtherCoinsOnly() {
+        PortfolioWidget section(rpc_, nullptr, PortfolioWidget::Place::WithinWallet);
+        section.resize(1200, 700);
+        section.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&section));
+        QCOMPARE(Find<QGroupBox>(&section, "portfolioCoins")->title(), QString("Other coins in this wallet"));
+        auto* coins = Find<QTableWidget>(&section, "coinsTable");
+        QCOMPARE(coins->rowCount(), 3);
+        QCOMPARE(coins->item(0, 0)->text(), QString("Bitcoin (BTC)"));
+        Q_EMIT rpc_->rpcResult("portfolio.din", QJsonObject{{"total", 5.0}});  // not asked for, and ignored
+        QCOMPARE(coins->rowCount(), 3);
+        QCOMPARE(coins->item(0, 0)->text(), QString("Bitcoin (BTC)"));
+        Q_EMIT rpc_->rpcResult("portfolio.btcstatus", QJsonObject{{"offered", true}, {"enabled", false}});
+        QCOMPARE(coins->item(0, 2)->text(), QString("Not turned on"));
+        QVERIFY(Find<QPushButton>(&section, "bitcoinTurnOn")->isVisible());
+        // As a section it takes only the height it needs.
+        QApplication::processEvents();
+        for (auto* box : section.findChildren<QGroupBox*>()) {
+            if (!box->isVisible()) continue;
+            QVERIFY2(box->height() <= box->sizeHint().height() + 4, qPrintable(box->objectName() + " stretched"));
+        }
+    }
+
     void aNodeThatDoesNotAnswerLeavesWhatIsOnShow() {
         auto* coins = Find<QTableWidget>(tab_, "coinsTable");
         // Before the first answer: waiting, not "unavailable".

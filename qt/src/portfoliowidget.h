@@ -18,7 +18,10 @@ class RpcClient;
 class PortfolioWidget : public QWidget {
     Q_OBJECT
 public:
-    explicit PortfolioWidget(RpcClient* rpc, QWidget* parent = nullptr);
+    // Standalone: every coin including DIN. Within the Wallet page: the other
+    // coins only (that page shows the DIN balance itself), as one more section.
+    enum class Place { Standalone, WithinWallet };
+    explicit PortfolioWidget(RpcClient* rpc, QWidget* parent = nullptr, Place place = Place::Standalone);
 
 protected:
     void showEvent(QShowEvent* event) override;
@@ -43,6 +46,7 @@ private:
     QJsonObject sendParams() const;
 
     RpcClient* rpc_;
+    Place place_{Place::Standalone};
     double dinTotal_{-1};
     QJsonObject btcStatus_, btcBalance_;
     QString btcProblem_;
