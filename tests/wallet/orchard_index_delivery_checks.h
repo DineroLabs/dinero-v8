@@ -77,6 +77,7 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     CHECK(ordinary.addUTXO(historical.vtx.front().GetTxid().AsUint256().GetHex(),0,old_output.value.GetInt64(),"",script_hex(old_output.scriptPubKey),c.height-1,true));
     CHECK(ordinary_count("SELECT count(*) FROM utxos")==int64_t(baseline));
     CHECK(!RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session));
+    CHECK(ordinary.GetScanStatus(c.height).scan_height==0);
     size_t recovery_source_reads=0;
     const auto source=[&](RuntimeOutboxCursor cursor,size_t maximum) {
         CHECK(maximum>0 && maximum<=128);++recovery_source_reads;
@@ -105,6 +106,7 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     CHECK(ordinary_count("SELECT count(*) FROM utxos")==int64_t(baseline));
     CHECK(ordinary_count("SELECT count(*) FROM transactions")==0);
     CHECK(ordinary_count("SELECT count(*) FROM utxos WHERE is_spent=1")==0);
+    CHECK(ordinary.GetScanStatus(c.height).scan_height==0);
     ordinary_sql("DROP TRIGGER ordinary_reject_commit");
     { const auto lease=ordinary.AcquireDatabaseLease();
       CHECK(sqlite3_exec(lease->Database(),"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)==SQLITE_OK);
@@ -200,6 +202,8 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     // delivery that just committed the tip must have published it, or a coin
     // delivered now reads as unconfirmed until a restart.
     CHECK(ordinary.getCurrentBlockchainHeight()==c.height);
+    CHECK(ordinary.GetScanStatus(c.height).scan_height==c.height);
+    CHECK(ordinary.GetScanStatus(c.height).is_synced());
     using Account=dinero::wallet::OrchardAccountDelivery;
     const Account::Profile account_profile{c.domain,c.activation_height,0};
     const auto account_view=RuntimeAccountReplayTestAccess::Capture(db,c);
@@ -350,10 +354,13 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     ordinary_sql("DROP TRIGGER ordinary_reject_restore");
 
     ordinary.open("ordinary");ordinary_session=ordinary.AcquireDatabaseLease()->Session();
+    CHECK(ordinary.GetScanStatus(c.height).scan_height==c.height);
     CHECK(recover().applied.cursor==second.cursor);
     CHECK(recover().applied.cursor==second.cursor);
     CHECK(ordinary_count("SELECT count(*) FROM utxos")==int64_t(baseline));
     CHECK(ordinary_count("SELECT count(*) FROM utxos WHERE is_spent=1")==0);
+    CHECK(ordinary.GetScanStatus(c.height).scan_height==c.height-1);
+    CHECK(ordinary.GetScanStatus(c.height).is_scanning);
 
     CHECK(second.cursor==down.cursor && second.tip_hash==c.parent_hash && index.GetUTXOCount().value()==baseline);
     for(const auto& spent:undo.spent)if(spent.height<c.height)CHECK(!index.GetUTXO(TxId(spent.prev_txid),spent.prev_vout)->spend_height);
