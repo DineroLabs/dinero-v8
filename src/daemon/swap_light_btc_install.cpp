@@ -129,6 +129,22 @@ std::function<void(uint32_t)> InstallLightBitcoin(swap::SwapManager& manager, co
         if (!view.ok) throw std::runtime_error("cannot reach any Bitcoin server to read the deposit");
         return view;
     };
+    // Watch-only balances of addresses the user's swaps paid to: one watcher
+    // per script, kept, so what it has proven is not fetched again.
+    struct Watched {
+        std::mutex mu;
+        std::map<std::vector<uint8_t>, std::unique_ptr<swap::BtcDepositWatcher>> watchers;
+    };
+    auto watched = std::make_shared<Watched>();
+    support.script_balance = [backend, watched](const std::vector<uint8_t>& script) {
+        std::lock_guard<std::mutex> one(watched->mu);
+        const auto chain_lock = backend->Lock();
+        auto& watcher = watched->watchers[script];
+        if (!watcher) watcher = std::make_unique<swap::BtcDepositWatcher>(backend->chain(), backend->servers(), script);
+        const swap::BtcDepositView view = watcher->Observe();
+        if (!view.ok) throw std::runtime_error("cannot reach any Bitcoin server");
+        return view.seen_sat;
+    };
     support.recoverable_sat = [observe_for_recovery](const swap::Bytes32& key) { return observe_for_recovery(key).seen_sat; };
     support.deposit_address = [hrp](const swap::Bytes32& key) {
         return swap::BtcP2wpkhAddress(swap::detail::CompressedOf(key), hrp);

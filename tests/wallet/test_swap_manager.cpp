@@ -1231,6 +1231,137 @@ TEST(SwapManager, StrayBitcoinDepositsAreRecovered) {
     EXPECT_EQ(r.skipped[0], "index 2: 3000 sat found but not sent (Bitcoin transaction refused: dust)");
 }
 
+// A stored payout script is shown to the user as the address they gave.
+TEST(SwapManager, PayoutScriptsGoBackToTheirAddresses) {
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {"bc", "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"},
+        {"bc", "1111111111111111111114oLvT2"},  // an all-zero hash: leading zero bytes
+        {"bc", "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy"},
+        {"bc", "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"},
+        {"bc", "bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3"},
+        {"bc", "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0"},
+        {"tb", "mrS8eVKXguwufwvsVe9GtgGb7fif9UQeAu"},
+        {"tb", "2MzQwSSnBHWHqSAqtTVQ6v47XtaisrJa1Vc"},
+        {"bcrt", "mrS8eVKXguwufwvsVe9GtgGb7fif9UQeAu"},
+    };
+    for (const auto& [hrp, address] : cases) {
+        EXPECT_EQ(BtcAddressFromPayoutScript(BtcPayoutScriptFromAddress(address, hrp), hrp), address) << hrp;
+    }
+    EXPECT_EQ(BtcAddressFromPayoutScript({0x6a, 0x01, 0x00}, "bc"), "");  // not a payout script
+    EXPECT_EQ(BtcAddressFromPayoutScript({}, "bc"), "");
+}
+
+// Portfolio, step 1: the Bitcoin at the addresses this wallet's swaps paid to.
+// Watch-only: the node holds no key for these addresses, it only reads them.
+TEST(SwapManager, BitcoinAtTheAddressesOfThisWalletsSwaps) {
+    TempDir da("hold_alice"), db("hold_bob");
+    FakeWallet wa{0xe1}, wb{0xe2};
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+
+    // Without the light Bitcoin client there is nothing to read with.
+    EXPECT_THROW(alice.BtcHoldingsOfSwaps(), std::runtime_error);
+
+    std::map<std::vector<uint8_t>, uint64_t> held;  // by script
+    std::vector<std::vector<uint8_t>> asked;
+    bool reachable = true;
+    LightBtcSupport light;
+    light.make_io = [](const SwapSession& s, const RunnerConfig& rc, const Bytes32&) {
+        return std::make_unique<RpcSwapChainIo>(kNoDin, kNoBtc, s, rc);
+    };
+    light.tip_height = [] { return uint32_t{800}; };
+    // A light client that cannot read an arbitrary address says so.
+    alice.SetLightBitcoin(light);
+    EXPECT_THROW(alice.BtcHoldingsOfSwaps(), std::runtime_error);
+    light.script_balance = [&](const std::vector<uint8_t>& script) {
+        asked.push_back(script);
+        if (!reachable) throw std::runtime_error("cannot reach any Bitcoin server");
+        return held.count(script) ? held[script] : uint64_t{0};
+    };
+    alice.SetLightBitcoin(light);
+
+    // No swaps: nothing listed, no server asked.
+    auto h = alice.BtcHoldingsOfSwaps();
+    EXPECT_TRUE(h.addresses.empty());
+    EXPECT_TRUE(h.complete);
+    EXPECT_TRUE(asked.empty());
+
+    // Two sales paid to one address, a third to a legacy address. An open
+    // offer nobody accepted is not a swap and is not listed.
+    const std::string segwit = P2trAddress("bcrt", 0x41), legacy = "mrS8eVKXguwufwvsVe9GtgGb7fif9UQeAu";
+    const std::string bob_refund = P2trAddress("bcrt", 0x42);
+    std::vector<std::string> ids;
+    for (int i = 0; i < 3; ++i) {
+        OfferRequest r = Request();
+        r.din_amount_una += i;
+        r.btc_claim_address = i < 2 ? segwit : legacy;
+        const auto accepted = bob.Accept(alice.MakeOffer(r, kNow + i), P2trAddress("rdin", 0x31), bob_refund, kNow + 10 + i);
+        ASSERT_TRUE(accepted.accept_text);
+        ids.push_back(alice.Accept(*accepted.accept_text, "", "", kNow + 20 + i).id);
+    }
+    OfferRequest open = Request();
+    open.din_amount_una += 9;
+    open.btc_claim_address = P2trAddress("bcrt", 0x43);
+    alice.MakeOffer(open, kNow + 30);
+
+    held[BtcPayoutScriptFromAddress(segwit, "bcrt")] = 29'000;
+    held[BtcPayoutScriptFromAddress(legacy, "bcrt")] = 1'500;
+    h = alice.BtcHoldingsOfSwaps();
+    ASSERT_EQ(h.addresses.size(), 2u);
+    EXPECT_EQ(asked.size(), 2u) << "one question per address, not per swap";
+    EXPECT_TRUE(h.complete);
+    EXPECT_EQ(h.known_sat, 30'500u);
+    const auto find = [&](const std::string& address) {
+        for (const auto& a : h.addresses) if (a.address == address) return a;
+        ADD_FAILURE() << address << " is not listed";
+        return SwapManager::BtcHoldings::Address{};
+    };
+    auto a = find(segwit);
+    EXPECT_TRUE(a.known);
+    EXPECT_EQ(a.sat, 29'000u);
+    EXPECT_TRUE(a.sale_proceeds);
+    EXPECT_FALSE(a.purchase_refund);
+    EXPECT_EQ(a.swap_ids, (std::vector<std::string>{ids[0], ids[1]}));
+    a = find(legacy);
+    EXPECT_EQ(a.sat, 1'500u);
+    EXPECT_EQ(a.swap_ids, (std::vector<std::string>{ids[2]}));
+
+    // The buyer's side: his refund address, marked as such.
+    bob.SetLightBitcoin(light);
+    held[BtcPayoutScriptFromAddress(bob_refund, "bcrt")] = 2'817;
+    h = bob.BtcHoldingsOfSwaps();
+    ASSERT_EQ(h.addresses.size(), 1u);
+    EXPECT_EQ(h.addresses[0].address, bob_refund);
+    EXPECT_TRUE(h.addresses[0].purchase_refund);
+    EXPECT_FALSE(h.addresses[0].sale_proceeds);
+    EXPECT_EQ(h.addresses[0].sat, 2'817u);
+    EXPECT_EQ(h.addresses[0].swap_ids.size(), 3u);
+
+    // No server answers: the addresses are still listed, without a balance, and
+    // the total says it is not the whole picture. Nothing is thrown.
+    reachable = false;
+    h = alice.BtcHoldingsOfSwaps();
+    ASSERT_EQ(h.addresses.size(), 2u);
+    EXPECT_FALSE(h.complete);
+    EXPECT_EQ(h.known_sat, 0u);
+    for (const auto& x : h.addresses) {
+        EXPECT_FALSE(x.known);
+        EXPECT_EQ(x.sat, 0u);
+        EXPECT_EQ(x.problem, "cannot reach any Bitcoin server");
+    }
+    reachable = true;
+
+    // After a restart with the wallet locked the swap records cannot be read:
+    // said plainly, not shown as "you hold nothing".
+    wa.locked = true;
+    SwapManager restarted(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    restarted.SetLightBitcoin(light);
+    h = restarted.BtcHoldingsOfSwaps();
+    EXPECT_TRUE(h.addresses.empty());
+    EXPECT_FALSE(h.complete);
+    EXPECT_EQ(h.unreadable_swaps, 3u);
+}
+
 TEST(SwapManager, DepositsBelongToTheNodesThatCanUseThem) {
     TempDir da("light_who_alice"), db("light_who_core"), dc("light_who_sell");
     FakeWallet wa{0xf5}, wb{0xf6}, wc{0xf7};

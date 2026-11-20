@@ -214,6 +214,18 @@ print(int(t) if isinstance(t,int) and t > 10**6 else int(round(float(t)*1e8)))' 
 MIN_DIN=999000000; [[ -n "$TOWER" ]] && MIN_DIN=989000000
 check "bob's wallet received the DIN ($BOB_DIN una)" '[[ $BOB_DIN -ge $MIN_DIN && $BOB_DIN -le 1000000000 ]]'
 
+echo "=== each node reads the Bitcoin its swaps paid to (watch-only) ==="
+holding() {  # holding JSON ADDRESS -> "sat sale_proceeds purchase_refund rows complete"
+  python3 -c 'import sys,json
+d=json.loads(sys.argv[1]); rows=d.get("addresses",[])
+r=[a for a in rows if a["address"]==sys.argv[2]]
+print(r[0].get("sat","?") if r else "missing", r[0]["sale_proceeds"] if r else "-", r[0]["purchase_refund"] if r else "-", len(rows), d.get("complete"))' "$1" "$2"
+}
+HA=$(rpc $APORT swap.btcholdings '{}'); echo "  alice: $HA" | cut -c1-260
+check "alice sees the BTC she sold for at her payout address ($(holding "$HA" "$ALICE_BTC"))" '[[ "$(holding "$HA" "$ALICE_BTC")" == "999000 True False 1 True" ]]'
+HB=$(rpc $BPORT swap.btcholdings '{}'); echo "  bob: $HB" | cut -c1-260
+check "bob sees what came back to his refund address ($(holding "$HB" "$BOB_REFUND"))" '[[ "$(holding "$HB" "$BOB_REFUND")" == "$(sats "$BOB_REFUND") False True 1 True" ]]'
+
 echo "=== BTC that reaches a deposit address late is recovered ==="
 # A second withdrawal from an exchange arrives after the swap is over, and something lands on the first, cancelled address.
 "${BCLI[@]}" sendtoaddress "$ADDR" 0.0006 >/dev/null
