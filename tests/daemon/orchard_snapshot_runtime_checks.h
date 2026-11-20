@@ -2372,6 +2372,78 @@ TEST(OrchardPhoneHistory, SequentialBodiesExtendWithoutSkippingAndReadyDataIsNot
     EXPECT_FALSE(host.Enqueue({"archive",71,0},second->WireBytes()));
     EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(source.f.db),unchanged);
 }
+// A block arrives between the end of verification and the wallet's use of it.
+// The verified history is a checkpoint: it stays usable while the selected
+// chain extends it, and is withdrawn when a reorganisation replaces it.
+TEST(OrchardPhoneHistory, ABlockAfterVerificationKeepsTheCheckpointAndAReorganisationWithdrawsIt){
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;using Download=p2p::OrchardPhoneHistoryDownload;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    source.f.service->setRuntimeBlockNotifications(std::make_shared<CanonicalPoolNotices>());
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));
+    auto proof=std::make_shared<const OrchardSnapshotSection>(Access::CaptureActivation(source.f.db,*headers));
+    const auto a=source.f.db.getOrchardCatalogState(first->Header().GetHash());ASSERT_TRUE(a.ok());
+    BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+    const auto second=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(second);
+    ASSERT_TRUE(source.Submit(second->WireBytes()).connected);ASSERT_TRUE(headers->AddHeader(second->Header()));
+    const auto b=source.f.db.getOrchardCatalogState(second->Header().GetHash());ASSERT_TRUE(b.ok());
+    std::mutex mutex;std::condition_variable cv;std::deque<std::vector<uint8_t>> requests;
+    std::optional<Download::Target> target;
+    Download host(headers,source.f.path.parent_path(),[&]{std::lock_guard lock(mutex);return target;},[&]{return proof;},
+        [&](auto p,const auto& t){return Access::ReplayActivation(std::move(p),headers,t.height,t.hash);},
+        []{return std::vector<Download::Peer>{{"archive",71,ServiceFlags::NODE_NETWORK}};},
+        [&](const auto&,const auto&,const auto& bytes){std::lock_guard lock(mutex);requests.push_back(bytes);cv.notify_all();return true;});
+    const auto requested=[&]{std::unique_lock lock(mutex);
+        if(!cv.wait_for(lock,std::chrono::seconds(5),[&]{return !requests.empty();}))return false;requests.pop_front();return true;};
+    const auto until=[&](const auto& done){const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(std::chrono::steady_clock::now()<deadline){if(done())return true;std::this_thread::sleep_for(std::chrono::milliseconds(10));}return false;};
+    const Download::Target at_first{102,102,first->Header().GetHash(),storage::catalog::Hash(*a),first->Header().GetHash()};
+    const Download::Target at_second{102,103,second->Header().GetHash(),storage::catalog::Hash(*b),first->Header().GetHash()};
+
+    EXPECT_FALSE(host.ReadyCheckpoint());  // nothing verified yet
+    {std::lock_guard lock(mutex);target=at_first;}
+    ASSERT_TRUE(requested());ASSERT_TRUE(host.Enqueue({"archive",71,0},first->WireBytes()));
+    ASSERT_TRUE(until([&]{return bool(host.Ready());}));
+    auto verified=host.ReadyCheckpoint();ASSERT_TRUE(verified);EXPECT_EQ(verified->target,at_first);
+
+    // The next block arrives. Its body is requested but NOT delivered yet:
+    // this is the moment the wallet used to be refused in.
+    {std::lock_guard lock(mutex);target=at_second;}
+    ASSERT_TRUE(requested());
+    ASSERT_TRUE(until([&]{return !host.Ready();}));
+    EXPECT_FALSE(host.Ready()) << "the exact-tip answer is unchanged: not verified up to the new tip";
+    auto standing=host.ReadyCheckpoint();
+    ASSERT_TRUE(standing) << "the verified work is still there";
+    EXPECT_EQ(standing->target,at_first);
+    EXPECT_EQ(standing->Body(102),first->WireBytes());
+    EXPECT_ANY_THROW(standing->Body(103)) << "it vouches for nothing beyond what was verified";
+    EXPECT_EQ(host.ReadyCheckpointFor(at_second),standing);
+    EXPECT_TRUE(host.OnChainOf(at_second,102,first->Header().GetHash()));
+    EXPECT_FALSE(host.OnChainOf(at_second,102,second->Header().GetHash()));
+    EXPECT_FALSE(host.OnChainOf(at_first,103,second->Header().GetHash()));  // above the tip asked about
+
+    // Its body arrives and verifies: the checkpoint moves up with it.
+    ASSERT_TRUE(host.Enqueue({"archive",71,0},second->WireBytes()));
+    ASSERT_TRUE(until([&]{return bool(host.Ready());}));
+    auto moved=host.ReadyCheckpoint();ASSERT_TRUE(moved);EXPECT_EQ(moved->target,at_second);
+    EXPECT_EQ(moved->Body(103),second->WireBytes());
+
+    // A tip on a chain the headers do not connect to the checkpoint (a
+    // reorganisation): no checkpoint for it, from either question.
+    auto elsewhere=at_second;elsewhere.height=104;elsewhere.hash.data[0]^=1;
+    EXPECT_FALSE(host.ReadyCheckpointFor(elsewhere));
+    auto same_height_other_block=at_second;same_height_other_block.hash.data[0]^=1;
+    EXPECT_FALSE(host.ReadyCheckpointFor(same_height_other_block));
+    auto other_base=at_second;other_base.base.data[0]^=1;
+    EXPECT_FALSE(host.ReadyCheckpointFor(other_base));
+    // And once the worker itself sees the selected target replaced, it withdraws what it had.
+    {std::lock_guard lock(mutex);target=same_height_other_block;}
+    ASSERT_TRUE(until([&]{return !host.ReadyCheckpoint();}));
+    EXPECT_FALSE(host.Ready());
+    host.Stop();EXPECT_FALSE(host.ReadyCheckpoint());
+}
 TEST(OrchardPhoneHistory, CorruptFirstBodyNeverPublishesAndStopDiscardsFlight){
     using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;using Download=p2p::OrchardPhoneHistoryDownload;
     CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
