@@ -116,10 +116,10 @@ private Q_SLOTS:
         QVERIFY(!SwapLaunchPolicy::daemonArgs(true, true).contains("--swap.btc_wallet=1"));
         // Switched on, but the node could not start it: the reason in words.
         Q_EMIT rpc_->rpcResult("portfolio.btcstatus",
-                               QJsonObject{{"error", "the Bitcoin wallet is not running on this node: swap.btc_backend=light is "
-                                                     "not offered on mainnet yet (testnet first); use swap.btc_rpc with Bitcoin Core"}});
-        QVERIFY2(intro->text().contains("not available on mainnet yet"), qPrintable(intro->text()));
-        QVERIFY2(!intro->text().contains("swap.btc_rpc"), "no node options in front of the user");
+                               QJsonObject{{"error", "the Bitcoin wallet is not running on this node: swap.btc_backend=light "
+                                                     "needs a dinerod built with DINERO_SWAP_LIGHT_BTC"}});
+        QVERIFY2(intro->text().contains("built without it"), qPrintable(intro->text()));
+        QVERIFY2(!intro->text().contains("DINERO_SWAP_LIGHT_BTC"), "no build options in front of the user");
         QVERIFY(!turnOn->isVisible());
         // After the restart the node runs it: the wallet's own "turn on" (which needs the unlock) takes over.
         Q_EMIT rpc_->rpcResult("portfolio.btcstatus", QJsonObject{{"offered", true}, {"enabled", false}});

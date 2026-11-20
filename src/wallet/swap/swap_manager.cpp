@@ -1278,13 +1278,7 @@ SwapManager::BtcWalletState SwapManager::BtcWalletStatus() {
     out.why_not = BtcWalletWhyNot();
     out.offered = out.why_not.empty();
     std::lock_guard<std::mutex> file(btc_wallet_mu_);
-    if (!BtcWallet::Enabled(BtcWalletDir())) {
-        if (out.offered && config_.network == SwapNetwork::Mainnet && !config_.btc_wallet_on_mainnet) {
-            out.offered = false;
-            out.why_not = "the Bitcoin wallet is not offered on mainnet yet: it has run on test networks only";
-        }
-        return out;
-    }
+    if (!BtcWallet::Enabled(BtcWalletDir())) return out;
     try {
         BtcWallet wallet(BtcWalletDir(), config_.runner.btc_hrp);
         out.enabled = true;
@@ -1304,9 +1298,6 @@ std::string SwapManager::EnableBtcWallet() {
         source = btc_account_;
     }
     std::lock_guard<std::mutex> file(btc_wallet_mu_);
-    if (config_.network == SwapNetwork::Mainnet && !config_.btc_wallet_on_mainnet && !BtcWallet::Enabled(BtcWalletDir())) {
-        throw std::runtime_error("the Bitcoin wallet is not offered on mainnet yet: it has run on test networks only");
-    }
     const auto account = source(config_.network == SwapNetwork::Mainnet ? 0u : 1u);
     if (!account) throw std::runtime_error("wallet is locked: unlock it to turn the Bitcoin wallet on");
     BtcWallet::Enable(BtcWalletDir(), *account);

@@ -1675,7 +1675,7 @@ TEST(SwapManager, EachDineroWalletHasItsOwnBitcoinWallet) {
     EXPECT_FALSE(fs::exists(da.path + "/../../escape"));
 }
 
-TEST(SwapManager, TheBitcoinWalletStaysOffOnMainnetUntilItCanSend) {
+TEST(SwapManager, TheBitcoinWalletIsOfferedOnMainnet) {
     TempDir da("btcw_main");
     FakeWallet wa{0xd2};
     Bytes32 key{}, chain{};
@@ -1692,21 +1692,13 @@ TEST(SwapManager, TheBitcoinWalletStaysOffOnMainnetUntilItCanSend) {
     SwapManagerConfig c = Config(da.path);
     c.network = SwapNetwork::Mainnet;
     c.runner.btc_hrp = "bc";
-    {
-        SwapManager m(c, wa.Deriver(), kNoDin, kNoBtc);
-        m.SetLightBitcoin(light);
-        m.SetBtcAccountSource([&](uint32_t coin) { coin_types.push_back(coin); return std::optional<BtcWalletAccount>(account); });
-        const auto st = m.BtcWalletStatus();
-        EXPECT_FALSE(st.offered);
-        EXPECT_NE(st.why_not.find("not offered on mainnet yet"), std::string::npos) << st.why_not;
-        EXPECT_THROW(m.EnableBtcWallet(), std::runtime_error);
-        EXPECT_TRUE(coin_types.empty()) << "the seed is not touched for a refusal";
-        EXPECT_FALSE(BtcWallet::Enabled(da.path));
-    }
-    c.btc_wallet_on_mainnet = true;
     SwapManager m(c, wa.Deriver(), kNoDin, kNoBtc);
     m.SetLightBitcoin(light);
     m.SetBtcAccountSource([&](uint32_t coin) { coin_types.push_back(coin); return std::optional<BtcWalletAccount>(account); });
+    // Offered on mainnet (v8.2.4), with nothing more to set.
+    const auto st = m.BtcWalletStatus();
+    EXPECT_TRUE(st.offered) << st.why_not;
+    EXPECT_FALSE(st.enabled);
     EXPECT_EQ(m.EnableBtcWallet(), BtcWalletAddress(account, 0, 0, "bc"));
     ASSERT_EQ(coin_types.size(), 1u);
     EXPECT_EQ(coin_types[0], 0u) << "mainnet is coin type 0";

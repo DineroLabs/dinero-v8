@@ -100,8 +100,6 @@ inline BitcoinStartView bitcoinStartView(bool wanted, const QString& nodeMessage
         v.canSwitchOn = true;
         v.text = "Hold, receive and send Bitcoin in this wallet, with the recovery words you already have, and without "
                  "any other Bitcoin software. Switching it on lets Dinero follow the Bitcoin network.";
-    } else if (reason.contains("not offered on mainnet yet")) {
-        v.text = "The Bitcoin wallet is switched on, but it is not available on mainnet yet. A later release switches it on.";
     } else if (reason.contains("built with DINERO_SWAP_LIGHT_BTC")) {
         v.text = "The Bitcoin wallet is switched on, but this copy of Dinero was built without it.";
     } else if (!reason.isEmpty()) {
