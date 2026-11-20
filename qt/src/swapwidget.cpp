@@ -44,6 +44,7 @@ const QString kCaps = "swaptab.caps";
 const QString kFee = "swaptab.fee";
 const QString kDeposit = "swaptab.deposit";
 const QString kWithdraw = "swaptab.withdraw";
+const QString kHoldings = "swaptab.holdings";
 
 // The app's layout: form and its review side by side at 3:2, 12 px apart.
 // Plain words for someone who has never needed a Bitcoin address before.
@@ -472,6 +473,48 @@ void SwapWidget::setupUi() {
     listLayout->addWidget(events_);
     listLayout->addLayout(buttons);
     root->addWidget(list);
+
+    // --- Bitcoin from your swaps (a node without Bitcoin Core only) ---
+    holdingsBox_ = new QGroupBox("Bitcoin from your swaps", this);
+    holdingsBox_->setObjectName("swapHoldings");
+    auto* holdingsLayout = new QVBoxLayout(holdingsBox_);
+    auto* holdingsNote = new QLabel(
+        "What the Bitcoin network holds at the addresses your swaps paid to. This wallet cannot spend it: the keys "
+        "are in the Bitcoin app or exchange each address came from, and for an exchange address the amount here is "
+        "not your balance there. Checking asks public Bitcoin servers about these addresses.",
+        holdingsBox_);
+    holdingsNote->setObjectName("holdingsNote");
+    holdingsNote->setWordWrap(true);
+    holdingsNote->setStyleSheet("QLabel { color: #8b949e; }");
+    holdingsTable_ = new QTableWidget(0, 3, holdingsBox_);
+    holdingsTable_->setObjectName("holdingsTable");
+    holdingsTable_->setHorizontalHeaderLabels({"Bitcoin address", "What it is", "Holds"});
+    holdingsTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    holdingsTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    holdingsTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    holdingsTable_->setSelectionMode(QAbstractItemView::SingleSelection);
+    holdingsTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    holdingsTable_->setAlternatingRowColors(true);
+    holdingsTable_->setStyleSheet(kTableStyle);
+    holdingsTable_->verticalHeader()->setVisible(false);
+    holdingsTable_->setMaximumHeight(170);
+    holdingsTable_->setVisible(false);
+    holdingsSummary_ = new QLabel(holdingsBox_);
+    holdingsSummary_->setObjectName("holdingsSummary");
+    holdingsSummary_->setWordWrap(true);
+    holdingsSummary_->setVisible(false);
+    auto* holdingsButtons = new QHBoxLayout;
+    checkHoldings_ = ChromeButton("Check Bitcoin balances",
+                                  "Ask public Bitcoin servers what the addresses your swaps paid to hold now",
+                                  "checkHoldings", holdingsBox_);
+    holdingsButtons->addWidget(holdingsSummary_, 1);
+    holdingsButtons->addWidget(checkHoldings_);
+    holdingsLayout->addWidget(holdingsNote);
+    holdingsLayout->addWidget(holdingsTable_);
+    holdingsLayout->addLayout(holdingsButtons);
+    holdingsBox_->setVisible(false);
+    root->addWidget(holdingsBox_);
+    connect(checkHoldings_, &QPushButton::clicked, this, &SwapWidget::onCheckHoldings);
     root->addStretch(1);  // spare height stays below the content
 
     for (auto* e : {dinAmount_, btcAmount_, btcAddress_}) {
@@ -788,6 +831,47 @@ void SwapWidget::onWithdrawDeposit() {
     rpc_->callNamedAs("swap.cancel", QJsonObject{{"id", depositId_}}, kWithdraw);
 }
 
+void SwapWidget::onCheckHoldings() {
+    checkHoldings_->setEnabled(false);
+    checkHoldings_->setText(QString::fromUtf8("Checking…"));
+    rpc_->callNamedAs("swap.btcholdings", QJsonObject{}, kHoldings);
+}
+
+void SwapWidget::showHoldings(const QJsonObject& reply) {
+    checkHoldings_->setEnabled(true);
+    checkHoldings_->setText("Check Bitcoin balances");
+    const SwapFormPolicy::HoldingsView v = SwapFormPolicy::holdingsView(reply);
+    const QJsonArray addresses = reply.value("addresses").toArray();
+    holdingsTable_->setRowCount(v.rows.size());
+    for (int i = 0; i < v.rows.size(); ++i) {
+        auto* address = new QTableWidgetItem(v.rows[i].address);
+        address->setToolTip(v.rows[i].address);
+        holdingsTable_->setItem(i, 0, address);
+        holdingsTable_->setItem(i, 1, new QTableWidgetItem(v.rows[i].what));
+        auto* amount = new QTableWidgetItem(v.rows[i].amount);
+        if (!v.rows[i].known) {
+            amount->setForeground(QColor(PayCollectPolicy::toneColor(Tone::Warn)));
+            amount->setToolTip(addresses[i].toObject().value("problem").toString());
+        }
+        holdingsTable_->setItem(i, 2, amount);
+    }
+    holdingsTable_->setVisible(!v.rows.isEmpty());
+    holdingsSummary_->setText(v.summary);
+    holdingsSummary_->setStyleSheet(
+        v.incomplete ? QString("QLabel { color: %1; }").arg(PayCollectPolicy::toneColor(Tone::Warn)) : QString());
+    holdingsSummary_->setVisible(true);
+}
+
+void SwapWidget::showHoldingsProblem(const QString& message) {
+    checkHoldings_->setEnabled(true);
+    checkHoldings_->setText("Check Bitcoin balances");
+    holdingsTable_->setRowCount(0);
+    holdingsTable_->setVisible(false);
+    holdingsSummary_->setText("Could not check: " + message);
+    holdingsSummary_->setStyleSheet(QString("QLabel { color: %1; }").arg(PayCollectPolicy::toneColor(Tone::Warn)));
+    holdingsSummary_->setVisible(true);
+}
+
 void SwapWidget::onCancelSelected() {
     const int row = table_->currentRow();
     if (row < 0) return;
@@ -831,11 +915,14 @@ void SwapWidget::onRpcResult(const QString& method, const QJsonValue& result) {
             listEmpty_->setVisible(true);
             if (message.contains("disabled")) noteSwapsOff(message);
             else showRefreshError(message);
+        } else if (method == kHoldings) {
+            showHoldingsProblem(message);
         } else {
             showStatus(message, true);
         }
         return;
     }
+    if (method == kHoldings) return showHoldings(result.toObject());
     if (method == kChain) {
         chain_ = result.toObject().value("chain").toString(chain_);
         updateOfferReview();  // the address prefix depends on the chain
@@ -848,6 +935,7 @@ void SwapWidget::onRpcResult(const QString& method, const QJsonValue& result) {
         const bool btc = chains.contains(QJsonValue("btc"));
         lightBtc_ = btc && result.toObject().value("btc_backend").toString() == "light";
         lightNotice_->setVisible(lightBtc_);
+        holdingsBox_->setVisible(lightBtc_);
         updatePasteReview();
         chainLabel_->setVisible(zecSupported_);
         chainPick_->setVisible(zecSupported_);
@@ -985,5 +1073,6 @@ void SwapWidget::onRpcError(const QString& method, int code, const QString& mess
         return showRefreshError("This node does not offer swaps (connect to your own dinerod with swap.enable=1).");
     }
     if (method == kList) return showRefreshError(message);  // e.g. "Connection refused" while the node starts
+    if (method == kHoldings) return showHoldingsProblem(message);
     showStatus(message, true);
 }

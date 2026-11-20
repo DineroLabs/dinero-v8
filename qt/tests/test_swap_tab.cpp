@@ -86,7 +86,7 @@ private Q_SLOTS:
     // colour: light, unless the table says otherwise, under the app's pale text.
     void tablesKeepTheirRowsDark() {
         const auto tables = tab_->findChildren<QTableWidget*>();
-        QVERIFY(!tables.isEmpty());
+        QVERIFY(tables.size() >= 2);
         for (auto* t : tables) {
             if (!t->alternatingRowColors()) continue;
             QVERIFY2(t->styleSheet().contains("alternate-background-color: #2"),
@@ -200,6 +200,22 @@ private Q_SLOTS:
         }
         page.save(dir + "/swap-tab-hover.png");
         QToolTip::hideText();
+
+        // A node without Bitcoin Core, after "Check Bitcoin balances": one address read, one not.
+        Q_EMIT rpc_->rpcResult("swaptab.caps", QJsonObject{{"chains", QJsonArray{"btc"}}, {"btc_backend", "light"}});
+        Q_EMIT rpc_->rpcResult(
+            "swaptab.holdings",
+            QJsonObject{{"addresses",
+                         QJsonArray{QJsonObject{{"address", "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"}, {"known", true},
+                                                {"sat", 29000}, {"sale_proceeds", true}, {"purchase_refund", false}},
+                                    QJsonObject{{"address", "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy"}, {"known", false},
+                                                {"problem", "cannot reach any Bitcoin server"},
+                                                {"sale_proceeds", false}, {"purchase_refund", true}}}},
+                        {"known_sat", 29000}, {"unreadable_swaps", 0}, {"complete", false}});
+        tab_->resize(1440, 1250);
+        quiet();
+        tab_->grab().save(dir + "/swap-tab-holdings.png");
+        tab_->resize(1440, 900);
 
         // The same tab on a node that can swap ZEC: selling for ZEC, and a buyer's deposit.
         Q_EMIT rpc_->rpcResult("swaptab.caps", QJsonObject{{"chains", QJsonArray{"btc", "zec"}}});
@@ -484,6 +500,54 @@ private Q_SLOTS:
         QVERIFY(!Find<QPushButton>(tab_, "chainBtc")->isVisible());
         QVERIFY(Find<QPushButton>(tab_, "chainZec")->isChecked());
         QCOMPARE(Find<QGroupBox>(tab_, "swapSellForm")->title(), QString("Sell DIN for ZEC"));
+    }
+
+    // Portfolio, step 1: the Bitcoin at the addresses the swaps paid to.
+    void bitcoinFromYourSwapsIsAskedForOnlyWhenTheUserAsks() {
+        auto* box = Find<QGroupBox>(tab_, "swapHoldings");
+        QVERIFY2(!box->isVisible(), "a node that cannot read Bitcoin addresses does not offer it");
+        Q_EMIT rpc_->rpcResult("swaptab.caps", QJsonObject{{"chains", QJsonArray{"btc"}}, {"btc_backend", "light"}});
+        QVERIFY(box->isVisible());
+        auto* check = Find<QPushButton>(tab_, "checkHoldings");
+        auto* table = Find<QTableWidget>(tab_, "holdingsTable");
+        auto* summary = Find<QLabel>(tab_, "holdingsSummary");
+        QVERIFY(check->isEnabled());
+        QVERIFY(!table->isVisible());
+        // It tells the user what checking discloses, before they check.
+        QVERIFY2(Find<QLabel>(tab_, "holdingsNote")->text().contains("public Bitcoin servers"),
+                 qPrintable(Find<QLabel>(tab_, "holdingsNote")->text()));
+        // Refreshing the swap list does not ask the servers about the user's addresses.
+        Q_EMIT rpc_->rpcResult("swaptab.list", QJsonArray{});
+        QVERIFY(!table->isVisible());
+        QVERIFY(summary->text().isEmpty());
+
+        check->click();
+        QVERIFY(!check->isEnabled());  // one question at a time
+        const QJsonObject sale{{"address", "bc1qfh9ghr2u07ga8jnvwtda9uplqyjx0znj9sn6fv"}, {"known", true}, {"sat", 29000},
+                               {"sale_proceeds", true}, {"purchase_refund", false}, {"swaps", QJsonArray{"e57a84e5"}}};
+        const QJsonObject unread{{"address", "bc1qunread"}, {"known", false}, {"problem", "cannot reach any Bitcoin server"},
+                                 {"sale_proceeds", false}, {"purchase_refund", true}};
+        Q_EMIT rpc_->rpcResult("swaptab.holdings", QJsonObject{{"addresses", QJsonArray{sale, unread}}, {"known_sat", 29000},
+                                                              {"unreadable_swaps", 0}, {"complete", false}});
+        QVERIFY(check->isEnabled());
+        QVERIFY(table->isVisible());
+        QCOMPARE(table->rowCount(), 2);
+        QCOMPARE(table->item(0, 0)->text(), QString("bc1qfh9ghr2u07ga8jnvwtda9uplqyjx0znj9sn6fv"));
+        QCOMPARE(table->item(0, 2)->text(), QString("0.00029000 BTC"));
+        QCOMPARE(table->item(1, 2)->text(), QString("Not read"));
+        QVERIFY2(table->item(1, 2)->toolTip().contains("cannot reach any Bitcoin server"), "why it was not read");
+        QVERIFY2(summary->text().contains("not the whole amount"), qPrintable(summary->text()));
+
+        // A refusal lands in this section, and the button works again.
+        check->click();
+        Q_EMIT rpc_->rpcResult("swaptab.holdings", QJsonObject{{"error", "this node cannot read Bitcoin addresses"}});
+        QVERIFY(check->isEnabled());
+        QVERIFY(!table->isVisible());
+        QVERIFY2(summary->text().contains("cannot read Bitcoin addresses"), qPrintable(summary->text()));
+        check->click();
+        Q_EMIT rpc_->rpcError("swaptab.holdings", -1, "Connection refused");
+        QVERIFY(check->isEnabled());
+        QVERIFY2(summary->text().contains("Connection refused"), qPrintable(summary->text()));
     }
 
     void spareHeightStaysBelowTheContent() {
