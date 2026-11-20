@@ -73,7 +73,7 @@ inline bool startsNewBlock(int previous_height, int height) {
 // A new template starts with a slightly lighter grey row.
 inline HashRowColor hashRowColor(bool block_found, bool found_highlight_active,
                                  bool starts_new_block) {
-  if (block_found) return {242, 246, 250, found_highlight_active ? 255 : 225};
+  if (block_found) return {255, 176, 48, found_highlight_active ? 255 : 225};
   if (starts_new_block) return {196, 208, 219, 205};
   return {151, 163, 174, 150};
 }
