@@ -371,4 +371,13 @@ mine_btc 1
 for _ in $(seq 1 30); do [[ "$(jget "$(rpc $BPORT btc.getbalance '{}' 2>/dev/null || echo '{}')" sat)" == 10000 ]] && break; sleep 1; done
 check "it is paid and reads its balance (10,000 sat) with swaps off" '[[ "$(jget "$(rpc $BPORT btc.getbalance "{}")" sat)" == 10000 ]]'
 
+echo "=== a new wallet has its Bitcoin address from the start ==="
+NW=$(rpc $BPORT wallet.createhd '["second"]')
+NADDR=$(jget "$NW" first_btc_address)
+check "creating a wallet reports its first Bitcoin address beside its Dinero ones ($NADDR)" '[[ "$NADDR" == bcrt1q* && -n "$(jget "$NW" first_address)" ]]'
+check "it is another wallet's address, not the first wallet's" '[[ "$NADDR" != "$OADDR" ]]'
+NS=$(rpc $BPORT btc.status '{}')
+check "the open wallet's Bitcoin wallet is on, at that address" '[[ "$(jget "$NS" enabled)" == True && "$(jget "$NS" address)" == "$NADDR" ]]'
+check "and holds nothing of the first wallet's 10,000 sat" '[[ "$(jget "$(rpc $BPORT btc.getbalance "{}")" sat)" == 0 ]]'
+
 [[ $fail -eq 0 ]] && echo "SWAP LIGHT BTC BUY REGTEST: PASS" || { echo "SWAP LIGHT BTC BUY REGTEST: FAIL"; grep -h "\[Swap\]" "$DIR"/*.log | tail -8; exit 1; }

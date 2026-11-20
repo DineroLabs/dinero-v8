@@ -104,7 +104,10 @@ std::optional<din::Json> Refuse(const ExecutionContext& ctx, bool starting, bool
     if (starting) {
         if (!ctx.daemon || !ctx.daemon->wallet || !ctx.daemon->wallet->hasActiveWallet()) return Error("no active wallet");
         auto& wm = ctx.daemon->wallet->get();
-        if (!wm.isWalletEncrypted()) return Error("swaps need an encrypted wallet (wallet.encrypt)");
+        // Swaps keep their records sealed with a key of the encrypted wallet.
+        // The Bitcoin wallet keeps no secret of its own: like the DIN in an
+        // unencrypted wallet, its coins are as safe as the wallet file.
+        if (!bitcoin_wallet && !wm.isWalletEncrypted()) return Error("swaps need an encrypted wallet (wallet.encrypt)");
         if (wm.isWalletLocked()) return Error("wallet is locked: wallet.unlock first");
     }
     return std::nullopt;
