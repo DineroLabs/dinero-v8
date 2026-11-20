@@ -150,6 +150,87 @@ public:
   }
 };
 
+// Keep mining telemetry accessible as label text while drawing numeric values
+// as compact seven-segment scoreboard digits. External miner status can also
+// use the Blocks label, so nonnumeric text retains normal QLabel rendering.
+class MiningScoreboardLabel final : public QLabel {
+public:
+  explicit MiningScoreboardLabel(const QString& value, QWidget* parent = nullptr)
+      : QLabel(value, parent) {}
+
+  QSize sizeHint() const override {
+    const QString value = text();
+    if (!isDigits(value)) return QLabel::sizeHint();
+    return QSize(qCeil(value.size() * kDigitStep - kDigitGap),
+                 qMax(QLabel::sizeHint().height(), 18));
+  }
+
+protected:
+  void paintEvent(QPaintEvent* event) override {
+    const QString value = text();
+    if (!isDigits(value)) {
+      QLabel::paintEvent(event);
+      return;
+    }
+
+    static constexpr unsigned char segments[10] = {
+      0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f};
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(palette().color(QPalette::WindowText), 1.5,
+                        Qt::SolidLine, Qt::RoundCap));
+    const qreal top = (height() - kDigitHeight) / 2.0;
+    for (int i = 0; i < value.size(); ++i) {
+      const unsigned char bits = segments[value.at(i).unicode() - '0'];
+      const qreal left = i * kDigitStep;
+      const qreal right = left + kDigitWidth;
+      const qreal middle = top + kDigitHeight / 2.0;
+      if (bits & 0x01) {
+        painter.drawLine(QPointF(left + 1.5, top + 1),
+                         QPointF(right - 1.5, top + 1));
+      }
+      if (bits & 0x02) {
+        painter.drawLine(QPointF(right - 1, top + 2.5),
+                         QPointF(right - 1, middle - 1));
+      }
+      if (bits & 0x04) {
+        painter.drawLine(QPointF(right - 1, middle + 1),
+                         QPointF(right - 1, top + kDigitHeight - 2.5));
+      }
+      if (bits & 0x08) {
+        painter.drawLine(QPointF(left + 1.5, top + kDigitHeight - 1),
+                         QPointF(right - 1.5, top + kDigitHeight - 1));
+      }
+      if (bits & 0x10) {
+        painter.drawLine(QPointF(left + 1, middle + 1),
+                         QPointF(left + 1, top + kDigitHeight - 2.5));
+      }
+      if (bits & 0x20) {
+        painter.drawLine(QPointF(left + 1, top + 2.5),
+                         QPointF(left + 1, middle - 1));
+      }
+      if (bits & 0x40) {
+        painter.drawLine(QPointF(left + 1.5, middle),
+                         QPointF(right - 1.5, middle));
+      }
+    }
+  }
+
+private:
+  static bool isDigits(const QString& value) {
+    if (value.isEmpty()) return false;
+    for (const QChar digit : value) {
+      if (digit < QLatin1Char('0') || digit > QLatin1Char('9')) return false;
+    }
+    return true;
+  }
+
+  static constexpr qreal kDigitWidth = 8.5;
+  static constexpr qreal kDigitGap = 2.0;
+  static constexpr qreal kDigitStep = kDigitWidth + kDigitGap;
+  static constexpr qreal kDigitHeight = 14.0;
+};
+
 constexpr int kWalletUnlockTimeoutSeconds = 60 * 60;
 // A main tab's real name. Narrow windows show icon-only tabs (empty text, name
 // in the tooltip), so look tabs up through this, never through tabText().
@@ -4930,7 +5011,7 @@ void MainWindow::setupUI() {
             this, &MainWindow::onMiningModeChanged);
 
     // Tiny stats
-    lblBlocksFound_ = new QLabel("0");
+    lblBlocksFound_ = new MiningScoreboardLabel("0");
     lblBlocksFound_->setStyleSheet(miningStatStyle("#bec8d0", true));
     auto* lblBlocksCaption = new QLabel("Blocks:");
     lblBlocksCaption->setStyleSheet(miningStatStyle());
@@ -4940,7 +5021,7 @@ void MainWindow::setupUI() {
     auto* lblHeightCaption = new QLabel("Height:");
     lblHeightCaption->setStyleSheet(miningStatStyle());
     row2->addWidget(lblHeightCaption);
-    lblMiningHeight_ = new QLabel("-");
+    lblMiningHeight_ = new MiningScoreboardLabel("-");
     lblMiningHeight_->setStyleSheet(miningStatStyle("#bec8d0", true));
     row2->addWidget(lblMiningHeight_);
 
