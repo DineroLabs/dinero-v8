@@ -4,6 +4,7 @@
 #include "paycollectpolicy.h"
 #include "portfoliopolicy.h"
 #include "rpcclient.h"
+#include "swaplaunchpolicy.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -17,6 +18,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QSettings>
 #include <QShowEvent>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -244,6 +246,16 @@ void PortfolioWidget::showBitcoin() {
     const bool enabled = btcStatus_.value("enabled").toBool();
     const bool offered = btcStatus_.value("offered").toBool();
     btcOn_->setVisible(enabled);
+    // The node does not run the Bitcoin wallet at all: the user's own switch,
+    // which takes effect at the next start of Dinero.
+    const bool wanted = QSettings().value(SwapLaunchPolicy::bitcoinWalletKey(), false).toBool();
+    const auto start = PortfolioPolicy::bitcoinStartView(wanted, btcStatus_.value("why_not").toString());
+    if (!enabled && !offered && start.notRunning) {
+        turnOn_->setVisible(start.canSwitchOn);
+        turnOn_->setEnabled(true);
+        btcIntro_->setText(start.text);
+        return;
+    }
     turnOn_->setVisible(!enabled && offered);
     if (enabled) {
         btcIntro_->setText("A Bitcoin wallet from your own recovery words: the same words restore it in any Bitcoin wallet. "
@@ -285,6 +297,14 @@ void PortfolioWidget::onFormChanged() {
 }
 
 void PortfolioWidget::onTurnOn() {
+    // Not running on this node yet: store the user's switch; the node gets it at its next start.
+    if (PortfolioPolicy::bitcoinStartView(false, btcStatus_.value("why_not").toString()).notRunning &&
+        !btcStatus_.value("offered").toBool()) {
+        QSettings().setValue(SwapLaunchPolicy::bitcoinWalletKey(), true);
+        showBitcoin();
+        showCoins();
+        return;
+    }
     turnOn_->setEnabled(false);
     rpc_->callNamedAs("btc.enable", QJsonObject{}, kEnable);
 }

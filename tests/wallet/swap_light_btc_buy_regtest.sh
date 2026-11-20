@@ -352,4 +352,23 @@ check "a second look finds nothing" '[[ "$(field "$REC2" found_sat)" == 0 ]]'
 out=$(rpc $BPORT swap.recoverdeposits '{"btc_address":"not-an-address"}' 2>&1 || true)
 check "a bad address is refused (${out:0:60})" '[[ "$out" == *"not a Bitcoin address"* ]]'
 
+echo "=== the Bitcoin wallet alone: swaps off, bitcoin still works ==="
+kill "$BPID" 2>/dev/null; wait "$BPID" 2>/dev/null || true; BPID=
+WALLET_ONLY=("${LIGHT[@]:1}" --swap.btc_wallet=1 --swap.optional=1)   # the same Bitcoin settings, without swap.enable
+start_node bob $BPORT $BP2P "${WALLET_ONLY[@]}" --connect=127.0.0.1:$AP2P; BPID=$STARTED_PID; wait_rpc $BPORT
+rpc $BPORT wallet.unlock '["pw-swap-light", 7200]' >/dev/null
+check "the node says the wallet is available and swaps are off" 'grep -q "the Bitcoin wallet is available; swaps are off" "$DIR/bob.log"'
+out=$(rpc $BPORT swap.list '{}' 2>&1 || true)
+check "swap requests are refused as disabled (${out:0:60})" '[[ "$out" == *"swaps are disabled"* ]]'
+out=$(rpc $BPORT swap.offer '{"din_amount_una":1000000000,"btc_amount_sat":1000000,"din_funding_fee_rate_hint":2,"din_funding_maximum_fee_una":5000000}' 2>&1 || true)
+check "no offer can be made" '[[ "$out" == *"swaps are disabled"* ]]'
+for _ in $(seq 1 30); do OW=$(rpc $BPORT btc.status '{}' 2>/dev/null || true); [[ "$(jget "${OW:-{\}}" offered)" == True ]] && break; sleep 1; done
+check "the Bitcoin wallet is offered (${OW:0:70})" '[[ "$(jget "$OW" offered)" == True ]]'
+OADDR=$(jget "$(rpc $BPORT btc.enable '{}')" address)
+check "and turns on with an address of this wallet ($OADDR)" '[[ "$OADDR" == bcrt1q* ]]'
+"${BCLI[@]}" sendtoaddress "$OADDR" 0.0001 >/dev/null
+mine_btc 1
+for _ in $(seq 1 30); do [[ "$(jget "$(rpc $BPORT btc.getbalance '{}' 2>/dev/null || echo '{}')" sat)" == 10000 ]] && break; sleep 1; done
+check "it is paid and reads its balance (10,000 sat) with swaps off" '[[ "$(jget "$(rpc $BPORT btc.getbalance "{}")" sat)" == 10000 ]]'
+
 [[ $fail -eq 0 ]] && echo "SWAP LIGHT BTC BUY REGTEST: PASS" || { echo "SWAP LIGHT BTC BUY REGTEST: FAIL"; grep -h "\[Swap\]" "$DIR"/*.log | tail -8; exit 1; }

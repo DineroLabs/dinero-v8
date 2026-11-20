@@ -10,11 +10,13 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QSettings>
 #include <QTableWidget>
 
 #include "portfoliopolicy.h"
 #include "portfoliowidget.h"
 #include "rpcclient.h"
+#include "swaplaunchpolicy.h"
 
 namespace {
 template <typename T>
@@ -34,7 +36,13 @@ class PortfolioTabTest : public QObject {
     PortfolioWidget* tab_ = nullptr;
 
 private Q_SLOTS:
+    void initTestCase() {  // the switch is a stored setting: keep the test's apart from a real install's
+        QCoreApplication::setOrganizationName("DineroPortfolioTabTest");
+        QCoreApplication::setApplicationName("test_portfolio_tab");
+    }
+    void cleanupTestCase() { QSettings().clear(); }
     void init() {
+        QSettings().clear();
         rpc_ = new RpcClient(this);
         rpc_->setEndpoint(QUrl("http://127.0.0.1:1/"));  // nobody listens
         tab_ = new PortfolioWidget(rpc_);
@@ -60,6 +68,50 @@ private Q_SLOTS:
         QCOMPARE(PortfolioPolicy::formatBtc(31817), QString("0.00031817 BTC"));
     }
 
+    // The Bitcoin wallet has its own switch: it does not need swaps turned on.
+    void theBitcoinWalletIsSwitchedOnWithoutTheSwapTab() {
+        QSettings().remove(SwapLaunchPolicy::bitcoinWalletKey());
+        auto* turnOn = Find<QPushButton>(tab_, "bitcoinTurnOn");
+        auto* intro = Find<QLabel>(tab_, "bitcoinIntro");
+        auto* coins = Find<QTableWidget>(tab_, "coinsTable");
+        // A node started without it: offered here, on the Wallet page, not "go to the Swap tab".
+        Q_EMIT rpc_->rpcResult("portfolio.btcstatus",
+                               QJsonObject{{"error", "the Bitcoin wallet is not running on this node (swap.btc_wallet=1 starts it)"}});
+        QVERIFY(turnOn->isVisible() && turnOn->isEnabled());
+        QCOMPARE(coins->item(1, 2)->text(), QString("Not switched on"));
+        QVERIFY2(intro->text().contains("without any other Bitcoin software") && intro->text().contains("next time Dinero starts"),
+                 qPrintable(intro->text()));
+        QVERIFY2(!intro->text().contains("swap", Qt::CaseInsensitive), "no word about swaps");
+        QVERIFY(!QSettings().value(SwapLaunchPolicy::bitcoinWalletKey(), false).toBool());
+        turnOn->click();
+        QVERIFY(QSettings().value(SwapLaunchPolicy::bitcoinWalletKey(), false).toBool());
+        QVERIFY(!turnOn->isVisible());
+        QVERIFY2(intro->text().contains("quit Dinero"), qPrintable(intro->text()));
+        // What the node is started with next time: its Bitcoin client only, swaps stay off.
+        const QStringList args = SwapLaunchPolicy::daemonArgs(false, true);
+        QVERIFY(args.contains("--swap.btc_wallet=1") && args.contains("--swap.optional=1"));
+        QVERIFY2(!args.contains("--swap.enable=1"), "the Bitcoin switch must not turn swaps on");
+        QVERIFY(SwapLaunchPolicy::daemonArgs(false, false).isEmpty());
+        QVERIFY(SwapLaunchPolicy::daemonArgs(true, true).contains("--swap.enable=1"));   // swaps bring Bitcoin with them
+        QVERIFY(!SwapLaunchPolicy::daemonArgs(true, true).contains("--swap.btc_wallet=1"));
+        // Switched on, but the node could not start it: the reason in words.
+        Q_EMIT rpc_->rpcResult("portfolio.btcstatus",
+                               QJsonObject{{"error", "the Bitcoin wallet is not running on this node: swap.btc_backend=light is "
+                                                     "not offered on mainnet yet (testnet first); use swap.btc_rpc with Bitcoin Core"}});
+        QVERIFY2(intro->text().contains("not available on mainnet yet"), qPrintable(intro->text()));
+        QVERIFY2(!intro->text().contains("swap.btc_rpc"), "no node options in front of the user");
+        QVERIFY(!turnOn->isVisible());
+        // After the restart the node runs it: the wallet's own "turn on" (which needs the unlock) takes over.
+        Q_EMIT rpc_->rpcResult("portfolio.btcstatus", QJsonObject{{"offered", true}, {"enabled", false}});
+        QVERIFY(turnOn->isVisible());
+        QVERIFY2(intro->text().contains("recovery words"), qPrintable(intro->text()));
+        // An older node says "swaps are disabled" to the same question: treated the same way.
+        QSettings().remove(SwapLaunchPolicy::bitcoinWalletKey());
+        Q_EMIT rpc_->rpcResult("portfolio.btcstatus", QJsonObject{{"error", "swaps are disabled: start dinerod with swap.enable=1"}});
+        QVERIFY(turnOn->isVisible());
+        QSettings().remove(SwapLaunchPolicy::bitcoinWalletKey());
+    }
+
     void everyCoinIsListedAndWhatCannotBeServedSaysWhy() {
         auto* coins = Find<QTableWidget>(tab_, "coinsTable");
         QCOMPARE(coins->rowCount(), 4);
@@ -68,9 +120,11 @@ private Q_SLOTS:
         QCOMPARE(coins->item(2, 2)->text(), QString("Not available yet"));  // Zcash: listed, not hidden
         Q_EMIT rpc_->rpcResult("portfolio.din", QJsonObject{{"total", 1234.5}});
         QCOMPARE(coins->item(0, 1)->text(), QString("1234.50000000 DIN"));
-        // A node with swaps off: no Bitcoin wallet, with the node's reason, and nothing to click.
-        Q_EMIT rpc_->rpcResult("portfolio.btcstatus", QJsonObject{{"error", "swaps are disabled: start dinerod with swap.enable=1"}});
-        QVERIFY2(coins->item(1, 2)->text().contains("swaps are disabled"), qPrintable(coins->item(1, 2)->text()));
+        // A node that cannot serve the wallet at all says why, and there is nothing to click.
+        Q_EMIT rpc_->rpcResult("portfolio.btcstatus",
+                               QJsonObject{{"offered", false}, {"enabled", false},
+                                           {"why_not", "the Bitcoin wallet needs this node to reach Bitcoin without Bitcoin Core"}});
+        QVERIFY2(coins->item(1, 2)->text().contains("without Bitcoin Core"), qPrintable(coins->item(1, 2)->text()));
         QVERIFY(!Find<QPushButton>(tab_, "bitcoinTurnOn")->isVisible());
         QVERIFY(!Find<QGroupBox>(tab_, "bitcoinSend")->isVisible());
     }

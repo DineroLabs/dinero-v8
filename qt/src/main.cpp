@@ -103,7 +103,8 @@ void appendDaemonNetworkArgs(QStringList& args) {
         args << "--portmap=auto";
     }
     // The Swap tab's "Enable swaps" switch.
-    args << SwapLaunchPolicy::daemonArgs(QSettings().value(SwapLaunchPolicy::enabledKey(), false).toBool());
+    args << SwapLaunchPolicy::daemonArgs(QSettings().value(SwapLaunchPolicy::enabledKey(), false).toBool(),
+                                        QSettings().value(SwapLaunchPolicy::bitcoinWalletKey(), false).toBool());
 }
 
 QStringList currentBootstrapAddnodes() {

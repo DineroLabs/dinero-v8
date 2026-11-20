@@ -85,11 +85,20 @@ din::Json ToJson(const SwapSummary& s) {
 }
 
 // Shared preconditions; returns an error object or nullopt.
-std::optional<din::Json> Refuse(const ExecutionContext& ctx, bool starting) {
+// `bitcoin_wallet`: a btc.* request, which is also served by a node that runs
+// the built-in Bitcoin wallet with swaps off.
+std::optional<din::Json> Refuse(const ExecutionContext& ctx, bool starting, bool bitcoin_wallet = false) {
     if (!SwapService::Active() || !SwapService::Active()->manager()) {
-        // swap.enable=1 was refused and swap.optional=1 kept the node running: say why.
+        // The settings were refused and swap.optional=1 kept the node running: say why.
         const std::string why = SwapService::OffReason();
+        if (bitcoin_wallet) {
+            return Error(why.empty() ? "the Bitcoin wallet is not running on this node (swap.btc_wallet=1 starts it)"
+                                     : "the Bitcoin wallet is not running on this node: " + why);
+        }
         if (!why.empty()) return Error("swaps are disabled: " + why);
+        return Error("swaps are disabled: start dinerod with swap.enable=1 and swap.btc_rpc=HOST:PORT");
+    }
+    if (!bitcoin_wallet && !SwapService::SwapsOn()) {
         return Error("swaps are disabled: start dinerod with swap.enable=1 and swap.btc_rpc=HOST:PORT");
     }
     if (starting) {
@@ -432,7 +441,7 @@ din::Json BtcWalletStatusJson(const swap::SwapManager::BtcWalletState& st) {
 }
 
 din::Json RpcBtcStatus(const ExecutionContext& ctx, const din::Json&) {
-    if (auto e = Refuse(ctx, false)) return *e;
+    if (auto e = Refuse(ctx, false, true)) return *e;
     try {
         return BtcWalletStatusJson(SwapService::Active()->manager()->BtcWalletStatus());
     } catch (const std::exception& e) {
@@ -442,7 +451,7 @@ din::Json RpcBtcStatus(const ExecutionContext& ctx, const din::Json&) {
 
 // Turns the wallet on. The wallet must be unlocked: the account comes from the seed.
 din::Json RpcBtcEnable(const ExecutionContext& ctx, const din::Json&) {
-    if (auto e = Refuse(ctx, true)) return *e;
+    if (auto e = Refuse(ctx, true, true)) return *e;
     try {
         SwapService::Active()->manager()->EnableBtcWallet();
         return BtcWalletStatusJson(SwapService::Active()->manager()->BtcWalletStatus());
@@ -452,7 +461,7 @@ din::Json RpcBtcEnable(const ExecutionContext& ctx, const din::Json&) {
 }
 
 din::Json RpcBtcNewAddress(const ExecutionContext& ctx, const din::Json&) {
-    if (auto e = Refuse(ctx, false)) return *e;
+    if (auto e = Refuse(ctx, false, true)) return *e;
     try {
         din::Json out(Json::objectValue);
         out["address"] = SwapService::Active()->manager()->BtcWalletNewAddress();
@@ -463,7 +472,7 @@ din::Json RpcBtcNewAddress(const ExecutionContext& ctx, const din::Json&) {
 }
 
 din::Json RpcBtcBalance(const ExecutionContext& ctx, const din::Json&) {
-    if (auto e = Refuse(ctx, false)) return *e;
+    if (auto e = Refuse(ctx, false, true)) return *e;
     try {
         const auto b = SwapService::Active()->manager()->BtcWalletBalance();
         din::Json out(Json::objectValue);
@@ -525,7 +534,7 @@ const char* const kBtcSendUsage = "{address, amount_sat (or send_all: true), [ta
 
 // What a payment would be: signs nothing, sends nothing, needs no unlock.
 din::Json RpcBtcPreview(const ExecutionContext& ctx, const din::Json& params) {
-    if (auto e = Refuse(ctx, false)) return *e;
+    if (auto e = Refuse(ctx, false, true)) return *e;
     const auto a = ParseBtcSendArgs(params);
     if (!a) return Error(std::string("usage: btc.preview ") + kBtcSendUsage);
     try {
@@ -538,7 +547,7 @@ din::Json RpcBtcPreview(const ExecutionContext& ctx, const din::Json& params) {
 // Sends the payment btc.preview showed: `txid` is the preview's, and the
 // payment is refused if it would no longer be that one.
 din::Json RpcBtcSend(const ExecutionContext& ctx, const din::Json& params) {
-    if (auto e = Refuse(ctx, true)) return *e;
+    if (auto e = Refuse(ctx, true, true)) return *e;
     const auto a = ParseBtcSendArgs(params);
     if (!a || !Arg(params, "txid").isString()) {
         return Error(std::string("usage: btc.send ") + kBtcSendUsage + " and txid: the txid btc.preview showed for it");
@@ -557,7 +566,7 @@ din::Json RpcBtcSend(const ExecutionContext& ctx, const din::Json& params) {
 // new_txid: what it would be. With the new_txid that showed: sent.
 din::Json RpcBtcBumpFee(const ExecutionContext& ctx, const din::Json& params) {
     const bool send = Arg(params, "new_txid").isString();
-    if (auto e = Refuse(ctx, send)) return *e;
+    if (auto e = Refuse(ctx, send, true)) return *e;
     if (!Arg(params, "txid").isString()) {
         return Error("usage: btc.bumpfee {txid, [target_blocks], [new_txid: from a first call, to send it]}");
     }
@@ -574,7 +583,7 @@ din::Json RpcBtcBumpFee(const ExecutionContext& ctx, const din::Json& params) {
 }
 
 din::Json RpcBtcListTransactions(const ExecutionContext& ctx, const din::Json&) {
-    if (auto e = Refuse(ctx, false)) return *e;
+    if (auto e = Refuse(ctx, false, true)) return *e;
     try {
         din::Json out(Json::arrayValue);
         for (const auto& t : SwapService::Active()->manager()->BtcWalletHistory()) {

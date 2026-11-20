@@ -63,13 +63,53 @@ inline QList<CoinRow> coinRows(double dinTotal, const QJsonObject& btcStatus, co
     } else if (btcStatus.value("offered").toBool()) {
         btc.note = "Not turned on";
     } else {
-        btc.available = false;
-        btc.note = btcStatus.value("why_not").toString("Not available on this node");
+        const QString why = btcStatus.value("why_not").toString("Not available on this node");
+        const bool notRunning = why.startsWith("the Bitcoin wallet is not running on this node") || why.startsWith("swaps are disabled");
+        btc.available = notRunning;   // it can be switched on below
+        btc.note = notRunning ? "Not switched on" : why;
     }
     rows.append(btc);
     rows.append({"Zcash (ZEC)", {}, "Not available yet", false});
     rows.append({"Bitcoin Cash (BCH)", {}, "Not available yet", false});
     return rows;
+}
+
+// The node does not run the Bitcoin wallet at all (it is started with the
+// node, like swaps): what the Wallet page says and offers. `wanted`: the
+// user's own switch (SwapLaunchPolicy::bitcoinWalletKey). `nodeMessage`: what
+// the node answered to btc.status.
+struct BitcoinStartView {
+    bool notRunning{false};  // this view applies
+    QString text;
+    bool canSwitchOn{false};
+};
+
+inline BitcoinStartView bitcoinStartView(bool wanted, const QString& nodeMessage) {
+    BitcoinStartView v;
+    const QString prefix = "the Bitcoin wallet is not running on this node";
+    // An older node answers "swaps are disabled" for every request of this kind.
+    if (!nodeMessage.startsWith(prefix) && !nodeMessage.startsWith("swaps are disabled")) return v;
+    v.notRunning = true;
+    QString reason = nodeMessage.startsWith(prefix) ? nodeMessage.mid(prefix.size()) : QString();
+    if (reason.startsWith(": ")) reason = reason.mid(2);
+    else reason.clear();
+    if (reason.startsWith("swap.btc_wallet=1")) reason.clear();
+    if (!wanted) {
+        v.canSwitchOn = true;
+        v.text = "Hold, receive and send Bitcoin in this wallet, with the recovery words you already have, and without "
+                 "any other Bitcoin software. Switching it on lets Dinero follow the Bitcoin network; it takes effect "
+                 "the next time Dinero starts.";
+    } else if (reason.contains("not offered on mainnet yet")) {
+        v.text = "The Bitcoin wallet is switched on, but it is not available on mainnet yet. A later release switches it on.";
+    } else if (reason.contains("built with DINERO_SWAP_LIGHT_BTC")) {
+        v.text = "The Bitcoin wallet is switched on, but this copy of Dinero was built without it.";
+    } else if (!reason.isEmpty()) {
+        v.text = "The Bitcoin wallet is switched on, but cannot start here: " + reason;
+    } else {
+        v.text = "The Bitcoin wallet is switched on and starts the next time Dinero starts: quit Dinero (File → Quit) "
+                 "and open it again.";
+    }
+    return v;
 }
 
 // A payment before it is sent (btc.preview / btc.bumpfee), line by line.

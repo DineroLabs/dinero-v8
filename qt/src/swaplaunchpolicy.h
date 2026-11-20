@@ -18,10 +18,18 @@ inline QString enabledKey() { return QStringLiteral("swap/enabled_v1"); }
 // is closed.
 inline QString publicTowerUrl() { return QStringLiteral("https://swaptower.dinerolabs.org"); }
 
-inline QStringList daemonArgs(bool enabled) {
-    if (!enabled) return {};
-    return {"--swap.enable=1", "--swap.optional=1", "--swap.btc_backend=light", "--swap.mainnet_beta=1",
-            "--swap.tower_url=" + publicTowerUrl()};
+// The Wallet page's own switch for the built-in Bitcoin wallet. It does not
+// turn swaps on: with swaps off the node runs only its Bitcoin client and
+// this wallet's Bitcoin account.
+inline QString bitcoinWalletKey() { return QStringLiteral("btcwallet/enabled_v1"); }
+
+inline QStringList daemonArgs(bool enabled, bool bitcoinWallet = false) {
+    if (enabled) {  // swaps bring the Bitcoin client with them
+        return {"--swap.enable=1", "--swap.optional=1", "--swap.btc_backend=light", "--swap.mainnet_beta=1",
+                "--swap.tower_url=" + publicTowerUrl()};
+    }
+    if (bitcoinWallet) return {"--swap.btc_wallet=1", "--swap.optional=1"};
+    return {};
 }
 
 // The node's own reason after "swaps are disabled: " when it refused the

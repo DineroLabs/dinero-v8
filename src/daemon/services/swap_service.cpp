@@ -165,6 +165,10 @@ swap::DinFundingOwner MakeRetainedSwapFundingOwner(DaemonContext& ctx) {
 }
 
 SwapService* SwapService::Active() { return g_active.load(); }
+bool SwapService::SwapsOn() {
+    const SwapService* active = g_active.load();
+    return active && active->manager_ && !active->bitcoin_wallet_only_;
+}
 
 void SwapService::SetZecInstaller(ZecInstaller installer) { ZecInstallerSlot() = std::move(installer); }
 void SwapService::SetLightBtcInstaller(LightBtcInstaller installer) { LightBtcInstallerSlot() = std::move(installer); }
@@ -210,6 +214,7 @@ bool SwapService::Init(DaemonContext& ctx) {
     if (ok) return true;
     manager_.reset();
     before_tick_ = nullptr;
+    bitcoin_wallet_only_ = false;
     auto config = std::dynamic_pointer_cast<ConfigService>(ctx.config);
     if (!config || !config->GetBool("swap.optional", false)) return false;
     // dinero-qt's switch: the wallet's node must start whatever the swap settings are.
@@ -223,14 +228,20 @@ bool SwapService::Init(DaemonContext& ctx) {
 bool SwapService::Setup(DaemonContext& ctx) {
     ctx_ = &ctx;
     auto config = std::dynamic_pointer_cast<ConfigService>(ctx.config);
-    if (!config || !config->GetBool("swap.enable", false)) return true;  // disabled: nothing at all
+    const bool swaps_wanted = config && config->GetBool("swap.enable", false);
+    // The built-in Bitcoin wallet alone (swap.btc_wallet=1): the light Bitcoin
+    // client and this wallet's Bitcoin account, with swaps off. Someone who
+    // only wants to hold bitcoin does not have to turn swaps on for it.
+    const bool wallet_wanted = config && config->GetBool("swap.btc_wallet", false);
+    if (!swaps_wanted && !wallet_wanted) return true;  // neither: nothing at all
+    bitcoin_wallet_only_ = !swaps_wanted;
 
-    const std::string btc = config->GetString("swap.btc_rpc", "");
-    const bool zec_wanted = !config->GetString("swap.zec_rpc", "").empty();
+    const std::string btc = bitcoin_wallet_only_ ? std::string() : config->GetString("swap.btc_rpc", "");
+    const bool zec_wanted = !bitcoin_wallet_only_ && !config->GetString("swap.zec_rpc", "").empty();
     if (zec_wanted && !ZecInstallerSlot()) {
         return Refuse("swap.zec_rpc needs a dinerod built with DINERO_SWAP_ZEC");
     }
-    const std::string btc_backend = config->GetString("swap.btc_backend", "");
+    const std::string btc_backend = bitcoin_wallet_only_ ? std::string("light") : config->GetString("swap.btc_backend", "");
     const bool light_btc = btc_backend == "light";
     if (!btc_backend.empty() && btc_backend != "light" && btc_backend != "core") {
         return Refuse("swap.btc_backend must be core or light");
@@ -293,7 +304,7 @@ bool SwapService::Setup(DaemonContext& ctx) {
         return Refuse("swap.max_btc_sat / swap.max_din_una must be whole numbers");
     }
     const auto beta = swap::BetaPolicy(mc.network, config->GetBool("swap.mainnet_beta", false), *max_btc, *max_din);
-    if (beta.refusal) {
+    if (beta.refusal && !bitcoin_wallet_only_) {  // the beta opt-in is about swaps
         return Refuse(*beta.refusal);
     }
     mc.max_btc_sat = beta.max_btc_sat;
@@ -381,8 +392,8 @@ bool SwapService::Setup(DaemonContext& ctx) {
             return false;
         }
     }
-    const std::string inbox = config->GetString("swap.tower_inbox", "");
-    const std::string tower_url = config->GetString("swap.tower_url", "");
+    const std::string inbox = bitcoin_wallet_only_ ? std::string() : config->GetString("swap.tower_inbox", "");
+    const std::string tower_url = bitcoin_wallet_only_ ? std::string() : config->GetString("swap.tower_url", "");
     if (!tower_url.empty()) {
         if (!inbox.empty()) return Refuse("swap.tower_url and swap.tower_inbox are two ways to reach a watchtower: set one");
         if (!TowerUrlInstallerSlot()) return Refuse("swap.tower_url needs a dinerod built with DINERO_SWAP_LIGHT_BTC");
@@ -393,6 +404,11 @@ bool SwapService::Setup(DaemonContext& ctx) {
         manager_->SetTowerAck([inbox](const std::string& id, const std::string& hash) {
             return swap::TowerAckFresh(inbox, id, hash, static_cast<uint32_t>(std::time(nullptr)));
         });
+    }
+    if (bitcoin_wallet_only_) {
+        std::cout << "[Swap] the Bitcoin wallet is available; swaps are off (swap.btc_wallet=1 without swap.enable=1)"
+                  << std::endl;
+        return true;
     }
     std::cout << "[Swap] enabled: dir=" << mc.dir << " btc_rpc=" << btc
               << (zec_wanted ? " zec_rpc=" + config->GetString("swap.zec_rpc", "") : std::string()) << " tick="
