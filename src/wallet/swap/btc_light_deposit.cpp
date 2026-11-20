@@ -102,6 +102,7 @@ BtcDepositView BtcDepositWatcher::Observe() {
     }
     for (const auto& [txid, payment] : proven_) {
         const uint32_t confirmations = chain_.Confirmations(payment.block_hash);
+        if (!payment.outputs.empty()) view.ever_paid = true;
         for (const auto& [vout, value] : payment.outputs) {
             if (Spent(txid, vout)) continue;
             BtcDepositCoin coin;

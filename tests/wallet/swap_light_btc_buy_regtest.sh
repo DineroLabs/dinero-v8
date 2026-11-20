@@ -226,6 +226,42 @@ check "alice sees the BTC she sold for at her payout address ($(holding "$HA" "$
 HB=$(rpc $BPORT swap.btcholdings '{}'); echo "  bob: $HB" | cut -c1-260
 check "bob sees what came back to his refund address ($(holding "$HB" "$BOB_REFUND"))" '[[ "$(holding "$HB" "$BOB_REFUND")" == "$(sats "$BOB_REFUND") False True 1 True" ]]'
 
+echo "=== the built-in Bitcoin wallet: turned on from the seed, paid, read ==="
+jget() { python3 -c 'import sys,json
+d=json.loads(sys.argv[1])
+for k in sys.argv[2].split("."): d=d[int(k)] if isinstance(d,list) else d.get(k) if isinstance(d,dict) else None
+print(d)' "$1" "$2"; }
+W0=$(rpc $APORT btc.status '{}')
+check "offered and off before it is turned on (${W0:0:80})" '[[ "$(jget "$W0" offered)" == True && "$(jget "$W0" enabled)" == False ]]'
+out=$(rpc $APORT btc.getbalance '{}' 2>&1 || true)
+check "no balance before it is turned on (${out:0:60})" '[[ "$out" == *"not turned on"* ]]'
+W1=$(rpc $APORT btc.enable '{}'); echo "  $W1" | cut -c1-200
+WADDR=$(jget "$W1" address)
+check "turning it on gives a native SegWit address of this network ($WADDR)" '[[ "$WADDR" == bcrt1q* ]]'
+check "Bitcoin Core accepts it as a valid address" '[[ "$("${BCLI[@]}" validateaddress "$WADDR" | python3 -c "import sys,json; print(json.load(sys.stdin)[\"isvalid\"])")" == True ]]'
+check "turning it on again changes nothing" '[[ "$(jget "$(rpc $APORT btc.enable "{}")" address)" == "$WADDR" ]]'
+B0=$(rpc $APORT btc.getbalance '{}')
+check "an unpaid wallet holds nothing: the address handed out, 20 beyond it, and 20 change addresses are read ($(jget "$B0" sat) sat, $(jget "$B0" addresses_read) addresses read)" '[[ "$(jget "$B0" sat)" == 0 && "$(jget "$B0" addresses_read)" == 41 ]]'
+"${BCLI[@]}" sendtoaddress "$WADDR" 0.00031817 >/dev/null
+check "a payment still in the mempool is not counted" '[[ "$(jget "$(rpc $APORT btc.getbalance "{}")" sat)" == 0 ]]'
+mine_btc 1; sleep 3
+B1=$(rpc $APORT btc.getbalance '{}'); echo "  $B1" | cut -c1-220
+check "after one block the wallet holds what was sent (31,817 sat)" '[[ "$(jget "$B1" sat)" == 31817 && "$(jget "$B1" addresses.0.address)" == "$WADDR" ]]'
+check "the chain agrees ($(sats "$WADDR") sat at that address)" '[[ "$(sats "$WADDR")" == 31817 ]]'
+WADDR2=$(jget "$(rpc $APORT btc.getnewaddress '{}')" address)
+check "the next address is a new one ($WADDR2)" '[[ "$WADDR2" == bcrt1q* && "$WADDR2" != "$WADDR" ]]'
+"${BCLI[@]}" sendtoaddress "$WADDR2" 0.0001 >/dev/null
+mine_btc 1; sleep 3
+check "both addresses count (41,817 sat)" '[[ "$(jget "$(rpc $APORT btc.getbalance "{}")" sat)" == 41817 ]]'
+# A restore: the wallet's file is gone, only the seed is left. The chain says what was used.
+rm -f "$DIR/alice/swaps/btc-wallet.pub"
+check "without its file the wallet is off again" '[[ "$(jget "$(rpc $APORT btc.status "{}")" enabled)" == False ]]'
+W2=$(rpc $APORT btc.enable '{}')
+check "the same seed gives the same first address" '[[ "$(jget "$W2" address)" == "$WADDR" ]]'
+check "and finds both payments (41,817 sat)" '[[ "$(jget "$(rpc $APORT btc.getbalance "{}")" sat)" == 41817 ]]'
+WADDR3=$(jget "$(rpc $APORT btc.getnewaddress '{}')" address)
+check "and does not hand out an address that was paid ($WADDR3)" '[[ "$WADDR3" != "$WADDR" && "$WADDR3" != "$WADDR2" ]]'
+
 echo "=== BTC that reaches a deposit address late is recovered ==="
 # A second withdrawal from an exchange arrives after the swap is over, and something lands on the first, cancelled address.
 "${BCLI[@]}" sendtoaddress "$ADDR" 0.0006 >/dev/null
