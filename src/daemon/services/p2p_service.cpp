@@ -2,6 +2,7 @@
 #include "consensus/orchard_profile.h"
 #include "daemon/services/p2p_service.h"
 #include "p2p/start_once_due.h"
+#include "p2p/cached_source.h"
 #include "daemon/services/relay_role_policy.h"
 #include "daemon/services/logger_service.h"
 #include "daemon/services/config_service.h"
@@ -2239,19 +2240,20 @@ void P2PService::EnsureSnapshotHistoryWorkers() {
                     return p2p_mgr_&&p2p_mgr_->send_to_peer(peer.address,message,peer.session);
                 });
                 {std::lock_guard lock(orchard_catalog_download_mutex_);orchard_catalog_download_=std::move(download);}
+                // The selected target is read at most every 5 s (it takes the
+                // selected lock). This source is called from the download's
+                // worker AND from every wallet thread that asks Ready(): the
+                // cache is therefore a locked one, not lambda state. A torn
+                // target matches nothing and reads as "history not ready".
+                const auto selected_target=std::make_shared<p2p::CachedSource<p2p::OrchardPhoneHistoryTarget>>(
+                    [source=chainstate_]{return source->PhoneHistoryTarget();},std::chrono::seconds(5));
                 auto history=std::make_shared<p2p::OrchardPhoneHistoryDownload>(headers,
-                    std::filesystem::path(config_->DataDir()),[this,source=chainstate_,cached_proof,
-                        next_check=std::chrono::steady_clock::time_point{},
-                        latest=std::optional<p2p::OrchardPhoneHistoryTarget>{}]() mutable
+                    std::filesystem::path(config_->DataDir()),[this,source=chainstate_,cached_proof,selected_target]()
                             ->std::optional<p2p::OrchardPhoneHistoryTarget> {
                         const bool retained=bool(cached_proof());
                         if(retained)source->RequestRetainedPhoneHistoryData(); // PUBLIC DATA scheduling only.
                         if(!retained&&(!p2p_mgr_||!p2p_mgr_->is_network_active()))return std::nullopt;
-                        const auto now=std::chrono::steady_clock::now();
-                        if(now<next_check)return latest;
-                        latest=source->PhoneHistoryTarget();
-                        next_check=now+std::chrono::seconds(5);
-                        return latest;
+                        return selected_target->Get();
                     },[this,cache,cached_proof,proof_cache_retired]{
                         if(const auto first=cached_proof()){
                             std::shared_ptr<const consensus::OrchardSnapshotSection> proof;
