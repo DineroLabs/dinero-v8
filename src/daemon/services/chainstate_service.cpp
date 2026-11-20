@@ -8311,7 +8311,8 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             static std::mutex said_mutex;static std::string said;
             const std::string line=std::string("wallet replay waits: ")+why+(detail.empty()?"":" ("+detail+")");
             std::lock_guard<std::mutex> lock(said_mutex);
-            if(said!=line){said=line;std::cerr<<"[OrchardHistory] "<<stamp()<<" "<<line<<std::endl;}
+            static uint64_t refusals=0;++refusals;
+            if(said!=line){said=line;std::cerr<<"[OrchardHistory] "<<stamp()<<" "<<line<<" [refusal "<<refusals<<"]"<<std::endl;}
             return Status::Invalid;
         };
         // The history was verified up to a checkpoint (`target`). It is
@@ -8324,22 +8325,30 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
         const auto adopt=[&](const std::shared_ptr<const RuntimeAccountReplay>& replay,
                 const std::shared_ptr<ChainstateService>& source,const p2p::OrchardPhoneHistoryTarget& target,
                 const std::shared_ptr<p2p::OrchardPhoneHistoryDownload>& download)->StatusOr<std::shared_ptr<const RuntimeAccountReplay>> {
+            (void)source;
             const auto head=replay->Head();const auto point=replay->Point(head).checkpoint;
+            // The checkpoint and the replay's end must be on one chain: the
+            // header chain says so, without the selected lock. (Not "the
+            // download's newest checkpoint is this one": while this replay
+            // was built the download may have verified a further block,
+            // which takes nothing away from the checkpoint it was built on.
+            // And not a freshly read tip: reading it waits for the selected
+            // lock, which block connection holds exactly while the next
+            // block is delivered, so the answer would arrive stale.)
+            p2p::OrchardPhoneHistoryTarget end=target;end.height=point.height;end.hash=point.block_hash;
+            const bool one_chain=point.height>=target.height?download->OnChainOf(end,target.height,target.hash):
+                download->OnChainOf(target,point.height,point.block_hash);
+            if(!one_chain)
+                return refuse("the verified checkpoint and the node's record are not on one chain",
+                    "checkpoint "+std::to_string(target.height)+", record ends at "+std::to_string(point.height));
+            // Last, and under the selected lock: the replay ends at the
+            // node's own current record of its chain.
             const auto final=getRuntimeDeliveryPage(head,1);
-            const auto tip=source->PhoneHistoryTarget();
-            if(!tip)return refuse("no selected history target");
-            const auto standing=download->ReadyCheckpointFor(*tip);
-            if(!standing||standing->target!=target)
-                return refuse("the verified checkpoint is no longer on the selected chain",
-                    "checkpoint "+std::to_string(target.height)+", tip "+std::to_string(tip->height));
-            if(!download->OnChainOf(*tip,point.height,point.block_hash))
-                return refuse("the replay does not end on the selected chain",
-                    "replay "+std::to_string(point.height)+", tip "+std::to_string(tip->height));
             if(!final.ok()||(*final)->head!=head||!(*final)->events.empty()||(*final)->next!=head)
                 return refuse("a block was delivered while the replay was read","replay head "+std::to_string(head.sequence));
             {static std::atomic<uint64_t> adopted{0};
              if(++adopted==1||adopted%500==0)std::cerr<<"[OrchardHistory] "<<stamp()<<" wallet replay adopted (checkpoint "<<target.height
-                 <<", replay to "<<point.height<<", tip "<<tip->height<<", times "<<adopted.load()<<")"<<std::endl;}
+                 <<", replay to "<<point.height<<", times "<<adopted.load()<<")"<<std::endl;}
             return replay;
         };
         const auto phone=[&]()->std::optional<std::tuple<std::shared_ptr<ChainstateService>,p2p::OrchardPhoneHistoryTarget,
