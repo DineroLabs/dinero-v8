@@ -28,9 +28,12 @@ private:
     friend class ChainstateService;
     friend class DaemonApp;
     friend struct OrchardSnapshotStoreTestAccess;
-    // Process-local decoded DATA for one Init -> Start. Every reuse rehashes
-    // the retained proof in ChainDB and compares all selected catalog nodes to
-    // a fresh checksummed CF stream. Never restored from a durable receipt.
+    // Process-local decoded DATA for one Init -> Start. A second Restore
+    // rehashes the retained proof in ChainDB and compares selected catalog
+    // nodes to a fresh checksummed CF stream. Chainstate may instead retain
+    // Init's already authenticated publication only within the same open DB,
+    // with an unchanged write sequence and exact header-selector ancestry.
+    // Never restored from a durable receipt.
     struct StartupReads {
         std::optional<storage::OrchardSnapshotBase> base;
         std::shared_ptr<const consensus::OrchardSnapshotSection> baseline;

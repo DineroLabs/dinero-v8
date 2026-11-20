@@ -174,6 +174,11 @@ public:
         bool retryable = false;
     };
     NativePoolIssue issueNativePoolAddress(const std::string& label);
+    // v8.2.4 (#939): the next pooled P2MR receive address of a native v3
+    // wallet (m/88'/1448'/0'/0/idx, leaf 0). Same issuability rule as the
+    // Taproot pool; writes only the unguarded pool table (and the label in
+    // the separate P2MR key store), so the sealed receipts stay valid.
+    NativePoolIssue issueNativeP2MRPoolAddress(const std::string& label);
     // Pool scripts listaddresses must not present as "yours to receive on":
     // unissued receive and change scripts that have no coin history.
     std::set<std::string> nativePoolHiddenAddresses() const;
@@ -208,14 +213,16 @@ public:
     // needs the wallet's seed: the wallet is locked. Only the user can clear it.
     // #939: a wallet with an Orchard owner that the native v3 route cannot
     // serve (DatabaseLease::NativeV3Enrollable). Say so instead of "catching up".
+    // v8.2.4 (#939): set by wallet.restore on a v3 node; the runtime worker
+    // continues Orchard account-0 recovery for that wallet until it completes.
+    static constexpr const char* kOrchardAccount0RestorePendingSetting = "orchard_account0_restore_pending_v1";
+    // Last reason an automatic account-0 recovery pass did not complete
+    // (empty while progressing normally); reported by wallet.getwalletinfo.
+    static constexpr const char* kOrchardAccount0RestoreStatusSetting = "orchard_account0_restore_status_v1";
     static constexpr const char* kNativeWalletUnsupportedOnV3 =
         "This wallet was created or restored by Dinero 8.2 and this node's wallet index (v3) "
         "cannot track it yet. Your funds are safe on-chain: use its seed phrase in the phone app "
         "or on another node until the next update.";
-    static constexpr const char* kWalletCreationUnsupportedOnV3 =
-        "Restoring a wallet from a seed phrase is not supported on this node yet (wallet index v3). "
-        "Existing and newly created wallets keep working; restore it in the phone app or on another "
-        "node until the next update.";
     // #939 phase 1: a native wallet on v3 receives on its pre-derived pool;
     // issuing a new script after enrollment would invalidate its receipts.
     static constexpr const char* kNativeWalletAddressUnavailableOnV3 =
@@ -446,6 +453,15 @@ public:
         // fewer than kNativeV3PoolLowWater unissued receive or unused change
         // scripts (or no pool table yet) needs an extension.
         [[nodiscard]] bool NativeV3PoolNeedsExtension() const;
+        // v8.2.4 (#939): pool indices (m/88'/1448'/0'/0/idx) that an open
+        // native P2MR target still owes, ascending. A Pending wallet's
+        // coverage must not run until this is empty. Read-only.
+        [[nodiscard]] std::vector<int64_t> NativeP2MRTargetMissing() const;
+        // The first pooled change-chain address of a native v3 wallet with no
+        // coin history whose key this seed pin resolves. Enrollment receipts
+        // sealed it, so paying change there derives nothing and keeps both
+        // receipts valid. Empty if the pool has none. Read-only.
+        [[nodiscard]] std::string NativeV3PooledChangeAddress(const RecoverySeed& owner);
         // #939 phase 2 extension, driven by the runtime worker. One durable
         // transaction (unlocked seed): requires native Complete with a sealed
         // ordinary receipt, derives the next kNativeV3ReceivePool scripts of

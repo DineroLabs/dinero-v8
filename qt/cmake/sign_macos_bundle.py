@@ -16,6 +16,13 @@ def should_sign_file(path: Path) -> bool:
         return False
 
     path_str = str(path)
+    # Qt 6.5 frameworks carry signed resource manifests and Info.plist files.
+    # They are sealed by signing the framework binary and the containing app,
+    # and cannot be signed as standalone executable code.
+    if ".framework/" in path_str and (
+        "/_CodeSignature/" in path_str or "/Resources/" in path_str
+    ):
+        return False
     if "/Contents/MacOS/" in path_str:
         return True
     if "/Contents/PlugIns/" in path_str:

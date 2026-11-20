@@ -142,6 +142,10 @@ struct OrchardAccountState::Data : OrchardAccountMetadata {
        const uint256 &parent)
       : OrchardAccountMetadata(d), domain(d), fvk(f), activation(a),
         scan(OrchardWalletScanState::Begin(d, f, a, parent)) {}
+  Data(SigningDomain d, const FullViewingKeyBytes &f, uint32_t a,
+       const storage::OrchardStoredState &checkpoint)
+      : OrchardAccountMetadata(d), domain(d), fvk(f), activation(a),
+        scan(OrchardWalletScanState::AtFreshSeedCheckpoint(d, f, a, checkpoint)) {}
   ~Data() { OPENSSL_cleanse(fvk.data(), fvk.size()); }
 };
 OrchardAccountState OrchardAccountState::Begin(SigningDomain domain,
@@ -150,6 +154,12 @@ OrchardAccountState OrchardAccountState::Begin(SigningDomain domain,
                                                const uint256 &parent) {
   return OrchardAccountState(
       std::make_shared<Data>(domain, fvk, activation, parent));
+}
+OrchardAccountState OrchardAccountState::BeginFreshAtCheckpoint(
+    SigningDomain domain,const FullViewingKeyBytes &fvk,uint32_t activation,
+    const storage::OrchardStoredState &checkpoint) {
+  return OrchardAccountState(
+      std::make_shared<Data>(domain,fvk,activation,checkpoint));
 }
 std::pair<OrchardAccountState, WalletReceiver>
 OrchardAccountState::IssueReceiver(WalletScope scope) const {

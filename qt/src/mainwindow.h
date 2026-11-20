@@ -66,6 +66,7 @@ class MainWindow : public QMainWindow {
   Q_OBJECT
   friend class OverviewColumnsTest;
   friend class WalletLayoutTest;
+  friend class MiningOutputZoomTest;
 public:
   explicit MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
                       QWidget* parent = nullptr);
@@ -319,6 +320,11 @@ private:
   QLabel* lblGpuThermalsOverview_;
   QLabel* lblMempoolSize_;
   QLabel* lblMempoolBytes_;
+  QString errorMessageMethod_;  // call whose failure the error bar shows
+  QLabel* lblMempoolFeeRate_ = nullptr;
+  QLabel* lblMempoolFeeRange_ = nullptr;
+  QLabel* lblMempoolOldest_ = nullptr;
+  QLabel* lblMempoolEmpty_ = nullptr;
   QTableWidget* tblMempoolOverview_ = nullptr;
   QSet<QString> overviewMempoolTxids_;
   bool overviewMempoolInitialized_ = false;
@@ -567,6 +573,7 @@ private:
   QTextEdit* txtMiningOutput_ = nullptr;
   // Mining output text size: - / + in its top-right corner and Cmd -/+/=.
   int miningOutputFontPx_ = 10;
+  quint32 miningHashColorRgb_ = 0x00ff00;
   QPushButton* btnMiningZoomOut_ = nullptr;
   QPushButton* btnMiningZoomIn_ = nullptr;
   void applyMiningOutputFontSize(int px);
@@ -598,6 +605,7 @@ private:
   // Daemon process (if started by GUI)
   class QProcess* daemonProcess_;
   bool suppressErrorDialogs_;  // Suppress error dialogs during daemon startup
+  bool daemonEverConnected_ = false;
   bool autoStartDaemonAttempted_ = false;
   bool daemonStopRequested_ = false;  // #295: user pressed Stop Daemon — suppress exit dialog
   int daemonLaunchRetries_ = 0;  // auto-retry transient launch races (datadir lock / port held by a slow-exiting prior daemon) before showing the failure dialog
@@ -668,11 +676,9 @@ private:
     QStaticText renderedLine;
     bool blockFound = false;
     qint64 highlightUntilMs = 0;
-    bool startsNewBlock = false;
   };
   QVector<MiningHashSample> miningHashSamples_;
-  // Height the miner is working on; a change marks the first row of a new block.
-  int miningTipHeight_ = -1;
+  bool miningFoundPendingTemplate_ = false;
   QString miningSessionHeader_;
   QLabel* miningHashOverlay_ = nullptr;
   QHash<QString, quint64> transientMiningErrorGenerations_;

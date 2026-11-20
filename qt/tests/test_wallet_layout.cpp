@@ -14,6 +14,9 @@
 #include <QTimer>
 #include "mainwindow.h"
 #include "rpcclient.h"
+#if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
+#include "orchardwidget.h"
+#endif
 
 // The Wallet tab must never start or clean up daemon processes.
 void killStaleDinerodByPort() { qFatal("Unexpected daemon cleanup in wallet layout test"); }
@@ -373,6 +376,57 @@ private Q_SLOTS:
             "Legacy transparent wallet is catching up to the selected chain");
         QVERIFY(!window->btnSend_->isEnabled());
     }
+
+#if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
+    void recoveredV3ScopeCanSetUpOrchardAccount() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        QVERIFY(bindTestWallet(*window, "RecoveryTestWallet"));
+        auto* rpc = window->findChild<RpcClient*>();
+        auto* orchard = window->orchardWidget_;
+        QVERIFY(rpc && orchard);
+
+        window->checkRescanStatus();
+        Q_EMIT rpc->rpcResult("wallet.getinfo", QJsonObject{
+            {"hd_enabled", true}, {"wallet_name", "RecoveryTestWallet"},
+            {"unlocked", true}, {"scanning", false}});
+        Q_EMIT rpc->rpcResult("wallet.getbalance", QJsonObject{
+            {"walletname", "RecoveryTestWallet"}, {"confirmed", 12.0},
+            {"unconfirmed", 0.0}, {"immature", 0.0},
+            {"send_ready", true}, {"send_scope", "transparent_recovered_v3"}});
+
+        QSignalSpy requests(orchard, &OrchardWidget::requestSent);
+        orchard->setWalletScope("RecoveryTestWallet");
+        orchard->setChain("regtest");
+        auto reply = [&](const QString& method, const QJsonObject& value) {
+            for (int i = requests.size() - 1; i >= 0; --i) {
+                if (requests.at(i).at(0).toString() == method) {
+                    return QMetaObject::invokeMethod(orchard, "onRpcResult", Qt::DirectConnection,
+                        Q_ARG(QString, requests.at(i).at(2).toString()),
+                        Q_ARG(QJsonValue, QJsonValue(value)));
+                }
+            }
+            return false;
+        };
+        QVERIFY(reply("wallet.orchard.getwalletbinding", QJsonObject{
+            {"wallet_name", "RecoveryTestWallet"}, {"wallet_binding", QString(64, 'a')}}));
+        QVERIFY(reply("wallet.orchard.listaccounts", QJsonObject{
+            {"captured_source_sequence", 3}, {"captured_source_digest", QString(64, 'c')},
+            {"accounts", QJsonArray{}}}));
+        QVERIFY(reply("orchard.getactivationstatus", QJsonObject{
+            {"network", "regtest"}, {"activation_state", "active"},
+            {"activation_height", 10}, {"branch_id", 42},
+            {"tip_height", 20}, {"tip_hash", QString(64, 'd')},
+            {"next_block_height", 21}, {"rule_active_at_tip", true},
+            {"rule_active_for_next_block", true}, {"wallet_backend_compiled", true},
+            {"storage_mode", "full"}, {"node_supported", true},
+            {"node_notice", ""}, {"storage_upgrade_refused", false},
+            {"storage_upgrade_reason", "none"}}));
+        auto* setup = named<QPushButton>(*orchard, "orchardCreateAccount");
+        QVERIFY(setup);
+        QVERIFY2(setup->isEnabled(), "Unlocked v3 wallets must be able to set up Orchard account 0");
+    }
+#endif
 
     void maxStillSendsTheWholeBalance() {
         // Max reads the balance back from its label; separators must not change the amount.

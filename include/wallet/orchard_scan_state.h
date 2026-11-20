@@ -90,6 +90,12 @@ private:
   static OrchardWalletScanState AtHistoricalTip(orchard::SigningDomain,
       const orchard::FullViewingKeyBytes &, uint32_t activation, uint32_t height,
       const uint256 &hash);
+  // A genuinely new seed has no earlier Orchard receivers or notes. Its first
+  // account may start at an authenticated post-activation source checkpoint;
+  // restored seeds must use the historical recovery path instead.
+  static OrchardWalletScanState AtFreshSeedCheckpoint(orchard::SigningDomain,
+      const orchard::FullViewingKeyBytes &, uint32_t activation,
+      const storage::OrchardStoredState &checkpoint);
   struct Data;
   explicit OrchardWalletScanState(std::shared_ptr<const Data> data)
       : data_(std::move(data)) {}

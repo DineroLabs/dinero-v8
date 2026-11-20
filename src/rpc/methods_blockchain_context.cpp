@@ -27,6 +27,9 @@
 #include "daemon/daemon_context.h"  // Full DaemonContext definition (replaces forward decl)
 #include "daemon/services/chainstate_service.h"
 #include "daemon/services/p2p_service.h"
+#if DINERO_WALLET_RAW_ORCHARD
+#include "p2p/orchard_phone_history.h"
+#endif
 #include "daemon/services/wallet_service.h"  // Phase W.1.1: For WalletService access
 #include "daemon/services/config_service.h"
 #include "daemon/services/prune_service.h"   // Phase P.2: For PruneService RPC wiring
@@ -1311,7 +1314,7 @@ din::Json rpc_context_getarchivalstatus(const ExecutionContext& ctx, const din::
 /**
  * blockchain.getinfo - Simplified blockchain info for GUI
  * 
- * Returns: { "blocks": N, "headers": N }
+ * Returns the active block height and the highest known header height.
  * Used by GUI for sync progress display
  */
 din::Json rpc_context_getinfo(const ExecutionContext& ctx, const din::Json& params) {
@@ -1330,10 +1333,25 @@ din::Json rpc_context_getinfo(const ExecutionContext& ctx, const din::Json& para
 
     uint32_t height = chainstate->getBlockHeight();
 
-    // For now, blocks == headers (no headers-first sync yet)
-    // When we add headers-first sync, query chain_db->getHeaderCount()
+    // Match getblockchaininfo's header target. The GUI uses this value to
+    // decide whether its active chain has caught up; equating it to the active
+    // height made a node with downloaded headers look fully synced.
+    uint32_t header_height = height;
+    if (ctx.daemon->header_chain) {
+        dinero::consensus::HeaderIndexEntry best{};
+        if (ctx.daemon->header_chain->GetBestHeaderCopy(best)) {
+            header_height = std::max(header_height, best.height);
+        }
+    }
+    if (ctx.daemon->header_sync) {
+        const auto stats = ctx.daemon->header_sync->GetStats();
+        const auto peer_sync = CollectPeerSyncTelemetry(ctx);
+        header_height = std::max(
+            header_height,
+            std::max(stats.peer_best_height, peer_sync.advertised_best_height));
+    }
     result["blocks"] = static_cast<int>(height);
-    result["headers"] = static_cast<int>(height);
+    result["headers"] = static_cast<int>(header_height);
 
     // Add chain type for GUI network display (mainnet/testnet/regtest)
     if (ctx.daemon->config) {
@@ -2175,6 +2193,23 @@ static din::Json rpc_context_getsnapshotbootstrapstatus(const ExecutionContext& 
         result["services_ready"] = ibd.services_ready;
         result["snapshot_bootstrap"] = buildSnapshotBootstrapDiagnostics(ctx, chainstate);
         result["sync_stats"] = BuildSyncStatsJson(chainstate);
+#if DINERO_WALLET_RAW_ORCHARD
+        if (const auto peers = std::dynamic_pointer_cast<dinero::P2PService>(ctx.daemon->p2p)) {
+            result["orchard_catalog"]["ready"] = static_cast<bool>(peers->ReadyActivationCatalog());
+            result["orchard_catalog"]["expected_bytes"] = static_cast<Json::UInt64>(peers->OrchardCatalogExpectedBytes());
+            if (const auto history = peers->PhoneHistoryDownload()) {
+                const auto progress = history->Observe();
+                auto& orchard = result["orchard_history"];
+                orchard["source_target_available"] = chainstate->PhoneHistoryTarget(false).has_value();
+                orchard["requested"] = progress.requested;
+                orchard["ready"] = progress.ready;
+                orchard["verified_height"] = progress.verified_height;
+                orchard["target_height"] = progress.target_height;
+                orchard["iterations"] = static_cast<Json::UInt64>(history->Iterations());
+                if (!progress.error.empty()) orchard["error"] = progress.error;
+            }
+        }
+#endif
     } catch (const std::exception& e) {
         result["error"]["code"] = -32603;
         result["error"]["message"] = std::string("getsnapshotbootstrapstatus failed: ") + e.what();

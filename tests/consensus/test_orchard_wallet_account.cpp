@@ -106,6 +106,17 @@ int main(int argc, char **argv) {
     auto transition =
         PrepareOrchardStateTransition(c, std::nullopt, auths, lookups);
     auto funded = ready.Advance(c, block, transition, auths);
+    // A brand-new account can begin at a checked Orchard-era checkpoint with
+    // the real frontier and no earlier receivers or notes. The node must not
+    // pretend that a post-activation snapshot is the activation parent.
+    const auto fresh_fvk=WalletKeys::FromSeed(kAccountFixtureSeed,1).ExportFullViewingKey();
+    const auto checkpoint=funded.Scan().Checkpoint();
+    auto fresh=OrchardAccountState::BeginFreshAtCheckpoint(f.domain,fresh_fvk,20001,checkpoint);
+    Require(fresh.Scan().Checkpoint()==checkpoint&&fresh.Scan().Notes().empty()&&fresh.Scan().BalanceUna()==0);
+    auto restored_fresh=OrchardAccountState::Restore(fresh.Encode(),f.domain,fresh_fvk,20001,checkpoint,{});
+    Require(restored_fresh.Scan().Checkpoint()==checkpoint&&restored_fresh.Scan().Notes().empty());
+    auto bad_checkpoint=checkpoint;bad_checkpoint.anchor=H(91);
+    AccountReject([&]{(void)OrchardAccountState::BeginFreshAtCheckpoint(f.domain,fresh_fvk,20001,bad_checkpoint);});
     Require(funded.Scan().BalanceUna() == 5000 &&
             funded.Operations().Entries().at(id).transaction ==
                 f.Build().CanonicalBytes());

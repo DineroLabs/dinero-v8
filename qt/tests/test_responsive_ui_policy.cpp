@@ -50,26 +50,28 @@ private Q_SLOTS:
     QCOMPARE(dinero::qt::hashSampleCapacity(0, 0), 1);
   }
 
-  void newBlockStartsWhenTheHeightChanges() {
-    QVERIFY(!dinero::qt::startsNewBlock(-1, 122460));  // first sample of a session
-    QVERIFY(!dinero::qt::startsNewBlock(122460, 122460));
-    QVERIFY(dinero::qt::startsNewBlock(122460, 122461));
-  }
-
-  void newBlockRowIsALighterShadeOfTheSameGrey() {
+  void onlyTheCurrentBlockFindIsOrange() {
     using dinero::qt::hashRowColor;
-    const auto grey = hashRowColor(false, false, false);
-    QCOMPARE(grey.r, 151); QCOMPARE(grey.g, 163); QCOMPARE(grey.b, 174); QCOMPARE(grey.a, 150);
-    // Only the row where a new block starts: same cool grey, a little lighter.
-    const auto first = hashRowColor(false, false, true);
-    QVERIFY(first.r > grey.r && first.g > grey.g && first.b > grey.b);
-    QVERIFY2(first.g - first.r <= grey.g - grey.r + 2 && first.b - first.g <= grey.b - grey.g + 2,
-             "must stay the same grey tone, not a new colour");
-    QVERIFY(first.r - grey.r <= 60);  // a slight lift, not a highlight
-    // Your own found block stays orange.
-    const auto mine = hashRowColor(true, true, true);
-    QCOMPARE(mine.r, 213); QCOMPARE(mine.g, 138); QCOMPARE(mine.b, 50); QCOMPARE(mine.a, 255);
-    QCOMPARE(hashRowColor(true, false, false).a, 205);
+    const auto candidate = hashRowColor(false, false);
+    QCOMPARE(candidate.r, 0); QCOMPARE(candidate.g, 255);
+    QCOMPARE(candidate.b, 0); QCOMPARE(candidate.a, 210);
+    // After a newer find, the previous found row has the same color as
+    // every other candidate. A template change adds no pale row.
+    const auto olderFind = hashRowColor(false, true);
+    QCOMPARE(olderFind.r, candidate.r); QCOMPARE(olderFind.g, candidate.g);
+    QCOMPARE(olderFind.b, candidate.b); QCOMPARE(olderFind.a, candidate.a);
+    const auto mine = hashRowColor(true, true);
+    QCOMPARE(mine.r, 255); QCOMPARE(mine.g, 176); QCOMPARE(mine.b, 48); QCOMPARE(mine.a, 255);
+    QCOMPARE(hashRowColor(true, false).a, 225);
+    const auto blue = hashRowColor(false, false, 0x489cff);
+    QCOMPARE(blue.r, 0x48);
+    QCOMPARE(blue.g, 0x9c);
+    QCOMPARE(blue.b, 0xff);
+    QCOMPARE(blue.a, candidate.a);
+    const auto orangeFind = hashRowColor(true, true, 0xff5050);
+    QCOMPARE(orangeFind.r, mine.r);
+    QCOMPARE(orangeFind.g, mine.g);
+    QCOMPARE(orangeFind.b, mine.b);
   }
 
   void compactDifficultyMatchesMinerOutput() {

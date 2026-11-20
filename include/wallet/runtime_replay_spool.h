@@ -93,6 +93,23 @@ public:
     private:
         const RuntimeReplaySpool& owner_;std::unique_lock<std::recursive_mutex> lock_;
     };
+    // Keep one SQLite read transaction across a long ordered walk of a live
+    // disposable spool. If the caller already owns a write Batch, its
+    // transaction supplies the same view. This avoids reopening the pager for
+    // every Next() row while retaining the spool mutex for the whole walk.
+    class ReadSpan {
+    public:
+        explicit ReadSpan(const RuntimeReplaySpool& owner):owner_(owner),lock_(owner.mutex_) {
+            if(sqlite3_get_autocommit(owner_.db_.get())) {
+                Check(sqlite3_exec(owner_.db_.get(),"BEGIN",nullptr,nullptr,nullptr)==SQLITE_OK);
+                started_=true;
+            }
+        }
+        ~ReadSpan(){if(started_)sqlite3_exec(owner_.db_.get(),"ROLLBACK",nullptr,nullptr,nullptr);}
+        ReadSpan(const ReadSpan&)=delete;ReadSpan& operator=(const ReadSpan&)=delete;
+    private:
+        const RuntimeReplaySpool& owner_;std::unique_lock<std::recursive_mutex> lock_;bool started_=false;
+    };
     void Insert(std::span<const uint8_t> key,std::span<const uint8_t> value) {
         std::lock_guard guard(mutex_);Check(!frozen_&&!sqlite3_get_autocommit(db_.get()));
         Check(!key.empty()&&key.size()<=MaximumKeyBytes&&value.size()<=MaximumRecordBytes);
@@ -121,12 +138,13 @@ public:
         Bytes key(raw,raw+size);Check(key[0]==space);auto value=Value(stmt.get(),1,key);
         Check(sqlite3_step(stmt.get())==SQLITE_DONE);return std::pair{std::move(key),std::move(value)};
     }
-    // A bounded owned-copy page for immutable scans. One SQL cursor advances
+    // A bounded owned-copy page for ordered scans. One SQL cursor advances
     // through at most 256 rows, rather than restarting a B-tree seek per row.
     // No cursor, borrowed blob or caller callback escapes the private mutex.
     std::vector<std::pair<Bytes,Bytes>> NextBatch(uint8_t space,std::span<const uint8_t> after) const {
         std::lock_guard guard(mutex_);
-        Check(frozen_&&space<255&&!after.empty()&&after[0]==space&&after.size()<=MaximumKeyBytes);
+        Check((frozen_||!sqlite3_get_autocommit(db_.get()))&&space<255&&!after.empty()&&
+              after[0]==space&&after.size()<=MaximumKeyBytes);
         Query stmt(db_.get(),next_statement_,
             "SELECT k,v,tag FROM records WHERE k>?1 AND k<?2 ORDER BY k LIMIT 256",false);
         stmt.Blob(1,after);const Bytes upper{uint8_t(space+1)};stmt.Blob(2,upper);

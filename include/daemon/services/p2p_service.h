@@ -230,6 +230,7 @@ public:
     // Unpublished downloaded proof data only. The closed-store handoff must
     // reauthenticate independently under its retained root/selected ownership.
     std::shared_ptr<const consensus::OrchardSnapshotSection> ReadyActivationCatalog() const;
+    uint64_t OrchardCatalogExpectedBytes() const;
     std::shared_ptr<p2p::OrchardPhoneHistoryDownload> PhoneHistoryDownload() const;
     std::shared_ptr<p2p::WalletFundingDownload> WalletFundingBodies() const;
     // Explicit wallet history acquisition, PUBLIC DATA only. Existing cache

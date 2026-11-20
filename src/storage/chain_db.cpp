@@ -1183,6 +1183,11 @@ std::optional<std::pair<uint64_t,uint64_t>> ChainDB::readRevision() const {
     return std::make_pair(open_generation_, revision);
 }
 
+std::optional<std::pair<uint64_t,uint64_t>> ChainDB::startupWriteFence() const {
+    if (!db_) return {};
+    return std::make_pair(open_generation_, db_->GetLatestSequenceNumber());
+}
+
 StatusOr<TipInfo> ChainDB::getTip() const {
     if (!db_) return Status::Internal;
 
