@@ -18039,6 +18039,26 @@ target_include_directories(test_swap_btc_wallet_keys PRIVATE
 add_test(NAME SwapBtcWalletKeys COMMAND test_swap_btc_wallet_keys)
 set_tests_properties(SwapBtcWalletKeys PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 60)
 
+# The built-in Bitcoin wallet: its file, receive addresses, and reading the balance of both branches.
+add_executable(test_swap_btc_wallet
+  tests/wallet/test_swap_btc_wallet.cpp
+  src/wallet/swap/btc_wallet.cpp
+  src/wallet/swap/btc_wallet_keys.cpp
+  src/wallet/swap/btc_deposit.cpp
+  src/wallet/swap/btc_raw_tx.cpp
+  src/wallet/swap/btc_tx.cpp
+  src/wallet/swap/htlc.cpp
+)
+add_dependencies(test_swap_btc_wallet gtest gtest_main)
+target_link_libraries(test_swap_btc_wallet PRIVATE dinero_wallet dinero_consensus dinero_crypto gtest gtest_main)
+link_zstd_if_needed(test_swap_btc_wallet)
+target_include_directories(test_swap_btc_wallet PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+)
+add_test(NAME SwapBtcWallet COMMAND test_swap_btc_wallet)
+set_tests_properties(SwapBtcWallet PROPERTIES LABELS "wallet;swap;mandatory" TIMEOUT 60)
+
 # A swap's lock built from a deposit address (no Bitcoin wallet): coins, change, fees, signatures.
 add_executable(test_swap_btc_deposit
   tests/wallet/test_swap_btc_deposit.cpp
