@@ -132,6 +132,8 @@ check "bob is given a bcrt1q deposit address and the amount due (1,003,000 sat) 
 LIST=$(rpc $BPORT swap.list '[]')
 check "the part payment shows: awaiting-deposit, 400,000 sat seen" \
   '[[ "$LIST" == *awaiting-deposit* && "$LIST" == *"\"deposit_seen_zat\": 400000"* ]]'
+naddr() { rpc $BPORT wallet.listaddresses '[]' | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))'; }
+ADDR_BEFORE=$(naddr)
 out=$(rpc $BPORT swap.accept "{\"text\":\"$OFFER0\"}" 2>&1 || true)
 check "accepting on a short deposit is refused with the shortfall (${out:0:90})" '[[ "$out" == *"deposit is short by"*BTC* ]]'
 rpc $BPORT swap.cancel "[\"$(field "$DEP0" id)\"]" >/dev/null
@@ -152,7 +154,9 @@ check "a new swap, a new deposit address" '[[ "$ADDR" == bcrt1q* && "$ADDR" != "
 out=$(rpc $BPORT swap.accept "{\"text\":\"$OFFER\"}" 2>&1 || true)
 check "one confirmation on the second payment is not enough yet (${out:0:80})" '[[ "$out" == *"deposit is short by"* ]]'
 mine_btc 1; sleep 3
+check "the refused accepts took no address from bob's wallet ($ADDR_BEFORE before, $(naddr) now)" '[[ "$(naddr)" == "$ADDR_BEFORE" ]]'
 ACCEPT_JSON=$(rpc $BPORT swap.accept "{\"text\":\"$OFFER\"}")
+check "the accept that went through took exactly one" '[[ "$(naddr)" == "$((ADDR_BEFORE + 1))" ]]'
 ACCEPT=$(field "$ACCEPT_JSON" accept)
 check "with two confirmations bob accepts, giving no address again" '[[ "$ACCEPT" == dinswap1a* ]]'
 START_JSON=$(rpc $APORT swap.accept "{\"text\":\"$ACCEPT\"}")
