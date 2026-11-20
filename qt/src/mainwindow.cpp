@@ -16,6 +16,7 @@
 #endif
 #if defined(DIN_ENABLE_SWAP_UI) && DIN_ENABLE_SWAP_UI
 #include "swapwidget.h"
+#include "portfoliowidget.h"
 #endif
 #include "miningsessionstatus.h"
 #include "peerheightsemantics.h"
@@ -4204,6 +4205,8 @@ void MainWindow::setupUI() {
   // Off in release builds until the swap code has had external review.
   {
     tabs->addTab(makeScrollableTab(new SwapWidget(rpc_, this)), navigationIcon(NavigationGlyph::Swap), "Swap");
+    // Every coin this wallet holds, and the built-in Bitcoin wallet (docs/design/multi-coin-wallet.md).
+    tabs->addTab(makeScrollableTab(new PortfolioWidget(rpc_, this)), navigationIcon(NavigationGlyph::Swap), "Portfolio");
   }
 #endif
 
@@ -8964,7 +8967,7 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
   // The Swap tab owns its routes and says in its own words what went wrong.
   // It asks for the swap list every few seconds, and a node with swaps off
   // (the default) refuses each time: that is not an error to raise here.
-  if (method.startsWith(QStringLiteral("swaptab."))) return;
+  if (method.startsWith(QStringLiteral("swaptab.")) || method.startsWith(QStringLiteral("portfolio."))) return;
 
   if (method.startsWith(QLatin1String("overview.miningrewards:"))) {
     if (!walletSwitchInFlight_ && method == miningRewardsReplyAlias()) {
