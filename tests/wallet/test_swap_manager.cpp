@@ -1612,6 +1612,69 @@ TEST(SwapManager, ABitcoinPaymentIsShownThenSentExactlyAsShown) {
     EXPECT_THROW(m.PreviewBtcSend(to, 5'000, false, 6), std::runtime_error);
 }
 
+// A node can hold several Dinero wallets. Each has its own Bitcoin wallet:
+// the one that is open never sees another's addresses or balance.
+TEST(SwapManager, EachDineroWalletHasItsOwnBitcoinWallet) {
+    TempDir da("btcw_two");
+    FakeWallet wa{0xd4};
+    const auto account_of = [](uint8_t fill) {
+        Bytes32 key{}, chain{};
+        key.fill(fill);
+        chain.fill(static_cast<uint8_t>(fill + 1));
+        return BtcWalletAccountFromSecret(key, chain);
+    };
+    const BtcWalletAccount first = account_of(0x21), second = account_of(0x31);
+    std::string open = "first";
+    std::map<std::vector<uint8_t>, BtcScriptActivity> at;
+    at[BtcWalletScript(first, 0, 0)] = {70'000, true, {}, {}};
+    LightBtcSupport light;
+    light.make_io = [](const SwapSession& s, const RunnerConfig& rc, const Bytes32&) {
+        return std::make_unique<RpcSwapChainIo>(kNoDin, kNoBtc, s, rc);
+    };
+    light.tip_height = [] { return uint32_t{800}; };
+    light.script_activity = [&](const std::vector<uint8_t>& script) {
+        const auto it = at.find(script);
+        return it == at.end() ? BtcScriptActivity{} : it->second;
+    };
+    SwapManager m(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    m.SetLightBitcoin(light);
+    m.SetBtcAccountSource([&](uint32_t) { return std::optional<BtcWalletAccount>(open == "first" ? first : second); });
+    m.SetBtcWalletTagSource([&] { return open; });
+
+    const std::string first_address = m.EnableBtcWallet();
+    EXPECT_EQ(first_address, BtcWalletAddress(first, 0, 0, "bcrt"));
+    EXPECT_EQ(m.BtcWalletBalance().sat, 70'000u);
+
+    // The user opens the other wallet: no Bitcoin wallet there yet, and
+    // nothing of the first one's shows.
+    open = "second";
+    auto st = m.BtcWalletStatus();
+    EXPECT_FALSE(st.enabled);
+    EXPECT_TRUE(st.address.empty());
+    EXPECT_THROW(m.BtcWalletBalance(), std::runtime_error);
+    EXPECT_THROW(m.BtcWalletNewAddress(), std::runtime_error);
+    const std::string second_address = m.EnableBtcWallet();
+    EXPECT_EQ(second_address, BtcWalletAddress(second, 0, 0, "bcrt"));
+    EXPECT_NE(second_address, first_address);
+    EXPECT_EQ(m.BtcWalletBalance().sat, 0u) << "the first wallet's coins are not this wallet's";
+
+    // Back to the first: its address and balance are as they were.
+    open = "first";
+    st = m.BtcWalletStatus();
+    EXPECT_TRUE(st.enabled);
+    EXPECT_EQ(st.address, first_address);
+    EXPECT_EQ(m.BtcWalletBalance().sat, 70'000u);
+
+    // No wallet open: said so, nothing shown. A name with path characters stays inside the folder.
+    open.clear();
+    EXPECT_THROW(m.BtcWalletStatus(), std::runtime_error);
+    open = "../../escape";
+    EXPECT_FALSE(m.BtcWalletStatus().enabled);
+    m.EnableBtcWallet();
+    EXPECT_TRUE(fs::exists(da.path + "/btc-wallet-______escape/btc-wallet.pub"));
+    EXPECT_FALSE(fs::exists(da.path + "/../../escape"));
+}
+
 TEST(SwapManager, TheBitcoinWalletStaysOffOnMainnetUntilItCanSend) {
     TempDir da("btcw_main");
     FakeWallet wa{0xd2};

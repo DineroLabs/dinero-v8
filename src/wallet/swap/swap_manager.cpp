@@ -1234,6 +1234,32 @@ SwapManager::BtcHoldings SwapManager::BtcHoldingsOfSwaps() {
     return out;
 }
 
+void SwapManager::SetBtcWalletTagSource(std::function<std::string()> source) {
+    std::lock_guard<std::mutex> lock(mu_);
+    btc_wallet_tag_ = std::move(source);
+}
+
+// One Bitcoin wallet per Dinero wallet: its files live in a folder named
+// after the open wallet's public identity. A node can hold several wallets;
+// without this, the second one opened would be shown the first one's
+// Bitcoin addresses and balance, and would hand out its receive addresses.
+std::string SwapManager::BtcWalletDir() {
+    std::function<std::string()> tag_of;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        tag_of = btc_wallet_tag_;
+    }
+    if (!tag_of) return config_.dir;  // a manager with one wallet only (tests, tools)
+    std::string tag = tag_of();
+    if (tag.empty()) throw std::runtime_error("no wallet is open");
+    for (char& c : tag) {
+        const bool plain = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-' || c == '_';
+        if (!plain) c = '_';
+    }
+    if (tag.size() > 64) tag.resize(64);
+    return config_.dir + "/btc-wallet-" + tag;
+}
+
 void SwapManager::SetBtcAccountSource(BtcAccountSource source) {
     std::lock_guard<std::mutex> lock(mu_);
     btc_account_ = std::move(source);
@@ -1252,15 +1278,15 @@ SwapManager::BtcWalletState SwapManager::BtcWalletStatus() {
     out.why_not = BtcWalletWhyNot();
     out.offered = out.why_not.empty();
     std::lock_guard<std::mutex> file(btc_wallet_mu_);
-    if (!BtcWallet::Enabled(config_.dir)) {
+    if (!BtcWallet::Enabled(BtcWalletDir())) {
         if (out.offered && config_.network == SwapNetwork::Mainnet && !config_.btc_wallet_on_mainnet) {
             out.offered = false;
-            out.why_not = "the Bitcoin wallet is not offered on mainnet yet: it cannot send";
+            out.why_not = "the Bitcoin wallet is not offered on mainnet yet: it has run on test networks only";
         }
         return out;
     }
     try {
-        BtcWallet wallet(config_.dir, config_.runner.btc_hrp);
+        BtcWallet wallet(BtcWalletDir(), config_.runner.btc_hrp);
         out.enabled = true;
         out.address = wallet.CurrentReceiveAddress();
         out.handed_out = wallet.receive_handed_out();
@@ -1278,18 +1304,18 @@ std::string SwapManager::EnableBtcWallet() {
         source = btc_account_;
     }
     std::lock_guard<std::mutex> file(btc_wallet_mu_);
-    if (config_.network == SwapNetwork::Mainnet && !config_.btc_wallet_on_mainnet && !BtcWallet::Enabled(config_.dir)) {
-        throw std::runtime_error("the Bitcoin wallet is not offered on mainnet yet: it cannot send");
+    if (config_.network == SwapNetwork::Mainnet && !config_.btc_wallet_on_mainnet && !BtcWallet::Enabled(BtcWalletDir())) {
+        throw std::runtime_error("the Bitcoin wallet is not offered on mainnet yet: it has run on test networks only");
     }
     const auto account = source(config_.network == SwapNetwork::Mainnet ? 0u : 1u);
     if (!account) throw std::runtime_error("wallet is locked: unlock it to turn the Bitcoin wallet on");
-    BtcWallet::Enable(config_.dir, *account);
-    return BtcWallet(config_.dir, config_.runner.btc_hrp).CurrentReceiveAddress();
+    BtcWallet::Enable(BtcWalletDir(), *account);
+    return BtcWallet(BtcWalletDir(), config_.runner.btc_hrp).CurrentReceiveAddress();
 }
 
 std::string SwapManager::BtcWalletNewAddress() {
     std::lock_guard<std::mutex> file(btc_wallet_mu_);
-    return BtcWallet(config_.dir, config_.runner.btc_hrp).NewReceiveAddress();
+    return BtcWallet(BtcWalletDir(), config_.runner.btc_hrp).NewReceiveAddress();
 }
 
 BtcWallet::Balance SwapManager::BtcWalletBalance() {
@@ -1306,7 +1332,7 @@ BtcWallet::Balance SwapManager::BtcWalletBalance() {
     // payments, and would show them as missing: say so instead (this throws).
     synced();
     std::lock_guard<std::mutex> file(btc_wallet_mu_);
-    return BtcWallet(config_.dir, config_.runner.btc_hrp).ReadBalance(read);
+    return BtcWallet(BtcWalletDir(), config_.runner.btc_hrp).ReadBalance(read);
 }
 
 void SwapManager::SetBtcAccountSecretSource(BtcAccountSecretSource source) {
@@ -1372,7 +1398,7 @@ SwapManager::BtcPayment SwapManager::PreviewBtcSend(const std::string& to_addres
                                                     uint32_t target_blocks) {
     if (const std::string why = BtcWalletWhyNot(); !why.empty()) throw std::runtime_error(why);
     std::lock_guard<std::mutex> file(btc_wallet_mu_);
-    BtcWallet wallet(config_.dir, config_.runner.btc_hrp);
+    BtcWallet wallet(BtcWalletDir(), config_.runner.btc_hrp);
     return PlanBtcPayment(wallet, to_address, amount_sat, send_all, target_blocks).shown;
 }
 
@@ -1388,7 +1414,7 @@ SwapManager::BtcPayment SwapManager::SendBtc(const std::string& to_address, uint
     }
     if (!secret_source) throw std::runtime_error("this node cannot send Bitcoin");
     std::lock_guard<std::mutex> file(btc_wallet_mu_);
-    BtcWallet wallet(config_.dir, config_.runner.btc_hrp);
+    BtcWallet wallet(BtcWalletDir(), config_.runner.btc_hrp);
     const PlannedBtcPayment planned = PlanBtcPayment(wallet, to_address, amount_sat, send_all, target_blocks);
     if (planned.shown.txid != expected_txid) {
         throw std::runtime_error("the payment is no longer the one that was shown (the network fee or the wallet's "
@@ -1448,7 +1474,7 @@ SwapManager::BtcPayment SwapManager::BumpBtcFee(const std::string& txid, uint32_
         fee_rate = light_btc_->fee_rate;
     }
     std::lock_guard<std::mutex> file(btc_wallet_mu_);
-    BtcWallet wallet(config_.dir, config_.runner.btc_hrp);
+    BtcWallet wallet(BtcWalletDir(), config_.runner.btc_hrp);
     std::optional<BtcWallet::Sent> old;
     for (const auto& p : wallet.SentPayments()) {
         if (p.txid_hex == txid) old = p;
@@ -1515,7 +1541,7 @@ std::vector<SwapManager::BtcWalletTx> SwapManager::BtcWalletHistory() {
     }
     synced();  // throws while Bitcoin's headers are not up to date
     std::lock_guard<std::mutex> file(btc_wallet_mu_);
-    BtcWallet wallet(config_.dir, config_.runner.btc_hrp);
+    BtcWallet wallet(BtcWalletDir(), config_.runner.btc_hrp);
     const BtcWallet::Balance balance = wallet.ReadBalance(read);
     std::vector<BtcWalletTx> out;
     std::set<std::string> ours;

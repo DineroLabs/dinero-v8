@@ -220,8 +220,8 @@ struct SwapManagerConfig {
     bool require_tower_for_bob{false};  // mainnet beta: Bob may not accept without a watchtower
     bool btc_configured{true};          // false: no Bitcoin node (a Zcash-only node)
     // The built-in Bitcoin wallet may be turned on on mainnet. Off until it
-    // can send: coins received before then could only be moved with the
-    // recovery words in another Bitcoin wallet.
+    // has been rehearsed there: it receives, sends and raises fees on regtest
+    // and on public testnet4, and has not yet moved a mainnet coin.
     bool btc_wallet_on_mainnet{false};
     uint64_t btc_wallet_max_send_sat{0};  // the most one payment may send (0: no limit)
 };
@@ -314,6 +314,10 @@ public:
     // 5): the BIP84 account of this wallet's seed, read through the light
     // Bitcoin client. Receiving and balances; it does not send yet.
     void SetBtcAccountSource(BtcAccountSource source);
+    // A stable, public name of the wallet that is open now (not its keys):
+    // each Dinero wallet has its own Bitcoin wallet files. Throws or returns
+    // empty when no wallet is open. Unset: one wallet per manager.
+    void SetBtcWalletTagSource(std::function<std::string()> source);
     struct BtcWalletState {
         bool offered{false};    // this node can run it (see why_not otherwise)
         bool enabled{false};    // turned on: its account is stored
@@ -430,6 +434,8 @@ private:
     std::optional<LightBtcSupport> light_btc_;
     BtcAccountSource btc_account_;
     BtcAccountSecretSource btc_account_secret_;
+    std::function<std::string()> btc_wallet_tag_;
+    std::string BtcWalletDir();  // takes mu_ briefly
     struct PlannedBtcPayment;
     PlannedBtcPayment PlanBtcPayment(BtcWallet& wallet, const std::string& to_address, uint64_t amount_sat, bool send_all,
                                      uint32_t target_blocks);  // btc_wallet_mu_ held
