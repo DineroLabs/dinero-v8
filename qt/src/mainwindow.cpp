@@ -5194,14 +5194,30 @@ void MainWindow::setupUI() {
       swatch->setToolTip(QString("%1 mining hashes").arg(QString::fromLatin1(choice.label)));
       swatch->setAccessibleName(swatch->toolTip());
       swatch->setFixedSize(22, 20);
+      // Keep the 22x20 hit target, but make the visible square one quarter
+      // of its former area (10x10 instead of filling the whole button).
+      swatch->setIconSize(QSize(12, 12));
       swatch->setCheckable(true);
+      swatch->setFlat(true);
+      swatch->setFocusPolicy(Qt::NoFocus);
       swatch->setCursor(Qt::PointingHandCursor);
+      const auto square = [rgb = choice.rgb](const QColor& border) {
+        QPixmap pixmap(24, 24);
+        pixmap.setDevicePixelRatio(2);
+        pixmap.fill(Qt::transparent);
+        QPainter painter(&pixmap);
+        painter.fillRect(QRectF(1, 1, 10, 10), QColor::fromRgb(rgb));
+        painter.setPen(QPen(border, 1));
+        painter.drawRect(QRectF(1.5, 1.5, 9, 9));
+        return pixmap;
+      };
+      QIcon icon;
+      icon.addPixmap(square(QColor("#5d6871")), QIcon::Normal, QIcon::Off);
+      icon.addPixmap(square(QColor("#e1e8ed")), QIcon::Normal, QIcon::On);
+      swatch->setIcon(icon);
       swatch->setStyleSheet(QStringLiteral(
-        "QPushButton { background: #%1; border: 1px solid #5d6871; border-radius: 2px; padding: 0; } "
-        "QPushButton:hover { border: 2px solid #a9b4bb; } "
-        "QPushButton:checked { border: 2px solid #e1e8ed; } "
-        "QPushButton:focus { border: 2px solid #f0bf68; }")
-        .arg(QString::number(choice.rgb, 16).rightJustified(6, QLatin1Char('0'))));
+        "QPushButton { background: transparent; border: none; padding: 0; } "
+        "QPushButton:hover { background: #10161a; }"));
       hashColorGroup->addButton(swatch);
       hashColorButtons.append(swatch);
       connect(swatch, &QPushButton::clicked, this, [this, rgb = choice.rgb]() {
@@ -5263,14 +5279,18 @@ void MainWindow::setupUI() {
       void place() {
         const QRect area = out_->viewport()->geometry();
         const int y = 5;
-        int x = area.left() + 6;
-        for (QPushButton* swatch : swatches_) {
-          swatch->move(x, y);
-          swatch->raise();
-          x += swatch->width() + 4;
-        }
         plus_->move(area.right() - plus_->width() - 6, y);
         minus_->move(plus_->x() - minus_->width() - 4, y);
+        // Place the compact color choices beside the zoom controls, with
+        // green through red reading left to right.
+        int x = minus_->x() - 6;
+        for (int i = swatches_.size() - 1; i >= 0; --i) {
+          QPushButton* swatch = swatches_.at(i);
+          x -= swatch->width();
+          swatch->move(x, y);
+          swatch->raise();
+          x -= 2;
+        }
         minus_->raise();
         plus_->raise();
       }
@@ -11811,9 +11831,10 @@ void MainWindow::updateMiningOutputCinematicFrame() {
       if (sample.blockFound && remainingMs > 0 &&
           remainingMs <= dinero::qt::kBlockFoundHighlightMs) {
         // The solved template stops producing samples while the next one is
-        // loaded. For exactly one second, jolt only the orange text in three
-        // slices. The cached line is still the real winning header; no fake
-        // hashes, divider lines, or extra animation timer are needed.
+        // loaded. For exactly one second, jolt the orange text in three
+        // slices and give it one subtle zoom-out-and-back pulse. The cached
+        // line is still the real winning header; no fake hashes, divider
+        // lines, or extra animation timer are needed.
         static constexpr int offsets[5][3] = {
           {-4,  6, -2}, { 3, -5,  1}, {-2,  4, -6},
           { 5, -3,  2}, {-3,  2,  5}
@@ -11822,7 +11843,13 @@ void MainWindow::updateMiningOutputCinematicFrame() {
                               static_cast<int>(remainingMs);
         const int phase = std::clamp(
           elapsedMs / dinero::qt::kHashEngineIntervalMs, 0, 4);
+        static constexpr qreal pulseScale[5] = {1.0, 0.97, 0.94, 0.97, 1.0};
         const int textHeight = metrics.height();
+        const qreal anchorY = textTop + textHeight / 2.0;
+        painter.save();
+        painter.translate(8, anchorY);
+        painter.scale(pulseScale[phase], pulseScale[phase]);
+        painter.translate(-8, -anchorY);
         for (int slice = 0; slice < 3; ++slice) {
           const int top = textHeight * slice / 3;
           const int bottom = textHeight * (slice + 1) / 3;
@@ -11833,6 +11860,7 @@ void MainWindow::updateMiningOutputCinematicFrame() {
             QPointF(8 + offsets[phase][slice], textTop), sample.renderedLine);
           painter.restore();
         }
+        painter.restore();
       } else {
         painter.drawStaticText(QPointF(8, textTop), sample.renderedLine);
       }
