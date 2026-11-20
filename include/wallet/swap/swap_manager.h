@@ -207,8 +207,19 @@ public:
         std::string id;
         std::optional<std::string> accept_text;
     };
-    AcceptResult Accept(const std::string& text, const std::string& din_payout_address,
+    // `din_payout_address` is asked for only once every check has passed and
+    // the swap is about to be recorded: a refused attempt must not take an
+    // address from the wallet. (A buyer waiting for his deposit to confirm
+    // retries Accept many times; taking one each time pushed his payout past
+    // the address gap a restore from the recovery words looks through.)
+    using PayoutAddressSource = std::function<std::string()>;
+    AcceptResult Accept(const std::string& text, const PayoutAddressSource& din_payout_address,
                         const std::string& btc_refund_address, uint32_t now_unix);
+    AcceptResult Accept(const std::string& text, const std::string& din_payout_address,
+                        const std::string& btc_refund_address, uint32_t now_unix) {
+        return Accept(text, PayoutAddressSource([&din_payout_address] { return din_payout_address; }),
+                      btc_refund_address, now_unix);
+    }
 
     std::vector<SwapSummary> List();
     SwapSummary Status(const std::string& id);

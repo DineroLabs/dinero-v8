@@ -574,7 +574,7 @@ std::string SwapManager::MakeOffer(const OfferRequest& r, uint32_t now) {
     return text;
 }
 
-SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std::string& din_payout_address,
+SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const PayoutAddressSource& din_payout_address,
                                               const std::string& btc_refund_address, uint32_t now) {
     std::lock_guard<std::mutex> lock(mu_);
     const Bytes32 store_key = StoreKey();
@@ -626,7 +626,7 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
         const std::string id = SwapId(offer);
         if (already_started(id)) throw std::runtime_error("swap " + id + " already exists");
         SwapSession s;
-        s.din_payout_script = PayoutScriptFromAddress(din_payout_address, config_.runner.din_hrp);
+        s.din_payout_script = PayoutScriptFromAddress(din_payout_address(), config_.runner.din_hrp);
         s.btc_payout_script = BtcPayoutScriptFromAddress(btc_refund_address, config_.runner.btc_hrp);
         SwapStoreKeyFromSeed(derive_, config_.network);  // a relocked wallet: refused before an index is used
         const uint32_t index = AllocateIndex();
@@ -687,7 +687,7 @@ SwapManager::AcceptResult SwapManager::Accept(const std::string& text, const std
         }
         const auto mat = BoundSwapKeysForIndex(derive_, config_.network, *index, store_key, false, offer.chain);
         SwapSession s;
-        s.din_payout_script = PayoutScriptFromAddress(din_payout_address, config_.runner.din_hrp);
+        s.din_payout_script = PayoutScriptFromAddress(din_payout_address(), config_.runner.din_hrp);
         s.btc_payout_script = refund;
         s.record.role = Role::BtcSeller;
         s.record.offer = offer;

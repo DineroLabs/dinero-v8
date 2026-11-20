@@ -1027,6 +1027,18 @@ TEST(SwapManager, LightBitcoinBuysDinFromADeposit) {
         lb.status = {1'003'000, 1'002'999, 2};
         EXPECT_THROW(bob.Accept(offer, P2trAddress("rdin", 0x31), "", kNow + 60), std::runtime_error);
         EXPECT_TRUE(lb.io_deposit_keys.empty());
+        // A refused accept takes no address from the wallet, however often it is retried
+        // (a buyer waiting for confirmations retries for an hour).
+        int addresses_taken = 0;
+        const SwapManager::PayoutAddressSource payout = [&] { ++addresses_taken; return P2trAddress("rdin", 0x31); };
+        for (int retry = 0; retry < 5; ++retry) EXPECT_THROW(bob.Accept(offer, payout, "", kNow + 61 + retry), std::runtime_error);
+        EXPECT_EQ(addresses_taken, 0);
+        lb.status = {1'003'000, 1'003'000, 2};
+        SwapOffer other = DecodeOffer(offer);
+        other.network = SwapNetwork::Mainnet;  // refused for another reason: still none
+        EXPECT_THROW(bob.Accept(EncodeOffer(other), payout, "", kNow + 67), std::exception);
+        EXPECT_EQ(addresses_taken, 0);
+        lb.status = {1'003'000, 1'002'999, 2};
     }
     {   // A restart in between: the deposit is still there.
         SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
@@ -1034,8 +1046,11 @@ TEST(SwapManager, LightBitcoinBuysDinFromADeposit) {
         ASSERT_EQ(bob.List().size(), 1u);
         EXPECT_TRUE(bob.List()[0].pending_deposit);
         lb.status = {1'003'000, 1'003'000, 2};
-        const auto accepted = bob.Accept(offer, P2trAddress("rdin", 0x31), "", kNow + 70);
+        int addresses_taken = 0;
+        const auto accepted = bob.Accept(
+            offer, SwapManager::PayoutAddressSource([&] { ++addresses_taken; return P2trAddress("rdin", 0x31); }), "", kNow + 70);
         ASSERT_TRUE(accepted.accept_text.has_value());
+        EXPECT_EQ(addresses_taken, 1) << "the accept that goes through takes exactly one";
         // The swap's chain IO was given the deposit key: it builds the lock from the deposit.
         ASSERT_EQ(lb.io_deposit_keys.size(), 1u);
         EXPECT_EQ(lb.io_deposit_keys[0], KeyAt(wb.Deriver(), {kSwapKeyPurpose, 2, 7, 0}));

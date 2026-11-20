@@ -175,19 +175,17 @@ din::Json RpcAccept(const ExecutionContext& ctx, const din::Json& params) {
     try {
         if (!Arg(params, "text").isString()) return Error("usage: swap.accept {text, [btc_refund_address]}");
         const std::string text = Arg(params, "text").asString();
-        std::string din_payout, btc_refund;
-        if (text.rfind(kOfferPrefix, 0) == 0 && SwapService::Active()->manager()->LightBitcoin()) {
-            // Bob, without Bitcoin Core: the refund address was given with swap.deposit.
-            din_payout = NewWalletAddress(ctx);
-        } else if (text.rfind(kOfferPrefix, 0) == 0) {  // Bob
+        std::string btc_refund;
+        if (text.rfind(kOfferPrefix, 0) == 0 && !SwapService::Active()->manager()->LightBitcoin()) {  // Bob, with Bitcoin Core
             if (!Arg(params, "btc_refund_address").isString()) {
                 return Error("accepting an offer needs btc_refund_address (where your BTC returns on refund)");
             }
             btc_refund = Arg(params, "btc_refund_address").asString();
-            din_payout = NewWalletAddress(ctx);
-        } else if (text.rfind(kOffer2Prefix, 0) == 0) {  // Bob, Zcash: the refund address was given with swap.deposit
-            din_payout = NewWalletAddress(ctx);
         }
+        // Bob's DIN payout address is taken from the wallet only when the accept
+        // goes through (without Bitcoin Core, and for Zcash, the refund address
+        // was given with swap.deposit). Alice's start needs none.
+        const SwapManager::PayoutAddressSource din_payout = [&ctx] { return NewWalletAddress(ctx); };
         const auto r = SwapService::Active()->manager()->Accept(text, din_payout, btc_refund,
                                                                 static_cast<uint32_t>(std::time(nullptr)));
         din::Json out(Json::objectValue);
