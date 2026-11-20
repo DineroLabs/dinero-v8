@@ -72,8 +72,12 @@ TEST(OrchardDetachedCoverage, PreparedRestoreReleasesOwnersAndTransactionRecheck
 }
 TEST(OrchardDetachedCoverage, ExactReplaySessionAndCatalogChangesRefuseBeforeEffects){
     OrchardCatalogRecoveryFixture f;ASSERT_FALSE(f.Call(3).isMember("error"));ASSERT_FALSE(f.Call(17).isMember("error"));
-    const auto view=f.f.service->getRuntimeAccountReplay();const auto other=f.f.service->getRuntimeAccountReplay();
-    ASSERT_TRUE(view.ok());ASSERT_TRUE(other.ok());ASSERT_NE(view->get(),other->get());
+    const auto view=f.f.service->getRuntimeAccountReplay();
+    ASSERT_TRUE(view.ok());
+    // Full-replay reads now share a cached handle. Copy the authenticated
+    // immutable view so this still exercises the exact-handle identity fence.
+    const auto other=std::make_shared<const RuntimeAccountReplay>(**view);
+    ASSERT_NE(view->get(),other.get());
     auto use=WalletService::AcquireWalletUse(f.wallet);auto& wallet=use->Wallet();
     const auto session=f.Session();auto* db=wallet.getCurrentDatabase();
     const auto provider=[&](RuntimeOutboxCursor cursor){return (*view)->Point(cursor);};
@@ -81,7 +85,7 @@ TEST(OrchardDetachedCoverage, ExactReplaySessionAndCatalogChangesRefuseBeforeEff
     const auto before=f.Snapshot();
     {
         auto lease=wallet.AcquireDatabaseLease();ASSERT_EQ(sqlite3_exec(db,"BEGIN IMMEDIATE",nullptr,nullptr,nullptr),SQLITE_OK);
-        EXPECT_THROW(wallet::OrchardDetachedCoverageTestAccess::Recheck(wallet,session,*other,*prepared),std::runtime_error);
+        EXPECT_THROW(wallet::OrchardDetachedCoverageTestAccess::Recheck(wallet,session,other,*prepared),std::runtime_error);
         EXPECT_THROW(wallet::OrchardDetachedCoverageTestAccess::Recheck(wallet,session+1,*view,*prepared),std::runtime_error);
         EXPECT_FALSE(sqlite3_get_autocommit(db));ASSERT_EQ(sqlite3_exec(db,"ROLLBACK",nullptr,nullptr,nullptr),SQLITE_OK);
     }

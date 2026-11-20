@@ -1,6 +1,8 @@
 #include "consensus/release_profile.h"
 #include "consensus/orchard_profile.h"
 #include "daemon/services/p2p_service.h"
+#include "p2p/start_once_due.h"
+#include "p2p/cached_source.h"
 #include "daemon/services/relay_role_policy.h"
 #include "daemon/services/logger_service.h"
 #include "daemon/services/config_service.h"
@@ -1123,6 +1125,9 @@ void P2PService::StartSchedulerTickLoop() {
                             config.sync_profile, config.utreexo_stateless);
                         bool prioritize_orchard_history = false;
 #ifdef DINERO_HAS_ORCHARD_P2P
+                        // A snapshot imported after P2P start (every first run)
+                        // makes the history workers due only now.
+                        if (st.assumeutxo_active) EnsureSnapshotHistoryWorkers();
                         // Snapshot-born wallets need the independently verified
                         // Orchard activation prefix before they can issue an
                         // account. The peer receive loop also handles backfill
@@ -2154,33 +2159,25 @@ bool P2PService::Init(DaemonContext& ctx) {
     }
 }
 
-void P2PService::StartOrchardHistoryWorkers() {
-        // Only a full archival profile serves activation catalogs. The local
-        // load/export switch does not gate this consensus-state transport.
+// The workers that fetch and verify the Orchard history a snapshot-born node
+// lacks (a new wallet cannot be created without it). Whether they are needed
+// is only known once the snapshot is in: on a first run that is minutes after
+// P2P has started, so this is asked again from the scheduler tick loop until
+// it has started them, not decided once at start-up. Before, a first run never
+// requested the history at all and only a restart of the node did.
+void P2PService::EnsureSnapshotHistoryWorkers() {
 #ifdef DINERO_HAS_ORCHARD_P2P
-        if(!offline_mode_&&chainstate_&&consensus::OrchardProfileConfigurationValid(Params())&&
-           Params().orchard_activation_height!=UINT32_MAX){
-            const auto send=[this](const auto& peer,const auto& command,const auto& bytes){
-                ::P2PMessage message{};message.command=command;message.payload=bytes;
-                return p2p_mgr_&&p2p_mgr_->is_network_active()&&p2p_mgr_->send_to_peer(peer.address,message,peer.session);
-            };
-            if(GetConfig().utreexo_stateless){
-                auto inputs=std::make_shared<p2p::WalletInputProofDownload>([this]{
-                    std::vector<p2p::OrchardCatalogClient::Peer> peers;
-                    if(p2p_mgr_&&p2p_mgr_->is_network_active())for(const auto& p:p2p_mgr_->connected_peer_sessions())
-                        peers.push_back({p.address,p.nonce,p.services});return peers;
-                },send);
-                std::lock_guard lock(orchard_catalog_download_mutex_);wallet_input_proofs_=std::move(inputs);
-            }else wallet_input_server_=std::make_shared<p2p::WalletInputProofServer>(
-                [source=chainstate_](const auto& request){return ServeWalletInputProof(*source,request);},send);
-        }
+        if(snapshot_history_start_.Started())return;
+        std::lock_guard start(snapshot_history_start_mutex_);
         const bool needs_snapshot_history=GetConfig().utreexo_stateless ||
             (chainstate_ && chainstate_->HasOrchardSnapshotHistorySource());
-        if(chainstate_&&needs_snapshot_history&&
+        const bool can_start=chainstate_&&
            consensus::OrchardProfileConfigurationValid(Params())&&Params().orchard_activation_height!=UINT32_MAX&&
-           Params().orchard_catalog_commitment_activation_height==Params().orchard_activation_height){
-            auto* context=DaemonContext::instance();const auto headers=context?context->header_chain:nullptr;
-            if(headers){
+           Params().orchard_catalog_commitment_activation_height==Params().orchard_activation_height;
+        auto* context=DaemonContext::instance();const auto headers=context?context->header_chain:nullptr;
+        if(!snapshot_history_start_.Due(needs_snapshot_history&&can_start&&headers))return;
+        {
+            {
                 if(GetConfig().utreexo_stateless){
                     auto funding=std::make_shared<p2p::WalletFundingDownload>([this]{
                         std::vector<p2p::OrchardCatalogClient::Peer> peers;
@@ -2243,19 +2240,20 @@ void P2PService::StartOrchardHistoryWorkers() {
                     return p2p_mgr_&&p2p_mgr_->send_to_peer(peer.address,message,peer.session);
                 });
                 {std::lock_guard lock(orchard_catalog_download_mutex_);orchard_catalog_download_=std::move(download);}
+                // The selected target is read at most every 5 s (it takes the
+                // selected lock). This source is called from the download's
+                // worker AND from every wallet thread that asks Ready(): the
+                // cache is therefore a locked one, not lambda state. A torn
+                // target matches nothing and reads as "history not ready".
+                const auto selected_target=std::make_shared<p2p::CachedSource<p2p::OrchardPhoneHistoryTarget>>(
+                    [source=chainstate_]{return source->PhoneHistoryTarget();},std::chrono::seconds(5));
                 auto history=std::make_shared<p2p::OrchardPhoneHistoryDownload>(headers,
-                    std::filesystem::path(config_->DataDir()),[this,source=chainstate_,cached_proof,
-                        next_check=std::chrono::steady_clock::time_point{},
-                        latest=std::optional<p2p::OrchardPhoneHistoryTarget>{}]() mutable
+                    std::filesystem::path(config_->DataDir()),[this,source=chainstate_,cached_proof,selected_target]()
                             ->std::optional<p2p::OrchardPhoneHistoryTarget> {
                         const bool retained=bool(cached_proof());
                         if(retained)source->RequestRetainedPhoneHistoryData(); // PUBLIC DATA scheduling only.
                         if(!retained&&(!p2p_mgr_||!p2p_mgr_->is_network_active()))return std::nullopt;
-                        const auto now=std::chrono::steady_clock::now();
-                        if(now<next_check)return latest;
-                        latest=source->PhoneHistoryTarget();
-                        next_check=now+std::chrono::seconds(5);
-                        return latest;
+                        return selected_target->Get();
                     },[this,cache,cached_proof,proof_cache_retired]{
                         if(const auto first=cached_proof()){
                             std::shared_ptr<const consensus::OrchardSnapshotSection> proof;
@@ -2278,6 +2276,30 @@ void P2PService::StartOrchardHistoryWorkers() {
                 {std::lock_guard lock(orchard_catalog_download_mutex_);orchard_phone_history_=std::move(history);}
             }
         }
+#endif
+}
+
+void P2PService::StartOrchardHistoryWorkers() {
+        // Only a full archival profile serves activation catalogs. The local
+        // load/export switch does not gate this consensus-state transport.
+#ifdef DINERO_HAS_ORCHARD_P2P
+        if(!offline_mode_&&chainstate_&&consensus::OrchardProfileConfigurationValid(Params())&&
+           Params().orchard_activation_height!=UINT32_MAX){
+            const auto send=[this](const auto& peer,const auto& command,const auto& bytes){
+                ::P2PMessage message{};message.command=command;message.payload=bytes;
+                return p2p_mgr_&&p2p_mgr_->is_network_active()&&p2p_mgr_->send_to_peer(peer.address,message,peer.session);
+            };
+            if(GetConfig().utreexo_stateless){
+                auto inputs=std::make_shared<p2p::WalletInputProofDownload>([this]{
+                    std::vector<p2p::OrchardCatalogClient::Peer> peers;
+                    if(p2p_mgr_&&p2p_mgr_->is_network_active())for(const auto& p:p2p_mgr_->connected_peer_sessions())
+                        peers.push_back({p.address,p.nonce,p.services});return peers;
+                },send);
+                std::lock_guard lock(orchard_catalog_download_mutex_);wallet_input_proofs_=std::move(inputs);
+            }else wallet_input_server_=std::make_shared<p2p::WalletInputProofServer>(
+                [source=chainstate_](const auto& request){return ServeWalletInputProof(*source,request);},send);
+        }
+        EnsureSnapshotHistoryWorkers();
         if(!offline_mode_&&chainstate_&&!GetConfig().utreexo_stateless&&(!prune_||!prune_->isEnabled())&&
            consensus::OrchardProfileConfigurationValid(Params())&&Params().orchard_activation_height!=UINT32_MAX&&
            Params().orchard_catalog_commitment_activation_height==Params().orchard_activation_height){
@@ -2833,6 +2855,7 @@ void P2PService::ReleaseStoppedDependencies() {
     {std::lock_guard lock(orchard_catalog_download_mutex_);funding=std::move(wallet_funding_bodies_);history=std::move(orchard_phone_history_);download=std::move(orchard_catalog_download_);}
     inputs.reset();wallet_input_server_.reset();funding.reset();history.reset();download.reset();
     {std::lock_guard lock(orchard_catalog_download_mutex_);wallet_history_cache_.reset();}
+    {std::lock_guard start(snapshot_history_start_mutex_);snapshot_history_start_.Reset();}
     orchard_catalog_server_.reset();
     OnNewBlock = {};
     OnNewTx = {};
