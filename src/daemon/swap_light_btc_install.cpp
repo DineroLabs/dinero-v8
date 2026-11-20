@@ -143,8 +143,12 @@ std::function<void(uint32_t)> InstallLightBitcoin(swap::SwapManager& manager, co
         if (!watcher) watcher = std::make_unique<swap::BtcDepositWatcher>(backend->chain(), backend->servers(), script);
         const swap::BtcDepositView view = watcher->Observe();
         if (!view.ok) throw std::runtime_error("cannot reach any Bitcoin server");
-        return swap::BtcScriptActivity{view.seen_sat, view.ever_paid};
+        swap::BtcScriptActivity activity{view.seen_sat, view.ever_paid, {}};
+        for (const auto& coin : view.coins) activity.coins.push_back({coin.txid, coin.vout, coin.value_sat});
+        return activity;
     };
+    support.fee_rate = [backend](uint32_t target_blocks) { return backend->FeeRate(target_blocks); };
+    support.broadcast = [backend](const std::vector<uint8_t>& raw) { return backend->Broadcast(raw); };
     support.script_balance = [activity = support.script_activity](const std::vector<uint8_t>& script) {
         return activity(script).sat;
     };
