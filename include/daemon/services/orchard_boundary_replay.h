@@ -25,9 +25,25 @@ public:
     OrchardBoundaryReplay(const OrchardBoundaryReplay&)=delete;
     OrchardBoundaryReplay& operator=(const OrchardBoundaryReplay&)=delete;
     std::unique_ptr<const consensus::ValidatedOrchardBlock> Append(const OrchardBlockCandidate& block,uint64_t now){
-        using namespace consensus;Check();poisoned_=true;
+        return AppendChecked(block,now,false);
+    }
+    // The history downloader may retry a selection change before validation
+    // starts. Failures after validation starts still poison the owner.
+    std::unique_ptr<const consensus::ValidatedOrchardBlock> AppendForSelectedHistory(
+        const OrchardBlockCandidate& block,uint64_t now){
+        Require(!events_);
+        return AppendChecked(block,now,true);
+    }
+private:
+    std::unique_ptr<const consensus::ValidatedOrchardBlock> AppendChecked(
+        const OrchardBlockCandidate& block,uint64_t now,bool retry_selection){
+        using namespace consensus;
+        Check();
+        const bool target_selected = TargetSelected();
+        if (retry_selection && !target_selected) return {};
+        poisoned_ = true;
         Require(!finished_&&height_<uint32_t(INT32_MAX)&&(events_||height_<target_height_)&&
-            profile_==ValidatedOrchardBlock::CaptureProfile()&&TargetSelected());
+            profile_==ValidatedOrchardBlock::CaptureProfile()&&target_selected);
         const auto height=height_+1;uint256 expected;uint32_t target=0;
         if(events_)expected=block.Header().GetHash();
         else Require(headers_->GetAncestorHashByHash(target_hash_,height,expected,target)&&target==target_height_&&expected==block.Header().GetHash());
@@ -100,24 +116,38 @@ public:
         }
         state_=state.Next();catalog_=std::move(next);header_=block.Header();height_=height;poisoned_=false;return verified;
     }
+public:
     void Finish(){Check();poisoned_=true;Require(!finished_&&height_==target_height_&&header_.GetHash()==target_hash_&&(events_||state_.has_value())&&
         profile_==consensus::ValidatedOrchardBlock::CaptureProfile()&&TargetSelected());
         checkpoints_.Freeze();spool_.Freeze();finished_=true;poisoned_=false;}
     uint32_t Height()const{Check();return height_;}
-    // Extend only along the locally selected descendant branch. The existing
-    // validated prefix is retained; no body, event or state may be skipped.
-    void ExtendSelectedTarget(uint32_t height,const uint256& hash){
-        Check();Require(!finished_&&TargetSelected()&&height>=target_height_&&
+    enum class RetargetResult { Retained, Unselected, PrefixChanged };
+    // Continue only from a verified prefix on the replacement selected chain.
+    // Before the first append, preserve the activation block bound to the proof.
+    RetargetResult RetargetSelectedHistory(uint32_t height,const uint256& hash){
+        Check();
+        Require(!events_&&!finished_&&
             profile_==consensus::ValidatedOrchardBlock::CaptureProfile());
-        uint256 ancestor;uint32_t found=0;
-        Require(headers_->GetAncestorHashByHash(hash,target_height_,ancestor,found)&&
-            found==height&&ancestor==target_hash_);
         consensus::HeaderIndexEntry selected;
-        Require(headers_->GetHeaderAtHeightCopy(height,selected)&&selected.hash==hash);
-        target_height_=height;target_hash_=hash;
+        if (!headers_->GetHeaderAtHeightCopy(height, selected) || selected.hash != hash) {
+            return RetargetResult::Unselected;
+        }
+        const auto base_height = baseline_->state.height;
+        const auto prefix_height = std::max(height_, base_height);
+        const auto prefix_hash = height_ >= base_height ? header_.GetHash() : baseline_->state.block_hash;
+        if (height < prefix_height) return RetargetResult::PrefixChanged;
+        uint256 ancestor;
+        uint32_t found = 0;
+        if (!headers_->GetAncestorHashByHash(hash, prefix_height, ancestor, found) || found != height) {
+            return RetargetResult::Unselected;
+        }
+        if (ancestor != prefix_hash) return RetargetResult::PrefixChanged;
+        target_height_ = height;
+        target_hash_ = hash;
+        return RetargetResult::Retained;
     }
     // Readiness observation only; no serialized seal or publication authority.
-    // The worker may extend a checked target as the selected tip advances.
+    // The worker may retarget a checked prefix as the selected chain changes.
     bool AtSelectedTarget()const{Check();return !finished_&&height_==target_height_&&
         header_.GetHash()==target_hash_&&state_.has_value()&&TargetSelected()&&
         profile_==consensus::ValidatedOrchardBlock::CaptureProfile();}

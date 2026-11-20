@@ -125,6 +125,112 @@ struct OrchardSnapshotStoreTestAccess {
         std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);return OrchardSnapshotStore::RecoverBaseMarkers(mutex,db,token,headers);
     }
 };
+TEST(OrchardPhoneHistory, ReorgAboveVerifiedPrefixKeepsReplayAndReplacesRequest){
+    using namespace consensus;
+    using Access=OrchardSnapshotStoreTestAccess;
+    using Download=p2p::OrchardPhoneHistoryDownload;
+    CanonicalPoolFixture source(true);
+    MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    source.f.service->setRuntimeBlockNotifications(std::make_shared<CanonicalPoolNotices>());
+    const auto first=SolveCatalogTemplate(source.Build());
+    ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();
+    for(const auto& block:source.f.blocks)ASSERT_TRUE(headers->AddHeader(block.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));
+    auto proof=std::make_shared<const OrchardSnapshotSection>(Access::CaptureActivation(source.f.db,*headers));
+
+    BlockAssembler assembler(&source.f.db);
+    WireOrchardAssembler(assembler,source.f);
+    const auto second=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));
+    ASSERT_TRUE(source.Submit(second->WireBytes()).connected);
+    const auto old_hash=second->Header().GetHash();
+    const auto old_catalog=source.f.db.getOrchardCatalogState(old_hash);
+    ASSERT_TRUE(old_catalog.ok());
+    ASSERT_TRUE(headers->AddHeader(second->Header()));
+
+    auto replacement_header=second->Header();
+    do {++replacement_header.nonce;} while(!CheckProofOfWork(replacement_header,false));
+    auto replacement_bytes=second->WireBytes();
+    const auto prefix=replacement_header.SerializeForHash();
+    std::copy(prefix.begin(),prefix.end(),replacement_bytes.begin());
+    const auto replacement_hash=replacement_header.GetHash();
+    ASSERT_NE(old_hash,replacement_hash);
+    ASSERT_TRUE(ShieldedStateStartupTestAccess::DisconnectBoundary(*source.f.service,source.f.service->GetActiveTip()));
+    ASSERT_TRUE(source.Submit(replacement_bytes).connected);
+    const auto replacement_catalog=source.f.db.getOrchardCatalogState(replacement_hash);
+    ASSERT_TRUE(replacement_catalog.ok());
+
+    const auto base=first->Header().GetHash();
+    const Download::Target original{102,103,old_hash,storage::catalog::Hash(*old_catalog),base};
+    const Download::Target replacement{102,103,replacement_hash,storage::catalog::Hash(*replacement_catalog),base};
+    shielded_store_fixture::TempDir directory;
+    const auto& root=directory.path;
+    daemon::DatadirGuard guard;
+    std::string error;
+    ASSERT_TRUE(guard.Acquire(root,error))<<error;
+    auto cache=std::make_shared<p2p::OrchardHistoryCache>(guard);
+    const auto& first_bytes=first->WireBytes();
+    cache->Put('b',base,first_bytes.size(),OrchardBlockCandidate::MaxWireSize(),[&](const auto& sink){sink(first_bytes);});
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::deque<Download::Bytes> requests;
+    std::atomic<bool> reorg{false};
+    std::atomic<unsigned> verifiers{0};
+    const Download::Peer remote{"archive",91,ServiceFlags::NODE_NETWORK};
+    Download host(headers,root,[&]{return std::optional(reorg?replacement:original);},[&]{return proof;},
+        [&](auto p,const auto& t){++verifiers;return Access::ReplayActivation(std::move(p),headers,t.height,t.hash);},
+        [&]{return std::vector<Download::Peer>{remote};},
+        [&](const auto&,const auto& command,const auto& bytes){
+            std::lock_guard lock(mutex);
+            EXPECT_EQ(command,"getdata");
+            requests.push_back(bytes);
+            cv.notify_one();
+            return true;
+        },cache);
+    const auto expect_request=[&](const uint256& hash){
+        std::unique_lock lock(mutex);
+        if(!cv.wait_for(lock,std::chrono::seconds(5),[&]{return !requests.empty();}))return false;
+        Download::Bytes expected{1,2,0,0,0};
+        expected.insert(expected.end(),hash.begin(),hash.end());
+        const bool matches=requests.front()==expected;
+        requests.pop_front();
+        return matches;
+    };
+    ASSERT_TRUE(expect_request(old_hash))<<host.Observe().error;
+    ASSERT_EQ(host.Observe().verified_height,102u);
+    ASSERT_TRUE(headers->AddHeader(replacement_header));
+    headers->MarkFailedHeader(old_hash);
+    ASSERT_EQ(headers->GetBestHeaderValue()->hash,replacement_hash);
+    reorg=true;
+
+    ASSERT_TRUE(expect_request(replacement_hash))<<host.Observe().error
+        <<" (verifier attempts: "<<verifiers.load()<<")";
+    EXPECT_EQ(host.Observe().verified_height,102u);
+    EXPECT_EQ(verifiers.load(),1u);
+    EXPECT_FALSE(host.Enqueue(remote,second->WireBytes()));
+    ASSERT_TRUE(host.Enqueue(remote,replacement_bytes));
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(!host.Ready()&&std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    const auto complete=host.Ready();
+    ASSERT_TRUE(complete)<<host.Observe().error;
+    EXPECT_EQ(complete->target,replacement);
+    EXPECT_EQ(complete->Body(102),first_bytes);
+    EXPECT_EQ(complete->Body(103),replacement_bytes);
+    EXPECT_EQ(verifiers.load(),1u);
+
+    // Once height 103 is verified, switching branches at that height must
+    // discard the prior replay and validate the common block again.
+    headers->ReplaceFailedHeaderHashes({replacement_hash});
+    EXPECT_FALSE(host.Ready());
+    reorg=false;
+    ASSERT_TRUE(expect_request(old_hash))<<host.Observe().error;
+    EXPECT_EQ(host.Observe().verified_height,102u);
+    EXPECT_EQ(verifiers.load(),2u);
+}
+// The remaining fixtures exercise POSIX permissions or filesystem behavior.
+#ifndef _WIN32
 TEST(OrchardReopenFences, CommittedPoolFenceExportsTypedCandidatesForCanonicalReadmission){
     CanonicalPoolFixture fixture;const auto first=fixture.Build();ASSERT_TRUE(first);
     const auto survivor=CanonicalPoolSurvivor(fixture);ASSERT_TRUE(fixture.f.ingress->SubmitBody(survivor,TxOrigin::INTERNAL).accepted());
@@ -3409,5 +3515,6 @@ TEST(OrchardSnapshotRuntime, UnmarkedEmptyReadyStoreCannotSelfInitializeGenesis)
     size_t coins=0;ASSERT_EQ(db->forEachUTXO([&](const auto&,uint32_t,const auto&){++coins;return true;}),Status::Ok);EXPECT_EQ(coins,0u);
     service->Stop();context.chainstate.reset();
 }
+#endif // !_WIN32
 } // namespace dinero
 #endif

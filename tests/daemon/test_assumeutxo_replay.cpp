@@ -1225,12 +1225,7 @@ int main(int argc, char** argv) {
 #include "replay_forest_partitions_checks.h"
 
 #include "orchard_canonical_catalog_checks.h"
-#ifndef _WIN32
-// POSIX-only coverage: these cases exercise chmod/fchmod/fsync/O_NOFOLLOW
-// permission bits and symlink/hardlink attack surfaces with POSIX
-// semantics. They have never been registered on Windows (the TU did not
-// compile there before the mkdtemp shim above); porting them is a
-// separate task, not a build fix.
+#if defined(DINERO_TEST_ORCHARD_ORIGIN) || !defined(_WIN32)
 #include "orchard_snapshot_runtime_checks.h"
 #endif
 #ifdef _WIN32
