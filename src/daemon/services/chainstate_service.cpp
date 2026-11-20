@@ -2540,6 +2540,22 @@ bool ChainstateService::AuditSelectedOrchardTipUnderLock(std::string* reason) co
         ++orchard_tip_audits_remembered_;
         return true;
     }
+    // EXPERIMENT 2. Measured on a snapshot node: every block body that
+    // arrives from a peer, including each historical body of the snapshot
+    // backfill (four a second, for hours), runs an activation pass and with
+    // it this audit of the unchanged tip. Storing that body is a database
+    // write, so the fence above never matches, and the audits alone hold
+    // the selected lock all of the time. While the tip and the in-memory
+    // UTXO tip are unchanged, the last full audit is therefore also let
+    // stand for a bounded time: the tip is still audited in full when it
+    // changes and at least every kOrchardTipAuditStandsFor.
+    constexpr auto kOrchardTipAuditStandsFor=std::chrono::seconds(30);
+    if(before&&orchard_tip_audit_passed_&&orchard_tip_audit_passed_->tip==before->tip&&
+       orchard_tip_audit_passed_->utxo_best==before->utxo_best&&orchard_tip_audit_passed_->utxo_height==before->utxo_height&&
+       std::chrono::steady_clock::now()-orchard_tip_audit_passed_at_<kOrchardTipAuditStandsFor){
+        ++orchard_tip_audits_recent_;
+        return true;
+    }
     orchard_tip_audit_passed_.reset();
     ++orchard_tip_audits_run_;
     const auto started=std::chrono::steady_clock::now();
@@ -2548,9 +2564,19 @@ bool ChainstateService::AuditSelectedOrchardTipUnderLock(std::string* reason) co
     std::cerr<<"[OrchardAudit] tip "<<(active_tip_?active_tip_->height:0)<<" audited in "
              <<std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started).count()
              <<" ms ("<<(passed?"passed":"FAILED")<<"; run "<<orchard_tip_audits_run_.load()
-             <<", remembered "<<orchard_tip_audits_remembered_.load()<<")"<<std::endl;
+             <<", remembered "<<orchard_tip_audits_remembered_.load()<<", recent "<<orchard_tip_audits_recent_.load()<<")"<<std::endl;
     // Remembered only if the audit passed and wrote nothing itself.
-    if(passed&&before&&now()==before)orchard_tip_audit_passed_=before;
+    if(passed&&before){
+        const auto after=now();
+        if(after&&after->tip==before->tip&&after->utxo_best==before->utxo_best&&after->utxo_height==before->utxo_height){
+            orchard_tip_audit_passed_=before;
+            // Another thread wrote to the database while the audit ran (a
+            // peer storing a block body does, without the selected lock):
+            // the exact memory must then never match, only the bounded one.
+            if(!(*after==*before))orchard_tip_audit_passed_->db_fence={UINT64_MAX,UINT64_MAX};
+            orchard_tip_audit_passed_at_=std::chrono::steady_clock::now();
+        }
+    }
     return passed;
 }
 

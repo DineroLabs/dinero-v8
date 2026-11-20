@@ -1693,6 +1693,8 @@ private:
         bool operator==(const OrchardTipAuditPassed&)const=default;
     };
     mutable std::optional<OrchardTipAuditPassed> orchard_tip_audit_passed_;
+    mutable std::chrono::steady_clock::time_point orchard_tip_audit_passed_at_{};
+    mutable std::atomic<uint64_t> orchard_tip_audits_recent_{0};
     mutable std::atomic<uint64_t> orchard_tip_audits_run_{0},orchard_tip_audits_remembered_{0};
     // Recheck a reconstructed activation parent without publishing it.
     bool AuditCompactBoundaryUnderLock(const CBlockIndex&,std::string* reason) const;
