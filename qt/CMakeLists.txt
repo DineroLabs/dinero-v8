@@ -694,6 +694,9 @@ if(DIN_ENABLE_SWAP_UI)
     src/swapwidget.h
     src/swapformpolicy.h
     src/swaplaunchpolicy.h
+    src/portfoliowidget.cpp
+    src/portfoliowidget.h
+    src/portfoliopolicy.h
   )
 endif()
 
@@ -1586,6 +1589,15 @@ if(BUILD_TESTING)
     target_compile_definitions(test_swap_tab PRIVATE QT_NO_KEYWORDS)
     add_test(NAME SwapTab COMMAND test_swap_tab)
     set_tests_properties(SwapTab PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+
+    # The Portfolio tab (coins, the built-in Bitcoin wallet), offline.
+    add_executable(test_portfolio_tab tests/test_portfolio_tab.cpp
+      src/portfoliowidget.cpp src/portfoliowidget.h src/rpcclient.cpp src/rpcclient.h src/paycollectpolicy.cpp)
+    target_include_directories(test_portfolio_tab PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(test_portfolio_tab PRIVATE Qt6::Widgets Qt6::Network Qt6::Test)
+    target_compile_definitions(test_portfolio_tab PRIVATE QT_NO_KEYWORDS)
+    add_test(NAME PortfolioTab COMMAND test_portfolio_tab)
+    set_tests_properties(PortfolioTab PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
 
     # The real Swap tab against two regtest dinerods (tests/swap_widget_regtest.sh).
     add_executable(test_swap_widget_regtest tests/test_swap_widget_regtest.cpp
