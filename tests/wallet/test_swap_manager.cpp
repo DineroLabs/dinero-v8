@@ -1445,6 +1445,125 @@ TEST(SwapManager, TheBitcoinWalletIsTurnedOnFromTheSeedAndReadWhileLocked) {
     EXPECT_THROW(m.BtcWalletBalance(), std::runtime_error);  // never an empty wallet instead
 }
 
+TEST(SwapManager, ABitcoinPaymentIsShownThenSentExactlyAsShown) {
+    TempDir da("btcw_send");
+    FakeWallet wa{0xd3};
+    Bytes32 key{}, chain{};
+    key.fill(0x7a);
+    chain.fill(0x7b);
+    const BtcWalletAccount account = BtcWalletAccountFromSecret(key, chain);
+    bool locked = false;
+    double feerate = 2.0;
+    std::string refusal;
+    std::vector<std::vector<uint8_t>> broadcasts;
+    std::map<std::vector<uint8_t>, BtcScriptActivity> at;
+    BtcScriptCoin c1, c2;
+    c1.txid.fill(0x01); c1.vout = 0; c1.value_sat = 60'000;
+    c2.txid.fill(0x02); c2.vout = 1; c2.value_sat = 9'000;
+    at[BtcWalletScript(account, 0, 0)] = {69'000, true, {c1, c2}};
+    LightBtcSupport light;
+    light.make_io = [](const SwapSession& s, const RunnerConfig& rc, const Bytes32&) {
+        return std::make_unique<RpcSwapChainIo>(kNoDin, kNoBtc, s, rc);
+    };
+    light.tip_height = [] { return uint32_t{800}; };
+    light.script_activity = [&](const std::vector<uint8_t>& script) {
+        const auto it = at.find(script);
+        return it == at.end() ? BtcScriptActivity{} : it->second;
+    };
+    SwapManagerConfig cfg = Config(da.path);
+    cfg.btc_wallet_max_send_sat = 50'000;
+    SwapManager m(cfg, wa.Deriver(), kNoDin, kNoBtc);
+    m.SetBtcAccountSource([&](uint32_t) { return std::optional<BtcWalletAccount>(account); });
+    m.SetLightBitcoin(light);
+    m.EnableBtcWallet();
+    const std::string to = P2trAddress("bcrt", 0x77);
+
+    // A light client that cannot send: said so.
+    EXPECT_THROW(m.PreviewBtcSend(to, 20'000, false, 6), std::runtime_error);
+    light.fee_rate = [&](uint32_t) { return std::optional<double>(feerate); };
+    light.broadcast = [&](const std::vector<uint8_t>& raw) {
+        if (!refusal.empty()) throw std::runtime_error(refusal);
+        broadcasts.push_back(raw);
+        return std::string("ok");
+    };
+    m.SetLightBitcoin(light);
+    m.SetBtcAccountSecretSource([&](uint32_t) -> std::optional<BtcAccountSecret> {
+        if (locked) return std::nullopt;
+        return BtcAccountSecret{key, chain};
+    });
+
+    // The preview: no key needed, nothing sent.
+    locked = true;
+    const auto shown = m.PreviewBtcSend(to, 20'000, false, 6);
+    EXPECT_EQ(shown.amount_sat, 20'000u);
+    EXPECT_EQ(shown.inputs, 1u);
+    EXPECT_EQ(shown.amount_sat + shown.fee_sat + shown.change_sat, 60'000u);
+    EXPECT_EQ(shown.balance_before_sat, 69'000u);
+    EXPECT_EQ(shown.txid.size(), 64u);
+    EXPECT_TRUE(broadcasts.empty());
+    EXPECT_EQ(m.PreviewBtcSend(to, 20'000, false, 6).txid, shown.txid) << "the same question, the same payment";
+
+    // Refusals: the cap, a bad address, another network's address, a locked wallet.
+    EXPECT_THROW(m.PreviewBtcSend(to, 50'001, false, 6), std::invalid_argument);
+    EXPECT_THROW(m.PreviewBtcSend("nonsense", 20'000, false, 6), std::invalid_argument);
+    EXPECT_THROW(m.PreviewBtcSend(P2trAddress("bc", 0x77), 20'000, false, 6), std::invalid_argument);
+    EXPECT_THROW(m.PreviewBtcSend(to, 20'000, false, 0), std::invalid_argument);
+    try {
+        m.SendBtc(to, 20'000, false, 6, shown.txid);
+        ADD_FAILURE() << "sent with a locked wallet";
+    } catch (const std::runtime_error& e) {
+        EXPECT_STREQ(e.what(), "wallet is locked: unlock it to send Bitcoin");
+    }
+    locked = false;
+
+    // The fee moved since the preview: not sent, the user reviews again.
+    feerate = 9.0;
+    try {
+        m.SendBtc(to, 20'000, false, 6, shown.txid);
+        ADD_FAILURE() << "sent a payment other than the one shown";
+    } catch (const std::runtime_error& e) {
+        EXPECT_NE(std::string(e.what()).find("no longer the one that was shown"), std::string::npos) << e.what();
+    }
+    EXPECT_TRUE(broadcasts.empty());
+    feerate = 2.0;
+
+    // Refused by the network: nothing is held back afterwards.
+    refusal = "Bitcoin transaction refused: min relay fee not met";
+    EXPECT_THROW(m.SendBtc(to, 20'000, false, 6, shown.txid), std::runtime_error);
+    refusal.clear();
+    // (Its change address was used up, so the retried payment is a new one: preview again.)
+    const auto again = m.PreviewBtcSend(to, 20'000, false, 6);
+    EXPECT_EQ(again.inputs, 1u);
+    EXPECT_NE(again.txid, shown.txid);
+
+    // Sent: exactly the payment shown.
+    const auto sent = m.SendBtc(to, 20'000, false, 6, again.txid);
+    ASSERT_EQ(broadcasts.size(), 1u);
+    const BtcTx tx = ParseBtcTx(broadcasts[0]);
+    Bytes32 id = BtcTxid(tx);
+    std::reverse(id.begin(), id.end());
+    EXPECT_EQ(detail::ToHex(std::vector<uint8_t>(id.begin(), id.end())), again.txid);
+    EXPECT_EQ(sent.txid, again.txid);
+    ASSERT_EQ(tx.vout.size(), 2u);
+    EXPECT_EQ(tx.vout[0].value_sat, 20'000u);
+    EXPECT_EQ(tx.vout[0].script_pubkey, BtcPayoutScriptFromAddress(to, "bcrt"));
+    EXPECT_EQ(tx.vout[1].value_sat, again.change_sat);
+    ASSERT_EQ(tx.vin.size(), 1u);
+    EXPECT_EQ(tx.vin[0].prev_txid, c1.txid);
+
+    // The servers still list the spent coin; the wallet does not use it again.
+    const auto next = m.PreviewBtcSend(to, 5'000, false, 6);
+    EXPECT_EQ(next.inputs, 1u);
+    EXPECT_EQ(next.amount_sat + next.fee_sat + next.change_sat, 9'000u);
+    EXPECT_THROW(m.PreviewBtcSend(to, 20'000, false, 6), std::runtime_error);  // only 9,000 left to spend
+
+    // "It may not have been sent": the record stays, the coin is not offered again.
+    refusal = "Bitcoin transaction may not have been sent: no server answered";
+    EXPECT_THROW(m.SendBtc(to, 5'000, false, 6, next.txid), std::runtime_error);
+    refusal.clear();
+    EXPECT_THROW(m.PreviewBtcSend(to, 5'000, false, 6), std::runtime_error);
+}
+
 TEST(SwapManager, TheBitcoinWalletStaysOffOnMainnetUntilItCanSend) {
     TempDir da("btcw_main");
     FakeWallet wa{0xd2};

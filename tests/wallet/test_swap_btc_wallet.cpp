@@ -231,3 +231,60 @@ TEST(BtcWallet, ADamagedFileIsRefusedAndRebuiltFromTheSeed) {
     EXPECT_EQ(w.ReadBalance(chain.Reader()).sat, 800u);
     EXPECT_EQ(w.NewReceiveAddress(), BtcWalletAddress(account, 0, 2, "bcrt"));
 }
+
+TEST(BtcWallet, RemembersWhatItSentSoCoinsAreNotSpentTwice) {
+    TempDir d("sent");
+    const auto account = Account(0xa1);
+    BtcWallet::Enable(d.path, account);
+    Chain chain;
+    BtcScriptCoin c1, c2;
+    c1.txid.fill(0x01); c1.vout = 0; c1.value_sat = 60'000;
+    c2.txid.fill(0x02); c2.vout = 1; c2.value_sat = 9'000;
+    chain.at[BtcWalletScript(account, 0, 0)] = {69'000, true, {c1, c2}};
+    {
+        BtcWallet w(d.path, "bcrt");
+        const auto b = w.ReadBalance(chain.Reader());
+        ASSERT_EQ(b.coins.size(), 2u);
+        EXPECT_EQ(b.coins[0].branch, 0u);
+        EXPECT_EQ(b.coins[0].index, 0u);
+        EXPECT_EQ(w.WithoutSpent(b.coins).size(), 2u);
+        EXPECT_EQ(w.change_index(), 0u);
+        const auto change_before = w.ChangeScript();
+
+        BtcWallet::Sent sent;
+        sent.txid_hex = std::string(64, 'a');
+        sent.raw = {0x02, 0x00, 0x00, 0x00, 0xff};
+        sent.amount_sat = 20'000; sent.fee_sat = 300; sent.change_sat = 39'700;
+        sent.spent = {c1};
+        w.RecordSent(sent, true);
+        // The servers have not heard of the payment yet and still list c1: it is not offered again.
+        const auto left = w.WithoutSpent(b.coins);
+        ASSERT_EQ(left.size(), 1u);
+        EXPECT_EQ(left[0].txid, c2.txid);
+        // Its change address is taken: the next payment's change goes elsewhere.
+        EXPECT_EQ(w.change_index(), 1u);
+        EXPECT_NE(w.ChangeScript(), change_before);
+    }
+    // All of it survives a restart.
+    BtcWallet again(d.path, "bcrt");
+    const auto sent = again.SentPayments();
+    ASSERT_EQ(sent.size(), 1u);
+    EXPECT_EQ(sent[0].txid_hex, std::string(64, 'a'));
+    EXPECT_EQ(sent[0].raw, (std::vector<uint8_t>{0x02, 0x00, 0x00, 0x00, 0xff}));
+    EXPECT_EQ(sent[0].amount_sat, 20'000u);
+    EXPECT_EQ(sent[0].fee_sat, 300u);
+    EXPECT_EQ(sent[0].change_sat, 39'700u);
+    ASSERT_EQ(sent[0].spent.size(), 1u);
+    EXPECT_EQ(sent[0].spent[0].txid, c1.txid);
+    EXPECT_EQ(again.change_index(), 1u);
+    // A send-all (no change) leaves the change address alone; a torn line is skipped, not fatal.
+    BtcWallet::Sent all;
+    all.txid_hex = std::string(64, 'b');
+    all.raw = {0x01};
+    all.spent = {c2};
+    again.RecordSent(all, false);
+    EXPECT_EQ(again.change_index(), 1u);
+    { std::ofstream out(d.path + "/btc-wallet.sent", std::ios::app); out << "deadbeef 1 2"; }
+    EXPECT_EQ(BtcWallet(d.path, "bcrt").SentPayments().size(), 2u);
+    EXPECT_TRUE(BtcWallet(d.path, "bcrt").WithoutSpent(BtcWallet(d.path, "bcrt").ReadBalance(chain.Reader()).coins).empty());
+}
