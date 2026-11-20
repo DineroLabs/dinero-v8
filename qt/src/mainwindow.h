@@ -858,6 +858,7 @@ private:
   qint64 walletBalanceVerifiedAtMs_ = 0;
   bool walletSendReady_ = false;
   bool walletTransparentV3SendReady_ = false;
+  bool legacyShieldedBalanceUnsupported_ = false;
   QString walletSendUnavailableReason_ = "Waiting for a current wallet balance";
   double cachedP2mrBalance_ = 0.0;
   double cachedShieldedBalance_ = 0.0;
