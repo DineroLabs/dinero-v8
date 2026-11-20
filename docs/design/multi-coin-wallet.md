@@ -1,6 +1,6 @@
 # One wallet, several coins: Bitcoin first
 
-Status: proposal, 2026-11-19. Nothing here is built. Owner's direction: dinero-qt should be a
+Status: 2026-11-20. Bitcoin is built on a branch of its own (section 11); nothing of it is in a release. Owner's direction: dinero-qt should be a
 one-stop wallet with a portfolio of everything the user holds, starting with a real Bitcoin wallet
 and open to Zcash and whatever coins swaps add later.
 
@@ -164,3 +164,28 @@ swap rehearsal has passed.
   swap beta's ceiling).
 - **Dollar values:** whether a price source is offered at all, and which.
 - **Zcash:** start with "needs a Zcash node", or wait until it can run without one.
+
+## 11. Built so far (2026-11-20)
+
+On the branch `claude/portfolio-btc-balances`, on top of the swaps branch. Not in any release.
+
+| Piece | Where | State |
+|---|---|---|
+| Bitcoin at the addresses swaps paid to (watch-only) | `swap.btcholdings`; Swap tab, "Bitcoin from your swaps" | Built, tested on two real daemons |
+| Keys: the BIP84 account of the seed | `btc_wallet_keys` | Built; the vectors published with BIP84 |
+| Receive addresses, balance, restore from the seed | `btc_wallet`; `btc.status`, `btc.enable`, `btc.getnewaddress`, `btc.getbalance` | Built; works while the wallet is locked |
+| Paying: preview, then exactly that | `btc_wallet_send`; `btc.preview`, `btc.send` | Built; Bitcoin Core accepts the payments on regtest |
+| Raising a stuck payment's fee | `btc.bumpfee` | Built; Bitcoin Core replaces the old payment |
+| Transaction list | `btc.listtransactions` | Built. A send-all payment (no change) stays "not confirmed" in the list: its confirmations are read from its change |
+| Swaps default to the wallet | `swap.offer`, `swap.deposit` | The wallet's current address stands in for a missing Bitcoin address. Paying a swap's deposit from the wallet is an ordinary payment to the deposit address |
+| Portfolio tab | `portfoliowidget` | Built: coins, receive, send with review, list, fee raise |
+| Public testnet4 | `tests/wallet/btc_wallet_testnet4_run.sh` | See the run's result in the pull request |
+
+Differences from the sections above, decided while building:
+
+- **Not a `CoinModule` interface yet** (section 4). There is one coin; the interface is drawn when the second one arrives and shows what the two really share.
+- **Swap locks are not built from wallet coins** (section 5, "What swaps gain"). The lock must have a fixed, non-replaceable form that the watchtower package depends on; wallet payments are replaceable by design. Buying DIN from the wallet is therefore: pay the swap's deposit address from the wallet. It costs one more transaction and the deposit's two confirmations.
+- **Balances are read when the user looks**, after the wallet has been turned on, not on a timer.
+- **Mainnet:** turning the wallet on needs `swap.btc_wallet_mainnet=1` (off by default), and one payment sends at most 0.01 BTC.
+
+Still open: dollar values (off, undecided), a history kept on disk across server outages, coin control, and every other coin.
