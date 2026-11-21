@@ -304,6 +304,7 @@ private:
 };
 
 constexpr int kWalletUnlockTimeoutSeconds = 60 * 60;
+constexpr int kStartupWatchdogMs = 5 * 60 * 1000;
 // A main tab's real name. Narrow windows show icon-only tabs (empty text, name
 // in the tooltip), so look tabs up through this, never through tabText().
 QString mainTabName(const QTabWidget* tabs, int index) {
@@ -2478,11 +2479,10 @@ MainWindow::MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
 
   // #295: visible timeout on the startup wait. If RPC never comes up the
   // user previously stared at "Connecting..." forever with no explanation.
-  // Bumped 60s -> 100s -> 180s: on Windows a node with many wallets at high
-  // height can take ~150s to be RPC-ready, and the old 100s watchdog nagged
-  // with "Still Waiting for Daemon" before it connected. The handler no-ops if
-  // already connected, so this only delays the alert for a GENUINE hang.
-  QTimer::singleShot(180000, this, &MainWindow::onStartupWatchdogTimeout);
+  // A node reopening a large chain database can take several minutes to serve
+  // RPC. The handler no-ops once connected, so this only delays the notice for
+  // a startup that is still in progress after five minutes.
+  QTimer::singleShot(kStartupWatchdogMs, this, &MainWindow::onStartupWatchdogTimeout);
 
   // Cmd+K dashboard. The AI assistant surface is temporarily hidden by
   // kShowAiAssistantPanel, but the shortcut remains the dashboard entry point.
@@ -14835,7 +14835,7 @@ void MainWindow::onStartupWatchdogTimeout() {
   }
   const QString logPath = daemonDiagnosticLogPath(datadir);
 
-  qWarning() << "Startup watchdog: no daemon RPC connection after 180s";
+  qWarning() << "Startup watchdog: no daemon RPC connection after 300s";
 
   // The node can finish reopening its database while this notice is visible.
   // Keep the wallet window active and dismiss the notice when RPC connects.
@@ -14844,7 +14844,7 @@ void MainWindow::onStartupWatchdogTimeout() {
   box->setModal(false);
   box->setIcon(QMessageBox::Information);
   box->setWindowTitle("Node Still Starting");
-  box->setText("Dinero has not connected to its local node after three minutes.");
+  box->setText("Dinero has not connected to its local node after five minutes.");
   box->setInformativeText(
     "A large database may still be checking saved chain data. If the node "
     "stopped or could not open its port, Show Log provides the cause. "
@@ -14867,7 +14867,7 @@ void MainWindow::onStartupWatchdogTimeout() {
     if (box->clickedButton() == showLogBtn && !logPath.isEmpty()) {
       QDesktopServices::openUrl(QUrl::fromLocalFile(logPath));
     }
-    QTimer::singleShot(180000, this, &MainWindow::onStartupWatchdogTimeout);
+    QTimer::singleShot(kStartupWatchdogMs, this, &MainWindow::onStartupWatchdogTimeout);
   });
   box->show();
 }
@@ -15123,7 +15123,7 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
       // daemon once it is healthy. Interrupting the user with a modal here made
       // them force-quit mid-init, which only made things worse. Surface the
       // state quietly; a GENUINE, persistent failure is still reported by the
-      // (non-modal) startup watchdog after 180s.
+      // (non-modal) startup watchdog after five minutes.
       Q_UNUSED(dir);
       qWarning() << "Daemon exited before RPC came up, code:" << exitCode
                  << "(retries exhausted; ConnectionManager keeps trying, "

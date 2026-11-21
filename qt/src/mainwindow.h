@@ -177,7 +177,7 @@ private Q_SLOTS:
   void onConnectionStatusMessage(QString message, QString level);
   void onBlockchainSyncUpdate(int blocks, int headers);
   void maybeAutoStartDaemon();
-  void onStartupWatchdogTimeout();  // #295: fail loud after 60s without RPC
+  void onStartupWatchdogTimeout();  // #295: explain startup delays after five minutes without RPC
 
 private:
   void setupUI();
