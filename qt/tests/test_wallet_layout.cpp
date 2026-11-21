@@ -6,6 +6,8 @@
 #include <QMessageBox>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QTabBar>
@@ -14,6 +16,8 @@
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QWheelEvent>
+#include <algorithm>
 #include "mainwindow.h"
 #include "connection_manager.h"
 #include "rpcclient.h"
@@ -114,6 +118,24 @@ private Q_SLOTS:
         QCOMPARE(named<QLabel>(*window, "walletTotalBalance")->text(), QString("636,799.99999731 DIN"));
         QCOMPARE(named<QLabel>(*window, "lblTransparentTaprootBalance")->text(), QString("593,899.99999731 DIN"));
         QCOMPARE(named<QLabel>(*window, "lblTransparentP2mrBalance")->text(), QString("42,900.00000000 DIN"));
+    }
+
+    void walletWheelScrollsBackAtNormalMouseWheelRate() {
+        auto window = makeWindow(1440, 600);
+        QVERIFY(window);
+        auto* area = qobject_cast<QScrollArea*>(window->findChild<QTabWidget*>()->currentWidget());
+        auto* balance = named<QLabel>(*window, "walletTotalBalance");
+        QVERIFY(area && balance);
+        auto* bar = area->verticalScrollBar();
+        QVERIFY(bar && bar->maximum() > 0);
+        bar->setValue(bar->maximum());
+        const int before = bar->value();
+        const QPoint at = balance->rect().center();
+        QWheelEvent wheel(at, balance->mapToGlobal(at), QPoint(), QPoint(0, 120),
+                          Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(balance, &wheel);
+        const int expected = QApplication::wheelScrollLines() * std::max(1, bar->singleStep());
+        QCOMPARE(before - bar->value(), expected);
     }
 
     void recoveryRefusalDoesNotReplaceKnownBalanceWithZero() {
