@@ -104,7 +104,7 @@ public:
         try{
             if(cache_)cache_->Check();
             const auto current=target_();
-            if(!current)return {};
+            if(!current||!HeaderSelected(*current))return {};
             const bool stands=OrchardHistoryCheckpointStands(verified->target,*current,
                 [this,&current](const uint256& tip,uint32_t height)->std::optional<uint256>{
                     uint256 at;uint32_t found=0;
@@ -121,6 +121,7 @@ public:
         if(!verified)return {};
         try{
             if(cache_)cache_->Check();
+            if(!HeaderSelected(current))return {};
             const bool stands=OrchardHistoryCheckpointStands(verified->target,current,
                 [this,&current](const uint256& tip,uint32_t height)->std::optional<uint256>{
                     uint256 at;uint32_t found=0;

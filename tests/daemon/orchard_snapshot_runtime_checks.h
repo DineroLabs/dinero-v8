@@ -230,6 +230,10 @@ TEST(OrchardPhoneHistory, ReorgAboveVerifiedPrefixKeepsReplayAndReplacesRequest)
     // Once height 103 is verified, switching branches at that height must
     // discard the prior replay and validate the common block again.
     headers->ReplaceFailedHeaderHashes({replacement_hash});
+    // The target source may cache its old answer briefly. A checkpoint for
+    // that answer must stop being offered as soon as its header is deselected.
+    EXPECT_FALSE(host.ReadyCheckpoint());
+    EXPECT_FALSE(host.ReadyCheckpointFor(replacement));
     EXPECT_FALSE(host.Ready());
     reorg=false;
     ASSERT_TRUE(expect_request(old_hash))<<host.Observe().error;
