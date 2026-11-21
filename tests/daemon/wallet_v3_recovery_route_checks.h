@@ -2,6 +2,7 @@
 #include "daemon/runtime_delivery_worker.h"
 #include "storage/chain_db_wallet_view.h"
 #include "assets/asset_registry.h"
+#include "wallet/bip39.h"
 din::Json rpc_context_wallet_listaddresses(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_wallet_rescanblockchain(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_wallet_importtaprootdescriptor(const ExecutionContext&, const din::Json&);
@@ -903,6 +904,47 @@ TEST(WalletV3NativeInterim, V3CreatesGeneratedWalletsWithThreeAddresses) {
         WalletManager::kNativeV3ReceivePool);
 }
 
+TEST(WalletV3NativeInterim, WizardCreatesTwentyIssuedTaprootAndOneIssuedP2MR) {
+    CanonicalRecoveryFixture f(false,false);
+    (void)f.MineToWallet();
+    NativeV3IndexScope v3(f,"v3-native-wizard-addresses-index");
+    registerV7PqWalletMethods();
+    ExecutionContext request;request.daemon=&f.context;
+    auto create=din::obj();
+    create["name"]="native-wizard-addresses";
+    create["initial_taproot_addresses"]=20;
+    const auto created=rpc_context_wallet_createhd(request,create);
+    ASSERT_FALSE(created.isMember("error")) << created.toStyledString();
+    ASSERT_TRUE(created["taproot_receive_addresses"].isArray());
+    ASSERT_EQ(created["taproot_receive_addresses"].size(),20u);
+    EXPECT_EQ(created["taproot_receive_addresses"][0].asString(),
+              created["first_address"].asString());
+    std::set<std::string> distinct;
+    for (const auto& address:created["taproot_receive_addresses"])
+        distinct.insert(address.asString());
+    EXPECT_EQ(distinct.size(),20u);
+    EXPECT_TRUE(created.isMember("first_p2mr_address"));
+    EXPECT_TRUE(created.isMember("first_orchard_address"));
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+              WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    EXPECT_EQ(NativeTestCount(use->Wallet(),
+        "SELECT count(*) FROM native_v3_address_pool WHERE chain=0 AND issued=1"),20);
+    EXPECT_EQ(NativeTestCount(use->Wallet(),
+        "SELECT count(*) FROM native_v3_p2mr_pool WHERE issued=1"),1);
+    request.walletName="native-wizard-addresses";
+    const auto listed=rpc_context_wallet_listaddresses(request,din::obj());
+    ASSERT_TRUE(listed.isArray()) << listed.toStyledString();
+    int taproot=0,p2mr=0;
+    for(const auto& row:listed) {
+        if(row["type"].asString()=="p2tr") ++taproot;
+        if(row["type"].asString()=="p2mr") ++p2mr;
+    }
+    EXPECT_EQ(taproot,20);
+    EXPECT_EQ(p2mr,1);
+}
+
 TEST(WalletV3NativeInterim, EncryptedV3CreationIssuesThreeAddressesAndRelocks) {
     CanonicalRecoveryFixture f(false,false);
     (void)f.MineToWallet();
@@ -1015,6 +1057,18 @@ TEST(WalletFreshBirth, SealedOnlyForGeneratedIdentityAndAuthenticated) {
         auto lease=wallet.AcquireDatabaseLease();
         EXPECT_EQ(lease->SealedFreshBirthHeight(lease->Session()),std::optional<uint32_t>(155669u));
     }
+    // Importing different recovery words into an existing generated wallet
+    // must not turn its birth certificate into proof for the imported seed.
+    std::vector<uint8_t> other_seed;
+    ASSERT_TRUE(bip39::MnemonicToSeed(
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        "",other_seed));
+    ASSERT_FALSE(wallet.storeMasterSeed(other_seed,"",true));
+    {
+        auto lease=wallet.AcquireDatabaseLease();
+        EXPECT_EQ(lease->SealedFreshOrdinaryBirthHeight(lease->Session()),
+            std::optional<uint32_t>(155669u));
+    }
     // Tamper: any change to the sealed value must refuse, never pass as fresh.
     // Always CHANGE the last byte (a fixed '00' would be a no-op ~1/256 times,
     // leaving a valid record that is correctly accepted).
@@ -1057,6 +1111,115 @@ TEST(WalletFreshBirth, SealedOnlyForGeneratedIdentityAndAuthenticated) {
         auto lease=wallet.AcquireDatabaseLease();
         EXPECT_EQ(lease->SealedFreshBirthHeight(lease->Session()),std::nullopt);
     }
+}
+
+namespace {
+WalletService::CanonicalRecovery RecoverActiveOnV3WithoutPreactivationBody(
+    CanonicalRecoveryFixture& f,const char* index_name,std::string& error);
+}
+
+TEST(WalletFreshBirth, OrdinaryShortcutRejectsOutsideScriptsButKeepsGeneratedP2MR) {
+    CanonicalRecoveryFixture f(false,false);
+    const auto birth=Params().orchard_activation_height;
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        use->Wallet().createFromGeneratedBip39("fresh-import-guard",
+            WalletManager::GenerateBip39Identity(12,""),"",birth);
+        ASSERT_FALSE(use->Wallet().getNewAddress().empty());
+        auto lease=use->Wallet().AcquireDatabaseLease();
+        EXPECT_EQ(lease->SealedFreshOrdinaryBirthHeight(lease->Session()),
+            std::optional<uint32_t>(birth));
+    }
+    registerV7PqWalletMethods();
+    ExecutionContext request;request.daemon=&f.context;request.walletName="fresh-import-guard";
+    const auto* generated=g_rpcRegistry.lookup("wallet.getnewp2mraddress");
+    const auto* imported=g_rpcRegistry.lookup("wallet.importp2mrseed");
+    ASSERT_NE(generated,nullptr);ASSERT_NE(imported,nullptr);
+    din::Json p=din::obj();p["hrp"]="rdin";
+    const auto created=(*generated)(request,p);
+    ASSERT_FALSE(created.isMember("error")) << created.toStyledString();
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        auto lease=use->Wallet().AcquireDatabaseLease();
+        EXPECT_EQ(lease->SealedFreshOrdinaryBirthHeight(lease->Session()),
+            std::optional<uint32_t>(birth));
+    }
+    // An imported PQ seed can assert an ordinary-looking derivation path.
+    // Only rederivation from this wallet's BIP39 seed may retain the shortcut.
+    din::Json outside=din::obj();outside["seed_hex"]=std::string(64,'7');
+    outside["derivation_path"]="m/88'/1448'/0'/0/61";outside["hrp"]="rdin";
+    const auto import_result=(*imported)(request,outside);
+    ASSERT_FALSE(import_result.isMember("error")) << import_result.toStyledString();
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        auto lease=use->Wallet().AcquireDatabaseLease();
+        EXPECT_EQ(lease->SealedFreshBirthHeight(lease->Session()),
+            std::optional<uint32_t>(birth));
+        EXPECT_EQ(lease->SealedFreshOrdinaryBirthHeight(lease->Session()),std::nullopt);
+    }
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        use->Wallet().createFromGeneratedBip39("fresh-watch-guard",
+            WalletManager::GenerateBip39Identity(12,""),"",birth);
+        ASSERT_FALSE(use->Wallet().getNewAddress().empty());
+        auto* db=use->Wallet().getCurrentDatabase();
+        ASSERT_EQ(sqlite3_exec(db,"INSERT INTO watch_scripts(script_pubkey,path,is_change,last_seen_height,created_at) "
+            "VALUES(X'51200101010101010101010101010101010101010101010101010101010101010101',"
+            "'external:watch',0,0,0)",nullptr,nullptr,nullptr),SQLITE_OK);
+        auto lease=use->Wallet().AcquireDatabaseLease();
+        EXPECT_EQ(lease->SealedFreshOrdinaryBirthHeight(lease->Session()),std::nullopt);
+    }
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        use->Wallet().createFromGeneratedBip39("fresh-descriptor-guard",
+            WalletManager::GenerateBip39Identity(12,""),"",birth);
+        ASSERT_FALSE(use->Wallet().getNewAddress().empty());
+        auto* db=use->Wallet().getCurrentDatabase();
+        ASSERT_EQ(sqlite3_exec(db,"INSERT INTO imported_descriptors(descriptor,descriptor_type) "
+            "VALUES('raw(51)','raw')",nullptr,nullptr,nullptr),SQLITE_OK);
+        auto lease=use->Wallet().AcquireDatabaseLease();
+        EXPECT_EQ(lease->SealedFreshOrdinaryBirthHeight(lease->Session()),std::nullopt);
+    }
+}
+
+TEST(WalletFreshBirth, FundedPrebirthImportedKeyForcesHistoricalReplay) {
+    CanonicalRecoveryFixture f(false,false);
+    std::array<uint8_t,32> secret{},internal{},output{};secret.back()=91;int parity=0;
+    ASSERT_TRUE(TaprootKeys::DeriveXOnlyPubkey(secret,internal,parity));
+    ASSERT_TRUE(TaprootKeys::ComputeTweakedPubkey(internal,output));
+    const auto address=TaprootKeys::CreateTaprootAddress(output,"rdin");
+    ASSERT_FALSE(address.empty());
+    BlockAssembler assembler(&f.f.db);WireOrchardAssembler(assembler,f.f);
+    const auto block=assembler.CreateOrchardBlock(address);
+    ASSERT_TRUE(bool(block));
+    const auto result=f.Submit(block->WireBytes());
+    ASSERT_TRUE(result.accepted() && result.connected);
+    const auto coin=f.f.db.getCoin(block->Transactions().front().GetTxid().AsUint256(),0);
+    ASSERT_TRUE(coin.ok());
+    ASSERT_GT(coin->amount,0);
+    const auto birth=block->Height();
+    ASSERT_GE(birth,Params().orchard_activation_height);
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        use->Wallet().createFromGeneratedBip39("fresh-funded-import",
+            WalletManager::GenerateBip39Identity(12,""),"",birth);
+        ASSERT_FALSE(use->Wallet().getNewAddress().empty());
+        ASSERT_EQ(use->Wallet().importPrivateKey(
+            std::vector<uint8_t>(secret.begin(),secret.end()),"funded before birth"),address);
+        auto lease=use->Wallet().AcquireDatabaseLease();
+        EXPECT_EQ(lease->SealedFreshBirthHeight(lease->Session()),
+            std::optional<uint32_t>(birth));
+        EXPECT_EQ(lease->SealedFreshOrdinaryBirthHeight(lease->Session()),std::nullopt);
+    }
+    // The pre-activation body is required only by a historical replay. A
+    // falsely applied fresh shortcut would enroll and silently omit the coin.
+    ASSERT_EQ(f.f.db.deleteBlock(f.f.token,f.f.blocks[50].GetHash()),Status::Ok);
+    std::string error;
+    EXPECT_EQ(RecoverActiveOnV3WithoutPreactivationBody(f,"funded-import-v3-index",error),
+        WalletService::CanonicalRecovery::Deferred) << error;
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    auto lease=use->Wallet().AcquireDatabaseLease();
+    EXPECT_EQ(lease->NativeV3TransparentState(),WalletManager::NativeV3State::Pending);
 }
 
 namespace {
@@ -2426,13 +2589,19 @@ TEST(WalletV3NativeSpend, NativeSendRefusesPendingLockedAndStaleReceipt) {
     std::string error;
     ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
         WalletService::CanonicalRecovery::AppliedPrefix) << error;
-    // Only sendtoaddress is enabled: every other spend RPC (sendmany and the
-    // bound pool/swap dispatch built on it) keeps the native refusal.
+    // v8.2.5: sendmany and the bound pool/swap dispatch now pay through the
+    // native v3 owner (one recipient, change on a sealed script); a payment
+    // to several recipients is still refused by that owner, nothing retained.
+    f.context.tx_ingress=f.f.ingress.get();
     din::Json many(Json::arrayValue);din::Json recipients=din::obj();
-    recipients[OrchardMiningPayout]=0.001;many.append(recipients);
+    recipients[OrchardMiningPayout]=0.001;
+    recipients[bech32::Encode("rdin",1,std::vector<uint8_t>(32,0x22),bech32::Encoding::BECH32M)]=0.001;
+    many.append(recipients);
     const auto sent_many=rpc_context_wallet_sendmany(request,many);
-    EXPECT_EQ(sent_many["error_code"].asString(),"wallet_native_send_unavailable_on_v3") << sent_many.toStyledString();
+    EXPECT_NE(sent_many["error"].asString().find("one recipient"),std::string::npos) << sent_many.toStyledString();
+    EXPECT_FALSE(sent_many.isMember("txid"));
     EXPECT_TRUE(f.wallet->get().getPendingPayments().empty());
+    f.context.tx_ingress=nullptr;
     // The payment owner itself refuses a native transaction whose change pays
     // a script outside the sealed domain, whoever built it.
     {

@@ -69,7 +69,19 @@ include(CTest)
 find_package(Git QUIET)
 
 function(resolve_git_identity REPO_PATH PREFIX)
-  if(GIT_FOUND AND EXISTS "${REPO_PATH}/.git")
+  # A monorepo subdirectory has no .git entry of its own, and a linked
+  # worktree uses a .git file. Ask Git whether the path belongs to a checkout.
+  set(_inside_worktree "")
+  if(GIT_FOUND AND IS_DIRECTORY "${REPO_PATH}")
+    execute_process(
+      COMMAND ${GIT_EXECUTABLE} rev-parse --is-inside-work-tree
+      WORKING_DIRECTORY ${REPO_PATH}
+      OUTPUT_VARIABLE _inside_worktree
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+    )
+  endif()
+  if(_inside_worktree STREQUAL "true")
     execute_process(
       COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
       WORKING_DIRECTORY ${REPO_PATH}
@@ -131,6 +143,13 @@ endif()
 
 set(DINERO_SOURCE_ROOT "${_DEFAULT_DINERO_SOURCE_ROOT}" CACHE PATH "Source checkout for bundled dinerod/gpu miner")
 set(DINERO_SOLO_MINER_SOURCE_ROOT "${_DEFAULT_DINERO_SOLO_MINER_SOURCE_ROOT}" CACHE PATH "Source checkout for embedded solo miner")
+if(PROJECT_IS_TOP_LEVEL)
+  file(REAL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/.." _DINERO_QT_PARENT)
+  file(REAL_PATH "${DINERO_SOURCE_ROOT}" _DINERO_CORE_ROOT)
+  if(_DINERO_QT_PARENT STREQUAL _DINERO_CORE_ROOT)
+    set(DINERO_QT_RELEASE_REPO "dinero-v8")
+  endif()
+endif()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PRE-v8.0.0 RELEASE BLOCKER (logged 2026-05-12, consolidation Phase 2)
@@ -540,6 +559,7 @@ endif()
 # ═══════════════════════════════════════════════════════════════════════════════
 
 set(GUI_SOURCES
+  src/walleticons.qrc
   src/chaintiming.cpp
   src/upgradepolicy.cpp
   src/miningrewards.cpp
@@ -674,6 +694,10 @@ if(DIN_ENABLE_SWAP_UI)
     src/swapwidget.cpp
     src/swapwidget.h
     src/swapformpolicy.h
+    src/swaplaunchpolicy.h
+    src/portfoliowidget.cpp
+    src/portfoliowidget.h
+    src/portfoliopolicy.h
   )
 endif()
 
@@ -1559,16 +1583,35 @@ if(BUILD_TESTING)
   if(DIN_ENABLE_SWAP_UI)
     # The Swap tab's look and hints, offline (no node).
     add_executable(test_swap_tab tests/test_swap_tab.cpp
-      src/swapwidget.cpp src/swapwidget.h src/rpcclient.cpp src/rpcclient.h src/paycollectpolicy.cpp)
+      src/swapwidget.cpp src/swapwidget.h src/rpcclient.cpp src/rpcclient.h src/paycollectpolicy.cpp
+      src/QrUtil.cpp src/qrcodegen.cpp)
     target_include_directories(test_swap_tab PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(test_swap_tab PRIVATE Qt6::Widgets Qt6::Network Qt6::Test)
     target_compile_definitions(test_swap_tab PRIVATE QT_NO_KEYWORDS)
     add_test(NAME SwapTab COMMAND test_swap_tab)
     set_tests_properties(SwapTab PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
 
+    # The Portfolio tab (coins, the built-in Bitcoin wallet), offline.
+    add_executable(test_portfolio_tab tests/test_portfolio_tab.cpp
+      src/walleticons.qrc
+      src/portfoliowidget.cpp src/portfoliowidget.h src/rpcclient.cpp src/rpcclient.h src/paycollectpolicy.cpp)
+    target_include_directories(test_portfolio_tab PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(test_portfolio_tab PRIVATE Qt6::Widgets Qt6::Network Qt6::Test)
+    target_compile_definitions(test_portfolio_tab PRIVATE QT_NO_KEYWORDS)
+    add_test(NAME PortfolioTab COMMAND test_portfolio_tab)
+    set_tests_properties(PortfolioTab PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+
     # The real Swap tab against two regtest dinerods (tests/swap_widget_regtest.sh).
     add_executable(test_swap_widget_regtest tests/test_swap_widget_regtest.cpp
-      src/swapwidget.cpp src/swapwidget.h src/rpcclient.cpp src/rpcclient.h src/paycollectpolicy.cpp)
+      src/swapwidget.cpp src/swapwidget.h src/rpcclient.cpp src/rpcclient.h src/paycollectpolicy.cpp
+      src/QrUtil.cpp src/qrcodegen.cpp)
+    # The Zcash deposit's QR code (QrUtil): CoreImage on macOS.
+    foreach(swap_qt_test test_swap_tab test_swap_widget_regtest)
+      if(APPLE)
+        target_sources(${swap_qt_test} PRIVATE src/QrUtil_mac.mm)
+        target_link_libraries(${swap_qt_test} PRIVATE "-framework AppKit" "-framework CoreImage" "-framework Foundation")
+      endif()
+    endforeach()
     target_include_directories(test_swap_widget_regtest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(test_swap_widget_regtest PRIVATE Qt6::Widgets Qt6::Network Qt6::Test)
     target_compile_definitions(test_swap_widget_regtest PRIVATE QT_NO_KEYWORDS)
@@ -1576,6 +1619,16 @@ if(BUILD_TESTING)
       add_test(NAME SwapWidgetRegtest COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/swap_widget_regtest.sh
                ${DINEROD_BINARY} $<TARGET_FILE:test_swap_widget_regtest>)
       set_tests_properties(SwapWidgetRegtest PROPERTIES TIMEOUT 600)
+      # DIN <-> ZEC through the tab: a dinerod built with DINERO_SWAP_ZEC (its build
+      # dir then holds swap_zec_regtest_tool) and Zebra.
+      get_filename_component(_swap_dinerod_dir ${DINEROD_BINARY} DIRECTORY)
+      find_program(DINERO_QT_ZEBRAD zebrad PATHS $ENV{HOME}/.local/zebra-7.0.0/bin)
+      if(EXISTS ${_swap_dinerod_dir}/swap_zec_regtest_tool AND DINERO_QT_ZEBRAD)
+        add_test(NAME SwapWidgetZecRegtest COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/swap_widget_zec_regtest.sh
+                 ${DINEROD_BINARY} $<TARGET_FILE:test_swap_widget_regtest>
+                 ${_swap_dinerod_dir}/swap_zec_regtest_tool ${DINERO_QT_ZEBRAD})
+        set_tests_properties(SwapWidgetZecRegtest PROPERTIES TIMEOUT 900 SKIP_RETURN_CODE 77)
+      endif()
     endif()
   endif()
 

@@ -233,4 +233,21 @@ TEST(SwapBtcWatcher, AWrongNetworkNodeIsNotObserved) {
     EXPECT_FALSE(w.Observe().ok);
 }
 
+// Dinero testnet swaps against Bitcoin testnet4; a testnet3 node ("test",
+// deprecated in Core v31) is another network and is not trusted.
+TEST(SwapBtcWatcher, DineroTestnetTrustsOnlyBitcoinTestnet4) {
+    EXPECT_EQ(BitcoinChainFor(SwapNetwork::Mainnet), "main");
+    EXPECT_EQ(BitcoinChainFor(SwapNetwork::Regtest), "regtest");
+    for (const char* name : {"testnet4", "test"}) {
+        FakeBitcoin node;
+        node.chain_name = name;
+        node.Mine();
+        BtcWatchTarget t;
+        t.terms = Terms();
+        t.expected_chain = BitcoinChainFor(SwapNetwork::Testnet);
+        BtcWatcher w([&node](const std::string& m, const Json::Value& p) { return node.Call(m, p); }, t);
+        EXPECT_EQ(w.Observe().ok, std::string(name) == "testnet4") << name;
+    }
+}
+
 }  // namespace

@@ -29,6 +29,8 @@
 #include "wallet/swap/fee_ladder.h"
 #include "wallet/swap/runner.h"
 
+#include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -54,6 +56,17 @@ struct BtcRefundRung {
     uint64_t fee_sat{};
 };
 
+// A Zcash refund rung (docs/design/din-zec-atomic-swaps.md): one, at 4 x the
+// conventional fee, nExpiryHeight 0, nLockTime T_zec. The package carries its
+// parts; the Zcash module rebuilds the exact transaction to verify and send
+// it, so this file needs no Zcash parser.
+struct ZecRefundRung {
+    uint64_t fee_zat{};
+    uint32_t branch_id{};                // the consensus branch it was signed for
+    std::vector<uint8_t> payout_script;  // Bob's
+    std::vector<uint8_t> signature;      // DER + SIGHASH_ALL, Bob's ZEC refund key
+};
+
 struct TowerPackage {
     SwapOffer offer;
     SwapAccept accept;
@@ -61,8 +74,19 @@ struct TowerPackage {
     uint32_t din_scan_from_height{};
     Bytes32 din_sweep_pubkey{};                // zero: claims pay Bob's wallet directly (no CPFP)
     std::vector<DinClaimRung> din_claims;    // ascending fee
-    std::vector<BtcRefundRung> btc_refunds;  // ascending fee
+    std::vector<BtcRefundRung> btc_refunds;  // ascending fee (Bitcoin swaps)
+    std::optional<BtcFunding> zec_funding;   // Zcash swaps: the ZEC lock (zatoshi)
+    std::vector<ZecRefundRung> zec_refunds;  // Zcash swaps
 };
+
+// What the Zcash module provides to the tower (installed by ZecSwapChainIo):
+// verify the Zcash rungs (throws std::invalid_argument) and serialize rung i.
+// Without them a Zcash package is refused.
+struct ZecTowerHooks {
+    std::function<void(const TowerPackage&)> verify;
+    std::function<std::vector<uint8_t>(const TowerPackage&, size_t)> rung_raw;
+};
+void InstallZecTowerHooks(ZecTowerHooks hooks);
 
 // The outpoints the package's rungs spend are the locks the tower watches,
 // exactly (payments to the same scripts are ignored).
@@ -84,6 +108,12 @@ struct BtcFeeLadderPolicy {
 TowerPackage BuildTowerPackage(const SwapSession& s, const SwapKeys& keys, const FundingOutput& din_funding,
                                const BtcFunding& btc_funding, const FeeLadderPolicy& din_policy,
                                const BtcFeeLadderPolicy& btc_policy);
+// The two halves of BuildTowerPackage (neither verifies the package): the
+// terms and DIN claim rungs, then the Bitcoin refund rungs.
+TowerPackage BuildTowerPackageDin(const SwapSession& s, const SwapKeys& keys, const FundingOutput& din_funding,
+                                  const FeeLadderPolicy& din_policy);
+void AddBtcRefundRungs(TowerPackage& p, const SwapSession& s, const SwapKeys& keys, const BtcFunding& btc_funding,
+                       const BtcFeeLadderPolicy& btc_policy);
 
 // Throws std::invalid_argument naming the first problem: wrong outpoint, a rung
 // paying anywhere but Bob's payout, fees not strictly rising, a refund whose
@@ -104,6 +134,41 @@ void MarkTowerArmed(const std::string& inbox_dir, const std::string& swap_id, co
                     uint32_t now_unix);
 bool TowerAckFresh(const std::string& inbox_dir, const std::string& swap_id, const std::string& package_hash,
                    uint32_t now_unix, uint32_t max_age_seconds = 120);
+
+// ---- A tower that anyone may arm over the network ---------------------------
+// (tools/dinero_swap_tower_intake.cpp; design: section 14 of
+// docs/design/din-btc-swaps-without-bitcoin-core.md.) The intake hands the
+// tower's own inbox packages from strangers, so:
+//   - a package is fully verified before it is kept;
+//   - it is kept as <inbox>/<hash>.pkg, its SHA-256: nobody can replace or
+//     block another person's package, whatever swap it names;
+//   - size and number are capped.
+struct TowerIntakeLimits {
+    size_t max_package_bytes{256 * 1024};
+    size_t max_packages{20000};            // .pkg files in the inbox
+    std::optional<SwapNetwork> network;    // packages of another network are refused
+};
+enum class TowerIntakeStatus {
+    Stored,       // new, verified, on disk
+    AlreadyHeld,  // the same package again: nothing written
+    TooLarge,
+    Invalid,      // `reason` says why
+    Full,         // the inbox holds max_packages
+    Failed,       // could not write
+};
+struct TowerIntakeResult {
+    TowerIntakeStatus status{TowerIntakeStatus::Failed};
+    std::string hash;    // of the text, for Stored and AlreadyHeld
+    std::string reason;  // for Invalid and Failed
+};
+TowerIntakeResult TowerIntakeStore(const std::string& inbox_dir, const std::string& package_text,
+                                   const TowerIntakeLimits& limits);
+// 64 lower-case hex digits: the only thing the intake ever puts in a file name.
+bool IsTowerPackageHash(const std::string& text);
+// Seconds since the tower last confirmed it is guarding package `hash`, if
+// that is recent enough for the buyer to rely on (TowerAckFresh's rule).
+std::optional<uint32_t> TowerIntakeArmedAge(const std::string& inbox_dir, const std::string& hash, uint32_t now_unix,
+                                            uint32_t max_age_seconds = 120);
 
 struct TowerConfig {
     uint32_t escalate_after_seconds{30 * 60};
@@ -126,6 +191,7 @@ size_t IndexByUrgency(size_t count, uint32_t t_din, uint32_t din_mtp, const Towe
 struct TowerReport {
     bool observed{false};
     bool healthy{false};                    // both chains observed and the package's DIN lock on chain
+    bool counter_lock_seen{false};          // the buyer's BTC (or ZEC) lock is on its chain
     std::optional<Bytes32> learned_secret;  // set once, when first learned (the daemon keeps it)
     bool finished{false};  // Bob's outcome is settled on chain (claimed DIN or refunded BTC)
     std::vector<std::string> events;
@@ -158,5 +224,19 @@ private:
     void DinClaimDuty(const DinWatchReport& din, uint32_t now, TowerReport& report);
     void BtcRefundDuty(const BtcWatchReport& btc, uint32_t now, TowerReport& report);
 };
+
+// Nothing left to guard: both chains were observed, the buyer never locked
+// his coins, and the DIN deadline passed `grace_seconds` ago (he cannot lock
+// after it). A public tower drops such packages; they would pile up for ever.
+bool TowerPackageAbandoned(const TowerPackage& package, const TowerReport& report, uint32_t now_unix,
+                           uint32_t grace_seconds);
+
+// One daemon cycle for one armed swap: Tick, then refresh the ack (while
+// healthy) and keep a newly learned secret in the inbox. Never throws: a
+// failed tick or write is an ALERT event, because the daemon ticks every swap
+// in one loop and one swap's disk or chain trouble must not stop the others.
+// Without a fresh ack Bob does not fund, so a failed ack write is safe.
+TowerReport TickAndRecord(Watchtower& tower, const std::string& inbox_dir, const std::string& swap_id,
+                          const std::string& package_hash, uint32_t now_unix);
 
 }  // namespace dinero::swap

@@ -20,6 +20,7 @@ bool PreimageMatches(const Bytes32& preimage, const Bytes32& payment_hash) {
 struct Stepper {
     SwapRecord rec;
     const Observations& obs;
+    const CounterChainRules& rules;
     std::vector<Action> actions;
 
     void Go(SwapState state) {
@@ -39,8 +40,8 @@ struct Stepper {
     bool AliceCutoffOk() const {
         // Both clocks: Bob's refund opens by Bitcoin's median time, so a wall
         // clock running behind the chain must not extend the cut-off.
-        return uint64_t(obs.wall_clock_unix) + kAliceClaimCutoffSeconds < offer().t_btc_unix &&
-               uint64_t(obs.btc_mtp_unix) + kAliceClaimCutoffSeconds < offer().t_btc_unix;
+        const uint64_t margin = uint64_t(rules.claim_cutoff_seconds) + rules.early_refund_seconds;
+        return obs.wall_clock_unix + margin < offer().t_btc_unix && obs.btc_mtp_unix + margin < offer().t_btc_unix;
     }
 
     // ---- Alice: sells DIN, holds the secret --------------------------------
@@ -120,6 +121,16 @@ struct Stepper {
                     return;
                 }
                 return RefundDinWhenOpen();
+            }
+            if (rules.exclusive_windows) {
+                // A claim the contract can still take may already have leaked the
+                // secret (a relay or RPC saw it), so keep sending it until the
+                // chain's clock closes the claim window; only then give it up.
+                if (obs.btc_mtp_unix >= offer().t_btc_unix) {
+                    Alert("claim window closed before the claim landed; refunding DIN when it opens");
+                    return Go(SwapState::DinLocked);
+                }
+                return Do(ActionKind::ClaimBtc, "claim not seen; re-sending");
             }
             if (!rec.claim_seen && !AliceCutoffOk()) {
                 // The claim never reached the network and the cut-off has passed:
@@ -271,8 +282,8 @@ void PutString(std::vector<uint8_t>& out, const std::string& s) {
 
 }  // namespace
 
-StepResult Step(const SwapRecord& record, const Observations& now) {
-    Stepper s{record, now, {}};
+StepResult Step(const SwapRecord& record, const Observations& now, const CounterChainRules& rules) {
+    Stepper s{record, now, rules, {}};
     if (record.role == Role::DinSeller) {
         s.Alice();
     } else {

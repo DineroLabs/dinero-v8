@@ -216,6 +216,11 @@ public:
     // v8.2.4 (#939): set by wallet.restore on a v3 node; the runtime worker
     // continues Orchard account-0 recovery for that wallet until it completes.
     static constexpr const char* kOrchardAccount0RestorePendingSetting = "orchard_account0_restore_pending_v1";
+    // v8.2.5: swaps bind to a wallet with an Orchard owner (a delivery
+    // identity with binding authority); a legacy-class wallet has none.
+    static constexpr const char* kSwapLegacyWalletUnsupported =
+        "Swaps need a wallet created by Dinero 8.2 or later. Create a new wallet in this app, "
+        "move your funds to it, and swap from the new wallet.";
     // Last reason an automatic account-0 recovery pass did not complete
     // (empty while progressing normally); reported by wallet.getwalletinfo.
     static constexpr const char* kOrchardAccount0RestoreStatusSetting = "orchard_account0_restore_status_v1";
@@ -421,6 +426,11 @@ public:
         // unlocked seed and bound to this wallet's delivery identity. nullopt
         // when no record exists; throws when locked, mismatched or malformed.
         [[nodiscard]] std::optional<uint32_t> SealedFreshBirthHeight(uint64_t expected_session) const;
+        // The ordinary-history shortcut also requires every watched or
+        // spendable transparent script to derive from that same seed. A later
+        // key, descriptor, watch-only or P2MR import preserves the birth
+        // record but must replay history preceding wallet creation.
+        [[nodiscard]] std::optional<uint32_t> SealedFreshOrdinaryBirthHeight(uint64_t expected_session) const;
         // Enroll a never-enrolled legacy wallet atomically. The identity and
         // pending marker become visible together, or neither does.
         [[nodiscard]] std::string BeginLegacyTransparentMigration();
@@ -872,6 +882,28 @@ public:
         double amount_returned;
     };
     AbandonmentInfo getAbandonmentInfo(const std::string& txid) const;
+
+    // A NATIVE wallet (no legacy transparent state) is served only by runtime
+    // delivery, which has just COMMITTED its tip row and its coins'
+    // confirmations at `height`. Balance and coin readers count
+    // confirmations from the in-memory height, and for such a wallet nothing
+    // else sets it after open: a coin recovered or received since then would
+    // read as unconfirmed until the node is restarted. The delivery
+    // therefore publishes the height it wrote. It writes nothing itself and
+    // may lower the height (a disconnect).
+    //
+    // A wallet with legacy transparent state is NOT touched here: its height
+    // is published by PublishRecoveredBlockchainHeight, which checks the
+    // durable scan watermark and the session first, and its balance readers
+    // refuse until that has happened.
+    void publishNativeDeliveredTipHeight(DatabaseLease& lease, uint32_t height) {
+        if (lease.TypedTransparentState() != LegacyTransparentState::Absent) return;
+        {
+            std::lock_guard<std::mutex> lk(height_mu_);
+            current_blockchain_height_ = height;
+        }
+        height_cv_.notify_all();
+    }
 
     // Blockchain height access for maturity calculations
     void setBlockchainHeight(uint32_t height) {

@@ -110,7 +110,26 @@ inline constexpr uint32_t kBobMinDinDeadlineAheadSeconds = 36 * 60 * 60;
 // keeps watching and re-broadcasts if a reorg drops the transaction.
 inline constexpr uint32_t kSettleConfirmations = 6;
 
-StepResult Step(const SwapRecord& record, const Observations& now);
+// What differs between counter chains (docs/design/din-{eth,zec,sol}-atomic-swaps.md).
+// The defaults are Bitcoin's. Observations::btc / btc_mtp_unix carry the
+// counter chain's lock and clock whatever the chain is.
+struct CounterChainRules {
+    // false (Bitcoin, Zcash): after the deadline claim and refund are both
+    // valid and race. true (Ethereum, Solana): the contract takes a claim only
+    // before the deadline and a refund only from it.
+    bool exclusive_windows{false};
+    // Alice sends her first claim only while the deadline is at least this far
+    // away (Base 18 h, Solana 24 h).
+    uint32_t claim_cutoff_seconds{kAliceClaimCutoffSeconds};
+    // How long before the deadline a refund can already confirm (Zcash: a
+    // block's own timestamp may run up to 90 min past the median). Shrinks
+    // Alice's window by the same amount.
+    uint32_t early_refund_seconds{0};
+};
+inline constexpr CounterChainRules kBitcoinRules{};
+
+StepResult Step(const SwapRecord& record, const Observations& now, const CounterChainRules& rules);
+inline StepResult Step(const SwapRecord& record, const Observations& now) { return Step(record, now, kBitcoinRules); }
 
 // Persisted form: "dinswap1r" + hex(payload || 4-byte SHA-256 checksum).
 // Holds the secret in the clear: the wallet store that saves it must encrypt it.

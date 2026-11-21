@@ -1,13 +1,17 @@
 #pragma once
-// Pure rules behind the Swap tab (DIN <-> BTC atomic swaps), kept out of the
+// Pure rules behind the Swap tab (DIN <-> BTC / ZEC atomic swaps), kept out of the
 // widget so they are unit-tested: exact amount parsing (no floating point),
 // what blocks an offer, how swap states read, when cancel is allowed, and the
 // review text a user sees before money is committed.
 #include "shieldedtransferpolicy.h"
 
+#include <QCryptographicHash>
 #include <QDateTime>
+#include <QJsonArray>
 #include <QJsonObject>
+#include <QList>
 #include <QString>
+#include <QStringList>
 
 namespace SwapFormPolicy {
 
@@ -21,6 +25,56 @@ inline QString btcHrpForChain(const QString& chain) {
     if (c == "main" || c == "mainnet") return "bc";
     if (c == "test" || c == "testnet") return "tb";
     return "bcrt";
+}
+
+// How this network's Bitcoin addresses start, for messages.
+inline QString btcAddressStarts(const QString& btcHrp) {
+    return btcHrp + (btcHrp == "bc" ? "1, 1 or 3" : "1, m, n or 2");
+}
+
+// A legacy Bitcoin address (P2PKH / P2SH) of this network with a good checksum.
+// Exchanges and older wallets still hand these out.
+inline bool isLegacyBtcAddress(const QString& address, const QString& btcHrp) {
+    static const QByteArray alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    const QByteArray text = address.toLatin1();
+    if (text.size() < 26 || text.size() > 35 || address != QString::fromLatin1(text)) return false;
+    QByteArray bytes(25, '\0');  // version + 20-byte hash + 4-byte checksum, big-endian
+    for (char c : text) {
+        int carry = alphabet.indexOf(c);
+        if (carry < 0) return false;
+        for (int i = bytes.size() - 1; i >= 0; --i) {
+            carry += 58 * static_cast<unsigned char>(bytes[i]);
+            bytes[i] = static_cast<char>(carry & 0xff);
+            carry >>= 8;
+        }
+        if (carry) return false;  // longer than an address
+    }
+    int zeros = 0, ones = 0;
+    while (zeros < bytes.size() && bytes[zeros] == '\0') ++zeros;
+    while (ones < text.size() && text[ones] == '1') ++ones;
+    if (zeros != ones) return false;  // each leading 1 is exactly one leading zero byte
+    const auto sha = [](const QByteArray& d) { return QCryptographicHash::hash(d, QCryptographicHash::Sha256); };
+    if (sha(sha(bytes.left(21))).left(4) != bytes.right(4)) return false;
+    const int version = static_cast<unsigned char>(bytes[0]);
+    return btcHrp == "bc" ? (version == 0x00 || version == 0x05) : (version == 0x6f || version == 0xc4);
+}
+
+// Mirrors what the node accepts as a Bitcoin payout address: segwit (bc1…) by
+// its prefix, legacy (1… / 3…) checked in full so a typo is caught here.
+inline bool looksLikeBtcAddress(const QString& address, const QString& btcHrp) {
+    const QString a = address.trimmed();
+    return a.toLower().startsWith(btcHrp + "1") || isLegacyBtcAddress(a, btcHrp);
+}
+
+// Selling DIN: the wallet pays the network fee of the DIN lock, and swap.offer
+// refuses an offer that does not authorize it. The rate follows the node's
+// estimate (never below 2 una/vB, so the lock is not stuck behind an idle
+// estimate); the total is capped, and the review shows the cap.
+constexpr qint64 kDinFundingMaximumFeeUna = 5000000;  // 0.05 DIN
+inline qint64 dinFundingFeeRateHint(double estimateUnaPerVb) {
+    if (!(estimateUnaPerVb > 2.0)) return 2;  // also NaN and "no estimate yet"
+    if (estimateUnaPerVb >= 1000.0) return 1000;
+    return static_cast<qint64>(estimateUnaPerVb) + (estimateUnaPerVb > static_cast<qint64>(estimateUnaPerVb) ? 1 : 0);
 }
 
 struct OfferReview {
@@ -44,20 +98,106 @@ inline OfferReview reviewOffer(const QString& dinText, const QString& btcText, c
         return r;
     }
     if (r.btcSat < 10000) { r.blocker = "BTC amount is too small (at least 0.00010000 BTC)"; return r; }
-    const QString addr = btcAddress.trimmed().toLower();
-    if (addr.isEmpty()) { r.blocker = "Enter your Bitcoin address (where you receive the BTC)"; return r; }
-    if (!addr.startsWith(btcHrp + "1")) {
-        r.blocker = QString("Enter a Bitcoin %1… address (P2WPKH, P2WSH or Taproot)").arg(btcHrp + "1");
+    if (btcAddress.trimmed().isEmpty()) { r.blocker = "Enter your Bitcoin address (where you receive the BTC)"; return r; }
+    if (!looksLikeBtcAddress(btcAddress, btcHrp)) {
+        r.blocker = "That is not a Bitcoin address of this network (it starts with " + btcAddressStarts(btcHrp) + ")";
         return r;
     }
     return r;
 }
 
-// Price in sat per DIN, rounded down; "" if undefined.
-inline QString rate(qint64 dinUna, qint64 btcSat) {
+// Price in sat per DIN (zat per DIN for Zcash), rounded down; "" if undefined.
+inline QString rate(qint64 dinUna, qint64 btcSat, const QString& unit = "sat") {
     if (dinUna <= 0 || btcSat < 0) return {};
     const long double satPerDin = static_cast<long double>(btcSat) * 100000000.0L / dinUna;
-    return QString::number(static_cast<qint64>(satPerDin)) + " sat per DIN";
+    return QString::number(static_cast<qint64>(satPerDin)) + " " + unit + " per DIN";
+}
+
+// --- Zcash (docs/design/din-zec-atomic-swaps.md) ---------------------------------
+// Mirrors what dinerod refuses: an amount covering 20 claim fees, a
+// transparent address of the node's network.
+inline constexpr qint64 kZecSpendFeeZat = 20000;
+inline constexpr qint64 kZecMinZat = 20 * kZecSpendFeeZat;  // 0.004 ZEC
+inline constexpr int kZecDepositConfirmations = 10;
+
+inline QStringList zecAddressPrefixes(const QString& chain) {
+    const QString c = chain.toLower();
+    if (c == "main" || c == "mainnet") return {"t1", "t3"};
+    return {"tm", "t2"};  // testnet and regtest
+}
+
+inline bool looksLikeZecAddress(const QString& address, const QString& chain) {
+    const QString a = address.trimmed();
+    static const QString base58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    if (a.size() != 35) return false;
+    for (const QChar ch : a) {
+        if (!base58.contains(ch)) return false;
+    }
+    for (const auto& p : zecAddressPrefixes(chain)) {
+        if (a.startsWith(p)) return true;
+    }
+    return false;
+}
+
+inline OfferReview reviewZecOffer(const QString& dinText, const QString& zecText, const QString& zecAddress,
+                                  const QString& chain) {
+    OfferReview r;
+    if (dinText.trimmed().isEmpty()) { r.blocker = "Enter the DIN amount you sell"; return r; }
+    if (!ShieldedTransferPolicy::parseDinToUna(dinText, &r.dinUna) || r.dinUna <= 0) {
+        r.blocker = "Enter a valid DIN amount (up to 8 decimals)";
+        return r;
+    }
+    if (zecText.trimmed().isEmpty()) { r.blocker = "Enter the ZEC amount you want"; return r; }
+    if (!ShieldedTransferPolicy::parseDinToUna(zecText, &r.btcSat) || r.btcSat <= 0) {
+        r.blocker = "Enter a valid ZEC amount (up to 8 decimals)";
+        return r;
+    }
+    if (r.btcSat < kZecMinZat) { r.blocker = "ZEC amount is too small (at least 0.004 ZEC)"; return r; }
+    if (zecAddress.trimmed().isEmpty()) { r.blocker = "Enter your Zcash address (where you receive the ZEC)"; return r; }
+    if (!looksLikeZecAddress(zecAddress, chain)) {
+        r.blocker = "Enter a transparent Zcash address (" + zecAddressPrefixes(chain).join("… or ") + "…)";
+        return r;
+    }
+    return r;
+}
+
+inline bool isZecOffer(const QString& text) { return text.trimmed().startsWith("dinswap2o"); }
+
+// Bob's deposit as swap.status / swap.list report it.
+struct DepositView {
+    qint64 dueZat = 0;
+    qint64 seenZat = 0;       // at least 1 confirmation
+    qint64 confirmedZat = 0;  // at least kZecDepositConfirmations
+    int confirmations = 0;    // of the newest payment
+    bool reachable = true;
+    bool ready = false;       // covered at `needed` confirmations: the reply can be sent
+    QString coin = "ZEC";     // "ZEC", or "BTC" for a Bitcoin deposit on a node without Bitcoin Core
+    int needed = kZecDepositConfirmations;  // confirmations a payment needs to count (ZEC 10, BTC 2)
+    QString hint;
+};
+
+inline DepositView depositView(const QJsonObject& s) {
+    DepositView v;
+    v.dueZat = s.value("deposit_due_zat").toVariant().toLongLong();
+    v.reachable = !s.contains("deposit_status");
+    v.seenZat = s.value("deposit_seen_zat").toVariant().toLongLong();
+    v.confirmedZat = s.value("deposit_confirmed_zat").toVariant().toLongLong();
+    v.confirmations = s.value("deposit_confirmations").toInt();
+    if (s.value("deposit_coin").toString() == "BTC") v.coin = "BTC";
+    const int needed = s.value("confirmations_needed").toInt();
+    if (needed > 0 && needed <= 100) v.needed = needed;
+    else if (v.coin == "BTC") v.needed = 2;
+    const bool btc = v.coin == "BTC";
+    v.ready = v.reachable && v.dueZat > 0 && v.confirmedZat >= v.dueZat;
+    if (!v.reachable) {
+        v.hint = btc ? "your node cannot reach any Bitcoin server; the deposit address still stands"
+                     : "your node cannot reach its Zcash node; the deposit address still stands";
+    } else if (v.ready) v.hint = {};
+    else if (v.seenZat == 0) v.hint = "pay " + formatUnits(v.dueZat) + " " + v.coin + " to the deposit address";
+    else if (v.seenZat < v.dueZat) v.hint = formatUnits(v.dueZat - v.seenZat) + " " + v.coin + " still due";
+    else v.hint = QString("wait for %1 more %2 confirmations of the deposit")
+                      .arg(qMax(1, v.needed - v.confirmations)).arg(btc ? "Bitcoin" : "Zcash");
+    return v;
 }
 
 inline QString timeLeft(qint64 seconds) {
@@ -70,19 +210,21 @@ inline QString timeLeft(qint64 seconds) {
 
 inline QString kindOfText(const QString& text) {
     const QString t = text.trimmed();
-    if (t.startsWith("dinswap1o")) return "offer";
+    if (t.startsWith("dinswap1o") || t.startsWith("dinswap2o")) return "offer";
     if (t.startsWith("dinswap1a")) return "accept";
     return {};
 }
 
 // Only before this side has locked anything (mirrors swap.cancel).
-inline bool canCancel(const QString& state) { return state == "accepted" || state == "offer-sent"; }
+inline bool canCancel(const QString& state) {
+    return state == "accepted" || state == "offer-sent" || state == "awaiting-deposit" || state == "deposit-confirmed";
+}
 
 inline bool finished(const QString& state) {
     return state == "done" || state == "refunded" || state == "aborted" || state == "lost";
 }
 
-inline QString stateLabel(const QString& state, const QString& role) {
+inline QString stateLabelBtc(const QString& state, const QString& role) {
     const bool alice = role == "din-seller";
     if (state == "offer-sent") return "Offer sent — waiting for the buyer's accept";
     if (state == "accepted") return alice ? "Starting — locking your DIN" : "Waiting for the seller's DIN lock";
@@ -101,6 +243,15 @@ inline QString stateLabel(const QString& state, const QString& role) {
     if (state == "lost") return "ATTENTION: the swap went wrong — see events";
     if (state.startsWith("paused")) return "Paused — unlock the wallet to continue";
     return state;
+}
+
+// The same states read for the swap's counter chain ("zec": ZEC in place of BTC).
+inline QString stateLabel(const QString& state, const QString& role, const QString& chain = QString()) {
+    if (state == "awaiting-deposit") return "Waiting for your ZEC deposit";
+    if (state == "deposit-confirmed") return "Deposit confirmed — accept the offer to start";
+    QString label = stateLabelBtc(state, role);
+    if (chain == "zec") label.replace("BTC", "ZEC");
+    return label;
 }
 
 inline QString localTime(qint64 unix) {
@@ -128,6 +279,20 @@ inline AcceptReview reviewDecodedOffer(const QJsonObject& d, const QString& expe
     const qint64 btc = d.value("btc_amount_sat").toVariant().toLongLong();
     const qint64 tBtc = d.value("t_btc_unix").toVariant().toLongLong();
     const qint64 tDin = d.value("t_din_unix").toVariant().toLongLong();
+    if (d.value("chain").toString() == "zec") {
+        r.text = QString(
+                     "You send %1 ZEC and receive %2 DIN (%3).\n\n"
+                     "First you pay %4 ZEC (the amount plus a 0.0002 ZEC funding fee) into a deposit address of "
+                     "your node, from any Zcash wallet. You can withdraw it until the seller locks DIN.\n"
+                     "Your node locks the ZEC from the deposit after the DIN lock has %5 confirmations; it comes "
+                     "back to you after %6 (in %7) if the seller never claims it.\n"
+                     "The seller's DIN is locked until %8.\n\n"
+                     "Your node must stay online and unlocked until the swap finishes.")
+                     .arg(formatUnits(btc), formatUnits(din), rate(din, btc, "zat"), formatUnits(btc + 20000))
+                     .arg(d.value("n_din").toInt())
+                     .arg(localTime(tBtc), timeLeft(tBtc - now), localTime(tDin));
+        return r;
+    }
     r.text = QString(
                  "You send %1 BTC and receive %2 DIN (%3).\n\n"
                  "Your BTC is locked until the seller claims it, or until %4 (in %5) — then it comes back to you.\n"
@@ -139,6 +304,66 @@ inline AcceptReview reviewDecodedOffer(const QJsonObject& d, const QString& expe
                       localTime(tDin))
                  .arg(d.value("n_din").toInt());
     return r;
+}
+
+// The Bitcoin at the addresses this wallet's swaps paid to (swap.btcholdings),
+// in words. Watch-only: nothing here can be spent from the app, and an address
+// may be an exchange's, where the chain's balance is not the user's.
+struct HoldingRow {
+    QString address;
+    QString what;
+    QString amount;
+    bool known{false};
+};
+struct HoldingsView {
+    QList<HoldingRow> rows;
+    QString summary;
+    bool incomplete{false};  // the summary is not the whole picture
+};
+
+inline HoldingsView holdingsView(const QJsonObject& reply) {
+    HoldingsView v;
+    int unknown = 0;
+    for (const auto& entry : reply.value("addresses").toArray()) {
+        const QJsonObject a = entry.toObject();
+        HoldingRow r;
+        r.address = a.value("address").toString();
+        r.known = a.value("known").toBool();
+        const bool sale = a.value("sale_proceeds").toBool(), refund = a.value("purchase_refund").toBool();
+        r.what = sale && refund ? "Paid to you for DIN you sold; refunds and change from buying DIN"
+                 : sale ? "Paid to you for DIN you sold"
+                        : "Refunds and change from buying DIN";
+        if (r.known) {
+            r.amount = formatUnits(a.value("sat").toVariant().toLongLong()) + " BTC";
+        } else {
+            r.amount = "Not read";
+            ++unknown;
+        }
+        v.rows.append(r);
+    }
+    const int unreadable = reply.value("unreadable_swaps").toInt();
+    if (v.rows.isEmpty() && unreadable == 0) {
+        v.summary = "No swap of this wallet has paid Bitcoin to an address yet.";
+        return v;
+    }
+    if (!v.rows.isEmpty()) {
+        v.summary = QString("%1 BTC at %2.")
+                        .arg(formatUnits(reply.value("known_sat").toVariant().toLongLong()),
+                             v.rows.size() == 1 ? QString("1 address") : QString("%1 addresses").arg(v.rows.size()));
+    }
+    if (unknown > 0) {
+        v.incomplete = true;
+        v.summary += QString(" %1 could not be read (no Bitcoin server answered), so this is not the whole amount. "
+                             "Check again in a minute.")
+                         .arg(unknown == 1 ? QString("1 address") : QString("%1 addresses").arg(unknown));
+    }
+    if (unreadable > 0) {
+        v.incomplete = true;
+        v.summary += QString(" %1 could not be opened while the wallet is locked: unlock it and check again.")
+                         .arg(unreadable == 1 ? QString("1 swap") : QString("%1 swaps").arg(unreadable));
+    }
+    v.summary = v.summary.trimmed();
+    return v;
 }
 
 }  // namespace SwapFormPolicy

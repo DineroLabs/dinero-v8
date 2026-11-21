@@ -7453,8 +7453,8 @@ ChainstateService::resumeRuntimeWalletRecoveryIfNeededImpl(WalletManager& wallet
       catch (...) { return Status::Internal; }
 }
 
-Status ChainstateService::resumeRuntimeOrchardDeliveryV3(WalletManager& wallet,UTXOIndex& metadata_index,
-        uint64_t session) {
+StatusOr<bool> ChainstateService::resumeRuntimeOrchardDeliveryV3(WalletManager& wallet,UTXOIndex& metadata_index,
+        uint64_t session,size_t max_events) {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     // #939 phase 3: deliver a native-complete wallet's Orchard accounts on a
     // full-archive v3 source. Orchard account state only: no transparent,
@@ -7474,25 +7474,25 @@ Status ChainstateService::resumeRuntimeOrchardDeliveryV3(WalletManager& wallet,U
             return Status::Invalid;
         std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> table(raw,sqlite3_finalize);
         int rc=sqlite3_step(raw);
-        if(rc==SQLITE_DONE)return Status::Ok; // No Orchard account: nothing to deliver.
+        if(rc==SQLITE_DONE)return true; // No Orchard account: nothing to deliver.
         if(rc!=SQLITE_ROW)return Status::Invalid;
         raw=nullptr;
         if(sqlite3_prepare_v2(lease->Database(),"SELECT 1 FROM orchard_wallet_snapshots LIMIT 1",-1,&raw,nullptr)!=SQLITE_OK)
             return Status::Invalid;
         std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> rows(raw,sqlite3_finalize);
         rc=sqlite3_step(raw);
-        if(rc==SQLITE_DONE)return Status::Ok;
+        if(rc==SQLITE_DONE)return true;
         if(rc!=SQLITE_ROW)return Status::Invalid;
     }
     // Orchard catalog/account restoration needs the seed. A locked wallet
     // keeps its transparent delivery; its Orchard accounts catch up on unlock.
-    if(wallet.isWalletLocked())return Status::Ok;
+    if(wallet.isWalletLocked())return true;
     try {
         const auto captured=getRuntimeAccountReplayForWallet(wallet,session);
         if(!captured.ok())return captured.status();
         const auto& replay=**captured;
         const auto head=replay.Head();
-        if(!head.sequence)return Status::Ok;
+        if(!head.sequence)return true;
         const auto point=replay.Point(head).checkpoint;
         const RuntimeWalletRecovery::OrchardSourceOwner bind=[&](const auto& write){
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
@@ -7513,8 +7513,11 @@ Status ChainstateService::resumeRuntimeOrchardDeliveryV3(WalletManager& wallet,U
             fence();write(fence);
         };
         const ChainstateRuntimeRecoverySource recovery_source(*this);
-        (void)RuntimeWalletRecovery::ResumePreparedOrchardCatalogStores(replay,recovery_source,wallet,session,bind);
-        return Status::Ok;
+        if(max_events) return RuntimeWalletRecovery::AdvancePreparedOrchardCatalogStores(
+            replay,recovery_source,wallet,session,bind,max_events).has_value();
+        (void)RuntimeWalletRecovery::ResumePreparedOrchardCatalogStores(
+            replay,recovery_source,wallet,session,bind);
+        return true;
     } catch(const consensus::OrchardStateLookupError& e) { return e.SourceStatus(); }
       catch(...) { return Status::Internal; }
 #else
@@ -7581,7 +7584,9 @@ void FillNativeP2MRTargetsV3(WalletManager& wallet,uint64_t session) {
 
 StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
 ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,UTXOIndex& metadata_index,
-        uint64_t expected_session,size_t material_limit_bytes) {
+        uint64_t expected_session,size_t material_limit_bytes,size_t orchard_events_per_pass,
+        bool* advanced_partial) {
+    if(advanced_partial)*advanced_partial=false;
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     if(activation_mutex_.HeldByCurrentThread() || !material_limit_bytes ||
        material_limit_bytes>128*1024*1024)return Status::Invalid;
@@ -7708,8 +7713,13 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 source.TipHash(),source.Origin().OriginHeight(),source.TipHeight()};
             wallet.PublishRecoveredBlockchainHeight(wallet.getBlockchainHeight(),applied.tip_height,session);
             if(native) {
-                const auto orchard=resumeRuntimeOrchardDeliveryV3(wallet,metadata_index,session);
-                if(orchard!=Status::Ok)return orchard;
+                const auto orchard=resumeRuntimeOrchardDeliveryV3(
+                    wallet,metadata_index,session,orchard_events_per_pass);
+                if(!orchard.ok())return orchard.status();
+                if(!*orchard){
+                    if(advanced_partial)*advanced_partial=true;
+                    return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
+                }
                 continue_restored_account0();
             }
             return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
@@ -7766,9 +7776,22 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 return Status::Invalid;
         }
         wallet.PublishRecoveredBlockchainHeight(wallet.getBlockchainHeight(),applied.tip_height,session);
+        // A worker pass carries at most 32 ordinary events. Finish every
+        // available ordinary page before beginning an expensive Orchard
+        // account step, so mining rewards cannot wait behind old account
+        // history when this page already proves transparent backlog.
+        if(orchard_events_per_pass && applied.cursor!=(*page)->head) {
+            if(advanced_partial)*advanced_partial=true;
+            return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
+        }
         if(native) {
-            const auto orchard=resumeRuntimeOrchardDeliveryV3(wallet,metadata_index,session);
-            if(orchard!=Status::Ok)return orchard;
+            const auto orchard=resumeRuntimeOrchardDeliveryV3(
+                wallet,metadata_index,session,orchard_events_per_pass);
+            if(!orchard.ok())return orchard.status();
+            if(!*orchard){
+                if(advanced_partial)*advanced_partial=true;
+                return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
+            }
         }
         return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
             RuntimeEnrolledWalletRecoveryResult{applied,{},(*page)->head,std::nullopt});
@@ -7777,6 +7800,7 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
       catch(...) { return Status::Internal; }
 #else
     (void)wallet;(void)metadata_index;(void)expected_session;(void)material_limit_bytes;
+    (void)orchard_events_per_pass;(void)advanced_partial;
     return Status::Internal;
 #endif
 }
@@ -8077,8 +8101,10 @@ SignResult ChainstateService::signAndStageWalletPayment(WalletManager& wallet,
                     // #939: a native send pays exactly one recipient; every
                     // other output must pay a script already sealed in both
                     // receipts (the watched domain). No caller can route
-                    // change to a script no replay has covered.
-                    if(intent.request||!intent.additional_recipients.empty())
+                    // change to a script no replay has covered. v8.2.5: a
+                    // bound request (e.g. swap funding) is still one exact
+                    // recipient under the same output check below.
+                    if(!intent.additional_recipients.empty())
                         throw std::runtime_error("Native v3 payment supports one recipient");
                     std::vector<uint8_t> recipient;
                     const auto witness=DecodeWitnessAddress(intent.address,HrpForActiveNetworkRef());
@@ -8239,36 +8265,112 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             if(!captured_head)captured_head=(*page)->head;
             return **page;
         };
-        // Only phone nodes retain a replay; ordinary captures stay concurrent.
+        // A full activation-origin outbox is already authenticated after its
+        // first capture. Share that immutable view while the head is the same;
+        // extend only the new tail after all earlier readers release it. The
+        // fixed-prefix reader rechecks continuity and the selected after-tip.
+        std::unique_lock<std::mutex> full_retained(full_replay_mutex_,std::defer_lock);
+        if(!orchard_phone_history_requested_.load())full_retained.lock();
+        if(full_retained.owns_lock()&&full_replay_){
+            if(full_replay_->Head()==outbox_head){
+                const auto final=getRuntimeDeliveryPageAtPrefix(outbox_head,outbox_head,1,16*1024*1024);
+                if(!final.ok())return final.status();
+                const auto point=full_replay_->Point(outbox_head).checkpoint;
+                if((*final)->head!=outbox_head||(*final)->next!=outbox_head||!(*final)->events.empty()||
+                   !(*final)->after_tip||(*final)->after_tip->first!=point.block_hash||
+                   (*final)->after_tip->second!=point.height){
+                    full_replay_.reset();return Status::Invalid;
+                }
+                return full_replay_;
+            }
+            std::shared_ptr<const RuntimeAccountReplay> extended;
+            try{extended=RuntimeAccountReplay::ExtendTail(std::move(full_replay_),read);}
+            catch(const consensus::OrchardStateLookupError&){if(full_replay_)throw;captured_head.reset();}
+            catch(...){full_replay_.reset();captured_head.reset();}
+            if(extended){full_replay_=extended;++full_replay_extensions_;return extended;}
+            // A concurrent reader still owns the old immutable view. A new
+            // full capture keeps this call's semantics and becomes the cache.
+            captured_head.reset();
+        }
+        // Phone activation-prefix material has its own retained view and
+        // remains independent of the full activation-origin cache above.
         std::unique_lock<std::mutex> retained(phone_replay_mutex_,std::defer_lock);
         if(orchard_phone_history_requested_.load())retained.lock();
         // Same adoption checks for a fresh or an extended replay; neither is
         // returned unless it ends exactly at the current target and outbox head.
+        // Every refusal on the verified-history path says why, once per
+        // reason and replay head (the wallet retries about twice a second).
+        const auto stamp=[]{
+            const std::time_t now=std::time(nullptr);std::tm local{};
+#ifdef _WIN32
+            localtime_s(&local,&now);
+#else
+            localtime_r(&now,&local);
+#endif
+            char text[16];std::strftime(text,sizeof(text),"%H:%M:%S",&local);return std::string(text);
+        };
+        const auto refuse=[&](const char* why,const std::string& detail={})->Status {
+            static std::mutex said_mutex;static std::string said;
+            const std::string line=std::string("wallet replay waits: ")+why+(detail.empty()?"":" ("+detail+")");
+            std::lock_guard<std::mutex> lock(said_mutex);
+            static uint64_t refusals=0;++refusals;
+            if(said!=line){said=line;std::cerr<<"[OrchardHistory] "<<stamp()<<" "<<line<<" [refusal "<<refusals<<"]"<<std::endl;}
+            return Status::Invalid;
+        };
+        // The history was verified up to a checkpoint (`target`). It is
+        // adopted while the selected chain still contains that checkpoint and
+        // the replay ends at the node's own current outbox head on that chain.
+        // A block that arrived since verification does not undo it; a
+        // reorganisation that replaces the checkpoint does. (Before, the
+        // history had to be verified up to the very tip at this instant,
+        // which a chain with a block a minute almost never grants.)
         const auto adopt=[&](const std::shared_ptr<const RuntimeAccountReplay>& replay,
                 const std::shared_ptr<ChainstateService>& source,const p2p::OrchardPhoneHistoryTarget& target,
                 const std::shared_ptr<p2p::OrchardPhoneHistoryDownload>& download)->StatusOr<std::shared_ptr<const RuntimeAccountReplay>> {
+            (void)source;
             const auto head=replay->Head();const auto point=replay->Point(head).checkpoint;
+            // The checkpoint and the replay's end must be on one chain: the
+            // header chain says so, without the selected lock. (Not "the
+            // download's newest checkpoint is this one": while this replay
+            // was built the download may have verified a further block,
+            // which takes nothing away from the checkpoint it was built on.
+            // And not a freshly read tip: reading it waits for the selected
+            // lock, which block connection holds exactly while the next
+            // block is delivered, so the answer would arrive stale.)
+            p2p::OrchardPhoneHistoryTarget end=target;end.height=point.height;end.hash=point.block_hash;
+            const bool one_chain=point.height>=target.height?download->OnChainOf(end,target.height,target.hash):
+                download->OnChainOf(target,point.height,point.block_hash);
+            if(!one_chain)
+                return refuse("the verified checkpoint and the node's record are not on one chain",
+                    "checkpoint "+std::to_string(target.height)+", record ends at "+std::to_string(point.height));
+            // Last, and under the selected lock: the replay ends at the
+            // node's own current record of its chain.
             const auto final=getRuntimeDeliveryPage(head,1);
-            if(source->PhoneHistoryTarget()!=target||!download->Ready()||point.height!=target.height||point.block_hash!=target.hash||
-                !final.ok()||(*final)->head!=head||!(*final)->events.empty()||(*final)->next!=head)return Status::Invalid;
+            if(!final.ok()||(*final)->head!=head||!(*final)->events.empty()||(*final)->next!=head)
+                return refuse("a block was delivered while the replay was read","replay head "+std::to_string(head.sequence));
+            {static std::atomic<uint64_t> adopted{0};
+             if(++adopted==1||adopted%500==0)std::cerr<<"[OrchardHistory] "<<stamp()<<" wallet replay adopted (checkpoint "<<target.height
+                 <<", replay to "<<point.height<<", times "<<adopted.load()<<")"<<std::endl;}
             return replay;
         };
         const auto phone=[&]()->std::optional<std::tuple<std::shared_ptr<ChainstateService>,p2p::OrchardPhoneHistoryTarget,
                 std::shared_ptr<p2p::OrchardPhoneHistoryDownload>,std::shared_ptr<const p2p::OrchardPhoneHistoryData>>> {
             const auto source=std::const_pointer_cast<ChainstateService>(weak_from_this().lock());
             if(!source)return {};
-            const auto target=source->PhoneHistoryTarget();
             const auto* context=DaemonContext::instance();
-            if(!target||!context||context->chainstate.get()!=this)return {};
+            if(!context||context->chainstate.get()!=this)return {};
             const auto peers=std::dynamic_pointer_cast<P2PService>(context->p2p);
             auto download=peers?peers->PhoneHistoryDownload():nullptr;
-            auto history=download?download->Ready():nullptr;
-            if(!history||history->target!=*target)return {};
-            return std::tuple{source,*target,std::move(download),std::move(history)};
+            // The newest fully verified history that the selected chain still
+            // contains; its own target is the checkpoint the replay is built on.
+            auto history=download?download->ReadyCheckpoint():nullptr;
+            if(!history)return {};
+            const auto target=history->target;
+            return std::tuple{source,target,std::move(download),std::move(history)};
         };
         if(retained.owns_lock()&&phone_replay_&&phone_replay_base_){
             const auto ready=phone();
-            if(!ready)return Status::Invalid;
+            if(!ready)return refuse("no verified history checkpoint yet (retained replay kept)");
             const auto& [source,target,download,history]=*ready;
             const auto base=*phone_replay_base_;
             if(base.second==target.base&&base.first>=target.activation&&base.first<=target.height){
@@ -8294,17 +8396,21 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             captured_head.reset();
         }
         {std::lock_guard memo(phone_prefix_pending_mutex_);
-         if(phone_prefix_pending_head_&&*phone_prefix_pending_head_==std::pair{outbox_head.sequence,outbox_head.digest}&&!phone())return Status::Invalid;}
+         if(phone_prefix_pending_head_&&*phone_prefix_pending_head_==std::pair{outbox_head.sequence,outbox_head.digest}&&!phone())return refuse("no verified history checkpoint yet");}
         ++phone_replay_source_reads_;
         auto material=RuntimeAccountReplay::ReadSource(read);
         if(const auto base=RuntimeAccountReplay::ActivationPrefixBase(material)){
             const auto ready=phone();
-            if(!ready){std::lock_guard memo(phone_prefix_pending_mutex_);phone_prefix_pending_head_=std::pair{outbox_head.sequence,outbox_head.digest};return Status::Invalid;}
+            if(!ready){std::lock_guard memo(phone_prefix_pending_mutex_);phone_prefix_pending_head_=std::pair{outbox_head.sequence,outbox_head.digest};return refuse("no verified history checkpoint yet (first build)");}
             {std::lock_guard memo(phone_prefix_pending_mutex_);phone_prefix_pending_head_.reset();}
             const auto& [source,target,download,history]=*ready;
-            if(base->second!=target.base||base->first<target.activation||base->first>target.height)return Status::Invalid;
+            if(base->second!=target.base||base->first<target.activation||base->first>target.height)
+                return refuse("the node's record starts at another snapshot base than the verified history",
+                    "record "+std::to_string(base->first)+", checkpoint "+std::to_string(target.height));
             auto verifier=source->PreparePhoneHistoryVerifier(history->activation_proof,target);
-            if(!verifier)return Status::Invalid;
+            if(!verifier)return refuse("the history verifier could not be prepared","checkpoint "+std::to_string(target.height));
+            std::cerr<<"[OrchardHistory] "<<stamp()<<" wallet replay: building from the verified checkpoint "<<target.height
+                     <<" (bodies "<<target.activation<<" to "<<base->first<<")"<<std::endl;
             auto replay=RuntimeAccountReplay::BuildWithActivationPrefix(std::move(material),[&](uint32_t height){
                 auto body=std::make_shared<const OrchardBlockCandidate>(OrchardBlockCandidate::DecodeExact(history->Body(height)));
                 const auto now=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
@@ -8315,9 +8421,13 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             // the next capture then verifies only what arrived meanwhile.
             if(retained.owns_lock()){phone_replay_=replay;phone_replay_base_=*base;}
             ++phone_replay_full_builds_;
+            std::cerr<<"[OrchardHistory] "<<stamp()<<" wallet replay: built (full build "<<phone_replay_full_builds_
+                     <<(retained.owns_lock()?", kept for the next attempt)":", NOT kept)")<<std::endl;
             return adopt(replay,source,target,download);
         }
-        return RuntimeAccountReplay::Build(std::move(material));
+        auto replay=RuntimeAccountReplay::Build(std::move(material));
+        if(full_retained.owns_lock()){full_replay_=replay;++full_replay_full_builds_;}
+        return replay;
     } catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
       catch(...){return Status::Internal;}
 #else
@@ -8332,11 +8442,16 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
 StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService::captureRuntimeWalletOrigin(
         WalletManager& wallet,uint64_t session,UTXOIndex* index,bool existing_identity_only,bool public_history,
         bool& body_data_pending,bool retained_history,size_t material_limit_bytes,
-        const std::optional<RuntimeOutboxCursor>& captured_head,bool fresh_empty_prefix) const {
+        const std::optional<RuntimeOutboxCursor>& captured_head,bool fresh_empty_prefix,
+        const std::optional<std::pair<uint32_t,uint256>>& snapshot_base_origin) const {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     // The empty-prefix origin is only for a wallet whose sealed fresh birth
     // proves it had no keys below activation; it never acquires history.
     if(fresh_empty_prefix && (public_history || retained_history))return Status::Invalid;
+    // A snapshot-base origin is the empty-prefix origin rooted at an
+    // authenticated full-v6 snapshot base instead of activation; the caller
+    // proved a sealed fresh birth at or above that base.
+    if(snapshot_base_origin && !fresh_empty_prefix)return Status::Invalid;
     try {
         auto result=RuntimeOrdinaryDelivery::CaptureOriginDomain(wallet,session,index,existing_identity_only,
             material_limit_bytes);
@@ -8348,10 +8463,25 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
             if(!page.ok())return page.status();
             if(safe_mode_active_ || (*page)->events.size()!=1)return Status::Invalid;
             const auto& first=(*page)->events.front();
-            if(first.cursor.sequence!=1 || first.direction!=RuntimeBlockDirection::Connect ||
-               first.context.height!=first.context.activation_height || !first.context.height)
-                return Status::Invalid;
-            result->SetFirstEvent(first);head=(*page)->head;
+            if(snapshot_base_origin) {
+                // Re-prove the base under the selected lock: still the
+                // authenticated snapshot base this node imported, and the
+                // outbox's first event is exactly its successor.
+                if(!orchard_snapshot_startup_ ||
+                   orchard_snapshot_startup_->base.height!=snapshot_base_origin->first ||
+                   orchard_snapshot_startup_->base.block!=snapshot_base_origin->second ||
+                   first.cursor.sequence!=1 || first.direction!=RuntimeBlockDirection::Connect ||
+                   first.context.height!=uint64_t(snapshot_base_origin->first)+1 ||
+                   first.context.parent_hash!=snapshot_base_origin->second)
+                    return Status::Invalid;
+                result->SetFirstSnapshotBaseEvent(first,snapshot_base_origin->first,snapshot_base_origin->second);
+            } else {
+                if(first.cursor.sequence!=1 || first.direction!=RuntimeBlockDirection::Connect ||
+                   first.context.height!=first.context.activation_height || !first.context.height)
+                    return Status::Invalid;
+                result->SetFirstEvent(first);
+            }
+            head=(*page)->head;
             auto expected=first.context.parent_hash;
             // Operational ancestry cap, not a resident-memory certificate.
             // Retains hashes only; full bodies are read/validated one at a time.
@@ -8481,7 +8611,7 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
                lease->Session()!=session || wallet.getUTXOIndex()!=nullptr ||
                !sqlite3_get_autocommit(lease->Database()))return Status::Invalid;
             // A present-but-unverifiable record fails closed (throws below).
-            const auto birth=lease->SealedFreshBirthHeight(session);
+            const auto birth=lease->SealedFreshOrdinaryBirthHeight(session);
             fresh_empty_prefix=birth && *birth>=Params().orchard_activation_height;
         }
         {
@@ -8561,8 +8691,45 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
         // authority; every projected coin is rebuilt from the owned source.
         const auto replay=getRuntimeAccountReplayForWallet(wallet,session);
         if(!replay.ok())return replay.status();
+        // On an authenticated full-v6 snapshot source the outbox starts at
+        // base+1, so an activation origin can never be captured. A wallet
+        // whose sealed fresh birth is at or above the base owned no script
+        // below it: root its ordinary origin at that base with an empty
+        // prefix. Restored/imported seeds, births below the base, compact
+        // sources and history acquisition keep the activation requirement.
+        std::optional<std::pair<uint32_t,uint256>> snapshot_base;
+        if(!public_history && !retained_history) {
+            {
+                std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+                if(orchard_snapshot_startup_ && !compact_startup_ &&
+                   orchard_snapshot_startup_->base.profile==uint8_t(consensus::OrchardSnapshotProfile::Full) &&
+                   orchard_snapshot_startup_->base.height>=Params().orchard_activation_height) {
+                    const auto first=getRuntimeDeliveryPage({},1);
+                    if(first.ok() && (*first)->events.size()==1 &&
+                       (*first)->events.front().context.height==uint64_t(orchard_snapshot_startup_->base.height)+1)
+                        snapshot_base=std::pair{orchard_snapshot_startup_->base.height,orchard_snapshot_startup_->base.block};
+                }
+            }
+            if(snapshot_base) {
+                std::optional<uint32_t> birth;
+                {
+                    const auto lease=wallet.AcquireDatabaseLease();
+                    if(lease->Session()!=session)return Status::Invalid;
+                    // The sealed record needs the seed: a locked wallet waits
+                    // for unlock instead of being treated as unproved.
+                    if(wallet.isWalletLocked())return Status::NotFound;
+                    birth=lease->SealedFreshOrdinaryBirthHeight(session);
+                }
+                // The replay's outbox origin (Point({})) must be the same base;
+                // receipts are bound to that point.
+                const auto root=(*replay)->Point({}).checkpoint;
+                if(!birth || *birth<snapshot_base->first ||
+                   root.height!=snapshot_base->first || root.block_hash!=snapshot_base->second)
+                    snapshot_base.reset();
+            }
+        }
         const auto origin=captureRuntimeWalletOrigin(wallet,session,&index,true,public_history,body_data_pending,
-            retained_history,material_limit_bytes);
+            retained_history,material_limit_bytes,std::nullopt,bool(snapshot_base),snapshot_base);
         if(!origin.ok())return origin.status();
         const auto result=RuntimeWalletCoverageProjection::Build(*origin,*replay,{},material_limit_bytes);
         {

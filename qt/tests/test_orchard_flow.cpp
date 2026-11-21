@@ -111,6 +111,12 @@ private Q_SLOTS:
             {"accounts",QJsonArray{entry(3),entry(17)}}};
         const auto parsed=ParseAccounts(good);QVERIFY(parsed);QCOMPARE(parsed->accounts.size(),2);
         QCOMPARE(parsed->accounts[0].account,quint64(3));QCOMPARE(parsed->accounts[1].account,quint64(17));
+        auto withAddress=good;auto addresses=withAddress["accounts"].toArray();auto firstAddress=addresses[0].toObject();
+        firstAddress["first_receive_address"]="rdinorch1testreceiver";addresses[0]=firstAddress;withAddress["accounts"]=addresses;
+        const auto showing=ParseAccounts(withAddress);QVERIFY(showing);
+        QCOMPARE(showing->accounts[0].firstReceiveAddress,QString("rdinorch1testreceiver"));
+        firstAddress["first_receive_address"]="not an Orchard address";addresses[0]=firstAddress;withAddress["accounts"]=addresses;
+        QVERIFY(!ParseAccounts(withAddress));
         for(const auto& field:QStringList{"account","account_revision","account_sequence","checkpoint_height"}) {
             for(const auto& invalid:QList<QJsonValue>{QJsonValue(-1),QJsonValue(0.5),QJsonValue(true),QJsonValue("5"),QJsonValue()}) {
                 auto bad=good;auto rows=bad["accounts"].toArray();auto row=rows[1].toObject();row[field]=invalid;rows[1]=row;bad["accounts"]=rows;QVERIFY(!ParseAccounts(bad));

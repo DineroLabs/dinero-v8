@@ -1,0 +1,8 @@
+<RCC>
+  <qresource prefix="/wallet-icons">
+    <file alias="dinero.png">../../resources/DIN.iconset/icon_32x32@2x.png</file>
+    <file alias="bitcoin.png">../assets/wallet/bitcoin.png</file>
+    <file alias="zcash.png">../assets/wallet/zcash.png</file>
+    <file alias="bitcoin-cash.png">../assets/wallet/bitcoin-cash.png</file>
+  </qresource>
+</RCC>

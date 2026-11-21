@@ -258,6 +258,7 @@ jobs:
             -DDINERO_USE_VENDORED_DEPS=ON \
             -DDINERO_BUILD_QT=ON \
             -DDINERO_BUILD_ORCHARD_BACKEND=ON \
+            -DDINERO_SWAP_LIGHT_BTC=ON \
             -DDIN_ENABLE_ORCHARD_UI=ON \
             -DDINERO_BUILD_MINER=ON \
             -DDINERO_BUILD_SEEDER=ON \
@@ -651,6 +652,7 @@ jobs:
             -DDINERO_USE_VENDORED_DEPS=ON \
             -DDINERO_BUILD_QT=ON \
             -DDINERO_BUILD_ORCHARD_BACKEND=ON \
+            -DDINERO_SWAP_LIGHT_BTC=ON \
             -DDIN_ENABLE_ORCHARD_UI=ON \
             -DDINERO_BUILD_MINER=ON \
             -DDINERO_BUILD_SEEDER=ON \

@@ -852,6 +852,9 @@ void CreateSeedPage::onGenerateSeed() {
   QJsonObject params;
   params["name"] = walletName;
   params["word_count"] = 12;
+  // Give a new desktop wallet twenty distinct ready-to-use Taproot receivers.
+  // PQ keeps one issued receiver; its watch-only reserve is not shown as issued.
+  params["initial_taproot_addresses"] = 20;
   if (auto* walletWizard = qobject_cast<WalletWizard*>(wizard())) {
     walletWizard->setProperty("walletRollbackCandidateName", walletName);
     walletWizard->setProperty("provisionedWalletName", QString());

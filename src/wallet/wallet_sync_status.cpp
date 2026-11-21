@@ -165,9 +165,12 @@ double WalletSyncStatusAggregator::CalculateOverallProgress(const WalletSyncStat
 
     // Never show 100% unless everything is actually complete
     if (overall >= 0.9999) {
-        bool all_complete = (headers_prog >= 0.9999 &&
-                            blocks_prog >= 0.9999 &&
-                            scan_prog >= 0.9999);
+        // A large mainnet chain can be only a few blocks behind while each
+        // ratio rounds above 0.9999. Compare counts, not rounded ratios: the
+        // latter caused wallet.getsyncstatus to reject a valid lagging wallet.
+        bool all_complete = (status.headers_synced >= status.headers_total &&
+                            status.blocks_synced >= status.blocks_total &&
+                            status.wallet_scan_height >= status.chain_height);
         if (!all_complete) {
             overall = 0.999;  // Cap at 99.9%
         }

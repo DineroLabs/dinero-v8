@@ -12,7 +12,7 @@ inline constexpr int kUtxoPageSize = 200;
 // leaving enough GUI-thread time for long header rows to paint without timer
 // callbacks piling up behind one another.
 inline constexpr int kHashEngineIntervalMs = 200;
-inline constexpr int kBlockFoundHighlightMs = 1000;
+inline constexpr int kBlockFoundHighlightMs = 3000;
 inline constexpr int kTransientMiningErrorMs = 15000;
 
 struct UtxoPage {

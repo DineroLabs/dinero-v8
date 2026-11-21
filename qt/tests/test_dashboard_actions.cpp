@@ -119,6 +119,27 @@ private Q_SLOTS:
         QCOMPARE(spy.last().at(2).toString(),
                  QStringLiteral("dinero-seeder not found"));
     }
+
+    void unsupported_seeder_rpc_stops_operator_actions() {
+        DashboardActionController c(nullptr, nullptr);
+        QSignalSpy stateSpy(&c, &DashboardActionController::seederStateChanged);
+        QSignalSpy requestSpy(&c, &DashboardActionController::rpcDispatched);
+        c.setSeederOptIn(true);
+
+        const bool invoked = QMetaObject::invokeMethod(
+            &c, "onRpcError", Qt::DirectConnection,
+            Q_ARG(QString, QStringLiteral("seeder.status")),
+            Q_ARG(int, -32601),
+            Q_ARG(QString, QStringLiteral("Method not found")));
+        QVERIFY(invoked);
+        QCOMPARE(stateSpy.last().at(2).toString(),
+                 QStringLiteral("Seeder service unavailable on this node"));
+
+        c.startSeeder();
+        QCOMPARE(requestSpy.count(), 0);
+        QCOMPARE(stateSpy.last().at(2).toString(),
+                 QStringLiteral("Seeder service unavailable on this node"));
+    }
 };
 
 QTEST_MAIN(TestDashboardActions)

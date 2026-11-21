@@ -917,6 +917,38 @@ TEST(RuntimeOriginProjection, BindsCapturedWalletAndScriptDomain) {
     EXPECT_THROW(RuntimeOriginProjectionTestAccess::Check(wallet,*p),std::runtime_error);
 }
 
+TEST(RuntimeOriginProjection, SnapshotBaseOriginAcceptsOnlyTheBaseSuccessor) {
+    // A full-v6 snapshot outbox starts at base+1. Only that exact Connect,
+    // child of the authenticated base and above activation, may root an
+    // empty-prefix origin; the activation rule stays exact.
+    constexpr uint32_t activation=150000,base=155650;
+    const uint256 base_block=uint256::FromHexUnsafe(std::string(63,'0')+"7");
+    const auto event=[&](uint64_t sequence,uint64_t height,const uint256& parent,RuntimeBlockDirection direction){
+        RuntimeOutboxEvent e;e.cursor.sequence=sequence;e.direction=direction;
+        e.context.height=height;e.context.activation_height=activation;e.context.parent_hash=parent;return e;
+    };
+    const auto set=[&](const RuntimeOutboxEvent& e,uint32_t h,const uint256& b){
+        auto p=RuntimeOriginProjectionTestAccess::Create({0,20,1});p->SetFirstSnapshotBaseEvent(e,h,b);
+    };
+    const auto ok=event(1,base+1,base_block,RuntimeBlockDirection::Connect);
+    EXPECT_NO_THROW(set(ok,base,base_block));
+    EXPECT_THROW(set(event(1,base+2,base_block,RuntimeBlockDirection::Connect),base,base_block),std::runtime_error);
+    EXPECT_THROW(set(event(1,base,base_block,RuntimeBlockDirection::Connect),base,base_block),std::runtime_error);
+    EXPECT_THROW(set(event(1,base+1,uint256{},RuntimeBlockDirection::Connect),base,base_block),std::runtime_error);
+    EXPECT_THROW(set(event(2,base+1,base_block,RuntimeBlockDirection::Connect),base,base_block),std::runtime_error);
+    EXPECT_THROW(set(event(1,base+1,base_block,RuntimeBlockDirection::Disconnect),base,base_block),std::runtime_error);
+    EXPECT_THROW(set(ok,base,uint256{}),std::runtime_error);
+    // A "base" at or below activation is the activation rule's case, not this one.
+    EXPECT_THROW(set(event(1,activation,base_block,RuntimeBlockDirection::Connect),activation-1,base_block),
+        std::runtime_error);
+    {auto p=RuntimeOriginProjectionTestAccess::Create({0,20,1});p->SetFirstSnapshotBaseEvent(ok,base,base_block);
+     EXPECT_THROW(p->SetFirstSnapshotBaseEvent(ok,base,base_block),std::runtime_error);
+     EXPECT_THROW(p->SetFirstEvent(event(1,activation,base_block,RuntimeBlockDirection::Connect)),std::runtime_error);}
+    // The activation rule still refuses the snapshot successor.
+    {auto p=RuntimeOriginProjectionTestAccess::Create({0,20,1});
+     EXPECT_THROW(p->SetFirstEvent(ok),std::runtime_error);}
+}
+
 TEST(RuntimeOriginProjection, KeepsSpentCoinsAndExactTransactionHistory) {
     // Projection arithmetic only. Consensus authorization is tested separately
     // by the existing owned replay suite; these spends are deliberately unsigned.
@@ -1186,6 +1218,7 @@ int main(int argc, char** argv) {
 #include "wallet_v3_native_orchard_spend_checks.h"
 #include "wallet_v3_native_restore_checks.h"
 #include "wallet_v3_native_p2mr_pool_checks.h"
+#include "wallet_v3_native_swap_checks.h"
 #endif
 
 #include "orchard_finish_rpc_checks.h"

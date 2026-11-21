@@ -1,6 +1,7 @@
 #pragma once
 #include "p2p/orchard_catalog_client.h"
 #include "p2p/orchard_phone_history_target.h"
+#include "p2p/orchard_history_checkpoint.h"
 #include "p2p/orchard_history_cache.h"
 #include "daemon/services/orchard_boundary_replay.h"
 #include <condition_variable>
@@ -85,9 +86,59 @@ public:
         if(!ready)return {};
         try{if(cache_)cache_->Check();const auto current=target_();return current&&*current==ready->target?ready:nullptr;}catch(...){return {};}
     }
+    // The newest history this download verified in full, while the selected
+    // chain still contains its target (orchard_history_checkpoint.h). Unlike
+    // Ready(), a block that arrived since does not withdraw it: the wallet
+    // builds on the checkpoint and reads later blocks from the node's own
+    // record. A reorganisation that replaces the target, another snapshot
+    // base, or a cache root that no longer checks out withdraws it. The
+    // data serves bodies up to its own target only, so the worker verifying
+    // newer blocks meanwhile does not disturb a reader.
+    std::shared_ptr<const Data> ReadyCheckpoint()const {
+        std::shared_ptr<const Data> verified;{std::lock_guard lock(mutex_);if(stop_)return {};verified=checkpoint_;}
+        if(!verified)return {};
+        try{
+            if(cache_)cache_->Check();
+            const auto current=target_();
+            if(!current)return {};
+            const bool stands=OrchardHistoryCheckpointStands(verified->target,*current,
+                [this,&current](const uint256& tip,uint32_t height)->std::optional<uint256>{
+                    uint256 at;uint32_t found=0;
+                    if(!headers_->GetAncestorHashByHash(tip,height,at,found)||found!=current->height)return std::nullopt;
+                    return at;
+                });
+            return stands?verified:nullptr;
+        }catch(...){return {};}
+    }
+    // The same, judged against a target the caller has just read (not the
+    // cached one): for the final check before a wallet adopts its replay.
+    std::shared_ptr<const Data> ReadyCheckpointFor(const Target& current)const {
+        std::shared_ptr<const Data> verified;{std::lock_guard lock(mutex_);if(stop_)return {};verified=checkpoint_;}
+        if(!verified)return {};
+        try{
+            if(cache_)cache_->Check();
+            const bool stands=OrchardHistoryCheckpointStands(verified->target,current,
+                [this,&current](const uint256& tip,uint32_t height)->std::optional<uint256>{
+                    uint256 at;uint32_t found=0;
+                    if(!headers_->GetAncestorHashByHash(tip,height,at,found)||found!=current.height)return std::nullopt;
+                    return at;
+                });
+            return stands?verified:nullptr;
+        }catch(...){return {};}
+    }
+    // Is the block (height, hash) the selected target itself or one of its
+    // ancestors on the header chain? False for anything that cannot be told.
+    bool OnChainOf(const Target& tip,uint32_t height,const uint256& hash)const {
+        if(height==tip.height)return hash==tip.hash;
+        if(height>tip.height)return false;
+        try{
+            uint256 at;uint32_t found=0;
+            return headers_->GetAncestorHashByHash(tip.hash,height,at,found)&&found==tip.height&&at==hash;
+        }catch(...){return false;}
+    }
     void Stop(){
         std::lock_guard joining(join_);
-        {std::lock_guard lock(mutex_);stop_=true;flight_.reset();packet_.reset();ready_.reset();}
+        {std::lock_guard lock(mutex_);stop_=true;flight_.reset();packet_.reset();ready_.reset();checkpoint_.reset();}
         cv_.notify_all();if(worker_.joinable())worker_.join();
     }
     // Idle workers (no selected target, or history ready for it) wait up to IdleWait instead
@@ -112,14 +163,17 @@ private:
     mutable std::mutex mutex_;std::mutex join_;std::condition_variable cv_;
     std::optional<Peer> flight_;uint256 wanted_;std::optional<Bytes> packet_;
     bool body_received_=false;
-    std::shared_ptr<const Data> ready_;Progress progress_;std::atomic<bool> stop_{false};std::thread worker_;
+    std::shared_ptr<const Data> ready_;Progress progress_;
+    // The last fully verified history; kept across pure tip extensions (ready_ is not).
+    std::shared_ptr<const Data> checkpoint_;std::atomic<bool> stop_{false};std::thread worker_;
     void Run()noexcept {
         std::optional<Target> selected;std::optional<Peer> peer;
         std::shared_ptr<const consensus::OrchardSnapshotSection> proof;
         std::unique_ptr<OrchardBoundaryReplay> replay;std::shared_ptr<Data::Corpus> corpus;
         std::map<std::string,Clock::time_point> cooldown;Clock::time_point sent{},window=Clock::now();
         uint64_t window_bytes=0;uint32_t next=0;bool awaiting=false;
-        const auto unpublish=[&]{std::lock_guard lock(mutex_);flight_.reset();packet_.reset();ready_.reset();};
+        // Only on a discard (a reorganisation, another target, a failed check): a pure extension keeps the checkpoint.
+        const auto unpublish=[&]{std::lock_guard lock(mutex_);flight_.reset();packet_.reset();ready_.reset();checkpoint_.reset();};
         const auto discard=[&]{unpublish();replay.reset();corpus.reset();proof.reset();selected.reset();awaiting=false;peer.reset();};
         const auto fail_peer=[&]{
             if(peer){if(cooldown.size()>=32)cooldown.erase(cooldown.begin());cooldown[peer->address]=Clock::now()+std::chrono::minutes(1);}
@@ -168,7 +222,7 @@ private:
                     if(const auto now=target_();now!=selected){if(!extends(now))discard();continue;}
                     if(cache_)cache_->Check();
                     std::lock_guard lock(mutex_);if(stop_)break;
-                    ready_=std::shared_ptr<const Data>(new Data(*selected,proof,corpus));progress_.ready=true;idle=true;continue;
+                    ready_=std::shared_ptr<const Data>(new Data(*selected,proof,corpus));checkpoint_=ready_;progress_.ready=true;idle=true;continue;
                 }
                 bool cached_packet=false;
                 if(!packet&&!awaiting&&Cached()){

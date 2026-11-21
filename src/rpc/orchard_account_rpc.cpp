@@ -27,6 +27,7 @@
 #include "wallet/p2mr_address.h"
 #include "wallet/runtime_account_replay.h"
 #include "wallet/runtime_origin_projection.h"
+#include <sqlite3.h>
 #endif
 
 bool rpc_context_native_v3_ordinary_inventory_ready(
@@ -378,6 +379,31 @@ din::Json OrchardAccountRead(const ExecutionContext& ctx,const din::Json& params
                 const auto captured=source->getRuntimeAccountReplayForWallet(wallet_use->Wallet(),session);
                 if(!captured.ok())throw std::runtime_error("Authenticated Orchard replay source unavailable");
                 try {
+                    if(listing) {
+                        // Account discovery can overlap a long v3 delivery.
+                        // Restore the full authenticated catalog inside one
+                        // read transaction so a newer committed revision
+                        // cannot invalidate the result mid-read. The selected
+                        // source was captured before wallet ownership.
+                        auto lease=wallet_use->Wallet().AcquireDatabaseLease();
+                        if(lease->Session()!=session || !lease->Database() ||
+                           !sqlite3_get_autocommit(lease->Database()))
+                            throw std::runtime_error("Orchard catalog read owner unavailable");
+                        auto* db=lease->Database();
+                        if(sqlite3_exec(db,"BEGIN",nullptr,nullptr,nullptr)!=SQLITE_OK)
+                            throw std::runtime_error("Orchard catalog read transaction unavailable");
+                        try {
+                            auto catalog=dinero::wallet::OrchardAccountDelivery::ReadCatalogForReplayInTransaction(
+                                wallet_use->Wallet(),session,**captured);
+                            if(sqlite3_exec(db,"COMMIT",nullptr,nullptr,nullptr)!=SQLITE_OK)
+                                throw std::runtime_error("Orchard catalog read commit failed");
+                            return {*captured,std::move(catalog)};
+                        } catch(...) {
+                            if(!sqlite3_get_autocommit(db))
+                                (void)sqlite3_exec(db,"ROLLBACK",nullptr,nullptr,nullptr);
+                            throw;
+                        }
+                    }
                     auto catalog=dinero::wallet::OrchardAccountDelivery::ReadCatalogForReplay(
                         wallet_use->Wallet(),session,**captured);
                     return {*captured,std::move(catalog)};
@@ -398,6 +424,9 @@ din::Json OrchardAccountRead(const ExecutionContext& ctx,const din::Json& params
                 account["account_digest"]=checkpoint.digest.GetHex();
                 account["checkpoint_height"]=Json::UInt(entry.state.account.Scan().Checkpoint().height);
                 account["checkpoint_hash"]=entry.state.account.Scan().Checkpoint().block_hash.GetHex();
+                if(const auto receiver=entry.state.account.FirstIssuedExternalReceiver())
+                    account["first_receive_address"]=receiver->EncodeAddress(
+                        static_cast<dinero::orchard::WalletNetwork>(view->Profile().domain.network_code));
                 accounts.append(std::move(account));
             }
             result["captured_source_sequence"]=Json::UInt64(view->Head().sequence);

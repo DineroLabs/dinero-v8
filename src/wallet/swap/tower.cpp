@@ -4,6 +4,7 @@
 #include "wallet/swap/swap_crypto.h"
 
 #include <cstdio>
+#include <filesystem>
 #include <algorithm>
 #include <fstream>
 #include <map>
@@ -50,7 +51,13 @@ FundingOutput DinFundingOf(const TowerPackage& p, const DinHtlcOutput& htlc) {
     return f;
 }
 
+ZecTowerHooks& ZecHooks() {
+    static ZecTowerHooks hooks;
+    return hooks;
+}
+
 BtcFunding BtcFundingOf(const TowerPackage& p) {
+    if (p.zec_funding) return *p.zec_funding;
     BtcFunding f;
     f.txid = p.btc_refunds.front().tx.vin.at(0).prev_txid;
     f.vout = p.btc_refunds.front().tx.vin.at(0).prev_vout;
@@ -59,6 +66,8 @@ BtcFunding BtcFundingOf(const TowerPackage& p) {
 }
 
 }  // namespace
+
+void InstallZecTowerHooks(ZecTowerHooks hooks) { ZecHooks() = std::move(hooks); }
 
 // ---- Package text form ------------------------------------------------------
 
@@ -84,6 +93,16 @@ std::string EncodeTowerPackage(const TowerPackage& p) {
         }
     }
     for (const auto& r : p.btc_refunds) out << "btc_refund=" << ToHex(SerializeBtcTx(r.tx)) << ":" << r.fee_sat << "\n";
+    if (p.zec_funding) {  // only in Zcash packages: Bitcoin packages are unchanged
+        out << "zec_funding=" << ToHex(std::vector<uint8_t>(p.zec_funding->txid.rbegin(), p.zec_funding->txid.rend()))
+            << ":" << p.zec_funding->vout << "\n";
+    }
+    for (const auto& r : p.zec_refunds) {
+        char branch[9];
+        std::snprintf(branch, sizeof branch, "%08x", r.branch_id);
+        out << "zec_refund=" << r.fee_zat << ":" << branch << ":" << ToHex(r.payout_script) << ":" << ToHex(r.signature)
+            << "\n";
+    }
     return out.str();
 }
 
@@ -126,6 +145,16 @@ TowerPackage DecodeTowerPackage(const std::string& text) {
             r.tx = ParseBtcTx(FromHex(parts[0]));
             r.fee_sat = ParseU64(parts[1]);
             p.btc_refunds.push_back(std::move(r));
+        } else if (key == "zec_refund") {
+            const auto parts = Split(value, ':');
+            if (parts.size() != 4 || parts[1].size() != 8) Bad("malformed zec_refund");
+            ZecRefundRung r;
+            r.fee_zat = ParseU64(parts[0]);
+            const auto b = FromHex(parts[1]);
+            r.branch_id = uint32_t(b[0]) << 24 | uint32_t(b[1]) << 16 | uint32_t(b[2]) << 8 | b[3];
+            r.payout_script = FromHex(parts[2]);
+            r.signature = FromHex(parts[3]);
+            p.zec_refunds.push_back(std::move(r));
         } else if (!single.emplace(key, value).second) {
             Bad("duplicate " + key);
         }
@@ -142,6 +171,18 @@ TowerPackage DecodeTowerPackage(const std::string& text) {
     const uint64_t dh = ParseU64(single["din_scan_from_height"]);
     if (dh > UINT32_MAX) Bad("bad DIN scan height");
     p.din_scan_from_height = static_cast<uint32_t>(dh);
+    if (single.count("zec_funding")) {
+        const auto parts = Split(single["zec_funding"], ':');
+        if (parts.size() != 2) Bad("malformed zec_funding");
+        const auto id = FromHex(parts[0]);
+        const uint64_t vout = ParseU64(parts[1]);
+        if (id.size() != 32 || vout > UINT32_MAX) Bad("bad zec_funding");
+        BtcFunding f;
+        std::copy(id.rbegin(), id.rend(), f.txid.begin());
+        f.vout = static_cast<uint32_t>(vout);
+        f.value_sat = p.offer.btc_amount_sat;
+        p.zec_funding = f;
+    }
     if (!single["din_sweep_pubkey"].empty()) {
         const auto k = FromHex(single["din_sweep_pubkey"]);
         if (k.size() != 32) Bad("bad din_sweep_pubkey");
@@ -156,12 +197,18 @@ TowerPackage DecodeTowerPackage(const std::string& text) {
 TowerPackage BuildTowerPackage(const SwapSession& s, const SwapKeys& keys, const FundingOutput& din_funding,
                                const BtcFunding& btc_funding, const FeeLadderPolicy& din_policy,
                                const BtcFeeLadderPolicy& btc_policy) {
+    auto p = BuildTowerPackageDin(s, keys, din_funding, din_policy);
+    AddBtcRefundRungs(p, s, keys, btc_funding, btc_policy);
+    VerifyTowerPackage(p);
+    return p;
+}
+
+TowerPackage BuildTowerPackageDin(const SwapSession& s, const SwapKeys& keys, const FundingOutput& din_funding,
+                                  const FeeLadderPolicy& din_policy) {
     const auto& rec = s.record;
     if (rec.role != Role::BtcSeller) Fail("only Bob arms a watchtower");
     const auto din_terms = MakeDinTerms(rec.offer, rec.accept);
-    const auto btc_terms = MakeBtcTerms(rec.offer, rec.accept);
     if (XOnlyOf(keys.din_secret_key) != din_terms.claim_pubkey) Fail("DIN key does not match the swap");
-    if (CompressedOf(keys.btc_secret_key) != btc_terms.refund_pubkey) Fail("BTC key does not match the swap");
 
     TowerPackage p;
     p.offer = rec.offer;
@@ -205,7 +252,13 @@ TowerPackage BuildTowerPackage(const SwapSession& s, const SwapKeys& keys, const
         }
         p.din_claims.push_back(std::move(r));
     }
+    return p;
+}
 
+void AddBtcRefundRungs(TowerPackage& p, const SwapSession& s, const SwapKeys& keys, const BtcFunding& btc_funding,
+                       const BtcFeeLadderPolicy& btc_policy) {
+    const auto btc_terms = MakeBtcTerms(s.record.offer, s.record.accept);
+    if (CompressedOf(keys.btc_secret_key) != btc_terms.refund_pubkey) Fail("BTC key does not match the swap");
     if (btc_policy.start_feerate_sat_per_vb == 0 || btc_policy.max_rungs == 0 || btc_policy.max_rungs > 16) {
         Fail("bad BTC fee policy");
     }
@@ -226,8 +279,6 @@ TowerPackage BuildTowerPackage(const SwapSession& s, const SwapKeys& keys, const
         p.btc_refunds.push_back(std::move(r));
     }
     if (p.btc_refunds.empty()) Fail("no BTC refund rung fits the fee policy");
-    VerifyTowerPackage(p);
-    return p;
 }
 
 void VerifyTowerPackage(const TowerPackage& p) {
@@ -235,7 +286,16 @@ void VerifyTowerPackage(const TowerPackage& p) {
     const auto btc_terms = MakeBtcTerms(p.offer, p.accept);
     const auto htlc = BuildDinHtlc(din_terms);
     if (p.din_claims.empty()) Bad("no DIN claim rungs");
-    if (p.btc_refunds.empty()) Bad("no BTC refund rungs");
+    const bool zec = p.offer.chain == CounterChain::Zcash;
+    if (zec) {
+        if (!p.btc_refunds.empty()) Bad("Bitcoin refund rungs in a Zcash package");
+        if (!p.zec_funding || p.zec_refunds.empty()) Bad("no ZEC refund rung");
+        if (p.zec_funding->value_sat != p.offer.btc_amount_sat) Bad("ZEC lock amount does not match the swap");
+        if (!ZecHooks().verify) Bad("this build cannot verify Zcash refund rungs");
+    } else {
+        if (p.zec_funding || !p.zec_refunds.empty()) Bad("Zcash rungs in a Bitcoin package");
+        if (p.btc_refunds.empty()) Bad("no BTC refund rungs");
+    }
 
     const FundingOutput din_funding = DinFundingOf(p, htlc);
     const bool cpfp = p.din_sweep_pubkey != Bytes32{};
@@ -294,6 +354,7 @@ void VerifyTowerPackage(const TowerPackage& p) {
         }
     }
 
+    if (zec) return ZecHooks().verify(p);
     const BtcFunding btc_funding = BtcFundingOf(p);
     const auto witness_script = BuildBtcHtlcWitnessScript(btc_terms);
     const auto& btc_payout = p.btc_refunds.front().tx.vout.empty() ? std::vector<uint8_t>{}
@@ -337,7 +398,7 @@ SwapWatchSpec TowerWatchSpec(const TowerPackage& p, const std::string& btc_chain
     w.din_scan_from_height = p.din_scan_from_height;
     w.btc_scan_from_height = p.btc_scan_from_height;
     w.din_funding_txid = p.din_claims.front().tx.vin.at(0).prevout.txid.AsUint256().GetHex();
-    const auto& wire = p.btc_refunds.front().tx.vin.at(0).prev_txid;
+    const auto wire = BtcFundingOf(p).txid;
     w.btc_funding_txid = ToHex(std::vector<uint8_t>(wire.rbegin(), wire.rend()));
     w.btc_chain = btc_chain;
     return w;
@@ -361,6 +422,100 @@ bool TowerAckFresh(const std::string& inbox_dir, const std::string& swap_id, con
     uint64_t t = 0;
     if (!(in >> hash >> t) || hash != package_hash) return false;
     return t <= uint64_t(now) + 60 && uint64_t(now) <= t + max_age;
+}
+
+bool IsTowerPackageHash(const std::string& text) {
+    if (text.size() != 64) return false;
+    return std::all_of(text.begin(), text.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+}
+
+TowerIntakeResult TowerIntakeStore(const std::string& inbox_dir, const std::string& package_text,
+                                   const TowerIntakeLimits& limits) {
+    TowerIntakeResult r;
+    if (package_text.size() > limits.max_package_bytes) {
+        r.status = TowerIntakeStatus::TooLarge;
+        return r;
+    }
+    try {
+        const TowerPackage package = DecodeTowerPackage(package_text);  // verifies every rung and signature
+        if (limits.network && package.offer.network != *limits.network) {
+            throw std::invalid_argument("this tower guards another network");
+        }
+    } catch (const std::exception& e) {
+        r.status = TowerIntakeStatus::Invalid;
+        r.reason = e.what();
+        return r;
+    }
+    r.hash = TowerPackageHash(package_text);
+    const std::string path = inbox_dir + "/" + r.hash + ".pkg";
+    try {
+        std::error_code ec;
+        // Held already, in any state: the tower has it or has dealt with it.
+        for (const char* suffix : {"", ".done", ".expired", ".rejected"}) {
+            if (std::filesystem::exists(path + suffix, ec)) {
+                r.status = TowerIntakeStatus::AlreadyHeld;
+                return r;
+            }
+        }
+        size_t held = 0;
+        for (const auto& entry : std::filesystem::directory_iterator(inbox_dir)) {
+            if (entry.path().extension() == ".pkg") ++held;
+        }
+        if (held >= limits.max_packages) {
+            r.status = TowerIntakeStatus::Full;
+            return r;
+        }
+        WriteFileAtomically(path, package_text);
+        r.status = TowerIntakeStatus::Stored;
+    } catch (const std::exception& e) {
+        r.status = TowerIntakeStatus::Failed;
+        r.reason = e.what();
+    }
+    return r;
+}
+
+std::optional<uint32_t> TowerIntakeArmedAge(const std::string& inbox_dir, const std::string& hash, uint32_t now,
+                                            uint32_t max_age) {
+    if (!IsTowerPackageHash(hash)) return std::nullopt;
+    std::ifstream in(inbox_dir + "/" + hash + ".armed");
+    std::string held;
+    uint64_t t = 0;
+    if (!(in >> held >> t) || held != hash) return std::nullopt;
+    if (t > uint64_t(now) + 60 || uint64_t(now) > t + max_age) return std::nullopt;
+    return t >= now ? 0 : now - static_cast<uint32_t>(t);
+}
+
+bool TowerPackageAbandoned(const TowerPackage& package, const TowerReport& report, uint32_t now, uint32_t grace) {
+    return report.observed && !report.counter_lock_seen && !report.finished &&
+           uint64_t(now) > uint64_t(package.offer.t_din_unix) + grace;
+}
+
+TowerReport TickAndRecord(Watchtower& tower, const std::string& inbox_dir, const std::string& swap_id,
+                          const std::string& package_hash, uint32_t now) {
+    TowerReport r;
+    try {
+        r = tower.Tick(now);
+    } catch (const std::exception& ex) {
+        r = TowerReport{};
+        r.events.push_back(std::string("ALERT: tick failed: ") + ex.what());
+        return r;
+    }
+    if (r.healthy) {
+        try {
+            MarkTowerArmed(inbox_dir, swap_id, package_hash, now);
+        } catch (const std::exception& ex) {
+            r.events.push_back(std::string("ALERT: cannot write the ack; Bob will not fund: ") + ex.what());
+        }
+    }
+    if (r.learned_secret) {
+        try {
+            WriteFileAtomically(inbox_dir + "/" + swap_id + ".secret",
+                                ToHex(std::vector<uint8_t>(r.learned_secret->begin(), r.learned_secret->end())) + "\n");
+        } catch (const std::exception& ex) {  // kept in memory; public on Bitcoin anyway
+            r.events.push_back(std::string("ALERT: cannot keep the learned secret on disk: ") + ex.what());
+        }
+    }
+    return r;
 }
 
 // ---- The tower --------------------------------------------------------------
@@ -405,6 +560,7 @@ TowerReport Watchtower::Tick(uint32_t now) {
     // Healthy: both chains observed and the package's DIN lock on chain. The
     // daemon refreshes Bob's ack only while this holds.
     report.healthy = din.ok && btc.ok && din_lock_here;
+    report.counter_lock_seen = btc.ok && btc.htlc.output_seen;
 
     // Learn the secret from Alice's Bitcoin claim, once; then keep it, so a
     // later Bitcoin outage cannot stop the DIN duty.
@@ -541,12 +697,14 @@ void Watchtower::BtcRefundDuty(const BtcWatchReport& btc, uint32_t now, TowerRep
     const auto& offer = package_.offer;
     if (btc.htlc.spent_by_claim || (btc.htlc.spent && btc.htlc.spend_confirmations >= 1)) return;
     if (btc.mtp_unix <= offer.t_btc_unix || !btc.htlc.output_seen) return;
-    const size_t i = NextRung(btc_refund_, package_.btc_refunds.size(), now);
+    const bool zec = package_.offer.chain == CounterChain::Zcash;
+    const size_t i = NextRung(btc_refund_, zec ? package_.zec_refunds.size() : package_.btc_refunds.size(), now);
     try {
-        report.events.push_back("BTC refund rung " + std::to_string(i) + " broadcast: " +
-                                io_.BroadcastBtc(SerializeBtcTx(package_.btc_refunds[i].tx)));
+        const auto raw = zec ? ZecHooks().rung_raw(package_, i) : SerializeBtcTx(package_.btc_refunds[i].tx);
+        report.events.push_back(std::string(zec ? "ZEC" : "BTC") + " refund rung " + std::to_string(i) + " broadcast: " +
+                                io_.BroadcastBtc(raw));
     } catch (const std::exception& e) {
-        report.events.push_back("BTC refund rung " + std::to_string(i) + " not accepted: " + e.what());
+        report.events.push_back(std::string(zec ? "ZEC" : "BTC") + " refund rung " + std::to_string(i) + " not accepted: " + e.what());
     }
 }
 

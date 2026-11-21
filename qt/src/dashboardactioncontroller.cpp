@@ -224,8 +224,9 @@ void DashboardActionController::setSeederOptIn(bool enabled) {
         stopSeeder();
         seeder_status_ = tr("Stopping");
     } else {
-        seeder_status_ = enabled ? (seeder_running_ ? tr("Running") : tr("Ready"))
-                                 : tr("Off");
+        seeder_status_ = !enabled ? tr("Off")
+            : seeder_rpc_unsupported_ ? tr("Seeder service unavailable on this node")
+            : seeder_running_ ? tr("Running") : tr("Ready");
     }
     emitSeederState();
 }
@@ -233,6 +234,11 @@ void DashboardActionController::setSeederOptIn(bool enabled) {
 void DashboardActionController::startSeeder() {
     if (!seeder_opted_in_) {
         seeder_status_ = tr("Switch to Yes first");
+        emitSeederState();
+        return;
+    }
+    if (seeder_rpc_unsupported_) {
+        seeder_status_ = tr("Seeder service unavailable on this node");
         emitSeederState();
         return;
     }
@@ -259,6 +265,11 @@ void DashboardActionController::stopSeeder() {
 }
 
 void DashboardActionController::refreshSeederStatus() {
+    // The dashboard exists before the embedded node starts listening. Wait for
+    // another RPC to establish the connection before polling this optional
+    // operator service, so startup does not show a misleading error.
+    if (!rpc_ || !rpc_->isConnected() || !seeder_opted_in_ ||
+        seeder_rpc_unsupported_) return;
     dispatchObject(QStringLiteral("seeder.status"), QJsonObject{});
 }
 
@@ -360,7 +371,10 @@ void DashboardActionController::onRpcError(const QString& method, int code,
             .arg(method).arg(code).arg(message));
         if (method.startsWith(QStringLiteral("seeder."))) {
             seeder_error_sticky_ = true;
-            seeder_status_ = tr("Error: %1").arg(message);
+            seeder_rpc_unsupported_ = code == -32601;
+            seeder_status_ = seeder_rpc_unsupported_
+                ? tr("Seeder service unavailable on this node")
+                : tr("Error: %1").arg(message);
             emitSeederState();
         }
     }

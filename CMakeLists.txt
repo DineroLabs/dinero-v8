@@ -840,6 +840,12 @@ add_library(dinero_rpc_handlers STATIC
   src/rpc/orchard_account_rpc.cpp
   src/rpc/wallet_raw_transaction_rpc.cpp
   src/rpc/methods_swap.cpp  # swap.* RPCs (DIN<->BTC atomic swaps)
+  # The swap service lives with the swap RPCs, not in dinero_core: it calls
+  # DispatchBoundWalletRequest, which is defined in this library. In
+  # dinero_core it was an object with a dependency its library cannot meet;
+  # GNU ld pulls it into any program whose other libraries need a libstdc++
+  # template it happens to carry, and that program then fails to link.
+  src/daemon/services/swap_service.cpp  # DIN<->BTC swaps (off unless swap.enable=1)
   src/rpc/amount_parser.cpp  # Exact DIN/una RPC boundary conversion
   src/rpc/methods_wallet_covenant_profile.cpp  # Regtest-only profile-v1 construction/recovery RPC
   src/rpc/wallet_sync_rpc_handlers.cpp  # Phase W.2.6: Wallet sync UX RPC methods
@@ -1118,7 +1124,6 @@ add_library(dinero_core STATIC
   src/daemon/services/assumeutxo_replay.cpp     # AssumeUTXO isolated replay engine
   src/daemon/services/mempool_service.cpp
   src/daemon/services/metrics_service.cpp
-  src/daemon/services/swap_service.cpp  # DIN<->BTC swaps (off unless swap.enable=1)
   src/daemon/services/p2p_service.cpp
 
   # Phase D.4 (Dinero Core 1.0) — pure health-check decision logic

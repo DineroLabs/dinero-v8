@@ -76,7 +76,8 @@ private Q_SLOTS:
         QVERIFY(window);
         auto* out = output(*window);
         auto* zoom = window->findChild<QPushButton*>("miningZoomIn");
-        QVERIFY(out && zoom);
+        auto* minus = window->findChild<QPushButton*>("miningZoomOut");
+        QVERIFY(out && zoom && minus);
         QCOMPARE(out->grab().toImage().pixelColor(out->width() / 2, 10), QColor("#000000"));
         const struct { const char* name; quint32 rgb; } choices[] = {
             {"miningHashColorGreen", 0x00ff00},
@@ -89,15 +90,20 @@ private Q_SLOTS:
             auto* button = window->findChild<QPushButton*>(choice.name);
             QVERIFY(button);
             QVERIFY(button->isVisible());
-            QCOMPARE(button->size(), zoom->size());
-            QVERIFY(button->x() < out->width() / 2);
-            QVERIFY(button->geometry().bottom() < out->viewport()->geometry().top());
+            QCOMPARE(button->size(), QSize(12, 20));
+            QCOMPARE(button->iconSize(), QSize(12, 12));
+            QVERIFY(button->x() > out->width() / 2);
+            QVERIFY(button->geometry().right() < minus->geometry().left());
+            QCOMPARE(button->y(), zoom->y());
             const QColor center = button->grab().toImage().pixelColor(button->width() / 2,
                                                                        button->height() / 2);
             QCOMPARE(center.red(), int((choice.rgb >> 16) & 0xff));
             QCOMPARE(center.green(), int((choice.rgb >> 8) & 0xff));
             QCOMPARE(center.blue(), int(choice.rgb & 0xff));
-            if (previous) QVERIFY(previous->geometry().right() < button->geometry().left());
+            if (previous) {
+                QVERIFY(previous->geometry().right() < button->geometry().left());
+                QVERIFY(button->geometry().left() - previous->geometry().right() <= 2);
+            }
             previous = button;
         }
         QCOMPARE(window->miningHashColorRgb_, 0x00ff00u);
