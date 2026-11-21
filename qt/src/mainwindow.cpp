@@ -11894,47 +11894,25 @@ void MainWindow::updateMiningOutputCinematicFrame() {
       const MiningHashSample& sample = miningHashSamples_.at(sampleIndex);
       // The chosen session hue applies to regular rows and older finds.
       // Only the current find is orange.
-      const auto colour = dinero::qt::hashRowColor(
-        sample.blockFound, sample.highlightUntilMs > nowMs, miningHashColorRgb_);
-      painter.setPen(QColor(colour.r, colour.g, colour.b, colour.a));
-      const qreal textTop = frameSize.height() - 6 - visual * rowHeight - metrics.ascent();
       const qint64 remainingMs = sample.highlightUntilMs - nowMs;
+      const auto colour = dinero::qt::hashRowColor(
+        sample.blockFound, remainingMs > 0, miningHashColorRgb_);
+      QColor rowColor(colour.r, colour.g, colour.b, colour.a);
       if (sample.blockFound && remainingMs > 0 &&
           remainingMs <= dinero::qt::kBlockFoundHighlightMs) {
-        // The solved template stops producing samples while the next one is
-        // loaded. For exactly one second, jolt the orange text in three
-        // slices and give it one subtle zoom-out-and-back pulse. The cached
-        // line is still the real winning header; no fake hashes, divider
-        // lines, or extra animation timer are needed.
-        static constexpr int offsets[5][3] = {
-          {-4,  6, -2}, { 3, -5,  1}, {-2,  4, -6},
-          { 5, -3,  2}, {-3,  2,  5}
-        };
-        const int elapsedMs = dinero::qt::kBlockFoundHighlightMs -
-                              static_cast<int>(remainingMs);
-        const int phase = std::clamp(
-          elapsedMs / dinero::qt::kHashEngineIntervalMs, 0, 4);
-        static constexpr qreal pulseScale[5] = {1.0, 0.97, 0.94, 0.97, 1.0};
-        const int textHeight = metrics.height();
-        const qreal anchorY = textTop + textHeight / 2.0;
-        painter.save();
-        painter.translate(8, anchorY);
-        painter.scale(pulseScale[phase], pulseScale[phase]);
-        painter.translate(-8, -anchorY);
-        for (int slice = 0; slice < 3; ++slice) {
-          const int top = textHeight * slice / 3;
-          const int bottom = textHeight * (slice + 1) / 3;
-          painter.save();
-          painter.setClipRect(QRectF(0, textTop + top,
-                                     frameSize.width(), bottom - top));
-          painter.drawStaticText(
-            QPointF(8 + offsets[phase][slice], textTop), sample.renderedLine);
-          painter.restore();
-        }
-        painter.restore();
-      } else {
-        painter.drawStaticText(QPointF(8, textTop), sample.renderedLine);
+        // Keep the winning hash still while the next template loads. Its
+        // orange light swells once and returns to its normal intensity.
+        const qreal progress = 1.0 - static_cast<qreal>(remainingMs) /
+                                   dinero::qt::kBlockFoundHighlightMs;
+        const qreal rise = 1.0 - std::abs(2.0 * progress - 1.0);
+        const qreal brightness = rise * rise * (3.0 - 2.0 * rise);
+        rowColor.setGreen(qRound(176 + 44 * brightness));
+        rowColor.setBlue(qRound(48 + 48 * brightness));
+        rowColor.setAlpha(qRound(225 + 30 * brightness));
       }
+      painter.setPen(rowColor);
+      const qreal textTop = frameSize.height() - 6 - visual * rowHeight - metrics.ascent();
+      painter.drawStaticText(QPointF(8, textTop), sample.renderedLine);
     }
     if (miningHashOverlay_) {
       miningHashOverlay_->setGeometry(viewport->rect());
