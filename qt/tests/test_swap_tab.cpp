@@ -61,6 +61,28 @@ private Q_SLOTS:
         tab_ = nullptr;
     }
 
+    void sellFormUsesTheSameCoinArtworkAsTheWallet() {
+        QVERIFY(!QPixmap(":/wallet-icons/dinero.png").isNull());
+        QVERIFY(!QPixmap(":/wallet-icons/bitcoin.png").isNull());
+        auto* din = Find<QLabel>(tab_, "swapDinAmountLabel");
+        auto* btc = Find<QLabel>(tab_, "swapWantedCoinLabel");
+        QVERIFY(din->text().contains(":/wallet-icons/dinero.png"));
+        QVERIFY(din->text().contains("DIN you sell:"));
+        QVERIFY(btc->text().contains(":/wallet-icons/bitcoin.png"));
+        QVERIFY(btc->text().contains("BTC you want:"));
+        const auto hasCoinColor = [](const QImage& image) {
+            for (int y = 0; y < image.height(); ++y)
+                for (int x = 0; x < image.width(); ++x) {
+                    const QColor pixel = image.pixelColor(x, y);
+                    if (pixel.red() > 170 && pixel.green() > 95 && pixel.blue() < 105 &&
+                        pixel.red() > pixel.green()) return true;
+                }
+            return false;
+        };
+        QVERIFY2(hasCoinColor(din->grab().toImage()), "Dinero coin did not render in the label");
+        QVERIFY2(hasCoinColor(btc->grab().toImage()), "Bitcoin coin did not render in the label");
+    }
+
     void everyButtonHasHoverTextAndTheAppLook() {
         const auto buttons = tab_->findChildren<QPushButton*>();
         QVERIFY(buttons.size() >= 6);

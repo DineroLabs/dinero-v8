@@ -305,6 +305,9 @@ private:
 
 constexpr int kWalletUnlockTimeoutSeconds = 60 * 60;
 constexpr int kStartupWatchdogMs = 5 * 60 * 1000;
+QString fullySyncedBadgeText() {
+  return QStringLiteral("<img src=\":/ui-icons/sync-ready.png\" width=\"18\" height=\"18\"/> Fully synced!");
+}
 // A main tab's real name. Narrow windows show icon-only tabs (empty text, name
 // in the tooltip), so look tabs up through this, never through tabText().
 QString mainTabName(const QTabWidget* tabs, int index) {
@@ -322,6 +325,7 @@ enum class NavigationGlyph {
   Send,
   Receive,
   Transactions,
+  Mempool,
   Link,
   Hardware,
   Card,
@@ -389,6 +393,12 @@ QPixmap drawNavigationGlyph(NavigationGlyph glyph, const QColor& color) {
     case NavigationGlyph::Transactions:
       line(9, 10, 31, 10); line(9, 20, 31, 20); line(9, 30, 25, 30);
       painter.drawPoint(QPointF(5, 10)); painter.drawPoint(QPointF(5, 20)); painter.drawPoint(QPointF(5, 30));
+      break;
+    case NavigationGlyph::Mempool:
+      // Three waiting transactions feed into the next block.
+      rect(4, 8, 9, 6, 1.5); rect(4, 17, 9, 6, 1.5); rect(4, 26, 9, 6, 1.5);
+      line(16, 20, 24, 20); line(21, 17, 24, 20); line(21, 23, 24, 20);
+      rect(27, 8, 9, 24, 2);
       break;
     case NavigationGlyph::Swap:
       // Two opposing arrows: one asset goes out, the other comes in.
@@ -2240,7 +2250,14 @@ MainWindow::MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
 {
   
   setWindowTitle("Dinero Cryptocurrency Wallet - Real Money For Free People");
-  setWindowIcon(QIcon(resolveBundledAssetPath(QStringLiteral("Dinero-Coin.png"))));
+  const QString dineroIconPath = resolveBundledAssetPath(QStringLiteral("Dinero-Coin.png"));
+  setWindowIcon(QIcon(dineroIconPath));
+#if defined(Q_OS_MAC)
+  // macOS shows a title-bar proxy icon only for windows associated with an
+  // existing file. The window title above stays in place, while the icon is
+  // the same coin used in the wallet and in the app bundle.
+  if (!dineroIconPath.isEmpty()) setWindowFilePath(dineroIconPath);
+#endif
 
   // Fit window to screen — never taller than available space
   QRect screenRect = QGuiApplication::primaryScreen()->availableGeometry();
@@ -3091,7 +3108,9 @@ void MainWindow::setupUI() {
     // Live mempool summary. The transaction rows make short-lived pending
     // activity observable instead of reducing it to a periodically sampled
     // counter that can remain visually indistinguishable from "unavailable".
-    auto *mempoolBox = new QGroupBox("📦 Mempool");
+    auto *mempoolBox = walletLegendGroup(
+      "Mempool", drawNavigationGlyph(NavigationGlyph::Mempool, QColor("#bec8d0")));
+    mempoolBox->setObjectName("overviewMempoolCard");
     auto *mempoolLayout = new QVBoxLayout(mempoolBox);
     mempoolLayout->setSpacing(6);
     mempoolBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
@@ -5354,11 +5373,15 @@ void MainWindow::setupUI() {
           : QObject(out), out_(out), swatches_(std::move(swatches)),
             minus_(minus), plus_(plus), step_(std::move(step)) {
         out->installEventFilter(this);
+        out->viewport()->installEventFilter(this);
         place();
       }
-      bool eventFilter(QObject*, QEvent* event) override {
+      bool eventFilter(QObject* watched, QEvent* event) override {
         if (event->type() == QEvent::Resize || event->type() == QEvent::Show) {
-          place();
+          // QTextEdit resizes its viewport after its own resize event. Place
+          // again when that viewport changes, and once layout settles.
+          if (watched == out_->viewport()) place();
+          else QTimer::singleShot(0, this, [this] { place(); });
         } else if (event->type() == QEvent::KeyPress) {
           auto* key = static_cast<QKeyEvent*>(event);
           if (key->modifiers() & Qt::ControlModifier) {
@@ -8633,7 +8656,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
           .arg(headers));
         lblSyncProgress_->setStyleSheet("QLabel { color: #d0d7df; font-weight: 600; background: #262b32; border: 1px solid #373d46; border-radius: 6px; padding: 5px; }");
       } else if (headers == blocks && blocks > 0) {
-        lblSyncProgress_->setText("✅ Fully synced!");
+        lblSyncProgress_->setText(fullySyncedBadgeText());
         lblSyncProgress_->setStyleSheet("QLabel { color: #e1e6ec; font-weight: 600; background: #2b3037; border: 1px solid #3a4048; border-radius: 6px; padding: 5px; }");
       } else {
         lblSyncProgress_->setText("");
@@ -9825,7 +9848,7 @@ void MainWindow::updateStatus(const QJsonObject& info) {
         .arg(headers));
       lblSyncProgress_->setStyleSheet("QLabel { color: #d0d7df; font-weight: 600; background: #262b32; border: 1px solid #373d46; border-radius: 6px; padding: 5px; }");
     } else if (headers == blocks && blocks > 0) {
-      lblSyncProgress_->setText("✅ Fully synced!");
+      lblSyncProgress_->setText(fullySyncedBadgeText());
       lblSyncProgress_->setStyleSheet("QLabel { color: #e1e6ec; font-weight: 600; background: #2b3037; border: 1px solid #3a4048; border-radius: 6px; padding: 5px; }");
     }
   }
@@ -18232,7 +18255,9 @@ void MainWindow::onExportMetrics() {
   QJsonObject blockchain;
   blockchain["height"] = lblHeight_ ? lblHeight_->text() : "-";
   blockchain["connections"] = lblConnections_ ? lblConnections_->text() : "-";
-  blockchain["sync_progress"] = lblSyncProgress_ ? lblSyncProgress_->text() : "-";
+  const QString syncStatus = lblSyncProgress_ ? lblSyncProgress_->text() : QStringLiteral("-");
+  blockchain["sync_progress"] = syncStatus == fullySyncedBadgeText()
+      ? QStringLiteral("Fully synced!") : syncStatus;
   metrics["blockchain"] = blockchain;
   
   // Alerts
@@ -18681,7 +18706,7 @@ void MainWindow::onBlockchainSyncUpdate(int blocks, int headers) {
         .arg(headers));
       lblSyncProgress_->setStyleSheet("QLabel { color: #d0d7df; font-weight: 600; background: #262b32; border: 1px solid #373d46; border-radius: 6px; padding: 5px; }");
     } else {
-      lblSyncProgress_->setText("✅ Fully synced!");
+      lblSyncProgress_->setText(fullySyncedBadgeText());
       lblSyncProgress_->setStyleSheet("QLabel { color: #e1e6ec; font-weight: 600; background: #2b3037; border: 1px solid #3a4048; border-radius: 6px; padding: 5px; }");
     }
   }

@@ -2,6 +2,7 @@
 #include <QGroupBox>
 #include <QTabWidget>
 #include <QImage>
+#include <QPixmap>
 #include <QPainter>
 #include <QSettings>
 #include <QTemporaryDir>
@@ -72,6 +73,9 @@ private Q_SLOTS:
             rpc->setDatadir(dir.path());
             rpc->setEndpoint(QUrl(QString("http://127.0.0.1:%1/").arg(endpoint.serverPort())));
         }
+        QVERIFY(!QPixmap(":/ui-icons/sync-ready.png").isNull());
+        window.onBlockchainSyncUpdate(100, 100);
+        QVERIFY(window.lblSyncProgress_->text().contains(":/ui-icons/sync-ready.png"));
 
         auto box = [&](const QString& title) -> QGroupBox* {
             for (auto* g : window.findChildren<QGroupBox*>())
@@ -79,7 +83,7 @@ private Q_SLOTS:
             return nullptr;
         };
         QGroupBox* consensus = box("v7 Consensus Health");
-        QGroupBox* mempool = box("📦 Mempool");
+        QGroupBox* mempool = window.findChild<QGroupBox*>("overviewMempoolCard");
         QGroupBox* resources = box("Resources & mining");
         QGroupBox* info = box("Network Info");
         QGroupBox* blocks = box("Latest Blocks");

@@ -71,6 +71,29 @@ private Q_SLOTS:
         QVERIFY2(m.right() < p.left() && qAbs(m.top() - p.top()) <= 2, "- should sit just left of +");
     }
 
+    void controlsFollowOutputAcrossWideResize() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        auto* out = output(*window);
+        auto* plus = window->findChild<QPushButton*>("miningZoomIn");
+        auto* minus = window->findChild<QPushButton*>("miningZoomOut");
+        auto* red = window->findChild<QPushButton*>("miningHashColorRed");
+        QVERIFY(out && plus && minus && red);
+        const int originalWidth = out->width();
+        const auto atRightEdge = [&] {
+            const QRect area(out->mapTo(window.get(), QPoint(0, 0)), out->size());
+            const QRect button(plus->mapTo(window.get(), QPoint(0, 0)), plus->size());
+            return area.right() - button.right() >= 0 && area.right() - button.right() <= 30;
+        };
+        window->resize(3000, 1100);
+        QTRY_VERIFY(out->width() > originalWidth + 500);
+        QTRY_VERIFY(atRightEdge());
+        QVERIFY(red->geometry().right() < minus->geometry().left());
+        QVERIFY(minus->geometry().right() < plus->geometry().left());
+        window->resize(1440, 1000);
+        QTRY_VERIFY(atRightEdge());
+    }
+
     void hashColorsSwitchImmediatelyAndResetOnNewWindow() {
         auto window = makeWindow();
         QVERIFY(window);

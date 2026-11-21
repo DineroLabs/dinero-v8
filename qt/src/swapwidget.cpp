@@ -110,6 +110,14 @@ QLabel* Plain(const QString& text, QWidget* parent) {
     return l;
 }
 
+void SetCoinLabel(QLabel* label, const QString& icon, const QString& words) {
+    label->setTextFormat(Qt::RichText);
+    label->setText(QString("<img src=\":/wallet-icons/%1.png\" width=\"18\" height=\"18\"/> "
+                           "%2")
+                       .arg(icon, words.toHtmlEscaped()));
+    label->setToolTip(words);
+}
+
 QLabel* Value(const char* name, QWidget* parent) {
     auto* l = new QLabel(kDash, parent);
     l->setObjectName(name);
@@ -249,11 +257,16 @@ void SwapWidget::setupUi() {
     pickRow->addStretch();
     chainLabel_->setVisible(false);
     chainPick_->setVisible(false);
-    btcAmountLabel_ = Plain("BTC you want:", sell);
+    btcAmountLabel_ = Plain({}, sell);
+    btcAmountLabel_->setObjectName("swapWantedCoinLabel");
+    SetCoinLabel(btcAmountLabel_, "bitcoin", "BTC you want:");
     btcAddressLabel_ = Plain("Your BTC address:", sell);
     sellGrid->addWidget(chainLabel_, 0, 0);
     sellGrid->addWidget(chainPick_, 0, 1);
-    sellGrid->addWidget(Plain("DIN you sell:", sell), 1, 0);
+    auto* dinAmountLabel = Plain({}, sell);
+    dinAmountLabel->setObjectName("swapDinAmountLabel");
+    SetCoinLabel(dinAmountLabel, "dinero", "DIN you sell:");
+    sellGrid->addWidget(dinAmountLabel, 1, 0);
     sellGrid->addWidget(dinAmount_, 1, 1);
     sellGrid->addWidget(btcAmountLabel_, 2, 0);
     sellGrid->addWidget(btcAmount_, 2, 1);
@@ -547,7 +560,8 @@ void SwapWidget::onChainPicked() {
     sellZec_ = zecSupported_ && chainZec_->isChecked();
     sellBox_->setTitle(sellZec_ ? "Sell DIN for ZEC" : "Sell DIN for BTC");
     reviewClaimName_->setText(sellZec_ ? "Claim the ZEC by" : "Claim the BTC by");
-    btcAmountLabel_->setText(sellZec_ ? "ZEC you want:" : "BTC you want:");
+    SetCoinLabel(btcAmountLabel_, sellZec_ ? "zcash" : "bitcoin",
+                 sellZec_ ? "ZEC you want:" : "BTC you want:");
     btcAddressLabel_->setText(sellZec_ ? "Your ZEC address:" : "Your BTC address:");
     btcAmount_->setPlaceholderText(sellZec_ ? "e.g. 2.5" : "e.g. 0.001");
     btcAmount_->setToolTip(sellZec_ ? "How much ZEC you want for it (up to 8 decimals)"
