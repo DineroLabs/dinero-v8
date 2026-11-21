@@ -14,6 +14,7 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QIcon>
 #include <QJsonArray>
 #include <QLabel>
 #include <QLineEdit>
@@ -43,6 +44,18 @@ const QString kBump = "portfolio.btcbump";
 const char* const kTableStyle =
     "QTableWidget { background: #181b20; alternate-background-color: #20252b; color: #d6dde6; "
     "gridline-color: #2f343c; selection-background-color: #3e4550; selection-color: #ffffff; }";
+
+QIcon coinIcon(const QString& name) {
+    static const QIcon dinero(":/wallet-icons/dinero.png");
+    static const QIcon bitcoin(":/wallet-icons/bitcoin.png");
+    static const QIcon zcash(":/wallet-icons/zcash.png");
+    static const QIcon bitcoinCash(":/wallet-icons/bitcoin-cash.png");
+    if (name.endsWith("(DIN)")) return dinero;
+    if (name.endsWith("(BTC)")) return bitcoin;
+    if (name.endsWith("(ZEC)")) return zcash;
+    if (name.endsWith("(BCH)")) return bitcoinCash;
+    return {};
+}
 
 QPushButton* Button(const QString& text, const QString& tip, const char* name, QWidget* parent) {
     auto* b = new QPushButton(text, parent);
@@ -83,6 +96,7 @@ PortfolioWidget::PortfolioWidget(RpcClient* rpc, QWidget* parent, Place place)
     coinsBox->setObjectName("portfolioCoins");
     auto* coinsLayout = new QVBoxLayout(coinsBox);
     coins_ = Table({"Coin", "You hold", "How it is known"}, "coinsTable", coinsBox);
+    coins_->setIconSize(QSize(20, 20));
     coins_->setSelectionMode(QAbstractItemView::NoSelection);
     coins_->setMaximumHeight(withinWallet ? 130 : 170);
     refresh_ = Button("Refresh", "Ask your node again for every balance", "portfolioRefresh", coinsBox);
@@ -238,6 +252,7 @@ void PortfolioWidget::showCoins() {
         const QString values[3] = {rows[i].coin, rows[i].amount.isEmpty() ? QString::fromUtf8("—") : rows[i].amount, rows[i].note};
         for (int c = 0; c < 3; ++c) {
             auto* item = new QTableWidgetItem(values[c]);
+            if (c == 0) item->setIcon(coinIcon(rows[i].coin));
             if (!rows[i].available) item->setForeground(QColor("#8b949e"));
             coins_->setItem(i, c, item);
         }

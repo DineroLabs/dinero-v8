@@ -485,6 +485,19 @@ QIcon navigationIcon(NavigationGlyph glyph) {
   return icon;
 }
 
+QGroupBox* walletLegendGroup(const QString& title, const QPixmap& pixmap) {
+  auto* group = new QGroupBox(pixmap.isNull() ? title : QStringLiteral("     ") + title);
+  if (!pixmap.isNull()) {
+    auto* icon = new QLabel(group);
+    icon->setFixedSize(18, 18);
+    icon->setPixmap(pixmap.scaled(18, 18, Qt::KeepAspectRatio,
+                                  Qt::SmoothTransformation));
+    icon->move(16, 0);
+    icon->setAttribute(Qt::WA_TransparentForMouseEvents);
+  }
+  return group;
+}
+
 // Temporary product gate: Cmd+K should expose only My Node Dashboard while
 // the AI assistant surface is parked for release polish.
 constexpr bool kShowAiAssistantPanel = false;
@@ -3323,7 +3336,8 @@ void MainWindow::setupUI() {
     auto *layout = new QVBoxLayout(wallet);
     
     // HD Wallet Setup Banner
-    auto *walletSetupGroup = new QGroupBox("🔐 HD Wallet");
+    auto *walletSetupGroup = walletLegendGroup(
+      "HD Wallet", drawNavigationGlyph(NavigationGlyph::Wallet, QColor("#bec8d0")));
     auto *walletSetupLayout = new QVBoxLayout(walletSetupGroup);
     walletSetupLayout->setSpacing(8);
     auto *walletIntroLayout = new QHBoxLayout;
@@ -3417,7 +3431,8 @@ void MainWindow::setupUI() {
     layout->addWidget(compatGroup);
     
     // Enhanced Balance Display
-    auto *balanceGroup = new QGroupBox("💰 Balance");
+    auto *balanceGroup = walletLegendGroup(
+      "Balance", QPixmap(":/wallet-icons/dinero.png"));
     auto *balanceLayout = new QVBoxLayout(balanceGroup);
 
     // Main balance includes public funds and shielded funds, including covenant-locked notes.
@@ -11908,11 +11923,12 @@ void MainWindow::updateMiningOutputCinematicFrame() {
       if (sample.blockFound && remainingMs > 0 &&
           remainingMs <= dinero::qt::kBlockFoundHighlightMs) {
         // Keep the winning hash still while the next template loads. Its
-        // orange light swells once and returns to its normal intensity.
+        // orange light swells twice, fading fully between the two glows.
         const qreal progress = 1.0 - static_cast<qreal>(remainingMs) /
                                    dinero::qt::kBlockFoundHighlightMs;
-        const qreal rise = 1.0 - std::abs(2.0 * progress - 1.0);
-        brightness = rise * rise * (3.0 - 2.0 * rise);
+        constexpr qreal kPi = 3.14159265358979323846;
+        const qreal wave = std::sin(progress * 2.0 * kPi);
+        brightness = wave * wave;
         rowColor.setGreen(qRound(176 + 44 * brightness));
         rowColor.setBlue(qRound(48 + 48 * brightness));
         rowColor.setAlpha(qRound(225 + 30 * brightness));

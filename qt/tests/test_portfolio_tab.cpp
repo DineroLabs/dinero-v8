@@ -137,6 +137,8 @@ private Q_SLOTS:
         QCOMPARE(coins->rowCount(), 4);
         QCOMPARE(coins->item(0, 0)->text(), QString("Dinero (DIN)"));
         QCOMPARE(coins->item(1, 0)->text(), QString("Bitcoin (BTC)"));
+        for (int row = 0; row < coins->rowCount(); ++row)
+            QVERIFY2(!coins->item(row, 0)->icon().isNull(), "coin icon resource is missing");
         QCOMPARE(coins->item(2, 2)->text(), QString("Not available yet"));  // Zcash: listed, not hidden
         Q_EMIT rpc_->rpcResult("portfolio.din", QJsonObject{{"total", 1234.5}});
         QCOMPARE(coins->item(0, 1)->text(), QString("1234.50000000 DIN"));
@@ -187,6 +189,8 @@ private Q_SLOTS:
         auto* coins = Find<QTableWidget>(&section, "coinsTable");
         QCOMPARE(coins->rowCount(), 3);
         QCOMPARE(coins->item(0, 0)->text(), QString("Bitcoin (BTC)"));
+        for (int row = 0; row < coins->rowCount(); ++row)
+            QVERIFY2(!coins->item(row, 0)->icon().isNull(), "wallet coin icon is missing");
         Q_EMIT rpc_->rpcResult("portfolio.din", QJsonObject{{"total", 5.0}});  // not asked for, and ignored
         QCOMPARE(coins->rowCount(), 3);
         QCOMPARE(coins->item(0, 0)->text(), QString("Bitcoin (BTC)"));
