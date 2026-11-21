@@ -8090,6 +8090,17 @@ din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Js
     }
 
     const uint32_t birth_height = ctx.daemon->chainstate ? ctx.daemon->chainstate->getBlockHeight() : 0;
+    // A first run bootstrapping from a snapshot must not seal a placeholder
+    // birth (0 before the load, or a height not yet advanced to the base).
+    // Refuse before creating anything; the caller retries once the node is at
+    // its snapshot base.
+    if (const auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        source && source->WalletBirthPrecedesSnapshot(birth_height)) {
+        result["error"] = "The node is still loading its starting snapshot; wallet was not created. Retry in a few minutes.";
+        result["error_code"] = "snapshot_bootstrap_pending";
+        result["retryable"] = true;
+        return result;
+    }
 #if DINERO_WALLET_RAW_ORCHARD
     // Creating a post-activation wallet promises a usable Orchard receiver.
     // A late snapshot can expose the selected tip before its independently
@@ -8202,6 +8213,18 @@ din::Json rpc_context_wallet_restore(const ExecutionContext& ctx, const din::Jso
     bool rescan_requested = true;
     if (params.isObject() && params.isMember("rescan") && params["rescan"].isBool()) {
         rescan_requested = params["rescan"].asBool();
+    }
+
+    // Same first-run window as wallet.createhd: while the node is still loading
+    // its starting snapshot (or its height has not reached the base), refuse
+    // before any effect, for rescan=true and rescan=false alike, so a restore
+    // never changes the selected wallet against a placeholder chain height.
+    if (const auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        source && source->WalletBirthPrecedesSnapshot(source->getBlockHeight())) {
+        result["error"] = "The node is still loading its starting snapshot; wallet was not restored. Retry in a few minutes.";
+        result["error_code"] = "snapshot_bootstrap_pending";
+        result["retryable"] = true;
+        return result;
     }
 
     // A restore changes the selected wallet/seed before its legacy rescan.

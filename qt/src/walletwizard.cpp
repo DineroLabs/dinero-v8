@@ -897,9 +897,13 @@ void CreateSeedPage::onGenerateSeed() {
           wizard()->setProperty("walletRollbackCandidateName", QString());
         QString rollbackError;
         rollbackProvisionedWallet(wizard(), &rollbackError);
-        const bool historyPending = payload.value("error_code").toString() == "orchard_history_pending";
+        const QString errorCode = payload.value("error_code").toString();
+        const bool snapshotPending = errorCode == "snapshot_bootstrap_pending";
+        const bool historyPending = snapshotPending || errorCode == "orchard_history_pending";
         lblSeed_->setText(historyPending
-            ? "Orchard history is still downloading and verifying. No wallet was created. Retry after sync progresses."
+            ? (snapshotPending
+                ? "Your node is still loading its starting snapshot. No wallet was created. Retry in a few minutes."
+                : "Orchard history is still downloading and verifying. No wallet was created. Retry after sync progresses.")
             : "❌ Error generating seed: " + errorText +
                 (rollbackError.isEmpty() ? QString() : "\n\nRollback warning:\n" + rollbackError));
         lblSeed_->setStyleSheet(historyPending
@@ -1036,14 +1040,18 @@ void CreateSeedPage::onGenerateSeed() {
       // The HTTP RPC envelope promotes handler errors to this callback. A
       // transport error can also leave creation's outcome unknown. Neither
       // proves that this wizard owns a wallet with the requested name.
-      const bool historyPending = error.contains(
+      const bool snapshotPending = error.contains(
+          "still loading its starting snapshot", Qt::CaseInsensitive);
+      const bool historyPending = snapshotPending || error.contains(
           "Orchard history is not ready; wallet was not created", Qt::CaseInsensitive);
       if (wizard())
         wizard()->setProperty("walletRollbackCandidateName", QString());
       QString rollbackError;
       rollbackProvisionedWallet(wizard(), &rollbackError);
       lblSeed_->setText(historyPending
-          ? "Orchard history is still downloading and verifying. No wallet was created. Retry after sync progresses."
+          ? (snapshotPending
+              ? "Your node is still loading its starting snapshot. No wallet was created. Retry in a few minutes."
+              : "Orchard history is still downloading and verifying. No wallet was created. Retry after sync progresses.")
           : "❌ Error generating seed: " + error + "\n\nPlease ensure daemon is running."
                 + (rollbackError.isEmpty()
                    ? QString()
@@ -1419,7 +1427,10 @@ bool RestoreSeedPage::validatePage() {
           } else {
             const QString error = obj["error"].toString();
             nameExists = classifyRestoreError(error) == RestoreErrorKind::NameExists;
-            lblStatus_->setText("❌ Restore failed: " + error);
+            lblStatus_->setText(obj["error_code"].toString() == "snapshot_bootstrap_pending"
+                ? QStringLiteral("⏳ Your node is still loading its starting snapshot. Nothing was changed. "
+                                 "Try the restore again in a few minutes.")
+                : "❌ Restore failed: " + error);
           }
         }
         loop.quit();
@@ -1431,7 +1442,10 @@ bool RestoreSeedPage::validatePage() {
         Q_UNUSED(code);
         responded = true;
         nameExists = classifyRestoreError(message) == RestoreErrorKind::NameExists;
-        lblStatus_->setText(QString("❌ Restore error: %1").arg(message));
+        lblStatus_->setText(message.contains("still loading its starting snapshot", Qt::CaseInsensitive)
+            ? QStringLiteral("⏳ Your node is still loading its starting snapshot. Nothing was changed. "
+                             "Try the restore again in a few minutes.")
+            : QString("❌ Restore error: %1").arg(message));
         loop.quit();
       });
 

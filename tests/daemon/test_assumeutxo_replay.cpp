@@ -917,6 +917,32 @@ TEST(RuntimeOriginProjection, BindsCapturedWalletAndScriptDomain) {
     EXPECT_THROW(RuntimeOriginProjectionTestAccess::Check(wallet,*p),std::runtime_error);
 }
 
+TEST(SnapshotWalletBirth, FirstRunRefusesABirthBelowTheSnapshotBase) {
+    // A first run from a snapshot must not seal a placeholder birth: 0 before
+    // the snapshot loads, or a height not yet advanced to the base after it.
+    // Such a wallet sits below the base, where neither the Orchard receiver
+    // check nor the snapshot-base origin applies, and never recovers.
+    using State=ChainstateService::SnapshotBootstrapState;
+    constexpr uint32_t base=161527;
+    for(const uint32_t birth:{0u,1u,base-1,base,base+1,200000u}) {
+        EXPECT_TRUE(ChainstateService::WalletBirthPrecedesSnapshot(State::Pending,base,birth)) << birth;
+        EXPECT_TRUE(ChainstateService::WalletBirthPrecedesSnapshot(State::Loading,base,birth)) << birth;
+        // Pending is published before the base height is written.
+        EXPECT_TRUE(ChainstateService::WalletBirthPrecedesSnapshot(State::Pending,0,birth)) << birth;
+    }
+    EXPECT_TRUE(ChainstateService::WalletBirthPrecedesSnapshot(State::Loaded,base,0));
+    EXPECT_TRUE(ChainstateService::WalletBirthPrecedesSnapshot(State::Loaded,base,base-1));
+    EXPECT_FALSE(ChainstateService::WalletBirthPrecedesSnapshot(State::Loaded,base,base));
+    EXPECT_FALSE(ChainstateService::WalletBirthPrecedesSnapshot(State::Loaded,base,base+1));
+    // No snapshot bootstrap (full sync, regtest, existing datadir) or a
+    // snapshot that fell back to full sync: a low birth is a real birth.
+    for(const uint32_t birth:{0u,1u,base-1,base}) {
+        EXPECT_FALSE(ChainstateService::WalletBirthPrecedesSnapshot(State::Inactive,base,birth)) << birth;
+        EXPECT_FALSE(ChainstateService::WalletBirthPrecedesSnapshot(State::Fallback,base,birth)) << birth;
+        EXPECT_FALSE(ChainstateService::WalletBirthPrecedesSnapshot(State::Inactive,0,birth)) << birth;
+    }
+}
+
 TEST(RuntimeOriginProjection, SnapshotBaseOriginAcceptsOnlyTheBaseSuccessor) {
     // A full-v6 snapshot outbox starts at base+1. Only that exact Connect,
     // child of the authenticated base and above activation, may root an

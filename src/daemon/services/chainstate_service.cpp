@@ -5743,11 +5743,14 @@ bool ChainstateService::Start() {
                 std::string perr;
                 if (ReadSnapshotHeaderPreview(snapshot_path, peek, perr) &&
                     peek.magic == consensus::SNAPSHOT_MAGIC) {
-                    // RULE 1: base peeked before any deferral.
-                    snapshot_bootstrap_state_.store(SnapshotBootstrapState::Pending);
+                    // RULE 1: base peeked before any deferral. Publish Pending
+                    // only after its path/base are written, so a thread that
+                    // observes Pending/Loading/Loaded also observes the base
+                    // (the wallet birth guard reads it from RPC threads).
                     snapshot_bootstrap_path_ = snapshot_path;
                     snapshot_bootstrap_base_hash_ = peek.block_hash;
                     snapshot_bootstrap_base_height_ = peek.block_height;
+                    snapshot_bootstrap_state_.store(SnapshotBootstrapState::Pending);
                     // v5 and v6 both authenticate their base with buried state
                     // commitments. Do not invoke the loader on a partial header
                     // batch: its correct refusal would permanently select full IBD.
