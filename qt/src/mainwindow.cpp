@@ -11906,6 +11906,7 @@ void MainWindow::updateMiningOutputCinematicFrame() {
       const auto colour = dinero::qt::hashRowColor(
         sample.blockFound, remainingMs > 0, miningHashColorRgb_);
       QColor rowColor(colour.r, colour.g, colour.b, colour.a);
+      qreal brightness = 0;
       if (sample.blockFound && remainingMs > 0 &&
           remainingMs <= dinero::qt::kBlockFoundHighlightMs) {
         // Keep the winning hash still while the next template loads. Its
@@ -11913,13 +11914,22 @@ void MainWindow::updateMiningOutputCinematicFrame() {
         const qreal progress = 1.0 - static_cast<qreal>(remainingMs) /
                                    dinero::qt::kBlockFoundHighlightMs;
         const qreal rise = 1.0 - std::abs(2.0 * progress - 1.0);
-        const qreal brightness = rise * rise * (3.0 - 2.0 * rise);
+        brightness = rise * rise * (3.0 - 2.0 * rise);
         rowColor.setGreen(qRound(176 + 44 * brightness));
         rowColor.setBlue(qRound(48 + 48 * brightness));
         rowColor.setAlpha(qRound(225 + 30 * brightness));
       }
-      painter.setPen(rowColor);
       const qreal textTop = frameSize.height() - 6 - visual * rowHeight - metrics.ascent();
+      if (brightness > 0) {
+        // Four translucent copies give this one cached row a brief warm halo.
+        // No extra frame timer or moving text is needed.
+        painter.setPen(QColor(255, 128, 16, qRound(60 * brightness)));
+        painter.drawStaticText(QPointF(6.5, textTop), sample.renderedLine);
+        painter.drawStaticText(QPointF(9.5, textTop), sample.renderedLine);
+        painter.drawStaticText(QPointF(8, textTop - 1.5), sample.renderedLine);
+        painter.drawStaticText(QPointF(8, textTop + 1.5), sample.renderedLine);
+      }
+      painter.setPen(rowColor);
       painter.drawStaticText(QPointF(8, textTop), sample.renderedLine);
     }
     if (miningHashOverlay_) {
