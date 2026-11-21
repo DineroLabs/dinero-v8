@@ -23,45 +23,54 @@ int Compare(const U256& a, const U256& b) {
 
 bool IsZero(const U256& a) { return (a[0] | a[1] | a[2] | a[3]) == 0; }
 
+// No 128-bit integers and no compiler built-ins here: MSVC has neither.
+
 // a += b; returns the carry out of bit 255.
 bool AddInPlace(U256& a, const U256& b) {
-    unsigned __int128 carry = 0;
+    uint64_t carry = 0;
     for (int i = 0; i < 4; ++i) {
-        carry += static_cast<unsigned __int128>(a[i]) + b[i];
-        a[i] = static_cast<uint64_t>(carry);
-        carry >>= 64;
+        const uint64_t sum = a[i] + b[i];
+        const uint64_t with_carry = sum + carry;
+        carry = (sum < a[i] || with_carry < sum) ? 1 : 0;
+        a[i] = with_carry;
     }
     return carry != 0;
 }
 
-void SubInPlace(U256& a, const U256& b) {  // requires a >= b
-    unsigned __int128 borrow = 0;
+void SubInPlace(U256& a, const U256& b) {  // requires a >= b (or the wrap-around the caller asks for)
+    uint64_t borrow = 0;
     for (int i = 0; i < 4; ++i) {
-        const unsigned __int128 need = static_cast<unsigned __int128>(b[i]) + borrow;
-        borrow = static_cast<unsigned __int128>(a[i]) < need ? 1 : 0;
-        a[i] = static_cast<uint64_t>(static_cast<unsigned __int128>(a[i]) - need);
+        const uint64_t diff = a[i] - b[i];
+        const uint64_t next_borrow = (a[i] < b[i] || diff < borrow) ? 1 : 0;
+        a[i] = diff - borrow;
+        borrow = next_borrow;
     }
 }
 
 // floor(a * m / d), exact: the product is held in 320 bits, so it never wraps.
 // nullopt if the quotient does not fit 256 bits. d != 0.
+// In 32-bit limbs, so that every intermediate fits 64 bits.
 std::optional<U256> MulDiv(const U256& a, uint32_t m, uint32_t d) {
-    uint64_t wide[5];
-    unsigned __int128 carry = 0;
-    for (int i = 0; i < 4; ++i) {
-        carry += static_cast<unsigned __int128>(a[i]) * m;
-        wide[i] = static_cast<uint64_t>(carry);
-        carry >>= 64;
+    uint32_t wide[10];  // least significant first
+    uint64_t carry = 0;
+    for (int i = 0; i < 8; ++i) {
+        const uint64_t limb = (a[i / 2] >> (32 * (i % 2))) & 0xffffffffu;
+        carry += limb * m;  // < 2^32 * 2^32, and the carry in is < 2^32: no overflow
+        wide[i] = static_cast<uint32_t>(carry);
+        carry >>= 32;
     }
-    wide[4] = static_cast<uint64_t>(carry);
-    unsigned __int128 rem = 0;
-    for (int i = 4; i >= 0; --i) {
-        const unsigned __int128 cur = (rem << 64) | wide[i];
-        wide[i] = static_cast<uint64_t>(cur / d);
+    wide[8] = static_cast<uint32_t>(carry);
+    wide[9] = 0;
+    uint64_t rem = 0;
+    for (int i = 9; i >= 0; --i) {
+        const uint64_t cur = (rem << 32) | wide[i];  // rem < d < 2^32
+        wide[i] = static_cast<uint32_t>(cur / d);
         rem = cur % d;
     }
-    if (wide[4] != 0) return std::nullopt;
-    return U256{wide[0], wide[1], wide[2], wide[3]};
+    if (wide[8] != 0 || wide[9] != 0) return std::nullopt;
+    U256 out{};
+    for (int i = 0; i < 4; ++i) out[i] = (static_cast<uint64_t>(wide[2 * i + 1]) << 32) | wide[2 * i];
+    return out;
 }
 
 bool Bit(const U256& a, int bit) { return (a[bit / 64] >> (bit % 64)) & 1; }
@@ -83,7 +92,11 @@ U256 Divide(const U256& n, const U256& d) {
 
 int BitLength(const U256& a) {
     for (int i = 3; i >= 0; --i) {
-        if (a[i]) return 64 * i + 64 - __builtin_clzll(a[i]);
+        if (a[i]) {
+            int bits = 0;
+            for (uint64_t v = a[i]; v; v >>= 1) ++bits;
+            return 64 * i + bits;
+        }
     }
     return 0;
 }
