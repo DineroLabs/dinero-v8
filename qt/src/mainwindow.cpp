@@ -5130,20 +5130,25 @@ void MainWindow::setupUI() {
     lblTargetBitsCaption->setToolTip(
       "Compact proof-of-work target (nBits); this can stay at the network's easiest allowed target.");
     row2->addWidget(lblTargetBitsCaption);
+    constexpr qreal kSecondaryMiningStatScale = 0.75;
     auto* targetScoreboard = new MiningScoreboardLabel("-");
-    targetScoreboard->setGlyphScale(0.7);
+    targetScoreboard->setGlyphScale(kSecondaryMiningStatScale);
     lblMiningDifficulty_ = targetScoreboard;
     lblMiningDifficulty_->setStyleSheet(miningStatStyle("#bec8d0", true));
     row2->addWidget(lblMiningDifficulty_);
     
-    lblCurrentHash_ = new MiningScoreboardLabel("0.00");
+    auto* hashRateScoreboard = new MiningScoreboardLabel("0.00");
+    hashRateScoreboard->setGlyphScale(kSecondaryMiningStatScale);
+    lblCurrentHash_ = hashRateScoreboard;
     lblCurrentHash_->setStyleSheet(miningStatStyle("#bec8d0", true));
     auto* lblHashrateCaption = new QLabel("MH/s:");
     lblHashrateCaption->setStyleSheet(miningStatStyle());
     row2->addWidget(lblHashrateCaption);
     row2->addWidget(lblCurrentHash_);
     
-    lblMiningUptime_ = new MiningScoreboardLabel("-");
+    auto* runtimeScoreboard = new MiningScoreboardLabel("-");
+    runtimeScoreboard->setGlyphScale(kSecondaryMiningStatScale);
+    lblMiningUptime_ = runtimeScoreboard;
     lblMiningUptime_->setStyleSheet(miningStatStyle("#bec8d0", true));
     lblMiningUptimeCaption_ = new QLabel("Run:");
     lblMiningUptimeCaption_->setStyleSheet(miningStatStyle());
