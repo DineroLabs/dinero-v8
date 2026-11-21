@@ -1931,7 +1931,7 @@ static din::Json rpc_context_loadtxoutset(const ExecutionContext& ctx, const din
         }
 
         // Phase 42: AssumeUTXO snapshot import (restored)
-        auto import_result = chainstate->LoadSnapshot(snapshot_path);
+        auto import_result = chainstate->LoadSnapshotFromRpc(snapshot_path);
 
         if (!import_result.success) {
             result["error"]["code"] = -1;

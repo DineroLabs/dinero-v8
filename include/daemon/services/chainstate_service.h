@@ -654,6 +654,10 @@ public:
     // must use the default and satisfy the full header burial rule.
     consensus::SnapshotImportResult LoadSnapshot(const std::filesystem::path& snapshot_path,
                                                  bool persisted_base_rehydrate = false);
+    // RPC import of the configured first-run snapshot shares the bootstrap
+    // single-flight state with the automatic loader. A successful manual load
+    // must publish Loaded so wallet creation can leave the pending guard.
+    consensus::SnapshotImportResult LoadSnapshotFromRpc(const std::filesystem::path& snapshot_path);
 
     // Phase 42: AssumeUTXO State Management
     bool IsAssumeUTXOActive() const { return assumeutxo_active_; }

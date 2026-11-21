@@ -16839,6 +16839,68 @@ bool ChainstateService::HasPersistedActiveSnapshotBase(
            lifecycle.snapshot_base_height == base_height;
 }
 
+consensus::SnapshotImportResult ChainstateService::LoadSnapshotFromRpc(
+    const std::filesystem::path& snapshot_path) {
+    using State = SnapshotBootstrapState;
+    const auto refuse = [](std::string message) {
+        consensus::SnapshotImportResult result{};
+        result.error_message = std::move(message);
+        return result;
+    };
+
+    const auto state = snapshot_bootstrap_state_.load();
+    if (state == State::Loading)
+        return refuse("Configured snapshot bootstrap is already loading; retry after it finishes");
+    if (state != State::Pending)
+        return LoadSnapshot(snapshot_path);
+
+    // Manual loadtxoutset can win the race with the header-driven loader.
+    // It may load only the base whose preview published Pending; otherwise
+    // the wallet-birth guard would be released for an unrelated snapshot.
+    // Check the path before opening it: an RPC-provided FIFO/device could
+    // block the preview read before LoadSnapshot's transport gate runs.
+    std::error_code path_error;
+    const auto path_status = std::filesystem::symlink_status(snapshot_path, path_error);
+    if (path_error || !std::filesystem::is_regular_file(path_status))
+        return refuse("Manual snapshot must be a regular file");
+    consensus::SnapshotMetadata preview{};
+    std::string preview_error;
+    if (!ReadSnapshotHeaderPreview(snapshot_path, preview, preview_error))
+        return refuse("Manual snapshot header unavailable: " + preview_error);
+    if (preview.magic != consensus::SNAPSHOT_MAGIC ||
+        preview.block_height != snapshot_bootstrap_base_height_ ||
+        preview.block_hash != snapshot_bootstrap_base_hash_)
+        return refuse("Manual snapshot differs from the configured bootstrap base");
+
+    State expected = State::Pending;
+    if (!snapshot_bootstrap_state_.compare_exchange_strong(expected, State::Loading))
+        return refuse("Configured snapshot bootstrap changed during manual load; retry");
+
+    try {
+        auto result = LoadSnapshot(snapshot_path);
+        if (result.success && result.block_height == snapshot_bootstrap_base_height_ &&
+            result.block_hash == snapshot_bootstrap_base_hash_) {
+            snapshot_bootstrap_state_.store(State::Loaded);
+            return result;
+        }
+        // The loader can reject an incomplete or untrusted file after the
+        // claim. Match the automatic path's fail-closed fallback; a compact
+        // v6 node has no safe full-state recovery and enters safe mode.
+        const bool wrong_base = result.success;
+        if (wrong_base) {
+            result.success = false;
+            result.error_message = "Imported snapshot base differs from the configured bootstrap base";
+        }
+        snapshot_bootstrap_state_.store(State::Fallback);
+        if (orchard_compact_bootstrap_pending_.load() || wrong_base)
+            EnterSafeMode(result.error_message);
+        return result;
+    } catch (...) {
+        snapshot_bootstrap_state_.store(State::Fallback);
+        throw;
+    }
+}
+
 consensus::SnapshotImportResult ChainstateService::LoadSnapshot(
     const std::filesystem::path& snapshot_path, bool persisted_base_rehydrate) {
     using namespace consensus;

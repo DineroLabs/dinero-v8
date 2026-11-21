@@ -457,9 +457,24 @@ def phase_snapshot(t, work, dinerod, taken, logs, pids, nodes, foreign):
     def active():
         st = con.ok("getsnapshotbootstrapstatus", [])
         b = (st or {}).get("snapshot_bootstrap", {})
-        return b.get("assumeutxo_active") is True and b.get("snapshot_base_height") == SNAPSHOT_BASE, st
+        height = con.ok("getblockcount", [])
+        return (b.get("assumeutxo_active") is True and
+                b.get("snapshot_base_height") == SNAPSHOT_BASE and
+                height >= SNAPSHOT_BASE), {"bootstrap": st, "height": height}
     poll(active, "snapshot activation")
-    con.ok("wallet.restore", {"name": "snapshot-recovered", "mnemonic": MNEMONIC, "rescan": False})
+    # The active flag and selected height can publish just before the loader's
+    # Pending/Loading state becomes Loaded. The birth guard must refuse that
+    # gap without changing the wallet; retry only that documented refusal.
+    restore_params = {"name": "snapshot-recovered", "mnemonic": MNEMONIC, "rescan": False}
+
+    def restore_when_loaded():
+        try:
+            return True, con.ok("wallet.restore", restore_params)
+        except RunError as error:
+            if "still loading its starting snapshot" in str(error):
+                return False, str(error)
+            raise
+    poll(restore_when_loaded, "snapshot-loaded wallet restore")
     con.ok("wallet.importmnemonic", {"mnemonic": MNEMONIC, "rescan": False, "initial_address_count": 4})
     con.stop()
     con.start(*snap_args)
