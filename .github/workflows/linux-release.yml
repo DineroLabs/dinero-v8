@@ -199,7 +199,7 @@ jobs:
           ALLOWED="ld-linux-x86-64.so.2 libc.so.6 libcurl.so.4 libgcc_s.so.1 libm.so.6 libstdc++.so.6 libudev.so.1"
           echo "allow-list: $ALLOWED"
           rc=0
-          for binary in build-release/dinerod build-release/dinero-swap-tower; do
+          for binary in build-release/dinerod build-release/dinero-swap-tower build-release/dinero-swap-tower-intake; do
             ACTUAL=$(objdump -p "$binary" | awk '/NEEDED/{print $2}' | sort)
             echo "$binary actual:"; echo "$ACTUAL" | sed 's/^/  /'
             for lib in $ACTUAL; do
@@ -254,9 +254,9 @@ jobs:
           # to the exact source checkout, not merely a matching version string.
           printf '%s\n' '${{ steps.ver.outputs.source_sha }}' > "$OUT/SOURCE_SHA"
           cmake --install build-release --component swap-tower --prefix "$PWD/swap-tower-install"
-          cp swap-tower-install/bin/dinero-swap-tower "$OUT/"
+          cp swap-tower-install/bin/dinero-swap-tower swap-tower-install/bin/dinero-swap-tower-intake "$OUT/"
 
-          for BIN in dinerod dinero-cli dinero-swap-tower; do
+          for BIN in dinerod dinero-cli dinero-swap-tower dinero-swap-tower-intake; do
             readelf --sections "$OUT/$BIN" | grep -q '\.debug_info' || {
               echo "::error::$BIN was built without DWARF debug information"
               exit 1
@@ -283,6 +283,7 @@ jobs:
             > "$DEBUG_STAGE/$OUT/README-debug-symbols.txt"
 
           python3 scripts/verify-swap-tower-binary.py "$OUT/dinero-swap-tower"
+          python3 scripts/verify-swap-tower-binary.py "$OUT/dinero-swap-tower-intake"
           python3 scripts/verify-orchard-package.py --daemon "$OUT/dinerod"
           "$OUT/dinerod" --version | grep -Fx 'commit: ${{ steps.ver.outputs.source_sha }}'
           tar -czf "$OUT.tar.gz" "$OUT"
@@ -290,17 +291,20 @@ jobs:
           tar -xzf "$OUT.tar.gz" -C tower-tar-check
           test "$(cat "tower-tar-check/$OUT/SOURCE_SHA")" = '${{ steps.ver.outputs.source_sha }}'
           python3 scripts/verify-swap-tower-binary.py "tower-tar-check/$OUT/dinero-swap-tower"
+          python3 scripts/verify-swap-tower-binary.py "tower-tar-check/$OUT/dinero-swap-tower-intake"
           python3 scripts/verify-orchard-package.py --daemon "tower-tar-check/$OUT/dinerod"
           # The symbols archive contains OUT/.debug/*.debug. Extracting both
           # archives in the same directory therefore gives GDB its standard
           # automatic debug-link layout without modifying the public binary.
           tar -czf "$DEBUG_ARCHIVE.tar.gz" -C "$DEBUG_STAGE" "$OUT"
-          sha256sum "$OUT.tar.gz" "$OUT/dinerod" "$OUT/dinero-cli" "$OUT/dinero-swap-tower" "$OUT/SOURCE_SHA" \
+          sha256sum "$OUT.tar.gz" "$OUT/dinerod" "$OUT/dinero-cli" "$OUT/dinero-swap-tower" \
+            "$OUT/dinero-swap-tower-intake" "$OUT/SOURCE_SHA" \
             > "SHA256SUMS-linux-x86_64-$V"
           sha256sum "$DEBUG_ARCHIVE.tar.gz" > "SHA256SUMS-linux-x86_64-debug-symbols-$V"
           (
             cd "$DEBUG_STAGE"
-            sha256sum "$OUT/.debug/dinerod.debug" "$OUT/.debug/dinero-cli.debug" "$OUT/.debug/dinero-swap-tower.debug"
+            sha256sum "$OUT/.debug/dinerod.debug" "$OUT/.debug/dinero-cli.debug" \
+              "$OUT/.debug/dinero-swap-tower.debug" "$OUT/.debug/dinero-swap-tower-intake.debug"
           ) >> "SHA256SUMS-linux-x86_64-debug-symbols-$V"
           cat "SHA256SUMS-linux-x86_64-$V"
           cat "SHA256SUMS-linux-x86_64-debug-symbols-$V"
@@ -340,6 +344,7 @@ jobs:
           test -x deb-check/usr/bin/dinerod
           test -x deb-check/usr/bin/dinero-cli
           python3 scripts/verify-swap-tower-binary.py deb-check/usr/bin/dinero-swap-tower
+          python3 scripts/verify-swap-tower-binary.py deb-check/usr/bin/dinero-swap-tower-intake
           python3 scripts/verify-orchard-package.py --daemon "deb-check/usr/bin/dinerod"
           for BIN in dinerod dinero-swap-tower; do
             objdump -p "deb-check/usr/bin/$BIN" | awk '/NEEDED/{print $2}' | grep -Fxq libcurl.so.4 || {
@@ -362,7 +367,7 @@ jobs:
           test "$(dpkg-deb -f "$DBG_DEB" Architecture)" = amd64
           mkdir -p deb-debug-check
           dpkg-deb -x "$DBG_DEB" deb-debug-check
-          for BIN in dinerod dinero-cli dinero-swap-tower; do
+          for BIN in dinerod dinero-cli dinero-swap-tower dinero-swap-tower-intake; do
             BUILD_ID=$(readelf -n "deb-check/usr/bin/$BIN" | awk '/Build ID:/{print $3; exit}')
             test -n "$BUILD_ID"
             DEBUG_FILE="deb-debug-check/usr/lib/debug/.build-id/${BUILD_ID:0:2}/${BUILD_ID:2}.debug"
