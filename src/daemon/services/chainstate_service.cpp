@@ -8101,8 +8101,10 @@ SignResult ChainstateService::signAndStageWalletPayment(WalletManager& wallet,
                     // #939: a native send pays exactly one recipient; every
                     // other output must pay a script already sealed in both
                     // receipts (the watched domain). No caller can route
-                    // change to a script no replay has covered.
-                    if(intent.request||!intent.additional_recipients.empty())
+                    // change to a script no replay has covered. v8.2.5: a
+                    // bound request (e.g. swap funding) is still one exact
+                    // recipient under the same output check below.
+                    if(!intent.additional_recipients.empty())
                         throw std::runtime_error("Native v3 payment supports one recipient");
                     std::vector<uint8_t> recipient;
                     const auto witness=DecodeWitnessAddress(intent.address,HrpForActiveNetworkRef());

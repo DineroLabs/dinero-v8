@@ -58,6 +58,7 @@
 #include "debugconsole.h"
 #include "portcheck.h"
 
+#include "swaplaunchpolicy.h"
 #include "minercontroller.h"
 #include <solo_miner/build_identity.h>
 
@@ -101,6 +102,9 @@ void appendDaemonNetworkArgs(QStringList& args) {
     if (p2pPortMappingAllowed()) {
         args << "--portmap=auto";
     }
+    // The Swap tab's "Enable swaps" switch.
+    args << SwapLaunchPolicy::daemonArgs(QSettings().value(SwapLaunchPolicy::enabledKey(), false).toBool(),
+                                        QSettings().value(SwapLaunchPolicy::bitcoinWalletKey(), false).toBool());
 }
 
 QStringList currentBootstrapAddnodes() {

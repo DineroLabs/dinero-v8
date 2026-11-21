@@ -5,8 +5,9 @@
 # block, and a refund.
 #   usage: swap_din_regtest.sh <dinerod> <swap_din_tool>
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/swap_regtest_lib.sh"
 DINEROD=${1:?dinerod}; TOOL=${2:?swap_din_tool}
-DIR=$(mktemp -d); RPCPORT=$((20000 + RANDOM % 20000)); P2P=$((RPCPORT + 7))
+DIR=$(mktemp -d); RPCPORT=$(swap_free_base 7); P2P=$((RPCPORT + 7))
 FUTURE=1800000000
 cleanup() { exec 3>&- 4<&- 2>/dev/null || true; [[ -n "${WPID:-}" ]] && kill "$WPID" 2>/dev/null || true
             [[ -n "${NPID:-}" ]] && kill "$NPID" 2>/dev/null || true; sleep 1; rm -rf "$DIR"; }
@@ -22,6 +23,7 @@ r=d.get("result"); print(r if isinstance(r,str) else json.dumps(r))' "$resp" "$1
 "$DINEROD" -regtest -daemon=0 -server -rpcuser=test -rpcpassword=test -rpcport=$RPCPORT -port=$P2P \
   -datadir="$DIR" -listenonion=0 -discover=0 -dnsseed=0 -fixedseeds=0 >"$DIR/node.log" 2>&1 & NPID=$!
 for _ in $(seq 1 90); do call getblockcount '[]' >/dev/null 2>&1 && break; sleep 1; done
+swap_require_regtest dinerod "$(call getblockchaininfo '[]')"
 call wallet.createhd '["swap"]' >/dev/null
 call wallet.encrypt '["pw-swap-regtest"]' >/dev/null
 call wallet.unlock '["pw-swap-regtest", 3600]' >/dev/null

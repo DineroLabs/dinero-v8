@@ -668,6 +668,26 @@ private Q_SLOTS:
         QVERIFY(!window->lblErrorMessage_->text().contains("code: -32603"));
     }
 
+    // The Swap tab polls swap.list; a node with swaps off (the default) refuses
+    // every time. That refusal belongs to the tab, not to the window's error bar.
+    void swapTabRefusalsNeverReachTheErrorBar() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        auto* rpc = window->findChild<RpcClient*>();
+        QVERIFY(rpc);
+        window->lblErrorMessage_->clear();
+        window->lblErrorMessage_->setVisible(false);
+        Q_EMIT rpc->rpcError("swaptab.list", -32603,
+            "swaps are disabled: start dinerod with swap.enable=1 and swap.btc_rpc=HOST:PORT");
+        // (Checked at once: the window's own startup calls fail too in this
+        // test and may fill the bar afterwards.)
+        QVERIFY2(!window->lblErrorMessage_->text().contains("swap"), qPrintable(window->lblErrorMessage_->text()));
+        // Any other failure is still shown.
+        Q_EMIT rpc->rpcError("getpeerinfo", -32603, "boom");
+        QVERIFY2(window->lblErrorMessage_->text().contains("getpeerinfo failed - boom"),
+                 qPrintable(window->lblErrorMessage_->text()));
+    }
+
     // Issue #939 interim: a wallet this v3 node cannot track yet must never
     // trigger the unlock prompt (unlocking cannot help) and must explain why.
     void nativeUnsupportedRefusalNeverAsksForUnlock() {
