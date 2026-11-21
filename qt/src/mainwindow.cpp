@@ -150,13 +150,24 @@ public:
   explicit MiningScoreboardLabel(const QString& value, QWidget* parent = nullptr)
       : QLabel(value, parent) {}
 
+  void setGlyphScale(qreal scale) {
+    glyphScale_ = scale;
+    updateGeometry();
+    update();
+  }
+
   QSize sizeHint() const override {
     const QString value = text();
     if (!isScoreboardText(value)) return QLabel::sizeHint();
     qreal width = 0;
     for (const QChar glyph : value) width += glyphAdvance(glyph);
-    return QSize(qCeil(width - kDigitGap),
+    return QSize(qCeil((width - kDigitGap) * glyphScale_),
                  qMax(QLabel::sizeHint().height(), 18));
+  }
+
+  QSize minimumSizeHint() const override {
+    if (!isScoreboardText(text())) return QLabel::minimumSizeHint();
+    return sizeHint();
   }
 
 protected:
@@ -171,7 +182,9 @@ protected:
     painter.setRenderHint(QPainter::Antialiasing);
     painter.setPen(QPen(palette().color(QPalette::WindowText), 1.5,
                         Qt::SolidLine, Qt::RoundCap));
-    const qreal top = (height() - kDigitHeight) / 2.0;
+    painter.translate(0, (height() - kDigitHeight * glyphScale_) / 2.0);
+    painter.scale(glyphScale_, glyphScale_);
+    const qreal top = 0;
     qreal left = 0;
     for (const QChar glyph : value) {
       const QChar lower = glyph.toLower();
@@ -181,6 +194,12 @@ protected:
       }
       if (lower == QLatin1Char('.')) {
         painter.drawPoint(QPointF(left + 1, top + kDigitHeight - 1));
+        left += kPointStep;
+        continue;
+      }
+      if (lower == QLatin1Char(':')) {
+        painter.drawPoint(QPointF(left + 1, top + 4));
+        painter.drawPoint(QPointF(left + 1, top + kDigitHeight - 4));
         left += kPointStep;
         continue;
       }
@@ -264,14 +283,14 @@ private:
       const QChar lower = glyph.toLower();
       if (segmentMask(lower) < 0 && lower != QLatin1Char('x') &&
           lower != QLatin1Char('m') && lower != QLatin1Char('.') &&
-          lower != QLatin1Char(' ')) return false;
+          lower != QLatin1Char(':') && lower != QLatin1Char(' ')) return false;
     }
     return true;
   }
 
   static qreal glyphAdvance(const QChar& glyph) {
     if (glyph == QLatin1Char(' ')) return kSpaceStep;
-    if (glyph == QLatin1Char('.')) return kPointStep;
+    if (glyph == QLatin1Char('.') || glyph == QLatin1Char(':')) return kPointStep;
     return kDigitStep;
   }
 
@@ -281,6 +300,7 @@ private:
   static constexpr qreal kDigitHeight = 14.0;
   static constexpr qreal kPointStep = 4.0;
   static constexpr qreal kSpaceStep = 5.0;
+  qreal glyphScale_ = 1.0;
 };
 
 constexpr int kWalletUnlockTimeoutSeconds = 60 * 60;
@@ -5055,6 +5075,7 @@ void MainWindow::setupUI() {
     onMiningModeChanged(cmbMiningMode_ ? cmbMiningMode_->currentIndex() : 0);
     
     auto *row2 = new QHBoxLayout;
+    row2->setSpacing(3);
     // v0.14.0.4: Single toggle button for Start/Stop mining
     btnStartMining_ = new QPushButton("Start Mining");
     btnStartMining_->setStyleSheet(miningButtonStyle());
@@ -5063,7 +5084,7 @@ void MainWindow::setupUI() {
     btnStartMining_->setToolTip("Start daemon first to enable mining");
     const int miningControlHeight = 30;
     btnStartMining_->setFixedHeight(miningControlHeight);
-    btnStartMining_->setMinimumWidth(170);
+    btnStartMining_->setMinimumWidth(125);
     // v0.14.0.4: Toggle button handler - toggles between start and stop
     connect(btnStartMining_, &QPushButton::clicked, this, &MainWindow::onToggleMining);
     row2->addWidget(btnStartMining_);
@@ -5109,7 +5130,9 @@ void MainWindow::setupUI() {
     lblTargetBitsCaption->setToolTip(
       "Compact proof-of-work target (nBits); this can stay at the network's easiest allowed target.");
     row2->addWidget(lblTargetBitsCaption);
-    lblMiningDifficulty_ = new MiningScoreboardLabel("-");
+    auto* targetScoreboard = new MiningScoreboardLabel("-");
+    targetScoreboard->setGlyphScale(0.7);
+    lblMiningDifficulty_ = targetScoreboard;
     lblMiningDifficulty_->setStyleSheet(miningStatStyle("#bec8d0", true));
     row2->addWidget(lblMiningDifficulty_);
     
@@ -12311,16 +12334,10 @@ void MainWindow::updateMiningRuntimeLabel() {
   const int minutes = (seconds % 3600) / 60;
   const int secs = seconds % 60;
 
-  QString runtime;
-  if (hours > 0) {
-    runtime = QString("%1h %2m %3s").arg(hours).arg(minutes).arg(secs);
-  } else if (minutes > 0) {
-    runtime = QString("%1m %2s").arg(minutes).arg(secs);
-  } else {
-    runtime = QString("%1s").arg(secs);
-  }
-
-  lblMiningUptime_->setText(runtime);
+  lblMiningUptime_->setText(QString("%1:%2:%3")
+                                .arg(hours, 2, 10, QChar('0'))
+                                .arg(minutes, 2, 10, QChar('0'))
+                                .arg(secs, 2, 10, QChar('0')));
   lblMiningUptime_->setStyleSheet(miningStatStyle("#bec8d0", true));
 }
 
