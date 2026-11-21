@@ -387,13 +387,13 @@ exit 1
         for path in primary_sidecars:
             path.touch()
         primary_sidecars[-1].write_text('{"publisher_signature_verified": true}\n')
-        fallbacks = [self.root / f'fallback {i}-v6-full.dat' for i in range(2)]
-        fallbacks.extend(self.root / f'fallback {i}.dat' for i in range(2, 6))
+        fallbacks = [self.root / f'fallback {i}-v6-full.dat' for i in range(3)]
+        fallbacks.extend(self.root / f'fallback {i}.dat' for i in range(3, 7))
         for path in fallbacks:
             path.touch()
             Path(str(path) + '.manifest.json').touch()
         publisher_sidecars = []
-        for path in fallbacks[:2]:
+        for path in fallbacks[:3]:
             for suffix in ('.publisher.manifest.json', '.publisher.manifest.sig'):
                 sidecar = Path(str(path) + suffix)
                 sidecar.touch()
@@ -419,7 +419,7 @@ exit 1
         primary_sidecars[-1].write_text('{"publisher_signature_verified": false}\n')
         self.assertNotEqual(run_check().returncode, 0)
         primary_sidecars[-1].write_text('{"publisher_signature_verified": true}\n')
-        check_env['DINERO_SNAPSHOT_FALLBACKS'] = ';'.join(map(str, fallbacks[:4]))
+        check_env['DINERO_SNAPSHOT_FALLBACKS'] = ';'.join(map(str, fallbacks[:6]))
         self.assertNotEqual(run_check().returncode, 0)
 
 
