@@ -50,7 +50,7 @@ thread_local const HttpRpcServer* rpc_connection_owner = nullptr;
 // These are rejected when the server runs in read-only mode (--rpc-readonly).
 static const std::unordered_set<std::string> ADMIN_METHODS = {
     "stop",
-    // DIN <-> BTC swaps: lock and move funds from this wallet.
+    // DIN <-> BTC / ZEC swaps: lock and move funds from this wallet.
     "swap.offer",
     "swap.accept",
     "swap.cancel",
@@ -62,6 +62,13 @@ static const std::unordered_set<std::string> ADMIN_METHODS = {
     "wallet.orchard.finishshield",
     "wallet.orchard.queuespend",
     "wallet.orchard.finishspend",
+    "swap.deposit",  // allocates a swap and its deposit address
+    "swap.recoverdeposits",  // sends BTC left on deposit addresses to an address of the user's
+    "btc.start",             // starts the node's Bitcoin client for the built-in wallet
+    "btc.enable",            // stores the Bitcoin wallet's account (its addresses become readable)
+    "btc.getnewaddress",     // hands out and records the next Bitcoin receive address
+    "btc.send",              // signs and broadcasts a Bitcoin payment from this wallet
+    "btc.bumpfee",           // re-sends a Bitcoin payment with a higher fee
     "wallet.importprivkey",
     "wallet.importmnemonic",
     "wallet.exportmnemonic",
@@ -813,8 +820,12 @@ Json::Value HttpRpcServer::process_admitted_rpc_call(const Json::Value& request)
         // a shared owner on that same service, including flat/legacy handlers.
         // Skip the reader for create itself to avoid recursive locking.
         const std::string rpc_source = readonly_source();
+        // wallet.restore takes the same exclusive owner across its file
+        // creation and gap-limit derivation (a v3 worker must not enroll a
+        // half-restored wallet).
         const bool creating_wallet = rpc_source == "wallet.createhd" ||
-            admin_check_method == "wallet.createhd" || method == "createhd";
+            admin_check_method == "wallet.createhd" || method == "createhd" ||
+            rpc_source == "wallet.restore" || admin_check_method == "wallet.restore";
         std::shared_ptr<dinero::WalletService> wallet_service;
         std::shared_lock<std::shared_mutex> ordinary_owner;
         if (!creating_wallet && daemon_context_ && daemon_context_->wallet) {

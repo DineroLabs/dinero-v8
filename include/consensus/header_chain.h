@@ -35,6 +35,23 @@ namespace dinero {
 class OrchardSnapshotStore;
 namespace consensus {
 
+// A link that never survives a copy or move. HeaderIndexEntry values are
+// copied out of the selector with parent cleared; a copied skip pointer could
+// dangle after the selector lock is released, so copies start unlinked and
+// fall back to the parent walk.
+class HeaderSkipLink {
+public:
+    HeaderSkipLink() = default;
+    HeaderSkipLink(const HeaderSkipLink&) noexcept {}
+    HeaderSkipLink(HeaderSkipLink&&) noexcept {}
+    HeaderSkipLink& operator=(const HeaderSkipLink&) noexcept { target_ = nullptr; return *this; }
+    HeaderSkipLink& operator=(HeaderSkipLink&&) noexcept { target_ = nullptr; return *this; }
+    const struct HeaderIndexEntry* get() const { return target_; }
+    void set(const struct HeaderIndexEntry* target) { target_ = target; }
+private:
+    const struct HeaderIndexEntry* target_ = nullptr;
+};
+
 /**
  * @brief Header-only index entry (no transactions, no UTXO)
  *
@@ -48,6 +65,7 @@ namespace consensus {
  *
  * This structure contains only what can be validated from headers alone.
  */
+
 struct HeaderIndexEntry {
     // Header identity (Phase M.0 compliant - uint256 is identity)
     uint256 hash;           // Block hash (header hash)
@@ -70,6 +88,12 @@ struct HeaderIndexEntry {
     // (child_count == 0) for the bounded-storage eviction policy. An entry with
     // child_count == 0 that is not best_header_ is a losing side-branch tip.
     uint32_t child_count = 0;
+
+    // Skip pointer to the ancestor at SkipHeight(height) (Bitcoin Core's
+    // pskip). RUNTIME-ONLY, never serialized; makes GetAncestor logarithmic.
+    // Only ever points at an ancestor, and headers are only evicted while
+    // childless, so the target outlives every entry that links to it.
+    HeaderSkipLink skip;
 
     /**
      * @brief Default constructor
@@ -107,6 +131,13 @@ struct HeaderIndexEntry {
      * @return Ancestor entry, or nullptr if not found
      */
     const HeaderIndexEntry* GetAncestor(uint32_t ancestor_height) const;
+
+    // Height the skip pointer of an entry at `height` targets.
+    static uint32_t SkipHeight(uint32_t height);
+    const HeaderIndexEntry* Skip() const { return skip.get(); }
+    // Set the skip pointer from the parent link. The parent's own skip
+    // pointer must already be built (build in ascending height order).
+    void BuildSkip();
 
     /**
      * @brief Get Median Time Past (MTP) for this header's chain

@@ -22,6 +22,8 @@
 #include "wallet/transaction.h"
 #include "mining/ct_selection_policy.h"  // CT-specific selection policies
 
+struct Consensus;
+
 // Forward declarations
 namespace dinero {
     class ChainDB;  // ChainDB for context injection
@@ -32,6 +34,7 @@ namespace dinero {
     class BlockRelayManager;  // Phase W.1.3: For network context
 
     namespace consensus {
+        class HeaderChainSelector;
         class UtreexoForest;  // Utreexo accumulator
         class IUTXOProvider;  // UTXO provider interface
         class BlockValidator; // Utreexo root computation oracle
@@ -417,6 +420,9 @@ public:
     // Week 5: ChainDB for context injection
     void setChainDB(class ChainDB* chain_db);
     class ChainDB* getChainDB() const { return chain_db_; }
+    // The selector supplies selected-parent ancestry omitted by snapshot
+    // ChainDB's historical height index. Set once before mining starts.
+    void SetHeaderChainSelector(std::shared_ptr<const consensus::HeaderChainSelector> headers);
 
     // Week 7: Mempool for transaction selection
     void setMempool(class Mempool* mempool);
@@ -540,6 +546,9 @@ private:
     mutable std::mutex chainstate_guard_mutex_;
     std::shared_ptr<const ChainstateReadGuardFactory> chainstate_guard_factory_;
     std::unique_ptr<ChainstateReadGuard> AcquireChainstateReadGuard() const;
+    uint32_t NextTemplateBits(const uint256& parent_hash, int32_t height,
+                              int64_t timestamp, const Consensus& rules) const;
+    std::shared_ptr<const consensus::HeaderChainSelector> header_chain_;
 
     BlockRelayManager* block_relay_manager_;  // Phase W.1.3: For network-aware mining (optional)
 

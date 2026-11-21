@@ -1810,12 +1810,10 @@ void WalletManager::createWithInitialSeed(
     const std::string& bip39_passphrase, InitialSeedKind kind,
     std::optional<uint32_t> fresh_birth_height) {
     std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
-    // #939: a v3 node enrolls a freshly generated identity through the native
-    // route (its sealed birth skips the genesis replay). A restored seed may
-    // own Orchard history that v3 cannot deliver before Orchard delivery
-    // exists there, so a restore is still refused before any file exists.
-    if (full_archive_v3_legacy_rescans_disabled_ && kind != InitialSeedKind::Generated)
-        throw std::runtime_error(kWalletCreationUnsupportedOnV3);
+    // #939: a v3 node enrolls every identity through the native route. A
+    // generated identity may seal a fresh birth that skips the genesis
+    // replay; a restored seed never does (below), so its enrollment replays
+    // the full history, and Orchard account 0 is recovered from the v3 source.
     if (fresh_birth_height && kind != InitialSeedKind::Generated)
         throw std::logic_error("Only a generated identity can seal a fresh birth height");
     if (database_leases_ != 0) throw std::logic_error("Cannot create a wallet during database delivery");
@@ -2357,6 +2355,30 @@ constexpr const char* kNativePoolSchema =
     "label TEXT NOT NULL DEFAULT '',"
     "issued_at INTEGER,"
     "UNIQUE(chain,idx))";
+// v8.2.4 (#939): the P2MR receive pool of a native v3 wallet, also unguarded.
+// Each row is an authenticated V7P2MRStore key at m/88'/1448'/0'/0/idx (leaf
+// 0). AdoptP2MRIssuanceIntent inserts the row in the SAME wallet transaction
+// that adopts its watch script, so every pooled script belongs to exactly one
+// generation's domain. Generations share one sequence with the Taproot pool.
+constexpr const char* kNativeP2MRPoolSchema =
+    "CREATE TABLE IF NOT EXISTS native_v3_p2mr_pool("
+    "script_pubkey TEXT PRIMARY KEY NOT NULL CHECK(typeof(script_pubkey)='text' AND "
+    "length(script_pubkey)=68 AND substr(script_pubkey,1,4)='5320'),"
+    "address TEXT NOT NULL UNIQUE,"
+    "idx INTEGER NOT NULL UNIQUE CHECK(idx>=0),"
+    "generation INTEGER NOT NULL CHECK(generation>=0),"
+    "issued INTEGER NOT NULL DEFAULT 0 CHECK(issued IN (0,1)),"
+    "label TEXT NOT NULL DEFAULT '',"
+    "issued_at INTEGER)";
+// An open P2MR fill a Pending wallet owes before its coverage may run:
+// indices [first_idx, first_idx+count) of `generation`. Deleted by the
+// adoption that pools its last index.
+constexpr const char* kNativeP2MRTargetSchema =
+    "CREATE TABLE IF NOT EXISTS native_v3_p2mr_target("
+    "generation INTEGER PRIMARY KEY CHECK(generation>=0),"
+    "first_idx INTEGER NOT NULL CHECK(first_idx>=0),"
+    "count INTEGER NOT NULL CHECK(count>0))";
+constexpr const char* kNativeP2MRPathPrefix = "m/88'/1448'/0'/0/";
 struct PoolStatement {
     sqlite3* db;
     sqlite3_stmt* stmt=nullptr;
@@ -2449,6 +2471,140 @@ bool NativeOrdinaryReceiptSealed(sqlite3* db) {
     if(!q.Row() || q.ColumnInt(0)!=2)return false;
     PoolStatement receipt(db,"SELECT runtime_ordinary_receipt IS NOT NULL AND runtime_ordinary_invalid=0 FROM wallet_meta WHERE id=1");
     return receipt.Row() && receipt.ColumnInt(0)==1;
+}
+bool NativeTablePresent(sqlite3* db,const char* name) {
+    PoolStatement q(db,"SELECT 1 FROM sqlite_master WHERE type='table' AND name=?");
+    q.Text(1,name);return q.Row();
+}
+// Newest generation across both pool tables (one shared sequence).
+int64_t NativePoolNewestGeneration(sqlite3* db) {
+    int64_t newest=0;
+    if(NativePoolPresent(db))
+        newest=NativePoolCount(db,"SELECT COALESCE(MAX(generation),0) FROM native_v3_address_pool");
+    if(NativeTablePresent(db,"native_v3_p2mr_pool"))
+        newest=std::max(newest,NativePoolCount(db,"SELECT COALESCE(MAX(generation),0) FROM native_v3_p2mr_pool"));
+    return newest;
+}
+// Pool index of an exact m/88'/1448'/0'/0/idx leaf-0 path, else nullopt.
+std::optional<int64_t> NativeP2MRPoolIndex(const std::string& path,uint32_t leaf) {
+    const std::string prefix(kNativeP2MRPathPrefix);
+    if(leaf!=0 || !path.starts_with(prefix))return std::nullopt;
+    const auto digits=path.substr(prefix.size());
+    if(digits.empty() || digits.size()>9 || (digits.size()>1 && digits[0]=='0') ||
+       !std::all_of(digits.begin(),digits.end(),[](char c){return c>='0' && c<='9';}))
+        return std::nullopt;
+    return std::stoll(digits);
+}
+// The open target that owes `idx` and has no pool row for it yet.
+std::optional<int64_t> NativeP2MRTargetOwing(sqlite3* db,int64_t idx) {
+    if(!NativeTablePresent(db,"native_v3_p2mr_target"))return std::nullopt;
+    if(NativeTablePresent(db,"native_v3_p2mr_pool")) {
+        PoolStatement pooled(db,"SELECT 1 FROM native_v3_p2mr_pool WHERE idx=?");
+        pooled.Int(1,idx);
+        if(pooled.Row())return std::nullopt;
+    }
+    PoolStatement q(db,"SELECT generation FROM native_v3_p2mr_target WHERE ?>=first_idx AND ?<first_idx+count");
+    q.Int(1,idx);q.Int(2,idx);
+    if(!q.Row())return std::nullopt;
+    return q.ColumnInt(0);
+}
+std::vector<int64_t> NativeP2MRMissing(sqlite3* db) {
+    std::vector<int64_t> missing;
+    if(!NativeTablePresent(db,"native_v3_p2mr_target"))return missing;
+    std::vector<std::pair<int64_t,int64_t>> targets;
+    { PoolStatement q(db,"SELECT first_idx,count FROM native_v3_p2mr_target ORDER BY first_idx");
+      while(q.Row())targets.emplace_back(q.ColumnInt(0),q.ColumnInt(1)); }
+    const bool pool=NativeTablePresent(db,"native_v3_p2mr_pool");
+    for(const auto& [first,count]:targets)
+        for(int64_t idx=first;idx<first+count;++idx) {
+            bool present=false;
+            if(pool){PoolStatement q(db,"SELECT 1 FROM native_v3_p2mr_pool WHERE idx=?");q.Int(1,idx);present=q.Row();}
+            if(!present)missing.push_back(idx);
+        }
+    return missing;
+}
+int64_t NativeP2MRUnissued(sqlite3* db) {
+    if(!NativeTablePresent(db,"native_v3_p2mr_pool"))return 0;
+    return NativePoolCount(db,"SELECT count(*) FROM native_v3_p2mr_pool WHERE issued=0");
+}
+// Pools an adopted owed index in the caller's wallet transaction, and closes
+// its target once every index of that target is pooled.
+void NativeP2MRPoolAdopted(sqlite3* db,const std::string& path,uint32_t leaf,
+                           const std::string& address,const std::vector<uint8_t>& script) {
+    const auto idx=NativeP2MRPoolIndex(path,leaf);
+    if(!idx)return;
+    const auto generation=NativeP2MRTargetOwing(db,*idx);
+    if(!generation)return;
+    if(script.size()!=34 || script[0]!=0x53 || script[1]!=0x20 || address.empty())
+        throw std::runtime_error("Native P2MR pool adoption script malformed");
+    static constexpr char digits[]="0123456789abcdef";
+    std::string hex;hex.reserve(68);
+    for(const auto byte:script){hex+=digits[byte>>4];hex+=digits[byte&15];}
+    if(sqlite3_exec(db,kNativeP2MRPoolSchema,nullptr,nullptr,nullptr)!=SQLITE_OK)
+        throw std::runtime_error("Native P2MR pool schema unavailable");
+    { PoolStatement insert(db,"INSERT INTO native_v3_p2mr_pool(script_pubkey,address,idx,generation,issued,label) "
+          "VALUES(?,?,?,?,0,'')");
+      insert.Text(1,hex);insert.Text(2,address);insert.Int(3,*idx);insert.Int(4,*generation);insert.Done(1); }
+    PoolStatement close(db,"DELETE FROM native_v3_p2mr_target WHERE generation=? AND "
+        "(SELECT count(*) FROM native_v3_p2mr_pool p WHERE p.idx>=first_idx AND p.idx<first_idx+count)=count");
+    close.Int(1,*generation);close.Done();
+}
+// P2MR pool scripts can be derived only with the loaded PQ master and a key
+// store path. A wallet without them keeps a Taproot-only pool (P2MR is never
+// "low" for it, so its extensions cannot loop on P2MR).
+bool NativeP2MRDerivable(const WalletManager& wallet) {
+    auto key = wallet.GetV7PqMasterKey();
+    const bool ok = key.has_value() && !wallet.GetV7P2MRStorePath().empty();
+    if (key) OPENSSL_cleanse(key->data(), key->size());
+    return ok;
+}
+bool NativeP2MRLow(sqlite3* db) {
+    if (NativeTablePresent(db, "native_v3_p2mr_target") &&
+        NativePoolCount(db, "SELECT count(*) FROM native_v3_p2mr_target") != 0) return false;
+    return !NativeTablePresent(db, "native_v3_p2mr_pool") ||
+        NativeP2MRUnissued(db) < WalletManager::kNativeV3PoolLowWater;
+}
+// In the caller's enrollment/extension transaction: records the P2MR fill of
+// `generation`. The first time, every authenticated P2MR key already issued
+// at m/88'/1448'/0'/0/idx (leaf 0) with its watch script (the creation-time
+// address, anything shown) is pooled as issued, generation 0.
+void NativeP2MROpenTarget(sqlite3* db, int64_t generation, const std::string& store_path,
+                          int64_t wallet_id) {
+    if (sqlite3_exec(db, kNativeP2MRPoolSchema, nullptr, nullptr, nullptr) != SQLITE_OK ||
+        sqlite3_exec(db, kNativeP2MRTargetSchema, nullptr, nullptr, nullptr) != SQLITE_OK)
+        throw std::runtime_error("Native P2MR pool schema unavailable");
+    std::vector<wallet::P2MRStoredAddress> stored;
+    if (!store_path.empty() && std::filesystem::exists(store_path)) {
+        wallet::V7P2MRStore store;
+        if (store.OpenExistingReadOnly(store_path) != wallet::V7P2MRStore::OpenResult::Ok)
+            throw std::runtime_error("Native P2MR pool key store unavailable");
+        stored = store.ListByWallet(wallet_id);
+    }
+    int64_t next = 0;
+    if (NativePoolCount(db, "SELECT count(*) FROM native_v3_p2mr_pool") != 0)
+        next = NativePoolCount(db, "SELECT MAX(idx)+1 FROM native_v3_p2mr_pool");
+    const bool adopt = next == 0;
+    for (const auto& row : stored) {
+        const auto idx = NativeP2MRPoolIndex(row.derivation_path, row.leaf_index);
+        if (!idx) continue;
+        next = std::max(next, *idx + 1);
+        if (!adopt) continue;
+        const auto script = wallet::BuildP2MRScriptPubKey(row.merkle_root);
+        PoolStatement watched(db, "SELECT 1 FROM watch_scripts WHERE script_pubkey=?");
+        if (sqlite3_bind_blob(watched.stmt, 1, script.data(), int(script.size()), SQLITE_TRANSIENT) != SQLITE_OK)
+            throw std::runtime_error("Native P2MR pool bind failed");
+        if (!watched.Row()) continue;  // an interrupted issuance: repaired, never pooled here
+        static constexpr char digits[] = "0123456789abcdef";
+        std::string hex;
+        for (const auto byte : script) { hex += digits[byte >> 4]; hex += digits[byte & 15]; }
+        PoolStatement insert(db, "INSERT INTO native_v3_p2mr_pool(script_pubkey,address,idx,generation,issued,label) "
+            "VALUES(?,?,?,0,1,?)");
+        insert.Text(1, hex); insert.Text(2, row.address); insert.Int(3, *idx); insert.Text(4, row.label);
+        insert.Done(1);
+    }
+    PoolStatement target(db, "INSERT INTO native_v3_p2mr_target(generation,first_idx,count) VALUES(?,?,?)");
+    target.Int(1, generation); target.Int(2, next); target.Int(3, WalletManager::kNativeV3ReceivePool);
+    target.Done(1);
 }
 } // namespace
 
@@ -2700,6 +2856,9 @@ bool AdoptP2MRIssuanceIntent(sqlite3* db,const wallet::P2MRStoredAddress& row,
     }
     IssuedStatement clear(db,"DELETE FROM p2mr_issuance_intent_v1 WHERE id=1 AND path=? AND leaf_index=?");
     clear.Text(1,expected);clear.Int(2,leaf);clear.Done(true);
+    // v8.2.4: an index an open native v3 P2MR target owes is pooled here,
+    // atomically with its watch script, so its generation's domain is exact.
+    NativeP2MRPoolAdopted(db,expected,uint32_t(leaf),row.address,script);
     return true;
 }
 bool IssuanceWalletColumn(sqlite3* db,const char* table) {
@@ -3176,6 +3335,13 @@ std::set<std::string> WalletManager::nativePoolHiddenAddresses() const {
     PoolStatement rows(db_, "SELECT p.address FROM native_v3_address_pool p WHERE (p.chain=1 OR p.issued=0) "
         "AND NOT EXISTS (SELECT 1 FROM utxos u WHERE u.address=p.address)");
     while (rows.Row()) hidden.insert(rows.ColumnText(0));
+    // P2MR keys live in a separate store, but their unissued v3 pool rows are
+    // watched reserves just like the Taproot pool. Do not show all twenty as
+    // addresses handed to the user. The RPC still displays a funded reserve.
+    if (NativeTablePresent(db_, "native_v3_p2mr_pool")) {
+        PoolStatement p2mr(db_, "SELECT address FROM native_v3_p2mr_pool WHERE issued=0");
+        while (p2mr.Row()) hidden.insert(p2mr.ColumnText(0));
+    }
     return hidden;
 }
 
@@ -3212,7 +3378,7 @@ WalletManager::NativePoolIssue WalletManager::issueNativePoolAddress(const std::
         if (state == NativeV3State::Complete) return exhausted();
         return refuse(kNativeWalletAddressUnavailableOnV3, "wallet_native_address_unavailable_on_v3", false);
     }
-    const auto newest = NativePoolCount(db, "SELECT COALESCE(MAX(generation),0) FROM native_v3_address_pool");
+    const auto newest = NativePoolNewestGeneration(db);
     // Issuable: covered by a SEALED receipt's replay.
     //  - Complete: the present ordinary receipt sealed the whole current
     //    domain (every generation). Any guarded write would have nulled it.
@@ -3252,6 +3418,95 @@ WalletManager::NativePoolIssue WalletManager::issueNativePoolAddress(const std::
     if (state == NativeV3State::Complete && !NativeOrdinaryReceiptSealed(db))
         throw std::runtime_error("Native address issuance touched the sealed script domain");
     transaction.Commit();
+    result.address = std::move(address);
+    return result;
+}
+
+WalletManager::NativePoolIssue WalletManager::issueNativeP2MRPoolAddress(const std::string& label) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
+    NativePoolIssue result;
+    const auto refuse = [&](const char* message, const char* code, bool retryable) {
+        result.address.clear();
+        result.error = message;
+        result.error_code = code;
+        result.retryable = retryable;
+        return result;
+    };
+    if (current_wallet_id_ < 0 || !db_ || !sqlite3_get_autocommit(db_))
+        throw std::runtime_error("Native P2MR pool owner unavailable");
+    auto lease = AcquireDatabaseLease();
+    if (lease->LegacyTransparentState() != LegacyTransparentState::Absent)
+        throw std::runtime_error("Native P2MR pool requires a native v3 wallet");
+    const auto state = lease->NativeV3TransparentState();
+    if (state == NativeV3State::Absent)
+        throw std::runtime_error("Native P2MR pool requires a native v3 wallet");
+    auto* db = lease->Database();
+    checkUnlockTimeout();
+    const bool locked = wallet_locked_;
+    const auto exhausted = [&] {
+        // A wallet that can never derive P2MR keys (no PQ master or key
+        // store) keeps the honest unavailable refusal; others extend.
+        if (!locked && !NativeP2MRDerivable(*this))
+            return refuse(kNativeWalletP2MRUnavailableOnV3, "wallet_native_p2mr_unavailable_on_v3", false);
+        return locked
+            ? refuse(kNativeWalletAddressPoolUnlockRequired, "wallet_native_address_pool_unlock_required", false)
+            : refuse(kNativeWalletAddressPoolExtending, "wallet_native_address_pool_extending", true);
+    };
+    std::string script, address;
+    int64_t idx = 0;
+    {
+        IssuedAddressTransaction transaction(db);
+        if (!NativeTablePresent(db, "native_v3_p2mr_pool")) {
+            if (state == NativeV3State::Complete) return exhausted();
+            return refuse(kNativeWalletAddressUnavailableOnV3, "wallet_native_address_unavailable_on_v3", false);
+        }
+        const auto newest = NativePoolNewestGeneration(db);
+        int64_t below = 0;
+        if (state == NativeV3State::Complete) {
+            if (!NativeOrdinaryReceiptSealed(db))
+                return refuse(kNativeWalletAddressUnavailableOnV3, "wallet_native_address_unavailable_on_v3", true);
+            below = std::numeric_limits<int64_t>::max();
+        } else if (newest > 0) {
+            below = newest;
+        } else {
+            return refuse(kNativeWalletAddressUnavailableOnV3, "wallet_native_address_unavailable_on_v3", false);
+        }
+        {
+            PoolStatement next(db, "SELECT script_pubkey,address,idx FROM native_v3_p2mr_pool "
+                "WHERE issued=0 AND generation<? ORDER BY idx LIMIT 1");
+            next.Int(1, below);
+            if (!next.Row()) return exhausted();
+            script = next.ColumnText(0);
+            address = next.ColumnText(1);
+            idx = next.ColumnInt(2);
+        }
+        // The pooled row must still be the exact watched P2MR script at its path.
+        {
+            PoolStatement watched(db, "SELECT 1 FROM watch_scripts WHERE lower(hex(script_pubkey))=? AND path=? AND is_change=0");
+            watched.Text(1, script);
+            watched.Text(2, std::string(kNativeP2MRPathPrefix) + std::to_string(idx));
+            if (!watched.Row()) throw std::runtime_error("Native P2MR pool row lost its watched script");
+        }
+        PoolStatement issue(db, "UPDATE native_v3_p2mr_pool SET issued=1,label=?,issued_at=? "
+            "WHERE script_pubkey=? AND issued=0");
+        issue.Text(1, label);
+        issue.Int(2, static_cast<int64_t>(std::time(nullptr)));
+        issue.Text(3, script);
+        issue.Done(1);
+        if (state == NativeV3State::Complete && !NativeOrdinaryReceiptSealed(db))
+            throw std::runtime_error("Native P2MR issuance touched the sealed script domain");
+        transaction.Commit();
+    }
+    // The label also lives in the separate key store (not a guarded table).
+    if (!label.empty()) {
+        wallet::V7P2MRStore store;
+        if (store.Open(GetV7P2MRStorePath()) == wallet::V7P2MRStore::OpenResult::Ok) {
+            const auto row = store.GetByAddress(current_wallet_id_, address);
+            if (!row || !store.UpdateLabelIfExact(current_wallet_id_, address, row->merkle_root, row->pubkey,
+                    row->derivation_path, row->leaf_index, label))
+                WLOG_WARN("Native P2MR pool label not recorded in the key store");
+        }
+    }
     result.address = std::move(address);
     return result;
 }
@@ -4329,7 +4584,14 @@ std::string WalletManager::DatabaseLease::BeginNativeTransparentMigrationV3(
             if (first < 0 || first > INT_MAX || sqlite3_step(next.stmt) != SQLITE_DONE)
                 throw std::runtime_error("V3 native wallet pool index invalid");
             if (chain == 0) receive_first = first;
-            for (int index = int(first); index < WalletManager::kNativeV3ReceivePool; ++index) {
+            // v8.2.4: a restored wallet already shows its gap-limit receive
+            // rows, which all count as issued. Top the receive pool up so
+            // enrollment leaves issuable scripts instead of forcing an
+            // immediate extension (a second full replay for a restored seed).
+            int end = WalletManager::kNativeV3ReceivePool;
+            if (chain == 0 && end - first < WalletManager::kNativeV3PoolLowWater)
+                end = int(first) + WalletManager::kNativeV3ReceivePool;
+            for (int index = int(first); index < end; ++index) {
                 const auto row = DeriveBip86Row(owner_.master_seed_, chain, index, owner_.logger_);
                 PersistIssuedAddress(db_, chain, index, row.address, "", "p2tr", row.script_hex,
                     row.script, row.path, row.key, row.internal, row.output);
@@ -4342,6 +4604,10 @@ std::string WalletManager::DatabaseLease::BeginNativeTransparentMigrationV3(
         if (NativePoolCount(db_, "SELECT count(*) FROM native_v3_address_pool") != 0)
             throw std::runtime_error("V3 native wallet address pool already populated");
         NativePoolAdopt(db_, 0, receive_first);
+        // v8.2.4: the P2MR receive pool joins this first coverage (generation
+        // 0), so a restored wallet never needs a second full replay for it.
+        if (NativeP2MRDerivable(owner_))
+            NativeP2MROpenTarget(db_, 0, owner_.GetV7P2MRStorePath(), owner_.current_wallet_id_);
         // Authenticate the seed and the complete inventory, pool included,
         // before either the pool or the class marker can become durable.
         ValidateRecoveryInventoryInTransaction(*seed);
@@ -4384,7 +4650,42 @@ bool WalletManager::DatabaseLease::NativeV3PoolNeedsExtension() const {
         NativeV3TransparentState() != WalletManager::NativeV3State::Complete)
         return false;
     const auto low = NativePoolLow(db_);
-    return low.receive || low.change;
+    return low.receive || low.change || (NativeP2MRLow(db_) && NativeP2MRDerivable(owner_));
+}
+
+std::vector<int64_t> WalletManager::DatabaseLease::NativeP2MRTargetMissing() const {
+    if (thread_ != std::this_thread::get_id())
+        throw std::logic_error("Native P2MR pool used on another thread");
+    if (!db_ || name_.empty() || owner_.db_ != db_ || owner_.database_session_ != session_)
+        throw std::runtime_error("Native P2MR pool ownership unavailable");
+    return NativeP2MRMissing(db_);
+}
+
+std::string WalletManager::DatabaseLease::NativeV3PooledChangeAddress(const RecoverySeed& owner) {
+    if (thread_ != std::this_thread::get_id())
+        throw std::logic_error("Native change pool used on another thread");
+    if (!db_ || name_.empty() || owner_.db_ != db_ || owner_.database_session_ != session_)
+        throw std::runtime_error("Native change pool ownership unavailable");
+    std::vector<std::pair<std::string, std::string>> candidates;
+    {
+        LegacyMigrationStatement pool(db_,
+            "SELECT a.address, a.script_pubkey FROM addresses a WHERE a.account=0 AND a.change=1 "
+            "AND NOT EXISTS (SELECT 1 FROM utxos u WHERE u.address=a.address) ORDER BY a.idx");
+        int rc;
+        while ((rc = sqlite3_step(pool.stmt)) == SQLITE_ROW) {
+            const auto* address = reinterpret_cast<const char*>(sqlite3_column_text(pool.stmt, 0));
+            const auto* script = reinterpret_cast<const char*>(sqlite3_column_text(pool.stmt, 1));
+            if (!address || !script) continue;
+            candidates.emplace_back(std::string(address, sqlite3_column_bytes(pool.stmt, 0)),
+                                    std::string(script, sqlite3_column_bytes(pool.stmt, 1)));
+        }
+        if (rc != SQLITE_DONE) throw std::runtime_error("Native change pool unavailable");
+    }
+    for (const auto& [address, script] : candidates) {
+        auto key = ResolveSigningKey(script, owner);
+        if (key && key->secret.size() == 32) return address;
+    }
+    return {};
 }
 
 bool WalletManager::DatabaseLease::BeginNativePoolExtensionV3(
@@ -4425,12 +4726,12 @@ bool WalletManager::DatabaseLease::BeginNativePoolExtensionV3(
                 "AND type='p2tr' AND lower(script_pubkey) NOT IN (SELECT script_pubkey FROM native_v3_address_pool)") != 0)
             throw std::runtime_error("V3 native pool extension found an unpooled Taproot row");
         const auto low = NativePoolLow(db_);
-        if (!low.receive && !low.change) {
+        const bool p2mr = NativeP2MRLow(db_) && NativeP2MRDerivable(owner_);
+        if (!low.receive && !low.change && !p2mr) {
             LegacyMigrationExec(db_, "ROLLBACK");
             return false;
         }
-        const auto generation =
-            NativePoolCount(db_, "SELECT COALESCE(MAX(generation),0) FROM native_v3_address_pool") + 1;
+        const auto generation = NativePoolNewestGeneration(db_) + 1;
         for (const int chain : {0, 1}) {
             if ((chain == 0 && !low.receive) || (chain == 1 && !low.change)) continue;
             LegacyMigrationStatement next(db_,
@@ -4453,6 +4754,15 @@ bool WalletManager::DatabaseLease::BeginNativePoolExtensionV3(
                 pooled.Text(1, row.script_hex);pooled.Text(2, row.address);pooled.Int(3, chain);
                 pooled.Int(4, index);pooled.Int(5, generation);pooled.Done(1);
             }
+        }
+        // v8.2.4: the P2MR fill of this generation is owed before coverage.
+        // A P2MR-only extension writes no guarded row here, so retire the
+        // ordinary receipt explicitly (its domain is about to grow).
+        if (p2mr) {
+            NativeP2MROpenTarget(db_, generation, owner_.GetV7P2MRStorePath(), owner_.current_wallet_id_);
+            if (!low.receive && !low.change)
+                LegacyMigrationExec(db_, "UPDATE wallet_meta SET runtime_ordinary_invalid=1,"
+                    "runtime_ordinary_receipt=NULL WHERE id=1 AND runtime_ordinary_receipt IS NOT NULL");
         }
         // Authenticate the seed and the complete grown inventory before the
         // grown domain or the Pending marker can become durable.
@@ -4949,9 +5259,18 @@ void WalletManager::DatabaseLease::BeginP2MRIssuance(
        pin.thread_!=thread_ || session_!=owner_.database_session_ ||
        owner_.db_!=db_ || owner_.recovery_seeds_!=1 || path.empty() ||
        path.size()>128 || path.find('\0')!=std::string::npos ||
-       !path.starts_with("m/88'/1448'/") ||
-       TypedTransparentState()!=WalletManager::LegacyTransparentState::Absent)
+       !path.starts_with("m/88'/1448'/"))
         throw std::runtime_error("P2MR issuance owner unavailable");
+    // Before any typed v3 enrollment the script domain is free. After native
+    // enrollment began, only an index an open P2MR target owes may be issued
+    // (the Pending wallet's coverage waits for it); never in Complete.
+    if(TypedTransparentState()!=WalletManager::LegacyTransparentState::Absent) {
+        const auto idx=NativeP2MRPoolIndex(path,leaf);
+        if(LegacyTransparentState()!=WalletManager::LegacyTransparentState::Absent ||
+           NativeV3TransparentState()!=WalletManager::NativeV3State::Pending ||
+           !idx || !NativeP2MRTargetOwing(db_,*idx))
+            throw std::runtime_error("P2MR issuance owner unavailable");
+    }
     IssuedAddressTransaction transaction(db_);
     ValidateRecoveryInventoryInTransaction(pin);
     IssuanceCheck(db_,sqlite3_exec(db_,
@@ -8609,9 +8928,9 @@ WalletManager::WalletScanStatus WalletManager::GetScanStatus(uint32_t chain_heig
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             status.scan_height = static_cast<uint32_t>(sqlite3_column_int(stmt, 0));
-            int scan_complete = sqlite3_column_int(stmt, 1);
-            // is_scanning = true if scan started but not complete, and not at tip
-            status.is_scanning = (scan_complete == 0) && (status.scan_height < status.chain_height);
+            // Historical rescan completion and current runtime delivery are
+            // separate. A completed scan can still lag newly selected blocks.
+            status.is_scanning = status.scan_height < status.chain_height;
         } else {
             // No sync_meta entry - never scanned
             status.scan_height = 0;

@@ -28,6 +28,7 @@ try:
         raise RuntimeError(f"scheduled provider fixture failed: exit {result.returncode}")
     required=["PASS scheduled regtest daemon installed actual typed provider",
               "PASS actual daemon typed provider matches backend and profile after worker startup",
+              "PASS runtime replay cancellation precedes selected-owner notification detach",
               "PASS actual daemon typed provider detached before dependency release",
               "PASS actual daemon initial durable scan without fabricated progress",
               "PASS actual daemon delivery worker drained before dependency release",
@@ -43,6 +44,8 @@ try:
     assert output.index("[DaemonApp] ✅ Core services started")<output.index(recovered)
     assert output.index("Loading mempool from disk...")<output.index(recovered)
     assert output.index(recovered)<output.index("Startup recovery complete; starting external listeners")
+    assert output.count("phase=runtime_delivery_cancel_requested")==1
+    assert output.index("phase=runtime_delivery_cancel_requested")<output.index("phase=runtime_notifications_detached")
     assert output.count("phase=runtime_notifications_detached")==1
     assert output.index("phase=runtime_notifications_detached")<output.index("phase=runtime_delivery_stopped")<output.index("phase=pool_payments_closed")
     assert " real daemon services released" in output

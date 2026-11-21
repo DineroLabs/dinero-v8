@@ -27,6 +27,7 @@
 #include "wallet/p2mr_address.h"
 #include "wallet/runtime_account_replay.h"
 #include "wallet/runtime_origin_projection.h"
+#include <sqlite3.h>
 #endif
 
 bool rpc_context_native_v3_ordinary_inventory_ready(
@@ -224,17 +225,6 @@ din::Json rpc_context_wallet_orchard_enrollpreactivation(const ExecutionContext&
 
 din::Json rpc_context_wallet_orchard_recoveraccount0(const ExecutionContext& ctx,const din::Json& params){
     din::Json result;
-    {
-        // #939: restored-seed Orchard history is not served on a v3 source yet
-        // (a v3 node also refuses restores); never run this recovery there.
-        const auto v3=ctx.daemon?std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate):nullptr;
-        if(v3&&v3->HasFullArchiveWalletIndexV3()){
-            result["error"]="Orchard account recovery is not available on this node yet (wallet index v3)";
-            result["error_code"]="wallet_native_orchard_recovery_unavailable_on_v3";
-            result["retryable"]=false;
-            return result;
-        }
-    }
     try {
         if(!params.isObject()||params.size()>1||(params.size()==1&&(!params.isMember("restart")||!params["restart"].isBool())))
             throw std::runtime_error("wallet.orchard.recoveraccount0 takes only optional restart:boolean; Core selects the profile and full history");
@@ -389,6 +379,31 @@ din::Json OrchardAccountRead(const ExecutionContext& ctx,const din::Json& params
                 const auto captured=source->getRuntimeAccountReplayForWallet(wallet_use->Wallet(),session);
                 if(!captured.ok())throw std::runtime_error("Authenticated Orchard replay source unavailable");
                 try {
+                    if(listing) {
+                        // Account discovery can overlap a long v3 delivery.
+                        // Restore the full authenticated catalog inside one
+                        // read transaction so a newer committed revision
+                        // cannot invalidate the result mid-read. The selected
+                        // source was captured before wallet ownership.
+                        auto lease=wallet_use->Wallet().AcquireDatabaseLease();
+                        if(lease->Session()!=session || !lease->Database() ||
+                           !sqlite3_get_autocommit(lease->Database()))
+                            throw std::runtime_error("Orchard catalog read owner unavailable");
+                        auto* db=lease->Database();
+                        if(sqlite3_exec(db,"BEGIN",nullptr,nullptr,nullptr)!=SQLITE_OK)
+                            throw std::runtime_error("Orchard catalog read transaction unavailable");
+                        try {
+                            auto catalog=dinero::wallet::OrchardAccountDelivery::ReadCatalogForReplayInTransaction(
+                                wallet_use->Wallet(),session,**captured);
+                            if(sqlite3_exec(db,"COMMIT",nullptr,nullptr,nullptr)!=SQLITE_OK)
+                                throw std::runtime_error("Orchard catalog read commit failed");
+                            return {*captured,std::move(catalog)};
+                        } catch(...) {
+                            if(!sqlite3_get_autocommit(db))
+                                (void)sqlite3_exec(db,"ROLLBACK",nullptr,nullptr,nullptr);
+                            throw;
+                        }
+                    }
                     auto catalog=dinero::wallet::OrchardAccountDelivery::ReadCatalogForReplay(
                         wallet_use->Wallet(),session,**captured);
                     return {*captured,std::move(catalog)};
@@ -409,6 +424,9 @@ din::Json OrchardAccountRead(const ExecutionContext& ctx,const din::Json& params
                 account["account_digest"]=checkpoint.digest.GetHex();
                 account["checkpoint_height"]=Json::UInt(entry.state.account.Scan().Checkpoint().height);
                 account["checkpoint_hash"]=entry.state.account.Scan().Checkpoint().block_hash.GetHex();
+                if(const auto receiver=entry.state.account.FirstIssuedExternalReceiver())
+                    account["first_receive_address"]=receiver->EncodeAddress(
+                        static_cast<dinero::orchard::WalletNetwork>(view->Profile().domain.network_code));
                 accounts.append(std::move(account));
             }
             result["captured_source_sequence"]=Json::UInt64(view->Head().sequence);
@@ -697,20 +715,8 @@ std::vector<uint8_t> SpendOutputScript(const std::string& address,uint8_t networ
 } // namespace
 
 namespace {
-// #939: Orchard spends and shields reserve transparent or Orchard inputs and
-// need a current Orchard spend source. A full-archive v3 node delivers Orchard
-// receipts (phase 3) but serves no Orchard spend yet; refuse before parsing.
-bool RefuseOrchardSpendOnV3(const ExecutionContext& ctx,din::Json& result){
-    const auto source=ctx.daemon?std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate):nullptr;
-    if(!source||!source->HasFullArchiveWalletIndexV3())return false;
-    result["error"]="Orchard spending is not available on this node yet (wallet index v3)";
-    result["error_code"]="wallet_native_orchard_spend_unavailable_on_v3";
-    result["retryable"]=false;
-    return true;
-}
 din::Json OrchardSpendCall(const ExecutionContext& ctx,const din::Json& params,bool finishing){
     din::Json result;
-    if(RefuseOrchardSpendOnV3(ctx,result))return result;
     try {
         const bool stored_only=finishing&&params.isObject()&&params.size()==2;
         auto request=stored_only?ParseStoredFinishRequest(params):ParseSpendRequest(params);
@@ -827,7 +833,6 @@ din::Json rpc_context_wallet_orchard_finishspend(const ExecutionContext& ctx,con
 namespace {
 din::Json OrchardShieldCall(const ExecutionContext& ctx,const din::Json& params,bool finishing){
     din::Json result;
-    if(RefuseOrchardSpendOnV3(ctx,result))return result;
     try{
         auto normalized=params;bool reacquire_input_proofs=false;
         if(params.isObject()&&params.isMember("reacquire_input_proofs")){

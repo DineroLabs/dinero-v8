@@ -24,7 +24,9 @@ namespace vault {class VaultService;}
 class RuntimeDeliveryWorker final {
     struct WakeState;
 public:
-    enum class WalletOutcome { Deferred, ResourceLimited, ExplicitlyAbsent, NoActiveWallet, NoLog, AppliedPrefix,
+    enum class WalletOutcome { Deferred, ResourceLimited, ExplicitlyAbsent, NoActiveWallet, NoLog,
+        AdvancedPending, // Durable bounded progress; captured wallet prefix remains incomplete.
+        AppliedPrefix,
         AppliedOrchardPrefix, // No transparent/index receipt or mixed readiness.
         AppliedImportedMixedPrefix }; // Captured BOTH-store/catalog prefix ONLY.
     enum class VaultOutcome { Deferred, NoAttachedRuntime, ObservedTip, UnchangedSinceObservation };
@@ -78,6 +80,9 @@ public:
     // Start always schedules a scan from the beginning, including after Stop.
     // Call lifecycle methods outside wallet, chain and runtime ownership.
     void Start();
+    // Signal cancellation before the daemon acquires selected ownership to
+    // detach notifications. Stop() still owns and joins the thread afterward.
+    void RequestStop();
     void Stop();
     // Suitable for a preallocated post-commit handoff. No source read or work
     // runs here; repeated requests coalesce and never acknowledge delivery.
@@ -97,6 +102,7 @@ private:
         uint64_t& recovery_attempts) const;
     void RestoreRetiredLegacyPendingNotes() const;
     bool ReconcileSlice(Report&) const;
+    void SignalStop() noexcept;
     std::shared_ptr<ChainstateService> source_;
     // Null is an explicit absence supplied by the composition owner.
     std::shared_ptr<WalletService> wallet_;

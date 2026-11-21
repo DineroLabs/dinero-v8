@@ -7,13 +7,19 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTcpServer>
+#include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTimer>
 #include "mainwindow.h"
+#include "connection_manager.h"
 #include "rpcclient.h"
+#if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
+#include "orchardwidget.h"
+#endif
 
 // The Wallet tab must never start or clean up daemon processes.
 void killStaleDinerodByPort() { qFatal("Unexpected daemon cleanup in wallet layout test"); }
@@ -85,6 +91,14 @@ private Q_SLOTS:
     void initTestCase() {
         QVERIFY(dir_.isValid());
         QVERIFY(endpoint_.listen(QHostAddress::LocalHost));
+        // Keep the isolated RPC socket open. Tests deliver explicit RPC
+        // replies; closing the test socket would trigger connection-loss
+        // banners and obscure the wallet state under test during waits.
+        connect(&endpoint_, &QTcpServer::newConnection, this, [this] {
+            while (auto* socket = endpoint_.nextPendingConnection()) {
+                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+            }
+        });
         qputenv("DINERO_RPC_URL", QString("http://127.0.0.1:%1/").arg(endpoint_.serverPort()).toUtf8());
         QCoreApplication::setOrganizationName("DineroWalletLayoutTest");
         QCoreApplication::setApplicationName("IsolatedWalletLayout");
@@ -210,6 +224,108 @@ private Q_SLOTS:
         QCOMPARE(total->text(), QString("Balance unavailable"));
         QVERIFY(scope->isHidden());
         QVERIFY(!send->isEnabled());
+    }
+
+    void briefCatchUpPausesSendingWithoutLeavingAStaleGlobalWarning() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        auto* rpc = window->findChild<RpcClient*>();
+        QVERIFY(rpc);
+        QVERIFY(bindTestWallet(*window, "RecoveryTestWallet"));
+        QSignalBlocker connectionSignals(window->connectionMgr_);
+        auto* total = named<QLabel>(*window, "walletTotalBalance");
+        auto* scope = named<QLabel>(*window, "walletBalanceScope");
+        auto* error = named<QLabel>(*window, "walletGlobalError");
+        auto* send = named<QPushButton>(*window, "walletSendButton");
+        QVERIFY(total && scope && error && send);
+        window->checkRescanStatus();
+        Q_EMIT rpc->rpcResult("wallet.getinfo", QJsonObject{
+            {"hd_enabled", true}, {"wallet_name", "RecoveryTestWallet"},
+            {"unlocked", true}, {"scanning", false}});
+        const QJsonObject balance{{"walletname", "RecoveryTestWallet"},
+                                  {"confirmed", 12.0}, {"unconfirmed", 0.0},
+                                  {"immature", 5.0}, {"send_ready", true}};
+        Q_EMIT rpc->rpcResult("wallet.getbalance", balance);
+        QVERIFY(send->isEnabled());
+
+        Q_EMIT rpc->rpcError("wallet.getinfo", -32603,
+            "Legacy transparent wallet is catching up to the selected chain");
+        QVERIFY(!send->isEnabled());
+        QVERIFY(window->walletBalanceUnavailable_);
+        QCOMPARE(total->text(), QString("12.00000000 DIN"));
+        QVERIFY(!scope->isHidden());
+        QVERIFY2(error->isHidden() || !error->text().startsWith("Wallet balance unavailable;"),
+                 "a one-block catch-up showed the global balance warning immediately");
+
+        Q_EMIT rpc->rpcResult("wallet.getbalance", balance);
+        QVERIFY(send->isEnabled());
+        QVERIFY(!window->walletBalanceUnavailable_);
+        QVERIFY(scope->isHidden());
+        QTest::qWait(6100);
+        QVERIFY2(error->isHidden() || !error->text().startsWith("Wallet balance unavailable;"),
+                 "an old catch-up timer revived the warning after balance recovery");
+    }
+
+    void prolongedCatchUpShowsTheWarningAndKeepsSendingPaused() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        auto* rpc = window->findChild<RpcClient*>();
+        QVERIFY(rpc);
+        QVERIFY(bindTestWallet(*window, "RecoveryTestWallet"));
+        QSignalBlocker connectionSignals(window->connectionMgr_);
+        auto* error = named<QLabel>(*window, "walletGlobalError");
+        auto* send = named<QPushButton>(*window, "walletSendButton");
+        QVERIFY(error && send);
+        window->checkRescanStatus();
+        Q_EMIT rpc->rpcResult("wallet.getinfo", QJsonObject{
+            {"hd_enabled", true}, {"wallet_name", "RecoveryTestWallet"},
+            {"unlocked", true}, {"scanning", false}});
+        Q_EMIT rpc->rpcResult("wallet.getbalance", QJsonObject{
+            {"walletname", "RecoveryTestWallet"}, {"confirmed", 12.0},
+            {"unconfirmed", 0.0}, {"immature", 5.0}, {"send_ready", true}});
+        QVERIFY(send->isEnabled());
+        QVERIFY(window->walletBalanceAccepted_);
+        QVERIFY(!window->walletBalanceUnavailable_);
+        const qint64 verifiedAt = window->walletBalanceVerifiedAtMs_;
+        const QString wallet = window->currentWalletName_;
+        Q_EMIT rpc->rpcError("wallet.getbalance", -32603,
+            "Legacy transparent wallet is catching up to the selected chain");
+        QVERIFY(!send->isEnabled());
+        QVERIFY(window->walletBalanceUnavailable_);
+        QTest::qWait(7000);
+        QVERIFY2(error->isVisible() && error->text().startsWith("Wallet balance unavailable;"),
+                 qPrintable(QString("global warning after grace: visible=%1 text='%2' balanceUnavailable=%3 accepted=%4 sameWallet=%5 sameTimestamp=%6")
+                     .arg(error->isVisible()).arg(error->text())
+                     .arg(window->walletBalanceUnavailable_).arg(window->walletBalanceAccepted_)
+                     .arg(window->currentWalletName_ == wallet)
+                     .arg(window->walletBalanceVerifiedAtMs_ == verifiedAt)));
+        QVERIFY(!send->isEnabled());
+    }
+
+    void addressAndHistoryCatchUpStayInTheirPanelsAndClearOnSuccess() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        auto* rpc = window->findChild<RpcClient*>();
+        auto* error = named<QLabel>(*window, "walletGlobalError");
+        auto* addresses = named<QLabel>(*window, "addressListStatus");
+        auto* history = named<QLabel>(*window, "transactionListStatus");
+        QVERIFY(rpc && error && addresses && history);
+        const QString catchingUp = "Legacy transparent wallet is catching up to the selected chain";
+
+        Q_EMIT rpc->rpcError("wallet.listaddresses", -32603, catchingUp);
+        Q_EMIT rpc->rpcError("wallet.listtransactions", -32603, catchingUp);
+        QVERIFY(!addresses->isHidden());
+        QVERIFY(!history->isHidden());
+        QVERIFY(addresses->text().contains("refresh automatically"));
+        QVERIFY(history->text().contains("refresh automatically"));
+        QVERIFY(error->isHidden() ||
+                (!error->text().contains("wallet.listaddresses") &&
+                 !error->text().contains("wallet.listtransactions")));
+
+        Q_EMIT rpc->rpcResult("wallet.listaddresses", QJsonArray{});
+        Q_EMIT rpc->rpcResult("wallet.listtransactions", QJsonArray{});
+        QVERIFY(addresses->isHidden());
+        QVERIFY(history->isHidden());
     }
 
     void lateOldWalletReplyCannotBeAcceptedAfterSwitch() {
@@ -374,6 +490,57 @@ private Q_SLOTS:
         QVERIFY(!window->btnSend_->isEnabled());
     }
 
+#if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
+    void recoveredV3ScopeCanSetUpOrchardAccount() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        QVERIFY(bindTestWallet(*window, "RecoveryTestWallet"));
+        auto* rpc = window->findChild<RpcClient*>();
+        auto* orchard = window->orchardWidget_;
+        QVERIFY(rpc && orchard);
+
+        window->checkRescanStatus();
+        Q_EMIT rpc->rpcResult("wallet.getinfo", QJsonObject{
+            {"hd_enabled", true}, {"wallet_name", "RecoveryTestWallet"},
+            {"unlocked", true}, {"scanning", false}});
+        Q_EMIT rpc->rpcResult("wallet.getbalance", QJsonObject{
+            {"walletname", "RecoveryTestWallet"}, {"confirmed", 12.0},
+            {"unconfirmed", 0.0}, {"immature", 0.0},
+            {"send_ready", true}, {"send_scope", "transparent_recovered_v3"}});
+
+        QSignalSpy requests(orchard, &OrchardWidget::requestSent);
+        orchard->setWalletScope("RecoveryTestWallet");
+        orchard->setChain("regtest");
+        auto reply = [&](const QString& method, const QJsonObject& value) {
+            for (int i = requests.size() - 1; i >= 0; --i) {
+                if (requests.at(i).at(0).toString() == method) {
+                    return QMetaObject::invokeMethod(orchard, "onRpcResult", Qt::DirectConnection,
+                        Q_ARG(QString, requests.at(i).at(2).toString()),
+                        Q_ARG(QJsonValue, QJsonValue(value)));
+                }
+            }
+            return false;
+        };
+        QVERIFY(reply("wallet.orchard.getwalletbinding", QJsonObject{
+            {"wallet_name", "RecoveryTestWallet"}, {"wallet_binding", QString(64, 'a')}}));
+        QVERIFY(reply("wallet.orchard.listaccounts", QJsonObject{
+            {"captured_source_sequence", 3}, {"captured_source_digest", QString(64, 'c')},
+            {"accounts", QJsonArray{}}}));
+        QVERIFY(reply("orchard.getactivationstatus", QJsonObject{
+            {"network", "regtest"}, {"activation_state", "active"},
+            {"activation_height", 10}, {"branch_id", 42},
+            {"tip_height", 20}, {"tip_hash", QString(64, 'd')},
+            {"next_block_height", 21}, {"rule_active_at_tip", true},
+            {"rule_active_for_next_block", true}, {"wallet_backend_compiled", true},
+            {"storage_mode", "full"}, {"node_supported", true},
+            {"node_notice", ""}, {"storage_upgrade_refused", false},
+            {"storage_upgrade_reason", "none"}}));
+        auto* setup = named<QPushButton>(*orchard, "orchardCreateAccount");
+        QVERIFY(setup);
+        QVERIFY2(setup->isEnabled(), "Unlocked v3 wallets must be able to set up Orchard account 0");
+    }
+#endif
+
     void maxStillSendsTheWholeBalance() {
         // Max reads the balance back from its label; separators must not change the amount.
         auto window = makeWindow();
@@ -499,6 +666,26 @@ private Q_SLOTS:
         // The user sees the unlock request, not a raw RPC failure.
         QVERIFY(window->lblErrorMessage_->text().contains("Unlock this wallet"));
         QVERIFY(!window->lblErrorMessage_->text().contains("code: -32603"));
+    }
+
+    // The Swap tab polls swap.list; a node with swaps off (the default) refuses
+    // every time. That refusal belongs to the tab, not to the window's error bar.
+    void swapTabRefusalsNeverReachTheErrorBar() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        auto* rpc = window->findChild<RpcClient*>();
+        QVERIFY(rpc);
+        window->lblErrorMessage_->clear();
+        window->lblErrorMessage_->setVisible(false);
+        Q_EMIT rpc->rpcError("swaptab.list", -32603,
+            "swaps are disabled: start dinerod with swap.enable=1 and swap.btc_rpc=HOST:PORT");
+        // (Checked at once: the window's own startup calls fail too in this
+        // test and may fill the bar afterwards.)
+        QVERIFY2(!window->lblErrorMessage_->text().contains("swap"), qPrintable(window->lblErrorMessage_->text()));
+        // Any other failure is still shown.
+        Q_EMIT rpc->rpcError("getpeerinfo", -32603, "boom");
+        QVERIFY2(window->lblErrorMessage_->text().contains("getpeerinfo failed - boom"),
+                 qPrintable(window->lblErrorMessage_->text()));
     }
 
     // Issue #939 interim: a wallet this v3 node cannot track yet must never

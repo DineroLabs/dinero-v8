@@ -32,6 +32,7 @@ private Q_SLOTS:
         manager.setDaemonUrl(QString("http://127.0.0.1:%1").arg(server.serverPort()));
         manager.setMaxRetries(1);
         QSignalSpy connected(&manager, &ConnectionManager::connected);
+        QSignalSpy synced(&manager, &ConnectionManager::blockchainSynced);
         manager.connectToDaemon();
         manager.reconnect(); // Exhaust the fast budget while the daemon has no cookie.
         QCOMPARE(manager.state(), ConnectionManager::Failed);
@@ -66,6 +67,9 @@ private Q_SLOTS:
         body = R"({"result":142767,"error":null,"id":"health_check"})";
         QTRY_COMPARE_WITH_TIMEOUT(manager.state(), ConnectionManager::Connected, 3000);
         QCOMPARE(connected.count(), 1);
+        // The health response contains only getblockcount. It cannot claim
+        // headers == blocks, since downloaded headers may be ahead of the tip.
+        QCOMPARE(synced.count(), 0);
         QVERIFY(probe->isActive());
         QCOMPARE(probe->interval(), 5000); // Restore the normal connected cadence.
         manager.disconnectFromDaemon();

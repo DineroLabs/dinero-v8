@@ -5,6 +5,7 @@
 #include <QSettings>
 #include <QTcpServer>
 #include <QTemporaryDir>
+#include <QTextEdit>
 
 #include "rpcclient.h"
 #include "shieldedwidget.h"
@@ -17,6 +18,7 @@ private Q_SLOTS:
     void staleJournalNeedsExplicitClearBeforeRetry();
     void transportFailureRemainsUncertain();
     void retiredBalanceIsRecordedButNotAvailable();
+    void nativeV3ShowsRetiredPoolAsUnavailableWithoutErrorSpam();
 };
 
 namespace {
@@ -71,6 +73,37 @@ void ShieldedWidgetLockTest::retiredBalanceIsRecordedButNotAvailable() {
     Q_EMIT rpc.rpcResult("wallet.shieldedbalance", QJsonObject{{"balance_una",100000000},
         {"ordinary_balance_una",100000000},{"covenant_balance_una",0},{"spend_enabled",true}});
     QVERIFY(balance->text().contains("available for ordinary payments"));
+}
+
+void ShieldedWidgetLockTest::nativeV3ShowsRetiredPoolAsUnavailableWithoutErrorSpam() {
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    configureSettings(settingsDir.path());
+    QTcpServer endpoint;
+    QVERIFY(endpoint.listen(QHostAddress::LocalHost));
+    RpcClient rpc;
+    rpc.setDatadir(settingsDir.path());
+    rpc.setEndpoint(QUrl(QString("http://127.0.0.1:%1/").arg(endpoint.serverPort())));
+    ShieldedWidget widget(&rpc);
+    widget.setWalletScope("Hotel");
+
+    Q_EMIT rpc.rpcResult("orchard.getactivationstatus", QJsonObject{
+        {"network", "mainnet"}, {"rule_active_for_next_block", true},
+        {"activation_height", 150000}});
+    Q_EMIT rpc.rpcResult("wallet.getbalance", QJsonObject{
+        {"walletname", "Hotel"}, {"send_scope", "transparent_native_v3"},
+        {"confirmed", 100.0}});
+    const QString unsupported =
+        "Shielded (Orchard) wallet state is not available on this node yet (wallet index v3).";
+    Q_EMIT rpc.rpcError("wallet.shieldedbalance", -32603, unsupported);
+    Q_EMIT rpc.rpcError("wallet.listshielded", -32603, unsupported);
+    auto* log = widget.findChild<QTextEdit*>();
+    auto* banner = widget.findChild<QLabel*>("shieldedStatusBanner");
+    QVERIFY(log && banner);
+    QVERIFY(banner->text().contains("history is unavailable"));
+    QCOMPARE(log->toPlainText().count("retired pool history is unavailable"), 1);
+    QVERIFY(!log->toPlainText().contains("[rpc-error] wallet.shieldedbalance"));
+    QVERIFY(!log->toPlainText().contains("[rpc-error] wallet.listshielded"));
 }
 
 void ShieldedWidgetLockTest::lockedWalletIsDefinitiveAndRetryUnlocks() {

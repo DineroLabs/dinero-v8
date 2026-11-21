@@ -354,6 +354,47 @@ public:
     // effects in the SAME account transaction. Missing ancestry/capacity refuses.
     static Applied ApplyForReplay(WalletManager&,uint64_t session,const Profile&,
         uint64_t expected_revision,const RuntimeAccountReplay&,uint64_t sequence);
+    // v8.2.4 active retention bound. Retaining delivery adds one row per
+    // account per event and OrchardOwnershipInventory refuses a wallet past
+    // kMaxRows, so unbounded history made every Orchard wallet unusable after
+    // ~65k events. For each catalog account whose retained rows exceed
+    // kRetainedWindow+kRetainedSlack, keep the kRetainedWindow linked parents
+    // of its current revision, authenticate them, delete the rest, and cut the
+    // oldest kept parent link to zero (the shape recovery adoption already
+    // installs). Its own transaction; call only after every account of a
+    // delivery step has committed, never inside a catalog plan. Returns rows
+    // deleted. A later rewind past the window refuses (kRewindBeyondWindow).
+    // Retained rows share OrchardOwnershipInventory::kMaxRows (65,536) across
+    // ALL accounts. kRetainedBudget (75%) is split evenly over the catalog's
+    // accounts: each gets share=budget/accounts rows = window + slack, with
+    // window capped at kRetainedWindow (256) and slack at kRetainedSlack (64).
+    // A larger catalog shrinks both, so n*(window+slack) <= budget for every
+    // catalog the format allows (<=1,024 accounts: window 24, slack 24).
+    // New accounts stop at kMaxRetainedAccounts (128) so every wallet created
+    // by this release keeps the full documented 256-parent rewind window:
+    // 128*(256+64) = 40,960 <= 49,152. Only pre-cap catalogs (129-1,024
+    // accounts) get a smaller window, and a deeper rewind refuses with
+    // kRewindBeyondWindow. Archive identities never retain rows
+    // (OrchardOperationArchive uses non-retaining StageReplace only).
+    static constexpr size_t kRetainedWindow=256,kRetainedSlack=64;
+    static constexpr size_t kRetainedBudget=49152,kMaxRetainedAccounts=128;
+    static size_t RetainedShareFor(size_t accounts) noexcept {
+        return accounts?kRetainedBudget/accounts:kRetainedBudget;
+    }
+    static size_t RetainedSlackFor(size_t accounts) noexcept {
+        const size_t half=RetainedShareFor(accounts)/2;
+        return half<kRetainedSlack?half:kRetainedSlack;
+    }
+    static size_t RetainedWindowFor(size_t accounts) noexcept {
+        const size_t window=RetainedShareFor(accounts)-RetainedSlackFor(accounts);
+        return window>kRetainedWindow?kRetainedWindow:window;
+    }
+    static constexpr const char* kRewindBeyondWindow=
+        "Orchard rewind is deeper than the retained history window";
+    // window_for_test!=0 (tests only) prunes every account to that window
+    // with no slack, so a test can drive the prune transaction directly.
+    static size_t BoundRetainedHistory(WalletManager&,uint64_t session,const RuntimeAccountReplay&,
+        size_t window_for_test=0);
     static Applied ReconcileForReplay(WalletManager&,uint64_t session,const Profile&,
         uint64_t expected_revision,const RuntimeAccountReplay&);
     static Applied Connect(WalletManager&, uint64_t session, const Profile&,

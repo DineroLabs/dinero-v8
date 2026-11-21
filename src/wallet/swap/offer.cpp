@@ -14,6 +14,7 @@ namespace {
 
 constexpr uint8_t kAcceptVersion = 1;
 constexpr size_t kOfferPayloadSize = 1 + 1 + 8 + 8 + 32 + 32 + 33 + 5 * 4;  // 135
+constexpr size_t kOffer2PayloadSize = kOfferPayloadSize + 1;                // + chain id
 constexpr size_t kAcceptPayloadSize = 1 + 32 + 32 + 33;                    // 98
 constexpr size_t kChecksumSize = 4;
 // Bob must have time to lock BTC and Alice to claim it before her cut-off
@@ -55,6 +56,7 @@ void ValidateOffer(const SwapOffer& o) {
         o.network != SwapNetwork::Regtest) {
         Refuse("unknown network");
     }
+    if (o.chain != CounterChain::Bitcoin && o.chain != CounterChain::Zcash) Refuse("unknown counter chain");
     if (o.din_amount_una == 0 || o.btc_amount_sat == 0) Refuse("amounts must be positive");
     RequireXOnly(o.din_refund_pubkey, "DIN refund key");
     RequireCompressed(o.btc_claim_pubkey, "BTC claim key");
@@ -69,6 +71,9 @@ void ValidateOffer(const SwapOffer& o) {
     }
     if (o.n_din_confirmations < kMinDinConfirmations) Refuse("too few DIN confirmations");
     if (o.n_btc_confirmations < kMinBtcConfirmations) Refuse("too few BTC confirmations");
+    if (o.chain == CounterChain::Zcash && o.n_btc_confirmations < kMinZecConfirmations) {
+        Refuse("too few ZEC confirmations");
+    }
 }
 
 void ValidateAccept(const SwapAccept& a) {
@@ -101,8 +106,10 @@ struct Reader {
 
 std::vector<uint8_t> OfferPayload(const SwapOffer& o) {
     std::vector<uint8_t> p;
-    p.push_back(kOfferVersion);
+    const bool v2 = o.chain != CounterChain::Bitcoin;
+    p.push_back(v2 ? kOfferVersion2 : kOfferVersion);
     p.push_back(static_cast<uint8_t>(o.network));
+    if (v2) p.push_back(static_cast<uint8_t>(o.chain));
     PutLE(p, o.din_amount_una, 8);
     PutLE(p, o.btc_amount_sat, 8);
     PutBytes(p, o.payment_hash);
@@ -161,17 +168,24 @@ void RequireMatched(const SwapOffer& offer, const SwapAccept& accept) {
 
 std::string EncodeOffer(const SwapOffer& offer) {
     ValidateOffer(offer);
-    return Seal(kOfferPrefix, OfferPayload(offer));
+    return Seal(offer.chain == CounterChain::Bitcoin ? kOfferPrefix : kOffer2Prefix, OfferPayload(offer));
 }
 
 SwapOffer DecodeOffer(const std::string& text) {
-    const auto payload = Open(text, kOfferPrefix, kOfferPayloadSize);
+    const bool v2 = text.compare(0, sizeof(kOffer2Prefix) - 1, kOffer2Prefix) == 0;
+    const auto payload = v2 ? Open(text, kOffer2Prefix, kOffer2PayloadSize) : Open(text, kOfferPrefix, kOfferPayloadSize);
     Reader r{payload};
-    if (r.LE(1) != kOfferVersion) Refuse("unsupported offer version");
+    if (r.LE(1) != (v2 ? kOfferVersion2 : kOfferVersion)) Refuse("unsupported offer version");
     SwapOffer o;
     const auto network = r.LE(1);
     if (network > static_cast<uint8_t>(SwapNetwork::Regtest)) Refuse("unknown network");
     o.network = static_cast<SwapNetwork>(network);
+    if (v2) {
+        // One encoding per offer: a Bitcoin offer is always v1.
+        const auto chain = r.LE(1);
+        if (chain != static_cast<uint8_t>(CounterChain::Zcash)) Refuse("unknown counter chain");
+        o.chain = static_cast<CounterChain>(chain);
+    }
     o.din_amount_una = r.LE(8);
     o.btc_amount_sat = r.LE(8);
     r.Bytes(o.payment_hash);

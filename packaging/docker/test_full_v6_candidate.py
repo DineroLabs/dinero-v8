@@ -250,6 +250,40 @@ class FullV6DockerCandidateTest(unittest.TestCase):
                            INPUT_BINARY_TARBALL_SHA256='', INPUT_BINARY_SUMS_SHA256='',
                            INPUT_VERSION='', INPUT_DRY_RUN='')
         self.assertEqual(release.returncode, 0, release.stderr)
+        revision = run_case(GITHUB_EVENT_NAME='release', GITHUB_REF_NAME='v8.2.4-r1',
+                            INPUT_CANDIDATE_SOURCE='', INPUT_SNAPSHOT_PAYLOAD_URL='',
+                            INPUT_SNAPSHOT_MANIFEST_URL='', INPUT_SNAPSHOT_SIGNATURE_URL='',
+                            INPUT_BINARY_TARBALL_URL='', INPUT_BINARY_SUMS_URL='',
+                            INPUT_BINARY_TARBALL_SHA256='', INPUT_BINARY_SUMS_SHA256='',
+                            INPUT_VERSION='', INPUT_DRY_RUN='')
+        self.assertEqual(revision.returncode, 0, revision.stderr)
+        self.assertIn('version=8.2.4\n', output.read_text())
+        invalid_revision = run_case(GITHUB_EVENT_NAME='release',
+                                    GITHUB_REF_NAME='v8.2.4-r1-extra',
+                                    INPUT_CANDIDATE_SOURCE='', INPUT_VERSION='',
+                                    INPUT_SNAPSHOT_PAYLOAD_URL='', INPUT_SNAPSHOT_MANIFEST_URL='',
+                                    INPUT_SNAPSHOT_SIGNATURE_URL='', INPUT_BINARY_TARBALL_URL='',
+                                    INPUT_BINARY_SUMS_URL='', INPUT_BINARY_TARBALL_SHA256='',
+                                    INPUT_BINARY_SUMS_SHA256='', INPUT_DRY_RUN='')
+        self.assertNotEqual(invalid_revision.returncode, 0)
+
+        # A manual registry repair may move `latest` only while the published
+        # stable release still names this same numeric product version.
+        fake_gh = self.root / 'gh'
+        fake_gh.write_text('#!/bin/sh\nprintf "%s\\n" "$FAKE_LATEST_TAG"\n')
+        fake_gh.chmod(0o755)
+        manual_release = {
+            'INPUT_CANDIDATE_SOURCE': '', 'INPUT_SNAPSHOT_PAYLOAD_URL': '',
+            'INPUT_SNAPSHOT_MANIFEST_URL': '', 'INPUT_SNAPSHOT_SIGNATURE_URL': '',
+            'INPUT_BINARY_TARBALL_URL': '', 'INPUT_BINARY_SUMS_URL': '',
+            'INPUT_BINARY_TARBALL_SHA256': '', 'INPUT_BINARY_SUMS_SHA256': '',
+            'INPUT_DRY_RUN': 'false', 'INPUT_PUBLISH_LATEST': 'true',
+            'PATH': str(self.root) + os.pathsep + os.environ['PATH'],
+        }
+        accepted_latest = run_case(**manual_release, FAKE_LATEST_TAG='v8.2.4-r1')
+        self.assertEqual(accepted_latest.returncode, 0, accepted_latest.stderr)
+        wrong_latest = run_case(**manual_release, FAKE_LATEST_TAG='v8.2.5')
+        self.assertNotEqual(wrong_latest.returncode, 0)
 
     def test_fresh_volume_smoke_restarts_same_volume_and_requires_armed_snapshot(self):
         docker = self.root / 'docker'
