@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the Docker image's six retained exact-base recovery payloads."""
+"""Check the Docker image's seven retained exact-base recovery payloads."""
 
 import argparse
 import hashlib
@@ -20,6 +20,7 @@ EXTRA_DOCKER_BASE = {
     "sha256": "0a98ab1bd544d333afae7c8d2b42b0a910fb5e7fcdefd40642c6d3e0c6aae8a4",
 }
 EXPECTED_RECOVERY_ORDER = [
+    "dinero-assumeutxo-155650-v6-full.dat",
     "dinero-assumeutxo-153578-v6-full.dat",
     "dinero-assumeutxo-153051-v6-full.dat",
     "dinero-assumeutxo-148375-v5.dat",
@@ -32,7 +33,7 @@ def verify(root: Path, catalog_path: Path, extra_docker_base: dict | None = None
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
     catalog_bases = catalog["fallbacks"]
     if [item.get("filename") for item in catalog_bases] != EXPECTED_RECOVERY_ORDER:
-        raise ValueError("desktop recovery catalog is not the H153578/H153051/H148375/H99677/H65300 set")
+        raise ValueError("desktop recovery catalog has an unexpected exact-base set")
     entries = [*catalog_bases[:-1], extra_docker_base or EXTRA_DOCKER_BASE,
                catalog_bases[-1]]
     verified = []

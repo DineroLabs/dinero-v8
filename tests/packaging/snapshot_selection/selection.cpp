@@ -13,13 +13,13 @@ int main(int argc, char** argv) {
         const std::string name = argv[1];
         using dinero::qt::SelectBundledSnapshots;
         if (name == "FreshPrimary") {
-            const auto selected = SelectBundledSnapshots({"155650-v6-full.dat", "153578-v6-full.dat", "153051-v6-full.dat", "148375.dat", "99677.dat", "65300.dat"});
-            Require(selected.primary == "155650-v6-full.dat", "newest snapshot was not selected");
-            Require(selected.fallbacks == std::vector<std::string>{"153578-v6-full.dat", "153051-v6-full.dat", "148375.dat", "99677.dat", "65300.dat"}, "exact full-v6 recovery base was lost");
+            const auto selected = SelectBundledSnapshots({"160839-v6-full.dat", "155650-v6-full.dat", "153578-v6-full.dat", "153051-v6-full.dat", "148375.dat", "99677.dat", "65300.dat"});
+            Require(selected.primary == "160839-v6-full.dat", "newest snapshot was not selected");
+            Require(selected.fallbacks == std::vector<std::string>{"155650-v6-full.dat", "153578-v6-full.dat", "153051-v6-full.dat", "148375.dat", "99677.dat", "65300.dat"}, "exact full-v6 recovery base was lost");
         } else if (name == "MissingPrimary") {
-            const auto selected = SelectBundledSnapshots({"", "153578-v6-full.dat", "153051-v6-full.dat", "148375.dat", "99677.dat", "65300.dat"});
-            Require(selected.primary == "153578-v6-full.dat", "H153578 recovery base was not selected");
-            Require(selected.fallbacks == std::vector<std::string>{"153051-v6-full.dat", "148375.dat", "99677.dat", "65300.dat"}, "older recovery bases were lost");
+            const auto selected = SelectBundledSnapshots({"", "155650-v6-full.dat", "153578-v6-full.dat", "153051-v6-full.dat", "148375.dat", "99677.dat", "65300.dat"});
+            Require(selected.primary == "155650-v6-full.dat", "H155650 recovery base was not selected");
+            Require(selected.fallbacks == std::vector<std::string>{"153578-v6-full.dat", "153051-v6-full.dat", "148375.dat", "99677.dat", "65300.dat"}, "older recovery bases were lost");
         } else if (name == "OldestOnly") {
             const auto selected = SelectBundledSnapshots({"", "", "", "", "65300.dat"});
             Require(selected.primary == "65300.dat" && selected.fallbacks.empty(), "oldest-only install refused");

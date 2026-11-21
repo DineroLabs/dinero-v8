@@ -63,16 +63,16 @@ try:
     # delivery catches up, so it is not a snapshot-readiness predicate.
     ready = (snapshot["assumeutxo_active"] is True and
              snapshot["fatal"] is False and
-             snapshot["snapshot_base_height"] == 155650 and
+             snapshot["snapshot_base_height"] == 160839 and
              snapshot["snapshot_base_block"] ==
-                 "0000001fd43981b118ab562cabbbdf2356527d8821d70e868fa12a021429340e" and
-             chain["blocks"] > 155650)
+                 "00000014f7dd604dca7857bbfc2eacc757d34a3a6cb02ee27a01c8bbda7fe5b5" and
+             chain["blocks"] > 160839)
 except (ValueError, KeyError, TypeError, IndexError):
     ready = False
 sys.exit(0 if ready else 1)
 PY
         then
-            base_hash="$(docker exec "$container" dinero-cli -datadir=/data getblockhash 155650 2>/dev/null || true)"
+            base_hash="$(docker exec "$container" dinero-cli -datadir=/data getblockhash 160839 2>/dev/null || true)"
             if python3 - "$base_hash" <<'PY'
 import json
 import sys
@@ -83,7 +83,7 @@ try:
         value = value.get("result")
 except (ValueError, IndexError):
     value = sys.argv[1].strip() if len(sys.argv) > 1 else ""
-sys.exit(0 if value == "0000001fd43981b118ab562cabbbdf2356527d8821d70e868fa12a021429340e" else 1)
+sys.exit(0 if value == "00000014f7dd604dca7857bbfc2eacc757d34a3a6cb02ee27a01c8bbda7fe5b5" else 1)
 PY
             then
                 snapshot_ready=true
@@ -94,7 +94,7 @@ PY
     done
     if [ "$snapshot_ready" != true ]; then
         docker logs "$container" >&2 || true
-        echo "Docker $pass daemon did not select and load the signed H155650 snapshot" >&2
+        echo "Docker $pass daemon did not select and load the signed H160839 snapshot" >&2
         exit 1
     fi
     docker logs "$container" 2>&1 | grep -F 'assumeutxo_snapshot=yes assumeutxo_fallbacks=yes assumeutxo_forward_connect=yes' >/dev/null || {

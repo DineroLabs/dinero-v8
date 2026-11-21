@@ -14,18 +14,25 @@ import sys
 import time
 
 
-PRIMARY = "dinero-assumeutxo-155650-v6-full.dat"
-PREVIOUS_PRIMARY = "dinero-assumeutxo-153578-v6-full.dat"
+PRIMARY = "dinero-assumeutxo-160839-v6-full.dat"
+PREVIOUS_PRIMARY = "dinero-assumeutxo-155650-v6-full.dat"
+PRIOR_FULL_V6 = "dinero-assumeutxo-153578-v6-full.dat"
 RECENT_FALLBACK = "dinero-assumeutxo-153051-v6-full.dat"
 REQUIRED = (
     PRIMARY,
     PRIMARY + ".manifest.json",
     PRIMARY + ".publisher.manifest.json",
     PRIMARY + ".publisher.manifest.sig",
+    "SHA256SUMS-assumeutxo-160839",
     PREVIOUS_PRIMARY,
     PREVIOUS_PRIMARY + ".manifest.json",
     PREVIOUS_PRIMARY + ".publisher.manifest.json",
     PREVIOUS_PRIMARY + ".publisher.manifest.sig",
+    "SHA256SUMS-assumeutxo-155650",
+    PRIOR_FULL_V6,
+    PRIOR_FULL_V6 + ".manifest.json",
+    PRIOR_FULL_V6 + ".publisher.manifest.json",
+    PRIOR_FULL_V6 + ".publisher.manifest.sig",
     "SHA256SUMS-assumeutxo-153578",
     RECENT_FALLBACK,
     RECENT_FALLBACK + ".manifest.json",

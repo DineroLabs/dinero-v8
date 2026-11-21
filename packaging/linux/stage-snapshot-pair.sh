@@ -3,7 +3,7 @@
 #
 # Usage: stage-snapshot-pair.sh DESTINATION_DIRECTORY
 # Set DINERO_SKIP_SNAPSHOTS=1 only for an explicitly snapshot-free developer
-# package. Official desktop packages must carry all six data/manifest pairs.
+# package. Official desktop packages must carry all seven data/manifest pairs.
 
 set -euo pipefail
 
@@ -16,8 +16,9 @@ if [[ "${DINERO_SKIP_SNAPSHOTS:-0}" == "1" ]]; then
     exit 0
 fi
 
-PRIMARY_NAME="dinero-assumeutxo-155650-v6-full.dat"
-PREVIOUS_PRIMARY_NAME="dinero-assumeutxo-153578-v6-full.dat"
+PRIMARY_NAME="dinero-assumeutxo-160839-v6-full.dat"
+PREVIOUS_PRIMARY_NAME="dinero-assumeutxo-155650-v6-full.dat"
+PRIOR_FULL_V6_NAME="dinero-assumeutxo-153578-v6-full.dat"
 RECENT_FALLBACK_NAME="dinero-assumeutxo-153051-v6-full.dat"
 FALLBACK_NAME="dinero-assumeutxo-148375-v5.dat"
 LEGACY_FALLBACK_NAME="dinero-assumeutxo-99677-v4.dat"
@@ -26,6 +27,8 @@ PRIMARY_DATA="${DINERO_SNAPSHOT_DAT:-${PROJECT_ROOT}/packaging/linux/snapshot/${
 PRIMARY_MANIFEST="${DINERO_SNAPSHOT_MANIFEST:-${PRIMARY_DATA}.manifest.json}"
 PREVIOUS_PRIMARY_DATA="$(dirname "$PRIMARY_DATA")/$PREVIOUS_PRIMARY_NAME"
 PREVIOUS_PRIMARY_MANIFEST="${PREVIOUS_PRIMARY_DATA}.manifest.json"
+PRIOR_FULL_V6_DATA="$(dirname "$PRIMARY_DATA")/$PRIOR_FULL_V6_NAME"
+PRIOR_FULL_V6_MANIFEST="${PRIOR_FULL_V6_DATA}.manifest.json"
 RECENT_FALLBACK_DATA="${DINERO_SNAPSHOT_RECENT_FALLBACK_DAT:-${PROJECT_ROOT}/packaging/linux/snapshot/${RECENT_FALLBACK_NAME}}"
 RECENT_FALLBACK_MANIFEST="${DINERO_SNAPSHOT_RECENT_FALLBACK_MANIFEST:-${RECENT_FALLBACK_DATA}.manifest.json}"
 FALLBACK_DATA="${DINERO_SNAPSHOT_FALLBACK_DAT:-${PROJECT_ROOT}/packaging/linux/snapshot/${FALLBACK_NAME}}"
@@ -92,6 +95,12 @@ python3 "$PROJECT_ROOT/packaging/snapshot/check_desktop_primary.py" \
     --publisher-signature "${PREVIOUS_PRIMARY_DATA}.publisher.manifest.sig"
 verify_and_stage "$PREVIOUS_PRIMARY_DATA" "$PREVIOUS_PRIMARY_MANIFEST" "$PREVIOUS_PRIMARY_NAME"
 python3 "$PROJECT_ROOT/packaging/snapshot/check_desktop_primary.py" \
+    --recent-fallback --payload "$PRIOR_FULL_V6_DATA" \
+    --manifest "$PRIOR_FULL_V6_MANIFEST" --expected-name "$PRIOR_FULL_V6_NAME" \
+    --publisher-manifest "${PRIOR_FULL_V6_DATA}.publisher.manifest.json" \
+    --publisher-signature "${PRIOR_FULL_V6_DATA}.publisher.manifest.sig"
+verify_and_stage "$PRIOR_FULL_V6_DATA" "$PRIOR_FULL_V6_MANIFEST" "$PRIOR_FULL_V6_NAME"
+python3 "$PROJECT_ROOT/packaging/snapshot/check_desktop_primary.py" \
     --recent-fallback --payload "$RECENT_FALLBACK_DATA" \
     --manifest "$RECENT_FALLBACK_MANIFEST" --expected-name "$RECENT_FALLBACK_NAME" \
     --publisher-manifest "${RECENT_FALLBACK_DATA}.publisher.manifest.json" \
@@ -104,10 +113,11 @@ verify_and_stage "$OLDEST_FALLBACK_DATA" "$OLDEST_FALLBACK_MANIFEST" "$OLDEST_FA
 for name in \
     "$PRIMARY_NAME" "$PRIMARY_NAME.manifest.json" \
     "$PREVIOUS_PRIMARY_NAME" "$PREVIOUS_PRIMARY_NAME.manifest.json" \
+    "$PRIOR_FULL_V6_NAME" "$PRIOR_FULL_V6_NAME.manifest.json" \
     "$RECENT_FALLBACK_NAME" "$RECENT_FALLBACK_NAME.manifest.json" \
     "$FALLBACK_NAME" "$FALLBACK_NAME.manifest.json" \
     "$LEGACY_FALLBACK_NAME" "$LEGACY_FALLBACK_NAME.manifest.json" \
     "$OLDEST_FALLBACK_NAME" "$OLDEST_FALLBACK_NAME.manifest.json"; do
     [[ -f "$DEST_DIR/$name" ]] || { echo "ERROR: staged snapshot artifact missing: $name" >&2; exit 1; }
 done
-echo "Staged verified full-v6 AssumeUTXO primary and five lifecycle fallbacks in $DEST_DIR"
+echo "Staged verified full-v6 AssumeUTXO primary and six lifecycle fallbacks in $DEST_DIR"
