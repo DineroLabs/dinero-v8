@@ -559,6 +559,7 @@ endif()
 # ═══════════════════════════════════════════════════════════════════════════════
 
 set(GUI_SOURCES
+  src/walleticons.qrc
   src/chaintiming.cpp
   src/upgradepolicy.cpp
   src/miningrewards.cpp
@@ -1592,6 +1593,7 @@ if(BUILD_TESTING)
 
     # The Portfolio tab (coins, the built-in Bitcoin wallet), offline.
     add_executable(test_portfolio_tab tests/test_portfolio_tab.cpp
+      src/walleticons.qrc
       src/portfoliowidget.cpp src/portfoliowidget.h src/rpcclient.cpp src/rpcclient.h src/paycollectpolicy.cpp)
     target_include_directories(test_portfolio_tab PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(test_portfolio_tab PRIVATE Qt6::Widgets Qt6::Network Qt6::Test)
