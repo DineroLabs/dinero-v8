@@ -1,14 +1,19 @@
 #include <algorithm>
+#include <atomic>
 #include "daemon/daemon_app.h"
 #include "daemon/runtime_delivery_worker.h"
 #include "pool/pool_manager.h"
 #include <chrono>
+#include <exception>
 #include <filesystem>
 #include <thread>
 #include "daemon/services/chainstate_service.h"
 #include "daemon/config.h"
 #include "wallet/utxo_index.h"
 #include "wallet/wallet_index_v3_schema.h"
+#include "daemon/prebase_marker_refusal.h"
+#include "storage/chain_db.h"
+#include "storage/chain_write_token.h"
 #include "consensus/chainparams.h"
 #include "consensus/orchard_profile.h"
 #include "consensus/shielded/pedersen_generators.h"
@@ -35,6 +40,34 @@ struct RuntimeDeliveryStartupTestAccess {
 namespace p2p { uint32_t g_magic = 0; }
 
 int main(int argc, char** argv) try {
+    if(argc==4 && std::string(argv[1])=="--fixture-write-prebase-marker") {
+        // Writes only the pre-base coin-set marker (no coins), the state a
+        // snapshot-bootstrapped node retains after it has fully synced.
+        dinero::ChainDB chain;
+        if(chain.init(argv[2])!=dinero::Status::Ok)throw std::runtime_error("pre-base fixture chain open failed");
+        const auto height=static_cast<uint32_t>(std::stoul(argv[3]));
+        const auto base=dinero::uint256::FromHexUnsafe(std::string(63,'0')+"b");
+        if(chain.replacePreBaseCoins(dinero::ChainWriteToken::CreateForTesting(),base,height,{})!=dinero::Status::Ok)
+            throw std::runtime_error("pre-base fixture marker write failed");
+        std::cout << "PASS pre-base marker " << height << " " << base.GetHex() << "\n";
+        return 0;
+    }
+    if(argc==2 && std::string(argv[1])=="--fixture-prebase-refusal-messages") {
+        using Base=std::pair<dinero::uint256,uint32_t>;
+        const auto need=[](bool ok,const char* what){if(!ok)throw std::runtime_error(std::string("pre-base message: ")+what);};
+        const auto hash=dinero::uint256::FromHexUnsafe(std::string(62,'0')+"ab");
+        const auto present=dinero::PreBaseMarkerRefusal(dinero::StatusOr<Base>(Base{hash,7u}),"upgrade");
+        need(present && present->find("upgrade refuses an imported pre-base source (snapshot base height 7, block "+hash.GetHex()+")")!=std::string::npos,"present marker names base");
+        need(!dinero::PreBaseMarkerRefusal(dinero::StatusOr<Base>(dinero::Status::NotFound),"startup"),"absent marker is eligible");
+        for(const auto failure:{dinero::Status::Io,dinero::Status::Corruption,dinero::Status::Serialization}) {
+            const auto unreadable=dinero::PreBaseMarkerRefusal(dinero::StatusOr<Base>(failure),"startup");
+            need(unreadable && unreadable->find("startup could not read the pre-base marker (")!=std::string::npos,"read failure is labelled");
+            need(unreadable->find("not proof of a snapshot import")!=std::string::npos,"read failure disclaims snapshot");
+            need(unreadable->find("refuses an imported pre-base source")==std::string::npos,"read failure is not a snapshot refusal");
+        }
+        std::cout << "PASS pre-base refusal messages distinguish marker from read failure\n";
+        return 0;
+    }
     if(argc==3 && (std::string(argv[1])=="--fixture-create-wallet-index-v2" ||
                    std::string(argv[1])=="--fixture-upgrade-wallet-index-v3")) {
         const std::filesystem::path path=argv[2];
@@ -226,7 +259,37 @@ int main(int argc, char** argv) try {
             try { ctx.chainstate->Stop(); } catch (const std::logic_error&) { refused=true; }
             if (!refused) throw std::runtime_error("owned wallet index did not prevent same-thread shutdown");
         }
-        app.Stop();
+        if(scheduled_fixture) {
+            // Reproduce the shutdown ordering that the Windows H149999 node
+            // exposed: selected ownership is unavailable while Stop begins.
+            // The worker must receive cancellation before provider detachment
+            // waits for that owner. Releasing the lock after the observation
+            // keeps a failing version of the test from hanging.
+            std::atomic<bool> selected_held=false,release_selected=false;
+            std::thread selected_holder([&] {
+                auto selected=ctx.chainstate->AcquireBlockIngressActivationLock();
+                selected_held.store(true);
+                while(!release_selected.load())std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            });
+            const auto hold_deadline=std::chrono::steady_clock::now()+std::chrono::seconds(10);
+            while(!selected_held.load() && std::chrono::steady_clock::now()<hold_deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            if(!selected_held.load()) {
+                release_selected.store(true);selected_holder.join();
+                throw std::runtime_error("shutdown test could not hold selected ownership");
+            }
+            std::exception_ptr stop_error;
+            std::thread stopper([&] {try {app.Stop();}catch(...) {stop_error=std::current_exception();}});
+            const auto signal_deadline=std::chrono::steady_clock::now()+std::chrono::seconds(10);
+            while(wake.Running() && std::chrono::steady_clock::now()<signal_deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            const bool cancellation_before_detach=!wake.Running();
+            release_selected.store(true);selected_holder.join();stopper.join();
+            if(stop_error)std::rethrow_exception(stop_error);
+            if(!cancellation_before_detach)
+                throw std::runtime_error("worker cancellation waited behind selected ownership");
+            std::cout << "PASS runtime replay cancellation precedes selected-owner notification detach\n";
+        } else app.Stop();
         if (dinero::RuntimeDeliveryStartupTestAccess::Notifications(app) ||
             dinero::RuntimeDeliveryStartupTestAccess::Installed(*ctx.chainstate) || !notifications_weak.expired())
             throw std::runtime_error("daemon retained typed notification ownership after Stop");

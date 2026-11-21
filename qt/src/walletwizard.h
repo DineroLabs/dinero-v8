@@ -62,10 +62,12 @@ private:
   QString seedPhrase_;
   QLabel* lblSeed_;
   QPushButton* btnReveal_;
+  QPushButton* btnRetry_;
   QCheckBox* chkCopied_;
   QTimer* rpcTimeout_;
   bool seedGenerated_;
   bool seedVisible_;
+  bool rpcPending_;
 };
 
 // ============================================================================

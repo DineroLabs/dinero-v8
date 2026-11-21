@@ -16,6 +16,7 @@
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/chainparams.h"
 #include "consensus/pow.hpp"
+#include "mining/selected_header_work.h"
 #include "consensus/merkle_root.h"  // For ComputeMerkleRoot (Phase 11a.2)
 #include "primitives/block.h"
 // Note: Transaction is already included via primitives/block.h -> wallet/transaction.h
@@ -329,7 +330,10 @@ din::Json handle_generatetoaddress(
             block.header.timestamp = block_time;
 
             const Consensus consensus = GetConsensusForNetwork(dinero::Params());
-            const uint32_t bits = GetNextWorkRequiredWithChainDB(
+            auto* daemon = DaemonContext::instance();
+            const uint32_t bits = dinero::mining::NextWorkRequiredForParent(
+                daemon && daemon->header_chain ? daemon->header_chain.get() : nullptr,
+                block.header.prev_block_hash,
                 static_cast<int32_t>(height),
                 static_cast<int64_t>(block.header.timestamp),
                 consensus,
@@ -1208,9 +1212,21 @@ din::Json handle_getblocktemplate(
 
     uint32_t bits;
 
-    const int64_t prevMTP = (height == 0)
+    int64_t prevMTP = (height == 0)
         ? static_cast<int64_t>(dinero::Params().genesis.nTime)
         : dinero::GetMedianTimePastAtHeight(chain_db, block_storage, height);
+    if (daemon_ctx && daemon_ctx->header_chain && height > 0) {
+        dinero::consensus::HeaderAsertContext parent;
+        const auto parent_hash = dinero::uint256::FromHexUnsafe(best_hash);
+        if (!daemon_ctx->header_chain->GetAsertContextByHash(
+                parent_hash, parent, dinero::TimingUpgradeAnchorHeight(
+                    static_cast<int32_t>(next_height), consensus)) ||
+            parent.parent_height != height) {
+            result["error"] = "Selected mining parent context unavailable";
+            return result;
+        }
+        prevMTP = parent.parent_mtp;
+    }
     if (height > 0 && prevMTP == 0) {
         result["error"] = "Cannot calculate median time past";
         return result;
@@ -1219,7 +1235,9 @@ din::Json handle_getblocktemplate(
         static_cast<int32_t>(next_height),
         prevMTP,
         static_cast<int64_t>(std::time(nullptr)));
-    bits = GetNextWorkRequiredWithChainDB(
+    bits = dinero::mining::NextWorkRequiredForParent(
+        daemon_ctx && daemon_ctx->header_chain ? daemon_ctx->header_chain.get() : nullptr,
+        dinero::uint256::FromHexUnsafe(best_hash),
         static_cast<int32_t>(next_height),
         currentMTP,
         consensus,

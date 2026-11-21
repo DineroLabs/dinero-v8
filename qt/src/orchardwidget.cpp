@@ -106,7 +106,7 @@ void OrchardWidget::setupUi() {
     auto* root = new QVBoxLayout(this);
     root->setSpacing(kGutter);
     root->addWidget(Pill(Tone::Info,
-                         "Orchard preview — activation status is unknown until the node reports it.",
+                         "Orchard — checking activation status with the node…",
                          "orchardIntro", this));
 
     // --- Row 1: account | balance ---
@@ -538,8 +538,14 @@ void OrchardWidget::updateForm() {
     else if (mode == "unshield" && !memo_->text().isEmpty()) blocker = "remove the note (public payments cannot carry one)";
     memo_->setEnabled(mode != "unshield");
     const bool emptyCatalog=accountsSnapshot_ && accountsSnapshot_->accounts.isEmpty();
-    createAccount_->setVisible(emptyCatalog && !wallet_.isEmpty());
+    // Keep the setup action discoverable while the node is fetching the
+    // authenticated history needed to read an empty catalog. It cannot be
+    // clicked until discovery has actually succeeded.
+    createAccount_->setVisible(!wallet_.isEmpty() && (!accountsSnapshot_ || emptyCatalog));
     createAccount_->setEnabled(emptyCatalog && !creatingAccount_ && canChooseAccount() && unlocked_ && activationObserved_ && OC::ValidBinding(walletBinding_));
+    createAccount_->setToolTip(!accountsSnapshot_
+        ? "Waiting for verified Orchard history before account setup."
+        : "Create the first private receiving account for this wallet.");
     accountSelector_->setEnabled(accountsSnapshot_ && canChooseAccount() && OC::ValidBinding(walletBinding_));
     newAddress_->setEnabled(accountKnown() && unlocked_ && activationObserved_ && OC::ValidBinding(walletBinding_) && revision_!=0);
     review_->setEnabled(blocker.isEmpty());
@@ -761,7 +767,11 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
         if(!catalog || stale) {
             accountsSnapshot_.reset();operationsSnapshot_.reset();balance_->setText(kUnknown);
             clearHistory("History unavailable — account discovery failed");
-            accountStatus_->setText("Account discovery unavailable");updateForm();return;
+            const auto error=OC::InBandError(result).value_or(QString());
+            accountStatus_->setText(error.contains("replay source unavailable",Qt::CaseInsensitive)
+                ? "Waiting for verified Orchard history — setup will become available after sync"
+                : "Account discovery unavailable");
+            updateForm();return;
         }
         accountsSnapshot_=*catalog;int selected=-1;
         {QSignalBlocker blocked(accountSelector_);accountSelector_->clear();

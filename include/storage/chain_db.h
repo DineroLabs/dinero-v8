@@ -205,6 +205,10 @@ public:
     // cannot change a completed prefix; their later overwrite still invalidates
     // at commit. Selected coin/forest/shielded checks remain mandatory.
     std::optional<std::pair<uint64_t,uint64_t>> readRevision() const;
+    // Process-local fence for an already authenticated startup read. The
+    // generation rejects a closed/reopened engine and the RocksDB sequence
+    // rejects any intervening write in any column family.
+    std::optional<std::pair<uint64_t,uint64_t>> startupWriteFence() const;
 
     // ═══════════════════════════════════════════════════════════════════════
     // Write Operations (REQUIRE ChainWriteToken - BlockAcceptor only)

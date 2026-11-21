@@ -230,6 +230,7 @@ private Q_SLOTS:
     }
     void failedAccountDiscoveryNeverEnablesCreationOrUsesOldBalance() {
         ready();rawReply(last("wallet.orchard.listaccounts"),QJsonObject{{"error","catalog missing"}});
+        QVERIFY(Find<QPushButton>(tab_,"orchardCreateAccount")->isVisible());
         QVERIFY(!Find<QPushButton>(tab_,"orchardCreateAccount")->isEnabled());
         QVERIFY(!Find<QPushButton>(tab_,"orchardNewAddress")->isEnabled());
         rawReply(last("wallet.orchard.getbalance"),balanceFixture());
@@ -238,6 +239,22 @@ private Q_SLOTS:
         QMetaObject::invokeMethod(tab_,"onPoll");rawReply(last("wallet.orchard.listaccounts"),accountsFixture({}));
         QVERIFY(Find<QPushButton>(tab_,"orchardCreateAccount")->isEnabled());
         QCOMPARE(Find<QComboBox>(tab_,"orchardAccountSelector")->count(),0);
+    }
+    void missingSnapshotHistoryKeepsSetupDiscoverableUntilVerified() {
+        tab_->setWalletScope("golf");tab_->setWalletUnlocked(true);
+        rawReply(last("getblockchaininfo"),QJsonObject{{"chain","regtest"}});
+        rawReply(last("wallet.orchard.getwalletbinding"),QJsonObject{
+            {"wallet_name","golf"},{"wallet_binding",QString(64,'a')}});
+        rawReply(last("orchard.getactivationstatus"),activationFixture());
+        auto* setup=Find<QPushButton>(tab_,"orchardCreateAccount");
+        QVERIFY(setup->isVisible());QVERIFY(!setup->isEnabled());
+        rawReply(last("wallet.orchard.listaccounts"),
+            QJsonObject{{"error","Authenticated Orchard replay source unavailable"}});
+        QVERIFY(setup->isVisible());QVERIFY(!setup->isEnabled());
+        QVERIFY(Find<QLabel>(tab_,"orchardAccountStatus")->text().contains("Waiting for verified Orchard history"));
+        QMetaObject::invokeMethod(tab_,"onPoll");
+        rawReply(last("wallet.orchard.listaccounts"),accountsFixture({}));
+        QVERIFY(setup->isVisible());QVERIFY(setup->isEnabled());
     }
     void activePaymentCannotBeRetargetedToAnotherAccount() {
         ready();rawReply(last("wallet.orchard.listaccounts"),accountsFixture({0,17}));fillSend();

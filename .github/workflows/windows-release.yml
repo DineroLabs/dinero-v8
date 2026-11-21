@@ -109,6 +109,16 @@ jobs:
             V="0.0.0-dev"
             TAG=""
           fi
+          if [ -n "$TAG" ]; then
+            [[ "$TAG" =~ ^v(8\.[0-9]+\.[0-9]+)(-r[1-9][0-9]*)?$ ]] || {
+              echo "::error::Release tag must be v8.x.y or v8.x.y-rN (N > 0)"; exit 1;
+            }
+            V="${BASH_REMATCH[1]}"
+            SOURCE_VERSION=$(sed -nE 's/^project\(dinero VERSION ([0-9]+\.[0-9]+\.[0-9]+) LANGUAGES.*$/\1/p' CMakeLists.txt)
+            test "$V" = "$SOURCE_VERSION" || {
+              echo "::error::Release tag product version differs from CMake source version"; exit 1;
+            }
+          fi
           {
             echo "version=$V"
             echo "release_tag=$TAG"
@@ -387,13 +397,24 @@ jobs:
             throw 'dinero-qt.exe does not import the CUDA driver and NVRTC runtime'
           }
 
-      - name: Verify daemon output cannot block before the Qt event loop
+      - name: Verify Qt, header ancestor, and Orchard cache safety
         shell: powershell
         run: |
-          cmake --build build-msvc-native --config Release --parallel 2 --target test_daemon_output
-          if ($LASTEXITCODE -ne 0) { throw 'daemon output test build failed' }
-          ctest --test-dir build-msvc-native\qt -C Release -R '^DaemonOutputBeforeEventLoop$' --output-on-failure
-          if ($LASTEXITCODE -ne 0) { throw 'daemon output test failed' }
+          cmake --build build-msvc-native --config Release --parallel 2 --target test_daemon_output test_wallet_backup_lock test_header_skip_pointers test_assumeutxo_replay
+          if ($LASTEXITCODE -ne 0) { throw 'Qt, header, or Orchard cache test build failed' }
+          ctest --test-dir build-msvc-native\qt -C Release -R '^(DaemonOutputBeforeEventLoop|WalletBackupLock)$' --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'Qt safety test failed' }
+          ctest --test-dir build-msvc-native -C Release -R '^HeaderSkipPointers$' --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'header ancestor parity test failed' }
+          $cacheTests = @(Get-ChildItem -Path 'build-msvc-native' -Filter 'test_assumeutxo_replay.exe' -Recurse -File)
+          if ($cacheTests.Count -ne 1) { throw 'expected one Orchard cache test executable' }
+          $cases = (& $cacheTests[0].FullName --gtest_list_tests) -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $cases -notmatch 'OrchardHistoryCache\.' -or
+              $cases -notmatch 'WindowsRetainsExactPublicBytesAndRefusesReplacement') {
+            throw 'Windows Orchard cache test case is absent'
+          }
+          ctest --test-dir build-msvc-native -C Release -R '^OrchardHistoryCache$' --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'Windows Orchard cache test failed' }
 
       - name: Build Windows server release and installer
         shell: powershell

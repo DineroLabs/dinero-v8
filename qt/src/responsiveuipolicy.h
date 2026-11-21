@@ -62,20 +62,15 @@ struct HashRowColor {
   int r = 0, g = 0, b = 0, a = 0;
 };
 
-// True when a sample at `height` is the first one on a new block. The first
-// sample of a session (no previous height) is not a new block.
-inline bool startsNewBlock(int previous_height, int height) {
-  return previous_height >= 0 && height != previous_height;
-}
-
-// Your own found block stays orange. The single row where a new block starts
-// (new prev/merkle/utreexo) is a slightly lighter shade of the usual grey and
-// scrolls away with the others.
+// Green matches the terminal miner and is the default on every app launch.
+// The user's session color applies to regular rows, including old finds.
+// The current block find always stays orange.
 inline HashRowColor hashRowColor(bool block_found, bool found_highlight_active,
-                                 bool starts_new_block) {
-  if (block_found) return {213, 138, 50, found_highlight_active ? 255 : 205};
-  if (starts_new_block) return {196, 208, 219, 205};
-  return {151, 163, 174, 150};
+                                 quint32 normal_rgb = 0x00ff00) {
+  if (block_found) return {255, 176, 48, found_highlight_active ? 255 : 225};
+  return {static_cast<int>((normal_rgb >> 16) & 0xff),
+          static_cast<int>((normal_rgb >> 8) & 0xff),
+          static_cast<int>(normal_rgb & 0xff), 210};
 }
 
 inline int hashSampleCapacity(int viewport_height, int row_height) {

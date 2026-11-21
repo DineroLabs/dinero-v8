@@ -53,10 +53,12 @@
 6 insert src/consensus/shielded/commitment_tree.cpp@232 ^    cached_root_\.reset\(\);$
 6 insert src/consensus/shielded/commitment_tree.cpp@272 ^    cached_root_\.reset\(\);$
 
-# Compact-v6 cold-start recovery: exact reviewed ASERT ancestry memo only.
-# Every header still runs ValidateHistoricalHeader; no open-ended file allowance.
-6 sha256 include/consensus/header_chain.h 15e2cb6d067b2dc2e12146f6f5afe5418e4ca9dd22eb681d60b9e833fa8b25f0
-6 sha256 src/consensus/header_chain.cpp fbf9a34f7ec9a3d619e49e71c711848f863db048e47094e49b1cdd1aecfa984b
+# Compact-v6 cold-start recovery: exact reviewed ASERT ancestry memo, plus the
+# v8.2.4 skip-pointer ancestor lookup (#930; result-identical to the parent walk,
+# exact across height-inconsistent links). Every header still runs
+# ValidateHistoricalHeader; no open-ended file allowance.
+6 sha256 include/consensus/header_chain.h 0f40ad4cafc8d0566ec04b19bbff24607f91aa78e38f5cdd6cdebd0595543041
+6 sha256 src/consensus/header_chain.cpp 6654b0f6e94fab4d675192afec8afe0b8aa90b82cd633eea304e6d15a5be698e
 
 # Compact-v6 cold startup: exact process-local authenticated catalog data reuse.
 # Complete graph, byte-integrity, live-source and selected-state checks remain.

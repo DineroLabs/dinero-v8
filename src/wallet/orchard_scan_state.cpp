@@ -80,6 +80,24 @@ OrchardWalletScanState OrchardWalletScanState::AtHistoricalTip(
       std::string(frontier.Bytes().begin(), frontier.Bytes().end())};
   return OrchardWalletScanState(std::move(state));
 }
+OrchardWalletScanState OrchardWalletScanState::AtFreshSeedCheckpoint(
+    SigningDomain domain, const FullViewingKeyBytes &fvk, uint32_t activation,
+    const storage::OrchardStoredState &checkpoint) {
+  Check(activation > 0 && activation != UINT32_MAX &&
+        checkpoint.height >= activation && checkpoint.height < UINT32_MAX &&
+        !checkpoint.block_hash.IsNull() && checkpoint.pool_balance <= kMaxMoneyUna);
+  (void)SigningContext::Create(domain, 0, {}, {}, 0);
+  (void)WalletReceiver::FromViewingKey(fvk, WalletScope::External, {});
+  const auto frontier = Frontier(checkpoint);
+  Check(frontier.Size() == checkpoint.tree_size &&
+        frontier.Root() == HashBytes(checkpoint.anchor));
+  auto state = std::make_shared<Data>();
+  state->domain = domain;
+  state->fvk = fvk;
+  state->activation = activation;
+  state->checkpoint = checkpoint;
+  return OrchardWalletScanState(std::move(state));
+}
 const storage::OrchardStoredState &
 OrchardWalletScanState::Checkpoint() const noexcept {
   return data_->checkpoint;

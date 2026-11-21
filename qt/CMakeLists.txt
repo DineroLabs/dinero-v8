@@ -597,6 +597,8 @@ set(GUI_SOURCES
   # Phase 5 — Shielded pool surface (re-introduced post-v7-cleanup,
   # tied to the new daemon shielded RPCs).
   src/shieldedwidget.cpp
+  src/bordercomet.cpp
+  src/bordercomet.h
   src/shieldedwidget.h
   # Track C — Liquidity Vault (production, daemon-side custodial vault).
   src/vaultpanel.cpp
@@ -1687,6 +1689,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_rpc_reply_alias PRIVATE Qt6::Core Qt6::Network Qt6::Test)
   target_compile_definitions(test_rpc_reply_alias PRIVATE QT_NO_KEYWORDS)
   add_test(NAME RpcReplyAlias COMMAND test_rpc_reply_alias)
+
+  add_executable(test_wallet_backup_lock tests/test_wallet_backup_lock.cpp)
+  target_link_libraries(test_wallet_backup_lock PRIVATE Qt6::Core Qt6::Test)
+  add_test(NAME WalletBackupLock COMMAND test_wallet_backup_lock)
 
   add_executable(test_mining_rewards tests/test_mining_rewards.cpp src/miningrewards.cpp src/chaintiming.cpp)
   target_include_directories(test_mining_rewards PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
