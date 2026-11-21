@@ -9,7 +9,8 @@
 //   - follows no redirects (a server cannot send us elsewhere);
 //   - has a limit on connecting, on the whole exchange, and on the size of the
 //     reply (after decompression): a reply over the limit is cut off there;
-//   - sends no cookies and nothing that identifies the user.
+//   - sends no cookies and nothing that identifies the user;
+//   - is given up at once when the node stops (InterruptBtcHttp).
 
 #include "wallet/swap/btc_esplora.h"
 
@@ -29,6 +30,15 @@ struct BtcHttpOptions {
 
 // A reply larger than the limit comes back with max_body_bytes + 1 bytes, which
 // EsploraServer refuses as malformed. Status 0: no answer.
+// Connections are kept open between the requests of one BtcHttp (and of its
+// copies), so a run of requests to one server pays for one handshake. A
+// server that let a request hang for three seconds or more is not asked
+// again for half a minute (GET only; a POST is always tried).
 BtcHttp MakeBtcHttp(BtcHttpOptions options = {});
+
+// The node is stopping: every request in flight, in any thread, ends now as
+// "no answer", and so does every later one. A stop must not wait out a
+// server that has gone quiet. `false` lifts it again (tests).
+void InterruptBtcHttp(bool interrupted = true);
 
 }  // namespace dinero::swap

@@ -8148,6 +8148,11 @@ void DaemonApp::Stop() {
     const auto shutdown_start = ShutdownClock::now();
     LogShutdownPhase("interrupting", shutdown_start, "DaemonApp::Stop entered");
 
+    // Requests to public Bitcoin servers (the swap code's) are given up now:
+    // one in flight in a request handler or in the swap thread would
+    // otherwise hold the stop for as long as a quiet server lets it.
+    SwapService::InterruptForShutdown();
+
     // A replay may hold activation_mutex_ while walking old headers. Signal
     // its cancellation BEFORE detaching notifications, which needs that same
     // mutex; the later Stop() joins after the provider has been detached.

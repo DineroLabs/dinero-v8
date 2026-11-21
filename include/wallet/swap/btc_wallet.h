@@ -96,7 +96,16 @@ public:
     };
     // Reads every address the wallet may own. Remembers what it learns: after
     // a restore, the next receive address is one past the last address paid.
-    Balance ReadBalance(const ScriptReader& read);
+    //
+    // `lookahead`: how many addresses past the last one known (handed out or
+    // paid) are read on each branch. The full gap limit finds everything the
+    // words own, and is what a restore needs. A smaller number is a quick
+    // reading for a wallet read in full a moment ago: every address it handed
+    // out is still read, so nothing this wallet was asked to receive is
+    // missed; only a payment to an address handed out by ANOTHER program
+    // using the same words waits for the next full reading. A reader is asked
+    // one address at a time, and a public server can take a second for each.
+    Balance ReadBalance(const ScriptReader& read, uint32_t lookahead = kBtcWalletGapLimit);
 
     // Where a payment's change goes: the first change address never used.
     // Planning does not use it up; RecordSent does.

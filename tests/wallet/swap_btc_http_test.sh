@@ -15,13 +15,23 @@ check() { if eval "$2"; then echo "  OK   $1"; else echo "  FAIL $1"; FAILED=1; 
 
 cat >"$DIR/server.py" <<'PY'
 import http.server, ssl, sys, time
+connections = [0]
 class H(http.server.BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'  # connections stay open between requests, as on the real servers
+    def setup(self):
+        connections[0] += 1
+        super().setup()
     def log_message(self, *a): pass
     def do_GET(self):
-        if self.path == '/ok':
+        if self.path == '/connections':
+            body = str(connections[0]).encode()
+            self.close_connection = True
+            self.send_response(200); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+        elif self.path == '/ok':
             body = b'hello'
             self.send_response(200); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
         elif self.path == '/big':
+            self.close_connection = True
             self.send_response(200); self.end_headers()
             try:
                 for _ in range(2000): self.wfile.write(b'x' * 10000)
@@ -34,6 +44,9 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send_response(200); self.send_header('Content-Length', '100'); self.end_headers(); self.wfile.write(b'short')
         else:
             self.send_response(404); self.send_header('Content-Length', '0'); self.end_headers()
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get('Content-Length', 0)))
+        self.send_response(200); self.send_header('Content-Length', '2'); self.end_headers(); self.wfile.write(b'ok')
 port = int(sys.argv[1])
 srv = http.server.ThreadingHTTPServer(('127.0.0.1', port), H)
 if len(sys.argv) > 2:
@@ -59,6 +72,19 @@ check "a reply cut short is no answer"              '[[ "$("$TOOL" get $B/half 1
 check "nobody listening is no answer"               '[[ "$("$TOOL" get http://127.0.0.1:$((PORT + 5))/ok 1000 3)" == "status 0 bytes 0" ]]'
 check "plain http to another machine is never sent" '[[ "$("$TOOL" get http://example.com/ 1000 5)" == "status 0 bytes 0" ]]'
 check "other schemes are refused"                   '[[ "$("$TOOL" get file:///etc/hosts 100000 5)" == "status 0 bytes 0" ]]'
+
+echo "=== one connection for a run of requests; a stop interrupts ==="
+conns() { curl -s -m 5 "$B/connections"; }
+before=$(conns)
+check "eight requests in a row all answer"          '[[ "$("$TOOL" gets $B/ok 8)" == "ok 8" ]]'
+after=$(conns)   # each look at the counter is itself one connection
+check "over one connection, not eight ($((after - before - 1)))" '(( after - before - 1 == 1 ))'
+check "a stalled request is interrupted at once, and nothing is sent after" \
+  '[[ "$("$TOOL" interrupt $B/slow)" == "status 0 then 0 quickly" ]]'
+
+check "a server that hung is not asked again for a while; others, and anything being sent, are" \
+  '[[ "$("$TOOL" rest $B/slow $B/ok http://localhost:$PORT/ok)" == "hung 0 same 0 at once other 200 post 200" ]]'
+check "a refusal on the spot does not rest a server" '[[ "$("$TOOL" rest http://127.0.0.1:$((PORT + 5))/ok $B/ok $B/ok)" == *"other 200"* ]]'
 
 echo "=== certificates ==="
 check "a certificate nobody vouches for is no answer" '[[ "$("$TOOL" get https://localhost:$TLS/ok 1000 5)" == "status 0 bytes 0" ]]'

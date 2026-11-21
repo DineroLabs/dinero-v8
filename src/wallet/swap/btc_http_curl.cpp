@@ -2,7 +2,12 @@
 
 #include <curl/curl.h>
 
+#include <atomic>
+#include <chrono>
+#include <map>
+#include <memory>
 #include <mutex>
+#include <vector>
 
 namespace dinero::swap {
 namespace {
@@ -33,14 +38,89 @@ bool PlainHttpOnThisMachine(const std::string& url) {
     return false;
 }
 
-BtcHttpResponse Perform(const BtcHttpOptions& options, const std::string& url, const std::string* post_body) {
+std::atomic<bool> g_interrupted{false};
+
+// Asked several times a second during a transfer: nonzero ends it at once.
+int OnProgress(void*, curl_off_t, curl_off_t, curl_off_t, curl_off_t) { return g_interrupted.load() ? 1 : 0; }
+
+// Handles kept between requests, each with its open connections: the next
+// request to the same server skips the TCP and TLS handshakes, which is most
+// of the time a short request takes. A wallet reading asks some eighty
+// questions in a row. A handle is used by one request at a time and is wiped
+// (curl_easy_reset) before each: no option of one request reaches the next.
+class Handles {
+public:
+    ~Handles() {
+        for (CURL* h : idle_) curl_easy_cleanup(h);
+    }
+    CURL* Take() {
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            if (!idle_.empty()) {
+                CURL* h = idle_.back();
+                idle_.pop_back();
+                curl_easy_reset(h);
+                return h;
+            }
+        }
+        return curl_easy_init();
+    }
+    void Return(CURL* h) {
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            if (idle_.size() < 4) {
+                idle_.push_back(h);
+                return;
+            }
+        }
+        curl_easy_cleanup(h);
+    }
+
+    // A server that let a request hang is left alone for a while: a wallet
+    // reading asks about forty addresses in a row, and waiting the full time
+    // limit for each of them at a server that has gone quiet (or is slowing
+    // us down on purpose) turns seconds into minutes. The other servers
+    // answer meanwhile; "no answer" from this one means what it always meant.
+    bool Resting(const std::string& server) {
+        std::lock_guard<std::mutex> lock(mu_);
+        const auto it = resting_.find(server);
+        if (it == resting_.end()) return false;
+        if (std::chrono::steady_clock::now() < it->second) return true;
+        resting_.erase(it);
+        return false;
+    }
+    void Rest(const std::string& server) {
+        std::lock_guard<std::mutex> lock(mu_);
+        resting_[server] = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    }
+
+private:
+    std::mutex mu_;
+    std::vector<CURL*> idle_;
+    std::map<std::string, std::chrono::steady_clock::time_point> resting_;
+};
+
+// "https://host:port" of a URL.
+std::string ServerOf(const std::string& url) {
+    const size_t start = url.find("://");
+    const size_t end = start == std::string::npos ? std::string::npos : url.find('/', start + 3);
+    return url.substr(0, end);
+}
+
+BtcHttpResponse Perform(const BtcHttpOptions& options, Handles& handles, const std::string& url,
+                        const std::string* post_body) {
     BtcHttpResponse response;
     const bool https = url.rfind("https://", 0) == 0;
     if (!https && !PlainHttpOnThisMachine(url)) return response;  // never plain http to the outside
+    if (g_interrupted.load()) return response;
+    // Only questions are held back. Something being sent (a transaction) is always tried.
+    const std::string server = ServerOf(url);
+    if (!post_body && handles.Resting(server)) return response;
+    const auto started = std::chrono::steady_clock::now();
 
     static std::once_flag once;
     std::call_once(once, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
-    CURL* curl = curl_easy_init();
+    CURL* curl = handles.Take();
     if (!curl) return response;
 
     Sink sink;
@@ -63,6 +143,8 @@ BtcHttpResponse Perform(const BtcHttpOptions& options, const std::string& url, c
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "btc-light/1");
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, OnBody);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &sink);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, OnProgress);
 
     curl_slist* headers = nullptr;
     if (post_body) {
@@ -77,7 +159,13 @@ BtcHttpResponse Perform(const BtcHttpOptions& options, const std::string& url, c
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
     if (headers) curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
+    // A transfer that ended badly may leave its connection in any state: drop the handle with it.
+    if (result == CURLE_OK) handles.Return(curl); else curl_easy_cleanup(curl);
+    // It failed slowly (a refusal on the spot costs nothing to ask again).
+    if (result != CURLE_OK && !sink.overflowed && !g_interrupted.load() &&
+        std::chrono::steady_clock::now() - started >= std::chrono::seconds(3)) {
+        handles.Rest(server);
+    }
 
     // A transfer we cut off for size still has a real status; any other failure
     // (no route, timeout, certificate, cut connection) is "no answer", whatever
@@ -93,9 +181,14 @@ BtcHttpResponse Perform(const BtcHttpOptions& options, const std::string& url, c
 
 BtcHttp MakeBtcHttp(BtcHttpOptions options) {
     BtcHttp http;
-    http.get = [options](const std::string& url) { return Perform(options, url, nullptr); };
-    http.post = [options](const std::string& url, const std::string& body) { return Perform(options, url, &body); };
+    const auto handles = std::make_shared<Handles>();
+    http.get = [options, handles](const std::string& url) { return Perform(options, *handles, url, nullptr); };
+    http.post = [options, handles](const std::string& url, const std::string& body) {
+        return Perform(options, *handles, url, &body);
+    };
     return http;
 }
+
+void InterruptBtcHttp(bool interrupted) { g_interrupted.store(interrupted); }
 
 }  // namespace dinero::swap

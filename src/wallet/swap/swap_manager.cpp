@@ -1323,7 +1323,24 @@ BtcWallet::Balance SwapManager::BtcWalletBalance() {
     // payments, and would show them as missing: say so instead (this throws).
     synced();
     std::lock_guard<std::mutex> file(btc_wallet_mu_);
-    return BtcWallet(BtcWalletDir(), config_.runner.btc_hrp).ReadBalance(read);
+    const std::string dir = BtcWalletDir();
+    const uint32_t lookahead = BtcReadLookahead(dir);
+    BtcWallet::Balance balance = BtcWallet(dir, config_.runner.btc_hrp).ReadBalance(read, lookahead);
+    DoneBtcRead(dir, lookahead);
+    return balance;
+}
+
+inline constexpr uint32_t kBtcWalletQuickLookahead = 3;
+
+uint32_t SwapManager::BtcReadLookahead(const std::string& dir) const {
+    const auto it = btc_full_read_.find(dir);
+    if (it == btc_full_read_.end() || config_.btc_wallet_full_read_seconds == 0) return kBtcWalletGapLimit;
+    const auto age = std::chrono::steady_clock::now() - it->second;
+    return age < std::chrono::seconds(config_.btc_wallet_full_read_seconds) ? kBtcWalletQuickLookahead : kBtcWalletGapLimit;
+}
+
+void SwapManager::DoneBtcRead(const std::string& dir, uint32_t lookahead) {
+    if (lookahead >= kBtcWalletGapLimit) btc_full_read_[dir] = std::chrono::steady_clock::now();
 }
 
 void SwapManager::SetBtcAccountSecretSource(BtcAccountSecretSource source) {
@@ -1359,7 +1376,9 @@ SwapManager::PlannedBtcPayment SwapManager::PlanBtcPayment(BtcWallet& wallet, co
                                     " sat while the Bitcoin wallet is new");
     }
     synced();  // throws while Bitcoin's headers are not up to date
-    const BtcWallet::Balance balance = wallet.ReadBalance(read);  // throws if no server answers
+    const uint32_t lookahead = BtcReadLookahead(BtcWalletDir());
+    const BtcWallet::Balance balance = wallet.ReadBalance(read, lookahead);  // throws if no server answers
+    DoneBtcRead(BtcWalletDir(), lookahead);
     const auto rate = fee_rate(target_blocks);
     if (!rate) throw std::runtime_error("cannot reach any Bitcoin server for the network fee");
     request.feerate_sat_per_vb = *rate;
@@ -1533,7 +1552,9 @@ std::vector<SwapManager::BtcWalletTx> SwapManager::BtcWalletHistory() {
     synced();  // throws while Bitcoin's headers are not up to date
     std::lock_guard<std::mutex> file(btc_wallet_mu_);
     BtcWallet wallet(BtcWalletDir(), config_.runner.btc_hrp);
-    const BtcWallet::Balance balance = wallet.ReadBalance(read);
+    const uint32_t lookahead = BtcReadLookahead(BtcWalletDir());
+    const BtcWallet::Balance balance = wallet.ReadBalance(read, lookahead);
+    DoneBtcRead(BtcWalletDir(), lookahead);
     std::vector<BtcWalletTx> out;
     std::set<std::string> ours;
     for (const auto& p : wallet.SentPayments()) {

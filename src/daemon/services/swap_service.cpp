@@ -180,6 +180,8 @@ namespace {
 std::mutex g_off_reason_mu;
 std::string g_off_reason;   // the last refusal printed
 bool g_off_by_refusal = false;  // Init kept the node running without swaps
+std::atomic<bool> g_shutting_down{false};
+std::atomic<void (*)()> g_interrupt_hook{nullptr};
 }  // namespace
 
 swap::SwapNetwork SwapService::BitcoinNetworkFor(const ConfigService& config, swap::SwapNetwork dinero_network) {
@@ -194,6 +196,13 @@ bool SwapService::Refuse(const std::string& why) {
     std::lock_guard<std::mutex> lock(g_off_reason_mu);
     g_off_reason = why;
     return false;
+}
+
+void SwapService::SetInterruptHook(void (*hook)()) { g_interrupt_hook.store(hook); }
+bool SwapService::ShuttingDown() { return g_shutting_down.load(); }
+void SwapService::InterruptForShutdown() {
+    g_shutting_down.store(true);
+    if (auto* hook = g_interrupt_hook.load()) hook();
 }
 
 std::string SwapService::OffReason() {

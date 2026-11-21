@@ -171,6 +171,7 @@ std::function<void(uint32_t)> InstallLightBitcoin(swap::SwapManager& manager, co
             }
         }
         for (int attempt = 0; attempt < 3 && !view.ok; ++attempt) {
+            if (SwapService::ShuttingDown()) throw std::runtime_error("the node is stopping");
             if (attempt) std::this_thread::sleep_for(std::chrono::milliseconds(1500));
             std::lock_guard<std::mutex> one(watched->mu);
             const auto chain_lock = backend->Lock();
@@ -243,6 +244,7 @@ bool InstallTowerUrl(swap::SwapManager& manager, const ConfigService& config) {
 const bool g_registered = [] {
     SwapService::SetLightBtcInstaller(InstallLightBitcoin);
     SwapService::SetTowerUrlInstaller(InstallTowerUrl);
+    SwapService::SetInterruptHook([] { swap::InterruptBtcHttp(); });
     return true;
 }();
 

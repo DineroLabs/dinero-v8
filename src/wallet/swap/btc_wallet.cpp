@@ -130,14 +130,15 @@ std::string BtcWallet::CurrentReceiveAddress() {
     return BtcWalletAddress(account_, 0, next_receive_ - 1, hrp_);
 }
 
-BtcWallet::Balance BtcWallet::ReadBalance(const ScriptReader& read) {
+BtcWallet::Balance BtcWallet::ReadBalance(const ScriptReader& read, uint32_t lookahead) {
+    lookahead = std::min(std::max(lookahead, uint32_t{1}), kBtcWalletGapLimit);
     Balance out;
     uint32_t paid[2] = {paid_receive_, paid_change_};
     for (uint32_t branch = 0; branch < 2; ++branch) {
         // Everything handed out, everything up to the last address paid, and
         // the gap beyond whichever is further.
         uint32_t known = branch == 0 ? std::max(next_receive_, paid[0]) : paid[1];
-        for (uint32_t index = 0; index < known + kBtcWalletGapLimit; ++index) {
+        for (uint32_t index = 0; index < known + lookahead; ++index) {
             const BtcScriptActivity activity = read(BtcWalletScript(account_, branch, index));
             ++out.addresses_read;
             if (activity.ever_paid || activity.sat > 0) {

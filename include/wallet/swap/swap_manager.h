@@ -28,6 +28,7 @@
 #include "wallet/swap/encrypted_store.h"
 #include "wallet/swap/runner.h"
 
+#include <chrono>
 #include <functional>
 #include <map>
 #include <memory>
@@ -220,6 +221,10 @@ struct SwapManagerConfig {
     bool require_tower_for_bob{false};  // mainnet beta: Bob may not accept without a watchtower
     bool btc_configured{true};          // false: no Bitcoin node (a Zcash-only node)
     uint64_t btc_wallet_max_send_sat{0};  // the most one payment may send (0: no limit)
+    // The built-in Bitcoin wallet reads its whole address gap at most this
+    // often, and a few addresses past the known ones in between (0: always
+    // the whole gap).
+    uint32_t btc_wallet_full_read_seconds{600};
 };
 
 inline constexpr uint64_t kBtcWalletMaxFeeSat = 50'000;  // no payment pays more network fee than this
@@ -436,6 +441,13 @@ private:
     PlannedBtcPayment PlanBtcPayment(BtcWallet& wallet, const std::string& to_address, uint64_t amount_sat, bool send_all,
                                      uint32_t target_blocks);  // btc_wallet_mu_ held
     std::mutex btc_wallet_mu_;  // the wallet's file; never taken while holding mu_
+    // How far past the known addresses this reading looks (btc_wallet.h,
+    // ReadBalance): the whole gap the first time for a wallet and again every
+    // btc_wallet_full_read_seconds, a few addresses in between.
+    // btc_wallet_mu_ held; DoneBtcRead after a reading that did not throw.
+    uint32_t BtcReadLookahead(const std::string& dir) const;
+    void DoneBtcRead(const std::string& dir, uint32_t lookahead);
+    std::map<std::string, std::chrono::steady_clock::time_point> btc_full_read_;
     std::string BtcWalletWhyNot();  // empty when this node offers the wallet; takes mu_
     std::optional<Bytes32> store_key_;  // kept while the daemon runs: live swaps survive a relock
     Bytes32 StoreKey();                  // binds the first key; relock retains it, a different key refuses

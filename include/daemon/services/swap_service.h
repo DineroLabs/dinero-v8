@@ -93,6 +93,14 @@ public:
     using TowerUrlInstaller = std::function<bool(swap::SwapManager& manager, const ConfigService& config)>;
     static void SetTowerUrlInstaller(TowerUrlInstaller installer);
 
+    // The node is stopping (called first thing in the daemon's stop): what the
+    // swap code has in flight towards Bitcoin servers is given up, so that
+    // neither a request handler nor the service thread makes the stop wait
+    // for a server. The hook is the HTTPS client's, set by the file that links it.
+    static void InterruptForShutdown();
+    static bool ShuttingDown();
+    static void SetInterruptHook(void (*hook)());
+
     // Starts the built-in Bitcoin wallet in a node that is already running
     // (no swaps): what swap.btc_wallet=1 does at start-up, on request, so
     // that turning it on in the app needs no restart. True when it runs

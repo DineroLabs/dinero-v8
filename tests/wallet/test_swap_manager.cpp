@@ -1457,6 +1457,75 @@ TEST(SwapManager, TheBitcoinWalletIsTurnedOnFromTheSeedAndReadWhileLocked) {
     EXPECT_THROW(m.BtcWalletHistory(), std::runtime_error);
 }
 
+// A public server can take a second for each address, and the wallet may own
+// forty: the whole gap is read the first time and now and then, and in
+// between only the addresses in use and a few past them.
+TEST(SwapManager, TheBitcoinWalletReadsItsWholeGapOnceThenOnlyWhatIsInUse) {
+    TempDir da("btcw_quick");
+    FakeWallet wa{0xd7};
+    Bytes32 key{}, chain{};
+    key.fill(0x7a);
+    chain.fill(0x7b);
+    const BtcWalletAccount account = BtcWalletAccountFromSecret(key, chain);
+    std::map<std::vector<uint8_t>, BtcScriptActivity> at;
+    size_t asked = 0;
+    bool reachable = true;
+    LightBtcSupport light;
+    light.make_io = [](const SwapSession& s, const RunnerConfig& rc, const Bytes32&) {
+        return std::make_unique<RpcSwapChainIo>(kNoDin, kNoBtc, s, rc);
+    };
+    light.tip_height = [] { return uint32_t{800}; };
+    light.script_activity = [&](const std::vector<uint8_t>& script) {
+        if (!reachable) throw std::runtime_error("cannot reach any Bitcoin server");
+        ++asked;
+        const auto it = at.find(script);
+        return it == at.end() ? BtcScriptActivity{} : it->second;
+    };
+    const auto read = [&](SwapManager& m) {
+        asked = 0;
+        const uint64_t sat = m.BtcWalletBalance().sat;
+        return std::make_pair(sat, asked);
+    };
+    SwapManager m(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    m.SetLightBitcoin(light);
+    m.SetBtcAccountSource([&](uint32_t) { return std::optional<BtcWalletAccount>(account); });
+    m.EnableBtcWallet();
+
+    // A reading that failed is not the full reading: the next one is still the whole gap.
+    reachable = false;
+    EXPECT_THROW(m.BtcWalletBalance(), std::runtime_error);
+    reachable = true;
+    EXPECT_EQ(read(m).second, 21u + 20u) << "the first reading: the address handed out and the whole gap, on both branches";
+    const size_t quick = read(m).second;
+    EXPECT_EQ(quick, 4u + 3u) << "afterwards: what is in use and three past it";
+
+    // Everything the wallet handed out is still read, and what is found moves the window on.
+    at[BtcWalletScript(account, 0, 0)] = {29'000, true};
+    at[BtcWalletScript(account, 0, 3)] = {500, true};
+    auto r = read(m);
+    EXPECT_EQ(r.first, 29'500u);
+    EXPECT_EQ(r.second, 7u + 3u);
+    // Another program using the same words was paid far ahead: a quick reading does not look there...
+    at[BtcWalletScript(account, 0, 15)] = {7'000, true};
+    EXPECT_EQ(read(m).first, 29'500u);
+    // ...the next full reading does. A restarted node always starts with one.
+    SwapManager restarted(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    restarted.SetLightBitcoin(light);
+    restarted.SetBtcAccountSource([&](uint32_t) { return std::optional<BtcWalletAccount>(account); });
+    r = read(restarted);
+    EXPECT_EQ(r.first, 36'500u);
+    EXPECT_EQ(r.second, 36u + 20u);
+
+    // btc_wallet_full_read_seconds = 0: the whole gap every time.
+    SwapManagerConfig always = Config(da.path);
+    always.btc_wallet_full_read_seconds = 0;
+    SwapManager thorough(always, wa.Deriver(), kNoDin, kNoBtc);
+    thorough.SetLightBitcoin(light);
+    thorough.SetBtcAccountSource([&](uint32_t) { return std::optional<BtcWalletAccount>(account); });
+    read(thorough);
+    EXPECT_EQ(read(thorough).second, 36u + 20u);
+}
+
 TEST(SwapManager, ABitcoinPaymentIsShownThenSentExactlyAsShown) {
     TempDir da("btcw_send");
     FakeWallet wa{0xd3};

@@ -15,6 +15,7 @@
 #include "wallet/swap/btc_http_curl.h"
 #include "wallet/swap/btc_light_deposit.h"
 
+#include <thread>
 #include <chrono>
 #include <memory>
 #include <sstream>
@@ -36,6 +37,46 @@ int main(int argc, char** argv) {
             if (argc >= 6) options.ca_bundle_path = argv[5];
             const auto r = MakeBtcHttp(options).get(argv[2]);
             std::cout << "status " << r.status << " bytes " << r.body.size() << "\n";
+            return 0;
+        }
+        // Several requests through one client: "gets URL COUNT".
+        if (mode == "gets" && argc >= 4) {
+            const BtcHttp http = MakeBtcHttp();
+            int ok = 0;
+            for (int i = 0; i < std::stoi(argv[3]); ++i) ok += http.get(argv[2]).status == 200;
+            std::cout << "ok " << ok << "\n";
+            return 0;
+        }
+        // A server that hangs is left alone afterwards: "rest SLOW_URL SAME_SERVER_URL OTHER_SERVER_URL".
+        if (mode == "rest" && argc >= 5) {
+            BtcHttpOptions options;
+            options.total_timeout_seconds = 3;
+            const BtcHttp http = MakeBtcHttp(options);
+            const auto hung = http.get(argv[2]);
+            const auto start = std::chrono::steady_clock::now();
+            const auto same = http.get(argv[3]);
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+            const auto other = http.get(argv[4]);
+            const auto sent = http.post(argv[3], "x");  // something to send is tried all the same
+            std::cout << "hung " << hung.status << " same " << same.status << (ms < 500 ? " at once" : " late") << " other "
+                      << other.status << " post " << sent.status << "\n";
+            return 0;
+        }
+        // A request to a server that stalls, interrupted after one second: "interrupt URL".
+        if (mode == "interrupt" && argc >= 3) {
+            BtcHttpOptions options;
+            options.total_timeout_seconds = 20;
+            const BtcHttp http = MakeBtcHttp(options);
+            const auto start = std::chrono::steady_clock::now();
+            std::thread stop([] {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                InterruptBtcHttp();
+            });
+            const auto r = http.get(argv[2]);
+            stop.join();
+            const auto after = http.get(argv[2]);  // and nothing is sent afterwards
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+            std::cout << "status " << r.status << " then " << after.status << (ms < 4000 ? " quickly" : " slowly") << "\n";
             return 0;
         }
         if (mode == "tip" && argc >= 3) {

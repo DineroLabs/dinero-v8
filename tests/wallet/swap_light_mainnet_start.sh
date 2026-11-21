@@ -69,5 +69,24 @@ st=$(call btc.start || true)
 check "btc.start starts it in the running mainnet node" '[[ "$st" == *"\"offered\" : true"* ]]'
 check "and it stays offered" '[[ "$(call btc.status || true)" == *"\"offered\" : true"* ]]'
 
+# --- A Bitcoin server that has gone quiet does not hold up stopping the node ---
+kill -9 "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true; PID=
+# It takes the connection and never answers: the node's requests to it hang until their time limit (30 s each).
+python3 -c 'import socket,sys,time
+s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(50)
+held=[]
+while True: held.append(s.accept()[0])' $((BASE + 2)) & QUIET=$!
+trap 'kill -9 $QUIET 2>/dev/null || true; cleanup' EXIT
+BTCNET=(--swap.btc_servers=http://127.0.0.1:$((BASE + 2)) --swap.btc_peers=none --swap.btc_min_servers=1)
+check "a mainnet node starts with a Bitcoin server that never answers" 'start_plain quiet --swap.btc_wallet=1'
+for _ in $(seq 1 30); do grep -q "the Bitcoin wallet is available" "$DIR/quiet.log" && break; sleep 1; done
+sleep 5  # the swap thread is now waiting for that server's answer
+asked=$(date +%s); kill "$PID"
+for _ in $(seq 1 60); do kill -0 "$PID" 2>/dev/null || break; sleep 1; done
+took=$(( $(date +%s) - asked ))
+check "asked to stop, it stops without waiting for that server (${took}s)" '! kill -0 "$PID" 2>/dev/null && (( took <= 20 ))'
+check "and stops cleanly, not by the watchdog" 'grep -q "Clean shutdown complete" "$DIR/quiet.log" && ! grep -q "WATCHDOG" "$DIR/quiet.log"'
+PID=; kill -9 $QUIET 2>/dev/null || true
+
 echo "$CHECKS checks, $FAILS failed"
-[[ $FAILS == 0 && $CHECKS == 12 ]]
+[[ $FAILS == 0 && $CHECKS == 15 ]]
