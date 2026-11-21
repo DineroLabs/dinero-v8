@@ -200,6 +200,7 @@ private:
         return consensus::ReadOrchardSnapshotNode(*baseline_,id);
     };}
     storage::OrchardCommitmentSets Commitments(const uint256& event_tip={},uint32_t event_height=0)const{
+        wallet::detail::RuntimeReplaySpool::ReadSpan view(spool_);
         storage::OrchardCommitmentSets sets;crypto::CSHA256 nf,anchor;
         nf.Write(std::string("ONF1\x01",5));anchor.Write(std::string("OAN1\x01",5));
         for(uint8_t space=1;space<=2;++space){
@@ -207,14 +208,17 @@ private:
             const auto flush=[&]{if(group){Require(refs&&refs<=UINT64_MAX-sets.anchor_references);
                 anchor.Write(group->data,32);Bytes bytes;Number(bytes,refs);anchor.Write(bytes.data(),bytes.size());
                 ++sets.anchor_count;sets.anchor_references+=refs;}};
-            Bytes after{space};while(const auto row=spool_.Next(space,after)){
-                after=row->first;
-                if(events_){Require(row->first.size()==41);if(!ActiveOwner(row->second,event_tip.IsNull()?header_.GetHash():event_tip,event_tip.IsNull()?height_:event_height))continue;}
-                else Require(row->second.empty());
-                if(space==1){Require(row->first.size()==(events_?41u:33u));uint256 hash;std::copy_n(row->first.begin()+1,32,hash.begin());
+            Bytes after{space};for(;;){
+                const auto rows=spool_.NextBatch(space,after);if(rows.empty())break;
+                for(const auto& row:rows){
+                after=row.first;
+                if(events_){Require(row.first.size()==41);if(!ActiveOwner(row.second,event_tip.IsNull()?header_.GetHash():event_tip,event_tip.IsNull()?height_:event_height))continue;}
+                else Require(row.second.empty());
+                if(space==1){Require(row.first.size()==(events_?41u:33u));uint256 hash;std::copy_n(row.first.begin()+1,32,hash.begin());
                     Require(!group||*group!=hash);group=hash;nf.Write(hash.data,32);++sets.nullifier_count;}
-                else{Require(row->first.size()==(events_?41u:37u));uint256 hash;std::copy_n(row->first.begin()+1,32,hash.begin());
+                else{Require(row.first.size()==(events_?41u:37u));uint256 hash;std::copy_n(row.first.begin()+1,32,hash.begin());
                     if(!group||*group!=hash){flush();group=hash;refs=0;}Require(refs<UINT64_MAX);++refs;}
+                }
             }
             if(space==2)flush();
         }

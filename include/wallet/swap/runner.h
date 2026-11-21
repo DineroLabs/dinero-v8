@@ -23,7 +23,9 @@
 
 namespace dinero::swap {
 
-struct TowerPackage;  // tower.h
+struct TowerPackage;        // tower.h
+struct BtcFeeLadderPolicy;  // tower.h
+struct FeeLadderPolicy;     // fee_ladder.h
 
 // Captured from the intended wallet before authorizing DIN funding. This is
 // stored inside the existing encrypted session, never reconstructed from the
@@ -156,6 +158,11 @@ struct PreparedBtcFunding {
 
 // The chains as the runner sees them. Write methods return the txid and throw
 // std::runtime_error when the node or wallet refuses.
+//
+// The "Btc" methods and the Counter* hooks are the counter chain: Bitcoin by
+// default. A Zcash implementation overrides them (docs/design/din-zec-atomic-
+// swaps.md); its report and funding use the same shapes (BtcWatchReport,
+// BtcFunding) with amounts in zatoshi.
 class SwapChainIo {
 public:
     virtual ~SwapChainIo() = default;
@@ -200,6 +207,31 @@ public:
         (void)din_txid;
         (void)btc_txid;
     }
+
+    // --- Counter-chain rules and transactions (Bitcoin defaults) ---
+    // What Step() needs to know about the chain.
+    virtual CounterChainRules CounterRules() const { return kBitcoinRules; }
+    // Where Bob's lock is paid.
+    virtual std::string CounterHtlcAddress(const SwapRecord& record, const RunnerConfig& config) const;
+    // This party's counter-chain claim or refund fee now. Bitcoin replaces by
+    // fee: it doubles every 30 minutes the state stays unconfirmed, up to
+    // btc_fee_max_percent of the amount.
+    virtual uint64_t CounterSpendFee(const SwapSession& s, const RunnerConfig& config, uint32_t now) const;
+    // Signed, serialized spends of the counter-chain lock.
+    virtual std::vector<uint8_t> SignCounterClaim(const SwapSession& s, const SwapKeys& keys,
+                                                  const BtcFunding& funding, uint64_t fee);
+    virtual std::vector<uint8_t> SignCounterRefund(const SwapSession& s, const SwapKeys& keys,
+                                                   const BtcFunding& funding, uint64_t fee);
+    // true: Bob's lock is always prepared (built and signed) and then
+    // broadcast, tower or not; there is no wallet to send it from.
+    virtual bool CounterFundsByPreparing() const { return false; }
+    // A claim broadcast failed with this error: could the transaction still
+    // have reached the network (a lost reply, "already known")? If unsure,
+    // true: the claim is then treated as public.
+    virtual bool CounterBroadcastMayHaveLeft(const std::string& error) const;
+    // Adds the counter-chain refund rungs to Bob's tower package.
+    virtual void AddCounterTowerRungs(TowerPackage& package, const SwapSession& s, const SwapKeys& keys,
+                                      const BtcFunding& funding, const BtcFeeLadderPolicy& policy) const;
 };
 
 // What the chain watchers look for.
@@ -306,6 +338,11 @@ private:
     std::optional<BtcFunding> ArmedBtcFunding(const BtcWatchReport& btc) const;
     bool ArmTowerWith(const FundingOutput& din_funding, const BtcFunding& btc_funding, std::vector<std::string>& events);
     TowerPackage MyTowerPackage(const FundingOutput& din_funding, const BtcFunding& btc_funding) const;
+    // The DIN half only (terms and claim rungs): what Bob's own claim needs.
+    // Never the counter-chain rungs, so a counter-chain problem (e.g. a Zcash
+    // branch the build does not know) cannot stop him claiming DIN.
+    TowerPackage MyDinRungs(const FundingOutput& din_funding) const;
+    FeeLadderPolicy DinTowerPolicy() const;
     void SendPreparedFunding(const DinWatchReport& din, const BtcWatchReport& btc, uint32_t now,
                              std::vector<std::string>& events);
     void ExpirePreparedFunding(uint32_t now, const std::string& why, std::vector<std::string>& events);
@@ -315,7 +352,6 @@ private:
     void SendRetainedDinFunding(const DinWatchReport&, const BtcWatchReport&, uint32_t,
                                 std::vector<std::string>&);
     void SetClaimSeen(bool seen);
-    uint64_t BtcFeeNow(uint32_t now) const;
     void SingleChainRebroadcast(const DinWatchReport& din, const BtcWatchReport& btc, uint32_t now,
                                 std::vector<std::string>& events);
 

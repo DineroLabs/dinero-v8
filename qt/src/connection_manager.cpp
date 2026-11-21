@@ -321,7 +321,9 @@ void ConnectionManager::performHealthCheck() {
             }
             consecutiveFailures_ = 0;
             
-            Q_EMIT blockchainSynced(static_cast<int>(height), static_cast<int>(height));
+            // getblockcount proves RPC readiness, but says nothing about the
+            // best header. The regular blockchain.getinfo poll supplies both
+            // heights for the sync display.
         } else {
             // Failure
             consecutiveFailures_++;

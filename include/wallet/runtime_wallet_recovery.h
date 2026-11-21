@@ -1,6 +1,7 @@
 #pragma once
 #include "wallet/runtime_index_delivery.h"
 #include "wallet/runtime_account_replay.h"
+#include <cstddef>
 #include <functional>
 #include <optional>
 
@@ -83,6 +84,13 @@ public:
     static RuntimeOrchardCatalogRecoveryResult ResumePreparedOrchardCatalogStores(
         const RuntimeAccountReplay&,const wallet::IRuntimeRecoverySource&,
         WalletManager&,uint64_t expected_session,const OrchardSourceOwner&);
+    // Native full-archive workers interleave Orchard replay with transparent
+    // delivery. A missing result means that up to max_events authenticated
+    // events were durably applied, but the captured Orchard head was not
+    // reached. It must never be treated as account readiness.
+    static std::optional<RuntimeOrchardCatalogRecoveryResult> AdvancePreparedOrchardCatalogStores(
+        const RuntimeAccountReplay&,const wallet::IRuntimeRecoverySource&,
+        WalletManager&,uint64_t expected_session,const OrchardSourceOwner&,size_t max_events);
 private:
     friend struct RuntimeCatalogRecoveryTestAccess;
     friend struct RuntimeWalletRecoveryTestAccess;
@@ -97,8 +105,8 @@ private:
     // Only the selected service may provide this lexical source owner. It
     // acquires snapshot -> selected -> imported lifecycle BEFORE the writer's
     // wallet/seed/SQL owners and supplies a fresh pre-COMMIT source recheck.
-    static RuntimeOrchardCatalogRecoveryResult ResumePreparedOrchardCatalog(
-        const RuntimeAccountReplay&,const Source&,WalletManager&,uint64_t,const OrchardSourceOwner&);
+    static std::optional<RuntimeOrchardCatalogRecoveryResult> ResumePreparedOrchardCatalog(
+        const RuntimeAccountReplay&,const Source&,WalletManager&,uint64_t,const OrchardSourceOwner&,size_t max_events);
     static RuntimeWalletRecoveryResult ResumeAccount(
         const RuntimeAccountReplay&,const Source&,WalletManager&,UTXOIndex&,uint64_t,uint32_t);
 };

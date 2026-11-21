@@ -148,6 +148,7 @@ void ShieldedWidget::setupUI() {
         v->addStretch();
     }
     topRow->addWidget(receiveBox, /*stretch=*/2);
+    receiveBox_ = receiveBox;
 
     root->addLayout(topRow);
 
@@ -309,7 +310,7 @@ void ShieldedWidget::setupUI() {
 
 // Capabilities come from the daemon, never from an address prefix.
 void ShieldedWidget::setActiveBanner(bool active, const QString& reason) {
-    if (fundMovingSurface_) fundMovingSurface_->setVisible(true);
+    if (fundMovingSurface_) fundMovingSurface_->setVisible(!retired_);
     shieldedActive_ = active;
     shieldedUnavailableReason_ = reason;
     updateFundMovingUi();
@@ -321,6 +322,22 @@ void ShieldedWidget::setWalletUnlocked(bool unlocked) {
 }
 
 void ShieldedWidget::updateFundMovingUi() {
+    if (retired_) {
+        statusBanner_->setText(legacyWalletStateUnavailable_
+            ? QString("This shielded pool was retired at block %1. Its history is unavailable "
+                      "for this wallet on this node; this does not report the Orchard balance.")
+                  .arg(retiredAtHeight_)
+            : QString("This shielded pool was retired at block %1, when Orchard private "
+                      "payments started. The notes below are kept as your record; they can no longer be moved.")
+                  .arg(retiredAtHeight_));
+        statusBanner_->setWordWrap(true);
+        statusBanner_->setStyleSheet(
+            "QLabel { padding: 8px 12px; border-radius: 6px; background: #3a3424; "
+            "color: #e0d2b8; font-weight: 600; }");
+        for (auto* button : {shieldBtn_, transferBtn_, unshieldBtn_})
+            if (button) button->setEnabled(false);
+        return;
+    }
     if (shieldedActive_ && walletUnlocked_) {
         statusBanner_->setText("✅ Private payments enabled by the daemon");
         statusBanner_->setStyleSheet(
@@ -358,8 +375,11 @@ void ShieldedWidget::updateFundMovingUi() {
 
 void ShieldedWidget::refresh() {
     if (!rpc_) return;
+    rpc_->call("orchard.getactivationstatus", {});
+    if (walletScope_.isEmpty() || legacyWalletStateUnavailable_) return;
     rpc_->call("wallet.shieldedbalance", {});
-    rpc_->callNamed("wallet.getshieldedaddress",
+    // A retired pool shows no receive address, so it never asks for one.
+    if (!retired_) rpc_->callNamed("wallet.getshieldedaddress",
                     QJsonObject{{"account", 0}, {"j", static_cast<qint64>(currentJ_)}});
     rpc_->call("wallet.listshielded", {});
 }
@@ -370,6 +390,8 @@ void ShieldedWidget::setWalletScope(const QString& walletName) {
 
     setActiveBanner(false, "Waiting for wallet activation status");
     walletScope_ = nextScope;
+    legacyWalletStateUnavailable_ = false;
+    holdsNotes_ = false;
     transferSubmitting_ = false;
     shieldSubmitting_ = false;
     unshieldSubmitting_ = false;
@@ -379,6 +401,7 @@ void ShieldedWidget::setWalletScope(const QString& walletName) {
     addressBook_.clear();
     currentJ_ = 0;
     currentAddress_.clear();
+    if (activityLog_) activityLog_->clear();
 
     if (addressBookCombo_) {
         addressBookCombo_->clear();
@@ -403,7 +426,7 @@ void ShieldedWidget::setWalletScope(const QString& walletName) {
     loadAddressBook();
     loadTransferJournal();
     loadOperationJournals();
-    updateFundMovingUi();
+    applyRetiredMode();
 }
 
 void ShieldedWidget::onTipPoll() {
@@ -838,6 +861,23 @@ void ShieldedWidget::updateBalanceLabels(const QJsonValue& result) {
     if (pendingNoteCountLabel_) {
         pendingNoteCountLabel_->setText(QString::number(pending));
     }
+    holdsNotes_ = una > 0 || confirmed > 0 || pending > 0;
+    applyRetiredMode();
+}
+
+void ShieldedWidget::applyRetiredMode() {
+    if (fundMovingSurface_) fundMovingSurface_->setVisible(!retired_);
+    if (receiveBox_) receiveBox_->setVisible(!retired_);
+    updateFundMovingUi();
+    if (!retiredKnown_) return;
+    const bool visible = !retired_ || holdsNotes_;
+    const QString label = retired_
+        ? QString("Retired pool (before H%1)").arg(retiredAtHeight_)
+        : QString("Legacy pool");
+    if (int(visible) == lastVisibility_ && label == lastLabel_) return;
+    lastVisibility_ = int(visible);
+    lastLabel_ = label;
+    Q_EMIT retiredPoolVisibilityChanged(visible, label);
 }
 
 void ShieldedWidget::updateReceiveAddress(const QJsonValue& result) {
@@ -869,6 +909,22 @@ void ShieldedWidget::onRpcResult(const QString& method, const QJsonValue& result
     }
     rpcEverConnected_ = true;
 
+    if (method == "wallet.getbalance" && result.isObject()) {
+        const auto obj = result.toObject();
+        if (!walletScope_.isEmpty() && obj.value("walletname").toString() == walletScope_) {
+            const bool unavailable =
+                obj.value("send_scope").toString() == "transparent_native_v3" ||
+                obj.value("wallet_scope").toString() == "legacy_transparent_only" ||
+                obj.value("send_unavailable_code").toString() == "wallet_native_send_unavailable_on_v3";
+            if (unavailable && !legacyWalletStateUnavailable_) {
+                legacyWalletStateUnavailable_ = true;
+                appendLog(activityLog_, "[status] retired pool history is unavailable for this wallet on this node");
+                applyRetiredMode();
+            }
+        }
+        return;
+    }
+
     if (method == "getblockcount") {
         // Auto-refresh path: refresh() if tip advanced.
         const qint64 tip = result.toVariant().toLongLong();
@@ -895,6 +951,19 @@ void ShieldedWidget::onRpcResult(const QString& method, const QJsonValue& result
          method == "wallet.unshield") &&
         ShieldedTransferPolicy::isWalletLockedError(innerError)) {
         rejectFundMovingRequestForLockedWallet(method);
+        return;
+    }
+
+    if (method == "orchard.getactivationstatus") {
+        if (innerError.isEmpty() && result.isObject()) {
+            const auto obj = result.toObject();
+            // Regtest keeps the full legacy workflow for developer tests.
+            retired_ = obj.value("network").toString() != "regtest" &&
+                obj.value("rule_active_for_next_block").toBool();
+            retiredAtHeight_ = obj.value("activation_height").toVariant().toLongLong();
+            retiredKnown_ = true;
+            applyRetiredMode();
+        }
         return;
     }
 
@@ -1005,6 +1074,16 @@ void ShieldedWidget::onRpcError(const QString& method, int code, const QString& 
     // RpcClient is shared by the whole window. Never surface failures from
     // unrelated wallet panels in Shielded activity.
     if (!isShieldedWidgetRpc(method)) {
+        return;
+    }
+    if (code == -32603 && message.contains("wallet index v3", Qt::CaseInsensitive) &&
+        (method == "wallet.shieldedbalance" || method == "wallet.listshielded" ||
+         method == "wallet.getshieldedaddress")) {
+        if (!legacyWalletStateUnavailable_) {
+            legacyWalletStateUnavailable_ = true;
+            appendLog(activityLog_, "[status] retired pool history is unavailable for this wallet on this node");
+            applyRetiredMode();
+        }
         return;
     }
     if (message.contains("Connection refused", Qt::CaseInsensitive)) {

@@ -67,6 +67,7 @@ private:
     bool seeder_opted_in_{false};
     bool seeder_running_{false};
     bool seeder_error_sticky_{false};
+    bool seeder_rpc_unsupported_{false};
     QString seeder_status_;
 
     bool confirm(const QString& title, const QString& body) const;

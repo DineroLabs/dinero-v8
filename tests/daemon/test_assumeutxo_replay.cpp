@@ -1181,6 +1181,13 @@ int main(int argc, char** argv) {
 #include "orchard_proof_finalization_checks.h"
 
 #include "orchard_spend_rpc_checks.h"
+#ifdef DINERO_TEST_ORCHARD_ORIGIN
+// Uses ServiceProofTerminal and the v3 route helpers (Orchard-origin only).
+#include "wallet_v3_native_orchard_spend_checks.h"
+#include "wallet_v3_native_restore_checks.h"
+#include "wallet_v3_native_p2mr_pool_checks.h"
+#include "wallet_v3_native_swap_checks.h"
+#endif
 
 #include "orchard_finish_rpc_checks.h"
 
@@ -1226,6 +1233,9 @@ int main(int argc, char** argv) {
 // compile there before the mkdtemp shim above); porting them is a
 // separate task, not a build fix.
 #include "orchard_snapshot_runtime_checks.h"
+#endif
+#ifdef _WIN32
+#include "orchard_history_cache_windows_checks.h"
 #endif
 #include "orchard_compact_service_checks.h"
 #include "orchard_compact_handoff_checks.h"

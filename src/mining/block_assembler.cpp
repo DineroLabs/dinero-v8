@@ -6,6 +6,7 @@
 #include "consensus/subsidy.h"  // Canonical subsidy schedule
 #include "consensus/consensus.hpp"
 #include "consensus/pow.hpp"
+#include "mining/selected_header_work.h"
 #include "consensus/chainparams.h"  // For Params()
 #include "consensus/state_commitment.h"  // DNRS coinbase commitment (state_commitment_v1)
 #include "daemon/daemon_context.h"       // DaemonContext → chainstate for the prediction oracle
@@ -233,6 +234,17 @@ void BlockAssembler::SetMiningAddress(const std::string& address) {
 void BlockAssembler::setChainDB(ChainDB* chain_db) {
     chain_db_ = chain_db;
     dinero::g_logger.debug("ChainDB set for BlockAssembler");
+}
+
+void BlockAssembler::SetHeaderChainSelector(
+    std::shared_ptr<const consensus::HeaderChainSelector> headers) {
+    header_chain_ = std::move(headers);
+}
+
+uint32_t BlockAssembler::NextTemplateBits(const uint256& parent_hash,
+    int32_t height, int64_t timestamp, const Consensus& rules) const {
+    return mining::NextWorkRequiredForParent(
+        header_chain_.get(), parent_hash, height, timestamp, rules, chain_db_);
 }
 
 void BlockAssembler::setMempool(Mempool* mempool) {
@@ -537,11 +549,11 @@ std::shared_ptr<MiningJob> BlockAssembler::CreateJob(const uint256* explicit_tip
     algo_state_.current_height = job->height;
     const Consensus consensus = GetConsensusForNetwork(dinero::Params());
     const int64_t currentTime = static_cast<int64_t>(job->header.timestamp);
-    job->target_bits = GetNextWorkRequiredWithChainDB(
+    job->target_bits = NextTemplateBits(
+        job->header.prev_block_hash,
         static_cast<int32_t>(job->height),
         currentTime,
-        consensus,
-        chain_db_);
+        consensus);
     job->header.difficulty = job->target_bits;
 
     // DEBUG: Log with proper hex formatting and phase detection
@@ -1356,8 +1368,8 @@ std::shared_ptr<const OrchardMiningTemplate> BlockAssembler::CreateOrchardBlock(
     const auto now = std::time(nullptr);
     if (now <= 0) throw std::runtime_error("Mining clock unavailable");
     header.timestamp = std::max(uint64_t(now), uint64_t(GetMedianTimePast()) + 1);
-    header.difficulty = GetNextWorkRequiredWithChainDB(static_cast<int32_t>(height),
-        static_cast<int64_t>(header.timestamp), GetConsensusForNetwork(dinero::Params()), chain_db_);
+    header.difficulty = NextTemplateBits(tip->hash, static_cast<int32_t>(height),
+        static_cast<int64_t>(header.timestamp), GetConsensusForNetwork(dinero::Params()));
     header.ZeroReserved();
     const auto capture = pool_use.pool->CaptureTypedBlockSelection(
         max_block_weight_ / 4, max_block_weight_, height);
@@ -1462,11 +1474,11 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(
     uint32_t header_time = std::max(current_time, mtp + 1);
     const Consensus consensus = GetConsensusForNetwork(dinero::Params());
     const int64_t currentTime = static_cast<int64_t>(header_time);
-    uint32_t target_bits = GetNextWorkRequiredWithChainDB(
+    uint32_t target_bits = NextTemplateBits(
+        prev_hash,
         static_cast<int32_t>(height),
         currentTime,
-        consensus,
-        chain_db_);
+        consensus);
     uint64_t block_subsidy = dinero::ConsensusSubsidy::GetBlockSubsidy(height, dinero::Params().sixty_second_activation_height).GetUna();
 
     const uint64_t selection_weight = static_cast<uint64_t>(max_block_weight_) *

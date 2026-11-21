@@ -851,17 +851,12 @@ TEST(WalletV3NativeInterim, UnservableNativeWalletKeepsUnsupportedRefusal) {
 // is allowed and its sealed birth enrolls it without a genesis replay. A
 // restored seed may own Orchard history that v3 cannot deliver before phase
 // 3, so restoring stays refused.
-TEST(WalletV3NativeInterim, V3CreatesGeneratedWalletsAndRefusesRestores) {
+// v8.2.4: restores are served on v3 too (WalletV3NativeRestore); this case
+// keeps the generated-wallet creation contract.
+TEST(WalletV3NativeInterim, V3CreatesGeneratedWalletsWithThreeAddresses) {
     CanonicalRecoveryFixture f(false,false);
     (void)f.MineToWallet();
     NativeV3IndexScope v3(f,"v3-native-create-index");
-    {
-        auto use=WalletService::AcquireWalletUse(f.wallet);
-        EXPECT_THROW(use->Wallet().createFromBip39("native-restored",
-            "legal winner thank year wave sausage worth useful legal winner thank yellow",""),
-            std::runtime_error);
-        EXPECT_FALSE(use->Wallet().exists("native-restored"));
-    }
     ExecutionContext request;
     request.daemon=&f.context;
     registerV7PqWalletMethods();
@@ -906,6 +901,47 @@ TEST(WalletV3NativeInterim, V3CreatesGeneratedWalletsAndRefusesRestores) {
     // The creation-time Taproot receiver (index 0) and the pool are enrolled.
     EXPECT_EQ(NativeTestCount(use->Wallet(),"SELECT count(*) FROM addresses WHERE account=0 AND change=0"),
         WalletManager::kNativeV3ReceivePool);
+}
+
+TEST(WalletV3NativeInterim, WizardCreatesTwentyIssuedTaprootAndOneIssuedP2MR) {
+    CanonicalRecoveryFixture f(false,false);
+    (void)f.MineToWallet();
+    NativeV3IndexScope v3(f,"v3-native-wizard-addresses-index");
+    registerV7PqWalletMethods();
+    ExecutionContext request;request.daemon=&f.context;
+    auto create=din::obj();
+    create["name"]="native-wizard-addresses";
+    create["initial_taproot_addresses"]=20;
+    const auto created=rpc_context_wallet_createhd(request,create);
+    ASSERT_FALSE(created.isMember("error")) << created.toStyledString();
+    ASSERT_TRUE(created["taproot_receive_addresses"].isArray());
+    ASSERT_EQ(created["taproot_receive_addresses"].size(),20u);
+    EXPECT_EQ(created["taproot_receive_addresses"][0].asString(),
+              created["first_address"].asString());
+    std::set<std::string> distinct;
+    for (const auto& address:created["taproot_receive_addresses"])
+        distinct.insert(address.asString());
+    EXPECT_EQ(distinct.size(),20u);
+    EXPECT_TRUE(created.isMember("first_p2mr_address"));
+    EXPECT_TRUE(created.isMember("first_orchard_address"));
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+              WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    EXPECT_EQ(NativeTestCount(use->Wallet(),
+        "SELECT count(*) FROM native_v3_address_pool WHERE chain=0 AND issued=1"),20);
+    EXPECT_EQ(NativeTestCount(use->Wallet(),
+        "SELECT count(*) FROM native_v3_p2mr_pool WHERE issued=1"),1);
+    request.walletName="native-wizard-addresses";
+    const auto listed=rpc_context_wallet_listaddresses(request,din::obj());
+    ASSERT_TRUE(listed.isArray()) << listed.toStyledString();
+    int taproot=0,p2mr=0;
+    for(const auto& row:listed) {
+        if(row["type"].asString()=="p2tr") ++taproot;
+        if(row["type"].asString()=="p2mr") ++p2mr;
+    }
+    EXPECT_EQ(taproot,20);
+    EXPECT_EQ(p2mr,1);
 }
 
 TEST(WalletV3NativeInterim, EncryptedV3CreationIssuesThreeAddressesAndRelocks) {
@@ -1407,6 +1443,9 @@ TEST(WalletV3NativeRoute, InterruptedNativeReconcileStaysPendingThenResumes) {
             EXPECT_THROW((void)lease->BeginNativeTransparentMigrationV3(index->Index(),session),std::exception);
             EXPECT_THROW((void)lease->BeginLegacyTransparentMigrationV3(index->Index(),session),std::exception);
         }
+        // v8.2.4: the owed P2MR pool fill precedes coverage (the reconcile
+        // refuses while it is owed); the worker does this before coverage.
+        FillNativeP2MRTargetsV3(use->Wallet(),session);
         EXPECT_FALSE(HasLegacyStateColumn(use->Wallet()));
         EXPECT_TRUE(HasNativeStateColumn(use->Wallet()));
         EXPECT_TRUE(use->Wallet().getNewAddress().empty()) << "Pending freezes the script domain";
@@ -1464,6 +1503,7 @@ TEST(WalletV3NativeRoute, OrchardOwnershipChangeDuringReconcileStaysPending) {
         auto lease=use->Wallet().AcquireDatabaseLease();
         ASSERT_FALSE(lease->BeginNativeTransparentMigrationV3(index->Index(),session).empty());
     }
+    FillNativeP2MRTargetsV3(use->Wallet(),session);  // v8.2.4: owed before coverage
     const auto coverage=f.f.service->getRuntimeWalletCoverageV3(use->Wallet(),session,index->Index());
     ASSERT_TRUE(coverage.ok()) << static_cast<int>(coverage.status());
     int commits=0;
@@ -2427,13 +2467,19 @@ TEST(WalletV3NativeSpend, NativeSendRefusesPendingLockedAndStaleReceipt) {
     std::string error;
     ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
         WalletService::CanonicalRecovery::AppliedPrefix) << error;
-    // Only sendtoaddress is enabled: every other spend RPC (sendmany and the
-    // bound pool/swap dispatch built on it) keeps the native refusal.
+    // v8.2.5: sendmany and the bound pool/swap dispatch now pay through the
+    // native v3 owner (one recipient, change on a sealed script); a payment
+    // to several recipients is still refused by that owner, nothing retained.
+    f.context.tx_ingress=f.f.ingress.get();
     din::Json many(Json::arrayValue);din::Json recipients=din::obj();
-    recipients[OrchardMiningPayout]=0.001;many.append(recipients);
+    recipients[OrchardMiningPayout]=0.001;
+    recipients[bech32::Encode("rdin",1,std::vector<uint8_t>(32,0x22),bech32::Encoding::BECH32M)]=0.001;
+    many.append(recipients);
     const auto sent_many=rpc_context_wallet_sendmany(request,many);
-    EXPECT_EQ(sent_many["error_code"].asString(),"wallet_native_send_unavailable_on_v3") << sent_many.toStyledString();
+    EXPECT_NE(sent_many["error"].asString().find("one recipient"),std::string::npos) << sent_many.toStyledString();
+    EXPECT_FALSE(sent_many.isMember("txid"));
     EXPECT_TRUE(f.wallet->get().getPendingPayments().empty());
+    f.context.tx_ingress=nullptr;
     // The payment owner itself refuses a native transaction whose change pays
     // a script outside the sealed domain, whoever built it.
     {
@@ -2613,10 +2659,14 @@ TEST(WalletV3NativePool, IssuesUnissuedPoolAddressesKeepingReceipts) {
         EXPECT_FALSE(shown.contains(unissued));
         EXPECT_FALSE(shown.contains(change0));
     }
-    // P2MR is not pooled on v3: refused honestly, nothing written.
+    // v8.2.4: P2MR comes from the P2MR pool sealed with the same receipts
+    // (filled at enrollment): two distinct addresses, receipts untouched.
     const auto p2mr=NativeIssue(request,"p2mr");
-    EXPECT_EQ(p2mr["error_code"].asString(),"wallet_native_p2mr_unavailable_on_v3") << p2mr.toStyledString();
-    EXPECT_FALSE(p2mr.isMember("address"));
+    ASSERT_TRUE(p2mr.isMember("address")) << p2mr.toStyledString();
+    EXPECT_TRUE(p2mr["address"].asString().starts_with("rdin1r")) << p2mr.toStyledString();
+    const auto p2mr_next=NativeIssue(request,"p2mr");
+    ASSERT_TRUE(p2mr_next.isMember("address")) << p2mr_next.toStyledString();
+    EXPECT_NE(p2mr_next["address"].asString(),p2mr["address"].asString());
     // The legacy derivation path stays closed (defense in depth).
     EXPECT_TRUE(WalletService::AcquireWalletUse(f.wallet)->Wallet().getNewAddress().empty());
     ExpectNativeReceiptsCurrent(f,102);

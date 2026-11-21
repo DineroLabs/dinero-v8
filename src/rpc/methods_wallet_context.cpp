@@ -942,9 +942,9 @@ static bool NativeV3PoolWallet(const ExecutionContext& ctx,
         lease->NativeV3TransparentState() != dinero::WalletManager::NativeV3State::Absent;
 }
 
-// #939 phase 2: wallet.getnewaddress for a native v3 wallet. Taproot comes
-// from the sealed pool (writes only the unguarded pool row); P2MR is not
-// pooled on v3 and is refused honestly. Nothing here derives a script.
+// #939 phase 2: wallet.getnewaddress for a native v3 wallet. Taproot and
+// (v8.2.4) P2MR come from their sealed pools (writes only the unguarded pool
+// row). Nothing here derives a script.
 static din::Json NativeV3PoolGetNewAddress(const ExecutionContext& ctx,
                                            const std::shared_ptr<dinero::WalletService>& service,
                                            const din::Json& params) {
@@ -958,9 +958,18 @@ static din::Json NativeV3PoolGetNewAddress(const ExecutionContext& ctx,
     if (normalized.empty() && service->get().getSetting("receive_default", "") == "p2mr")
         normalized = "p2mr";
     if (normalized == "p2mr" || normalized == "p2mr_v3") {
-        result["error"] = dinero::WalletManager::kNativeWalletP2MRUnavailableOnV3;
-        result["error_code"] = "wallet_native_p2mr_unavailable_on_v3";
-        result["retryable"] = false;
+        // v8.2.4: P2MR comes from the sealed P2MR pool (unguarded row only).
+        auto use = dinero::WalletService::AcquireWalletUse(service);
+        const auto issued = use->Wallet().issueNativeP2MRPoolAddress(label);
+        if (issued.address.empty()) {
+            result["error"] = issued.error;
+            result["error_code"] = issued.error_code;
+            result["retryable"] = issued.retryable;
+            return result;
+        }
+        result["address"] = issued.address;
+        result["address_type"] = "p2mr";
+        result["rpc_schema"] = "din.wallet.v1";
         return result;
     }
     if (!normalized.empty() && normalized != "taproot" && normalized != "p2tr" &&
@@ -1350,6 +1359,15 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
 
         // Wallet name
         result["walletname"] = mgr.current();
+        // v8.2.4 (#939): Orchard account 0 of a restored wallet is recovered
+        // in the background; say so, and why it is not progressing if not.
+        if (mgr.getSetting(dinero::WalletManager::kOrchardAccount0RestorePendingSetting) == "1") {
+            din::Json recovery = din::obj();
+            const auto status = mgr.getSetting(dinero::WalletManager::kOrchardAccount0RestoreStatusSetting);
+            recovery["state"] = mgr.isWalletLocked() ? "waiting_for_unlock" : "in_progress";
+            if (!status.empty()) recovery["detail"] = status;
+            result["orchard_account0_recovery"] = recovery;
+        }
 
         // Keep non-secret loaded-wallet metadata available without reporting
         // ordinary rows as a current mixed balance. This branch writes no
@@ -2415,6 +2433,7 @@ din::Json rpc_context_wallet_listaddresses(const ExecutionContext& ctx, const di
                         dinero::wallet::BuildP2MRScriptPubKey(p2mr.merkle_root);
                     const std::string script_pubkey_hex = BytesToHex(script_pubkey);
                     auto balance = wallet_service->get().getScriptPubKeyBalance(script_pubkey_hex);
+                    if (hidden.count(p2mr.address) && balance.utxo_count == 0) continue;
                     addr_obj["address"]    = p2mr.address;
                     if (!p2mr.label.empty()) {
                         addr_obj["label"]  = p2mr.label;
@@ -3782,23 +3801,7 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
             if (native_v3_send) {
                 // First pooled change-chain address with no coin history. It
                 // was sealed by the enrollment receipts; nothing is derived.
-                sqlite3_stmt* raw = nullptr;
-                if (sqlite3_prepare_v2(lease->Database(),
-                        "SELECT a.address FROM addresses a WHERE a.account=0 AND a.change=1 "
-                        "AND NOT EXISTS (SELECT 1 FROM utxos u WHERE u.address=a.address) ORDER BY a.idx",
-                        -1, &raw, nullptr) != SQLITE_OK)
-                    throw std::runtime_error("Native change pool unavailable");
-                const std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> pool(raw, sqlite3_finalize);
-                int rc;
-                while (change_address.empty() && (rc = sqlite3_step(raw)) == SQLITE_ROW) {
-                    const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(raw, 0));
-                    if (!text) continue;
-                    const std::string candidate(text, sqlite3_column_bytes(raw, 0));
-                    auto recorded = wallet_use->Wallet().getScriptPubKeyForAddress(candidate);
-                    if (!recorded) continue;
-                    auto key = lease->ResolveSigningKey(*recorded, *pin);
-                    if (key && key->secret.size() == 32) change_address = candidate;
-                }
+                change_address = lease->NativeV3PooledChangeAddress(*pin);
             }
             // A wallet enrolled before the change pool existed (and the legacy
             // class) reuses an owned input address instead.
@@ -4048,8 +4051,49 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
         return result;
     }
 
+    // v8.2.5: a completed full-archive v3 recovery (legacy class) or a
+    // native-complete v3 wallet pays through the same receipt-fenced owner as
+    // wallet.sendtoaddress: its coins are the certified inventory and its
+    // change goes to an already-covered address, never a derived one.
+    bool recovered_v3_send = false;
+    bool native_v3_send = false;
+#if DINERO_WALLET_RAW_ORCHARD
+    if (ctx.daemon->chainstate) {
+        auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        if (source && source->HasFullArchiveWalletIndexV3()) {
+            auto use = dinero::WalletService::AcquireWalletUse(wallet_service);
+            auto lease = use->Wallet().AcquireDatabaseLease();
+            recovered_v3_send = lease->TypedTransparentState() ==
+                dinero::WalletManager::LegacyTransparentState::Complete;
+            native_v3_send = recovered_v3_send &&
+                lease->NativeV3TransparentState() == dinero::WalletManager::NativeV3State::Complete;
+        }
+    }
+#endif
+    // True when the wallet cannot pay now (result carries the refusal).
+    const auto spend_refused = [&]() -> bool {
+        if (!recovered_v3_send) return RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result);
+        if (RefuseIfLegacyTransparentTipNotCurrent(ctx, wallet_service, result)) return true;
+        auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        if (!source || !source->RecoveredV3TransparentSendSourceReady()) {
+            result["error"] = "Recovered payment selected source unavailable";
+            result["error_code"] = "wallet_v3_send_source_unavailable";
+            return true;
+        }
+#if DINERO_WALLET_RAW_ORCHARD
+        if (native_v3_send && !wallet_service->get().isWalletLocked() &&
+            !rpc_context_native_v3_ordinary_inventory_ready(ctx, wallet_service->get().getCurrentWalletName())) {
+            result["error"] = dinero::WalletManager::kNativeWalletSendUnavailableOnV3;
+            result["error_code"] = "wallet_native_send_unavailable_on_v3";
+            result["retryable"] = false;
+            return true;
+        }
+#endif
+        return false;
+    };
+
     try {
-        if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
+        if (spend_refused()) return result;
         if(required_identity && (!required_service || required_service!=wallet_service || !requested))
             throw std::runtime_error("Bound payment wallet service or request format changed");
         // Retain the actual manager through all synchronous callbacks. This
@@ -4348,7 +4392,33 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
         // Build transaction using only our pre-filtered candidate UTXOs so that
         // the builder never selects stale/CT/immature inputs we have no key for.
         dinero::TransactionBuilder builder(chainstate_service->utxoIndex());
-        std::string change_address = wallet_service->get().getNewAddress("change", "taproot");
+        // A v3 wallet owns only scripts its sealed receipts proved: change goes
+        // to a pooled change address (native), else to an owned candidate
+        // address whose key this seed resolves (legacy class). Deriving a new
+        // script would invalidate the receipts and leave change unscanned.
+        std::string change_address;
+        if (recovered_v3_send) {
+            auto lease = wallet_use->Wallet().AcquireDatabaseLease();
+            if (lease->Session() != signing_identity.session || lease->WalletName() != signing_identity.name)
+                throw std::runtime_error("Recovered payment wallet selection changed");
+            auto pin = lease->CopyRecoverySeed(signing_identity.session);
+            if (native_v3_send) change_address = lease->NativeV3PooledChangeAddress(*pin);
+            for (const auto& coin : utxos) {
+                if (!change_address.empty()) break;
+                if (coin.address.empty() || coin.script_pubkey.empty()) continue;
+                auto recorded = wallet_use->Wallet().getScriptPubKeyForAddress(coin.address);
+                if (!recorded || *recorded != coin.script_pubkey) continue;
+                auto key = lease->ResolveSigningKey(coin.script_pubkey, *pin);
+                if (key && key->secret.size() == 32) change_address = coin.address;
+            }
+            if (change_address.empty()) {
+                result["error"] = "Recovered transparent wallet has no existing owned change address";
+                result["error_code"] = "wallet_v3_change_owner_unavailable";
+                return result;
+            }
+        } else {
+            change_address = wallet_service->get().getNewAddress("change", "taproot");
+        }
 
         // The builder's vsize estimator can undercount the final serialized size
         // on some wallet states. Start conservatively, then rebuild with a higher
@@ -4391,7 +4461,7 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
             if(intent.request && static_cast<uint64_t>(unsigned_tx.fee)>intent.request->maximum_fee_una) {
                 result["error"]="Payment exceeds explicit request fee limit";return result;
             }
-            if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
+            if (spend_refused()) return result;
             auto signed_result=intent.request
                 ? dinero::SignWalletRequestPreview(wallet_service->get(),signing_identity,unsigned_tx,intent)
                 : dinero::SignWalletTransaction(wallet_service->get(),signing_identity,unsigned_tx);
@@ -4425,7 +4495,7 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
             effective_fee_rate = std::max(effective_fee_rate * 2.0, effective_fee_rate + 1.0);
         }
 
-        if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
+        if (spend_refused()) return result;
         auto retained = chainstate_service->signAndStageWalletPayment(wallet_use->Wallet(), signing_identity, unsigned_tx, intent);
         if (!retained.success) { result["error"] = "Payment retention failed: " + retained.error; return result; }
         build_result.transaction = std::move(retained.signed_tx.tx);
@@ -8007,8 +8077,27 @@ din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Js
         return result;
     }
 
-    auto creation_owner = wallet_service->AcquireCreationOwner();
     const uint32_t birth_height = ctx.daemon->chainstate ? ctx.daemon->chainstate->getBlockHeight() : 0;
+#if DINERO_WALLET_RAW_ORCHARD
+    // Creating a post-activation wallet promises a usable Orchard receiver.
+    // A late snapshot can expose the selected tip before its independently
+    // verified Orchard history is available. Refuse before creating any wallet
+    // instead of returning a partial wallet with a silently missing address.
+    if (birth_height >= dinero::Params().orchard_activation_height) {
+        const auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        const auto replay = source ? source->getRuntimeAccountReplay() :
+            dinero::StatusOr<std::shared_ptr<const dinero::RuntimeAccountReplay>>(dinero::Status::Invalid);
+        if (!replay.ok()) {
+            result["error"] = "Orchard history is not ready; wallet was not created. Retry after history sync.";
+            result["error_code"] = "orchard_history_pending";
+            result["retryable"] = replay.status()==dinero::Status::NotFound ||
+                replay.status()==dinero::Status::Invalid;
+            result["source_status"] = dinero::StatusToString(replay.status());
+            return result;
+        }
+    }
+#endif
+    auto creation_owner = wallet_service->AcquireCreationOwner();
     result = dinero::rpc::RpcCreateHDWallet(params, &wallet_service->get(), birth_height);
     if (!result.isMember("error")) {
         wallet_service->EnsureRuntimeWalletBindings();
@@ -8107,6 +8196,12 @@ din::Json rpc_context_wallet_restore(const ExecutionContext& ctx, const din::Jso
     // Refuse an unavailable historical source BEFORE those effects; returning
     // a warning after switching wallets leaves a new partial inventory active.
     // rescan=false remains an explicit key-import operation, never recovery.
+    // v8.2.4 (#939): a full-archive v3 index has no legacy rescan. A restored
+    // seed is recovered by the native v3 route instead: after the first
+    // unlock it enrolls with a FULL historical replay (a restored identity
+    // never has a sealed fresh birth), and Orchard account 0 is recovered
+    // from the authenticated v3 source.
+    bool native_v3_recovery = false;
     if (rescan_requested) {
         auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
         if (!source) {
@@ -8114,6 +8209,7 @@ din::Json rpc_context_wallet_restore(const ExecutionContext& ctx, const din::Jso
             result["recovery_required"] = true;
             return result;
         }
+        native_v3_recovery = source->HasFullArchiveWalletIndexV3();
         const auto selected = source->GetSyncSnapshot();
         auto* database = source->GetChainDB();
         const auto durable = database ? database->getTip() : dinero::StatusOr<dinero::TipInfo>(dinero::Status::Invalid);
@@ -8124,7 +8220,7 @@ din::Json rpc_context_wallet_restore(const ExecutionContext& ctx, const din::Jso
             result["recovery_required"] = true;
             return result;
         }
-        const auto readiness = CheckRescanReadiness(source);
+        const auto readiness = native_v3_recovery ? RescanReadiness{true, {}, {}} : CheckRescanReadiness(source);
         if (!readiness.ok) {
             result["error"] = readiness.reason;
             if (!readiness.error_code.empty()) result["error_code"] = readiness.error_code;
@@ -8133,13 +8229,27 @@ din::Json rpc_context_wallet_restore(const ExecutionContext& ctx, const din::Jso
         }
     }
 
-    result = dinero::rpc::RpcRestoreWallet(params, &wallet_service->get());
-    if (!result.isMember("error")) {
-        wallet_service->EnsureRuntimeWalletBindings();
+    {
+        // Exclusive creation owner (as wallet.createhd): no worker recovery or
+        // other RPC may enroll or read the restored wallet until its file,
+        // policy and gap-limit addresses exist. Released before any rescan.
+        auto creation_owner = wallet_service->AcquireCreationOwner();
+        result = dinero::rpc::RpcRestoreWallet(params, &wallet_service->get());
+        if (!result.isMember("error")) {
+            // The ordinary desktop restore also recovers Orchard account 0 on
+            // every node type: the runtime worker continues it while unlocked.
+            if (result.isMember("success") && result["success"].asBool())
+                wallet_service->get().setSetting(
+                    dinero::WalletManager::kOrchardAccount0RestorePendingSetting, "1");
+            wallet_service->EnsureRuntimeWalletBindings();
+        }
     }
 
     if (result.isMember("success") && result["success"].asBool()) {
-        if (rescan_requested) {
+        result["orchard_account0_recovery"] = "automatic_after_unlock";
+        if (native_v3_recovery) {
+            result["history_recovery"] = "native_v3_after_unlock";
+        } else if (rescan_requested) {
             din::Json rescan_params(Json::arrayValue);
             rescan_params.append(0);
             din::Json rescan_result = rpc_context_wallet_rescanblockchain(ctx, rescan_params);

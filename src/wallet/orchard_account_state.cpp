@@ -142,6 +142,10 @@ struct OrchardAccountState::Data : OrchardAccountMetadata {
        const uint256 &parent)
       : OrchardAccountMetadata(d), domain(d), fvk(f), activation(a),
         scan(OrchardWalletScanState::Begin(d, f, a, parent)) {}
+  Data(SigningDomain d, const FullViewingKeyBytes &f, uint32_t a,
+       const storage::OrchardStoredState &checkpoint)
+      : OrchardAccountMetadata(d), domain(d), fvk(f), activation(a),
+        scan(OrchardWalletScanState::AtFreshSeedCheckpoint(d, f, a, checkpoint)) {}
   ~Data() { OPENSSL_cleanse(fvk.data(), fvk.size()); }
 };
 OrchardAccountState OrchardAccountState::Begin(SigningDomain domain,
@@ -150,6 +154,12 @@ OrchardAccountState OrchardAccountState::Begin(SigningDomain domain,
                                                const uint256 &parent) {
   return OrchardAccountState(
       std::make_shared<Data>(domain, fvk, activation, parent));
+}
+OrchardAccountState OrchardAccountState::BeginFreshAtCheckpoint(
+    SigningDomain domain,const FullViewingKeyBytes &fvk,uint32_t activation,
+    const storage::OrchardStoredState &checkpoint) {
+  return OrchardAccountState(
+      std::make_shared<Data>(domain,fvk,activation,checkpoint));
 }
 std::pair<OrchardAccountState, WalletReceiver>
 OrchardAccountState::IssueReceiver(WalletScope scope) const {
@@ -171,6 +181,15 @@ OrchardAccountState::IssueReceiver(WalletScope scope) const {
   }
   return {OrchardAccountState(std::move(next)), receiver};
 }
+
+std::optional<WalletReceiver> OrchardAccountState::FirstIssuedExternalReceiver() const {
+  const auto& next = data_->next[static_cast<uint8_t>(WalletScope::External)];
+  if (!data_->exhausted[static_cast<uint8_t>(WalletScope::External)] &&
+      std::all_of(next.begin(), next.end(), [](uint8_t byte) { return byte == 0; }))
+    return std::nullopt;
+  return WalletReceiver::FromViewingKey(data_->fvk, WalletScope::External, {});
+}
+
 OrchardAccountState OrchardAccountState::Advance(
     const OrchardBlockContext &context, const OrchardBlockCandidate &block,
     const PreparedOrchardState &prepared,

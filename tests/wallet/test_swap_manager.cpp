@@ -1,6 +1,7 @@
 // Swap manager: seed-derived keys, offer/accept between two wallets, index
 // never reused (even after a restored backup), locked wallet refuses and
-// pauses, cancel only before funds are locked, payout address parsing.
+// pauses, cancel only before funds are locked, offers limited to the spendable
+// balance, payout address parsing.
 #include "wallet/swap/swap_manager.h"
 
 #include "bech32/bech32.hpp"
@@ -50,6 +51,13 @@ struct FakeWallet {
     }
 };
 
+// One key of the wallet at a hardened path (the deriver answers in batches).
+Bytes32 KeyAt(const KeyDeriver& derive, std::vector<uint32_t> path) {
+    const auto batch = derive({std::move(path)}, false);
+    if (!batch || batch->keys.size() != 1) throw std::runtime_error("no key");
+    return batch->keys[0];
+}
+
 std::string P2trAddress(const std::string& hrp, uint8_t fill) {
     return bech32::Encode(hrp, 1, std::vector<uint8_t>(32, fill), bech32::Encoding::BECH32M);
 }
@@ -71,10 +79,29 @@ SwapManagerConfig Config(const std::string& dir) {
     return c;
 }
 
-// A Dinero node that only reports its height (the scan start of a new swap).
-const DinRpc kNoDin = [](const std::string& m, const Json::Value&) {
-    return m == "getblockcount" ? std::optional<Json::Value>(Json::Value(1000)) : std::optional<Json::Value>{};
-};
+// What getblockchaininfo says about transaction time locks.
+std::optional<Json::Value> ChainInfo(bool locks_active) {
+    Json::Value i(Json::objectValue);
+    i["contextual_locks_active"] = locks_active;
+    return i;
+}
+
+// A Dinero node that reports its height (the scan start of a new swap), that
+// it enforces time locks, and a wallet balance of `spendable_din` (DIN, as
+// wallet.getbalance reports it).
+DinRpc DinWithBalance(double spendable_din, bool locks_active = true) {
+    return [spendable_din, locks_active](const std::string& m, const Json::Value&) -> std::optional<Json::Value> {
+        if (m == "getblockcount") return Json::Value(1000);
+        if (m == "getblockchaininfo") return ChainInfo(locks_active);
+        if (m == "wallet.getbalance") {
+            Json::Value b(Json::objectValue);
+            b["spendable"] = spendable_din;
+            return b;
+        }
+        return std::nullopt;
+    };
+}
+const DinRpc kNoDin = DinWithBalance(1'000'000);
 // A Bitcoin node that only reports its height (the scan start of a new swap).
 const BtcRpc kNoBtc = [](const std::string& m, const Json::Value&) {
     return m == "getblockcount" ? std::optional<Json::Value>(Json::Value(500)) : std::optional<Json::Value>{};
@@ -739,6 +766,88 @@ TEST(SwapManager, BobsSwapIsNotFinishedUntilHisDinIsSwept) {
     EXPECT_FALSE(bob2.Status(id).sweep_pending);
 }
 
+// An offer is refused unless the wallet can pay it: spendable DIN must cover
+// its amount plus the funding fee allowance, on top of what open offers and
+// unfunded swaps already promise. Request() offers 10 DIN.
+TEST(SwapManager, OfferBeyondTheSpendableBalanceIsRefused) {
+    TempDir d("balance_short");
+    FakeWallet w{0x51};
+    SwapManager m(Config(d.path), w.Deriver(), DinWithBalance(5), kNoBtc);
+    try {
+        m.MakeOffer(Request(), kNow);
+        FAIL() << "a 10 DIN offer from a 5 DIN wallet was accepted";
+    } catch (const std::invalid_argument& e) {
+        EXPECT_NE(std::string(e.what()).find("offer exceeds available balance"), std::string::npos) << e.what();
+    }
+    EXPECT_TRUE(m.List().empty()) << "nothing is written for a refused offer";
+    // Exactly the amount is not enough: the funding fee needs room too.
+    TempDir d2("balance_exact");
+    SwapManager exact(Config(d2.path), w.Deriver(), DinWithBalance(10), kNoBtc);
+    EXPECT_THROW(exact.MakeOffer(Request(), kNow), std::invalid_argument);
+    TempDir d3("balance_enough");
+    SwapManager enough(Config(d3.path), w.Deriver(), DinWithBalance(10.01), kNoBtc);
+    EXPECT_NO_THROW(enough.MakeOffer(Request(), kNow));
+}
+
+TEST(SwapManager, OpenOffersAndUnfundedSwapsReserveTheirDin) {
+    TempDir da("reserve_alice"), db("reserve_bob");
+    FakeWallet wa{0x52}, wb{0x53};
+    SwapManager alice(Config(da.path), wa.Deriver(), DinWithBalance(15), kNoBtc);
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+
+    const std::string offer = alice.MakeOffer(Request(), kNow);
+    EXPECT_THROW(alice.MakeOffer(Request(), kNow + 1), std::invalid_argument)
+        << "two 10 DIN offers against 15 DIN";
+
+    // Still reserved once the offer turns into a swap that has not funded yet.
+    const auto b = bob.Accept(offer, P2trAddress("rdin", 0x31), P2trAddress("bcrt", 0x32), kNow + 60);
+    const auto a = alice.Accept(*b.accept_text, "", "", kNow + 120);
+    ASSERT_EQ(alice.Status(a.id).state, SwapState::Accepted);
+    EXPECT_THROW(alice.MakeOffer(Request(), kNow + 130), std::invalid_argument);
+
+    // Cancelling releases it.
+    alice.Cancel(a.id);
+    EXPECT_NO_THROW(alice.MakeOffer(Request(), kNow + 140));
+}
+
+TEST(SwapManager, AnUnreadableBalanceRefusesTheOffer) {
+    TempDir d("balance_unreadable");
+    FakeWallet w{0x54};
+    const DinRpc no_wallet = [](const std::string& m, const Json::Value&) -> std::optional<Json::Value> {
+        if (m == "getblockchaininfo") return ChainInfo(true);
+        return m == "getblockcount" ? std::optional<Json::Value>(Json::Value(1000)) : std::optional<Json::Value>{};
+    };
+    SwapManager m(Config(d.path), w.Deriver(), no_wallet, kNoBtc);
+    EXPECT_THROW(m.MakeOffer(Request(), kNow), std::runtime_error);
+    EXPECT_TRUE(m.List().empty());
+}
+
+// Dinero testnet does not enforce transaction time locks: Alice's refund
+// would confirm at once, so neither side may start a swap there.
+TEST(SwapManager, NoSwapOnADineroChainWithoutTimeLocks) {
+    TempDir da("nolocks_a"), db("nolocks_b"), dc("nolocks_c");
+    FakeWallet wa{0x61}, wb{0x62};
+    const DinRpc no_locks = DinWithBalance(1'000'000, false);
+    SwapManager alice_unsafe(Config(da.path), wa.Deriver(), no_locks, kNoBtc);
+    EXPECT_THROW(alice_unsafe.MakeOffer(Request(), kNow), std::runtime_error);
+    EXPECT_TRUE(alice_unsafe.List().empty());
+
+    SwapManager alice(Config(dc.path), wa.Deriver(), kNoDin, kNoBtc);
+    const auto offer = alice.MakeOffer(Request(), kNow);
+    SwapManager bob_unsafe(Config(db.path), wb.Deriver(), no_locks, kNoBtc);
+    EXPECT_THROW(bob_unsafe.Accept(offer, P2trAddress("rdin", 1), P2trAddress("bcrt", 2), kNow), std::runtime_error);
+    EXPECT_TRUE(bob_unsafe.List().empty());
+    // A node that does not say counts as one that does not enforce them.
+    const DinRpc silent = [](const std::string& m, const Json::Value&) -> std::optional<Json::Value> {
+        if (m == "getblockchaininfo") return Json::Value(Json::objectValue);
+        return kNoDin(m, Json::Value());
+    };
+    SwapManager bob_silent(Config(db.path), wb.Deriver(), silent, kNoBtc);
+    EXPECT_THROW(bob_silent.Accept(offer, P2trAddress("rdin", 1), P2trAddress("bcrt", 2), kNow), std::runtime_error);
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    EXPECT_NO_THROW(bob.Accept(offer, P2trAddress("rdin", 1), P2trAddress("bcrt", 2), kNow));
+}
+
 TEST(SwapManager, PayoutScriptFromAddress) {
     const auto tr = PayoutScriptFromAddress(P2trAddress("bcrt", 0x44), "bcrt");
     EXPECT_EQ(tr.size(), 34u);
@@ -751,6 +860,422 @@ TEST(SwapManager, PayoutScriptFromAddress) {
                  std::invalid_argument);  // v1 must be bech32m
     EXPECT_THROW(PayoutScriptFromAddress(bech32::Encode("bcrt", 0, std::vector<uint8_t>(25, 1)), "bcrt"),
                  std::invalid_argument);  // bad program length
+}
+
+// Exchanges and older wallets still hand out 1…/3… addresses: the BTC side
+// takes them, on the node's own Bitcoin network only. DIN payouts stay bech32.
+TEST(SwapManager, BtcPayoutScriptAcceptsLegacyAddresses) {
+    const std::string pkh = "77bff20c60e522dfaa3350c39b030a5d004e839a";
+    const std::string sh = "b472a266d0bd89c13706a4132ccfb16f7c3b9fcb";
+    EXPECT_EQ(detail::ToHex(BtcPayoutScriptFromAddress("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2", "bc")), "76a914" + pkh + "88ac");
+    EXPECT_EQ(detail::ToHex(BtcPayoutScriptFromAddress("3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy", "bc")), "a914" + sh + "87");
+    for (const char* hrp : {"tb", "bcrt"}) {
+        EXPECT_EQ(detail::ToHex(BtcPayoutScriptFromAddress("mrS8eVKXguwufwvsVe9GtgGb7fif9UQeAu", hrp)), "76a914" + pkh + "88ac");
+        EXPECT_EQ(detail::ToHex(BtcPayoutScriptFromAddress("2N9hLwkSqr1cPQAPxbrGVUjxyjD11G2e1he", hrp)), "a914" + sh + "87");
+    }
+    // The all-zero hash keeps its leading zero bytes.
+    EXPECT_EQ(detail::ToHex(BtcPayoutScriptFromAddress("1111111111111111111114oLvT2", "bc")),
+              "76a914" + std::string(40, '0') + "88ac");
+    // Segwit addresses are unchanged.
+    EXPECT_EQ(BtcPayoutScriptFromAddress(P2trAddress("bcrt", 0x44), "bcrt"),
+              PayoutScriptFromAddress(P2trAddress("bcrt", 0x44), "bcrt"));
+
+    // Another network's address, a typo, or anything else is refused.
+    EXPECT_THROW(BtcPayoutScriptFromAddress("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2", "bcrt"), std::invalid_argument);
+    EXPECT_THROW(BtcPayoutScriptFromAddress("mrS8eVKXguwufwvsVe9GtgGb7fif9UQeAu", "bc"), std::invalid_argument);
+    EXPECT_THROW(BtcPayoutScriptFromAddress("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN3", "bc"), std::invalid_argument);
+    EXPECT_THROW(BtcPayoutScriptFromAddress("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN0", "bc"), std::invalid_argument);
+    EXPECT_THROW(BtcPayoutScriptFromAddress("", "bc"), std::invalid_argument);
+    EXPECT_THROW(BtcPayoutScriptFromAddress(std::string(200, '2'), "bc"), std::invalid_argument);
+    EXPECT_THROW(BtcPayoutScriptFromAddress(P2trAddress("bc", 0x44), "bcrt"), std::invalid_argument);
+    // A Dinero payout never takes a Bitcoin legacy address.
+    EXPECT_THROW(PayoutScriptFromAddress("mrS8eVKXguwufwvsVe9GtgGb7fif9UQeAu", "rdin"), std::invalid_argument);
+}
+
+// Bitcoin without Bitcoin Core: the manager takes the Bitcoin side of a swap
+// from the installed support, sells DIN through it, and refuses to buy.
+TEST(SwapManager, LightBitcoinSellsDinAndRefusesToBuy) {
+    TempDir da("light_btc_alice"), db("light_btc_bob");
+    FakeWallet wa{0xe1}, wb{0xe2};
+    // A node with no Bitcoin RPC at all: every call to it fails.
+    const BtcRpc no_core = [](const std::string&, const Json::Value&) { return std::optional<Json::Value>{}; };
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, no_core);
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    EXPECT_THROW(alice.SetLightBitcoin(LightBtcSupport{}), std::invalid_argument);
+    EXPECT_FALSE(alice.LightBitcoin());
+
+    size_t ios = 0, tips = 0;
+    LightBtcSupport light;
+    light.make_io = [&](const SwapSession& s, const RunnerConfig& rc, const Bytes32&) {
+        ++ios;
+        return std::make_unique<RpcSwapChainIo>(kNoDin, kNoBtc, s, rc);
+    };
+    light.tip_height = [&] {
+        ++tips;
+        return uint32_t{800};
+    };
+    alice.SetLightBitcoin(light);
+    EXPECT_TRUE(alice.LightBitcoin());
+
+    const std::string offer = alice.MakeOffer(Request(), kNow);
+    // Buying DIN pays BTC: a light node cannot, and says so before anything is allocated.
+    try {
+        alice.Accept(offer, P2trAddress("rdin", 0x31), P2trAddress("bcrt", 0x32), kNow + 1);
+        ADD_FAILURE() << "a light node accepted an offer";
+    } catch (const std::runtime_error& e) {
+        EXPECT_NE(std::string(e.what()).find("buying DIN with BTC still needs Bitcoin Core"), std::string::npos) << e.what();
+    }
+    EXPECT_EQ(ios, 0u);
+
+    const auto accepted = bob.Accept(offer, P2trAddress("rdin", 0x31), P2trAddress("bcrt", 0x32), kNow + 1);
+    ASSERT_TRUE(accepted.accept_text.has_value());
+    tips = 0;
+    alice.Accept(*accepted.accept_text, "", "", kNow + 2);  // would throw "Bitcoin node unreachable" without the light tip
+    EXPECT_EQ(ios, 1u);   // the swap's Bitcoin side came from the light support
+    EXPECT_EQ(tips, 1u);  // and so did the height its watcher starts from
+    const auto key = SwapStoreKeyFromSeed(wa.Deriver(), SwapNetwork::Regtest);
+    EXPECT_EQ(EncryptedFileSwapStore::Load(da.path + "/swap-0.swap", key).btc_scan_from_height, 800u - 6u);
+
+    // The light view not synced yet: no swap is started on a guess.
+    TempDir dc("light_btc_carol");
+    FakeWallet wc{0xe3};
+    SwapManager carol(Config(dc.path), wc.Deriver(), kNoDin, no_core);
+    light.tip_height = []() -> uint32_t { throw std::runtime_error("Bitcoin headers are not synced yet: cannot reach any Bitcoin server"); };
+    carol.SetLightBitcoin(light);
+    const std::string carol_offer = carol.MakeOffer(Request(), kNow);
+    const auto to_carol = bob.Accept(carol_offer, P2trAddress("rdin", 0x33), P2trAddress("bcrt", 0x34), kNow + 1);
+    EXPECT_THROW(carol.Accept(*to_carol.accept_text, "", "", kNow + 2), std::runtime_error);
+    EXPECT_FALSE(fs::exists(dc.path + "/swap-0.swap"));
+}
+
+// Buying DIN without Bitcoin Core: the buyer pays a deposit address derived
+// from the seed (branch 7'), and accepts once the deposit is deep enough.
+namespace {
+struct FakeLightBtc {
+    ZecDepositStatus status;                                  // what every deposit shows (satoshi)
+    std::vector<std::pair<Bytes32, std::vector<uint8_t>>> sweeps;
+    std::vector<Bytes32> io_deposit_keys;                     // the deposit key each session's chain IO was given
+    std::set<std::string> address_keys;
+    LightBtcSupport Support(bool can_pay = true) {
+        LightBtcSupport l;
+        l.make_io = [this](const SwapSession& s, const RunnerConfig& rc, const Bytes32& deposit_key) {
+            io_deposit_keys.push_back(deposit_key);
+            return std::make_unique<RpcSwapChainIo>(kNoDin, kNoBtc, s, rc);
+        };
+        l.tip_height = [] { return uint32_t{800}; };
+        if (!can_pay) return l;
+        l.deposit_address = [this](const Bytes32& key) {
+            address_keys.insert(detail::ToHex(std::vector<uint8_t>(key.begin(), key.end())));
+            return "bcrt1qdeposit" + detail::ToHex(std::vector<uint8_t>(key.begin(), key.begin() + 4));
+        };
+        l.deposit_status = [this](const Bytes32&) { return status; };
+        l.sweep_deposit = [this](const Bytes32& key, const std::vector<uint8_t>& to) {
+            sweeps.emplace_back(key, to);
+            return std::string(64, 'd');
+        };
+        l.funding_fee_sat = 3000;
+        return l;
+    }
+};
+}  // namespace
+
+TEST(SwapManager, LightBitcoinBuysDinFromADeposit) {
+    TempDir da("light_dep_alice"), db("light_dep_bob");
+    FakeWallet wa{0xf1}, wb{0xf2};
+    FakeLightBtc lb;
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);  // Alice has Bitcoin Core
+    const std::string offer = alice.MakeOffer(Request(), kNow);        // 1,000,000 sat
+    const std::string refund = "mrS8eVKXguwufwvsVe9GtgGb7fif9UQeAu";   // a legacy address is fine
+    {
+        SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+        bob.SetLightBitcoin(lb.Support());
+
+        // Accepting before paying: told to pay the deposit first.
+        try {
+            bob.Accept(offer, P2trAddress("rdin", 0x31), refund, kNow + 10);
+            ADD_FAILURE() << "accepted without a deposit";
+        } catch (const std::runtime_error& e) {
+            EXPECT_STREQ(e.what(), "pay the deposit first: swap.deposit gives its address");
+        }
+        EXPECT_THROW(bob.PrepareDeposit(offer, "not an address", kNow + 20), std::invalid_argument);
+        EXPECT_THROW(bob.PrepareDeposit(offer, "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2", kNow + 20), std::invalid_argument);  // mainnet
+
+        const DepositInfo d = bob.PrepareDeposit(offer, refund, kNow + 30);
+        EXPECT_EQ(d.address.rfind("bcrt1qdeposit", 0), 0u);
+        EXPECT_EQ(d.amount_due_zat, 1'000'000u + 3000u);  // the swap amount and the fee buffer
+        EXPECT_EQ(bob.PrepareDeposit(offer, refund, kNow + 40).address, d.address);  // the same offer: the same deposit
+        // The key is the wallet's 7' key for that index, not the Zcash 6' one.
+        const auto expected = KeyAt(wb.Deriver(), {kSwapKeyPurpose, 2, 7, d.index});
+        ASSERT_EQ(lb.address_keys.size(), 1u);
+        EXPECT_EQ(*lb.address_keys.begin(), detail::ToHex(std::vector<uint8_t>(expected.begin(), expected.end())));
+
+        auto list = bob.List();
+        ASSERT_EQ(list.size(), 1u);
+        EXPECT_TRUE(list[0].pending_deposit);
+        EXPECT_EQ(list[0].chain, CounterChain::Bitcoin);
+        EXPECT_EQ(list[0].deposit_address, d.address);
+        EXPECT_EQ(list[0].deposit_due_zat, 1'003'000u);
+
+        // Paid, but not deep enough, and then short by a little.
+        lb.status = {1'003'000, 0, 1};
+        try {
+            bob.Accept(offer, P2trAddress("rdin", 0x31), "", kNow + 50);
+            ADD_FAILURE() << "accepted an unconfirmed deposit";
+        } catch (const std::runtime_error& e) {
+            EXPECT_STREQ(e.what(), "deposit is short by 0.01003 BTC (0 of 0.01003 BTC has 2 confirmations)");
+        }
+        lb.status = {1'003'000, 1'002'999, 2};
+        EXPECT_THROW(bob.Accept(offer, P2trAddress("rdin", 0x31), "", kNow + 60), std::runtime_error);
+        EXPECT_TRUE(lb.io_deposit_keys.empty());
+        // A refused accept takes no address from the wallet, however often it is retried
+        // (a buyer waiting for confirmations retries for an hour).
+        int addresses_taken = 0;
+        const SwapManager::PayoutAddressSource payout = [&] { ++addresses_taken; return P2trAddress("rdin", 0x31); };
+        for (int retry = 0; retry < 5; ++retry) EXPECT_THROW(bob.Accept(offer, payout, "", kNow + 61 + retry), std::runtime_error);
+        EXPECT_EQ(addresses_taken, 0);
+        lb.status = {1'003'000, 1'003'000, 2};
+        SwapOffer other = DecodeOffer(offer);
+        other.network = SwapNetwork::Mainnet;  // refused for another reason: still none
+        EXPECT_THROW(bob.Accept(EncodeOffer(other), payout, "", kNow + 67), std::exception);
+        EXPECT_EQ(addresses_taken, 0);
+        lb.status = {1'003'000, 1'002'999, 2};
+    }
+    {   // A restart in between: the deposit is still there.
+        SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+        bob.SetLightBitcoin(lb.Support());
+        ASSERT_EQ(bob.List().size(), 1u);
+        EXPECT_TRUE(bob.List()[0].pending_deposit);
+        lb.status = {1'003'000, 1'003'000, 2};
+        int addresses_taken = 0;
+        const auto accepted = bob.Accept(
+            offer, SwapManager::PayoutAddressSource([&] { ++addresses_taken; return P2trAddress("rdin", 0x31); }), "", kNow + 70);
+        ASSERT_TRUE(accepted.accept_text.has_value());
+        EXPECT_EQ(addresses_taken, 1) << "the accept that goes through takes exactly one";
+        // The swap's chain IO was given the deposit key: it builds the lock from the deposit.
+        ASSERT_EQ(lb.io_deposit_keys.size(), 1u);
+        EXPECT_EQ(lb.io_deposit_keys[0], KeyAt(wb.Deriver(), {kSwapKeyPurpose, 2, 7, 0}));
+        const auto list = bob.List();
+        ASSERT_EQ(list.size(), 1u);
+        EXPECT_FALSE(list[0].pending_deposit);  // the deposit became the swap
+        EXPECT_EQ(list[0].chain, CounterChain::Bitcoin);
+        // His refund key in the accept is the ordinary Bitcoin key (2'), as for a Bitcoin Core buyer.
+        EXPECT_EQ(DecodeAccept(*accepted.accept_text).btc_refund_pubkey,
+                  detail::CompressedOf(KeyAt(wb.Deriver(), {kSwapKeyPurpose, 2, 2, 0})));
+        EXPECT_EQ(alice.Accept(*accepted.accept_text, "", "", kNow + 80).id, accepted.id);
+
+        // Cancelling before anything is locked sends the deposit back to the refund address.
+        bob.Cancel(accepted.id);
+        ASSERT_EQ(lb.sweeps.size(), 1u);
+        EXPECT_EQ(lb.sweeps[0].first, lb.io_deposit_keys[0]);
+        EXPECT_EQ(detail::ToHex(lb.sweeps[0].second), "76a91477bff20c60e522dfaa3350c39b030a5d004e839a88ac");
+    }
+}
+
+TEST(SwapManager, AnUnusedBitcoinDepositIsWithdrawn) {
+    TempDir da("light_wd_alice"), db("light_wd_bob");
+    FakeWallet wa{0xf3}, wb{0xf4};
+    FakeLightBtc lb;
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    const std::string offer = alice.MakeOffer(Request(), kNow);
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    bob.SetLightBitcoin(lb.Support());
+    const DepositInfo d = bob.PrepareDeposit(offer, P2trAddress("bcrt", 0x55), kNow + 30);
+    lb.status = {400'000, 0, 1};  // part of it arrived
+    bob.Cancel(d.id);
+    ASSERT_EQ(lb.sweeps.size(), 1u);
+    EXPECT_EQ(lb.sweeps[0].second, PayoutScriptFromAddress(P2trAddress("bcrt", 0x55), "bcrt"));
+    EXPECT_TRUE(bob.List().empty());
+    // Nothing paid yet: nothing to send, the record just goes.
+    const DepositInfo again = bob.PrepareDeposit(offer, P2trAddress("bcrt", 0x55), kNow + 40);
+    lb.status = {};
+    bob.Cancel(again.id);
+    EXPECT_EQ(lb.sweeps.size(), 1u);
+    EXPECT_TRUE(bob.List().empty());
+}
+
+// BTC that reaches a deposit address late, or sits there after a restore from
+// the seed, is sent to an address of the user's. A deposit that may still fund
+// a swap is left alone.
+TEST(SwapManager, StrayBitcoinDepositsAreRecovered) {
+    TempDir da("light_rec_alice"), db("light_rec_bob");
+    FakeWallet wa{0xf8}, wb{0xf9};
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    const std::string home = P2trAddress("bcrt", 0x66);
+
+    // What each deposit address holds, by the key asked about.
+    std::map<Bytes32, uint64_t> held;
+    std::vector<std::pair<Bytes32, std::vector<uint8_t>>> sweeps;
+    bool reachable = true;
+    LightBtcSupport light;
+    light.make_io = [](const SwapSession& s, const RunnerConfig& rc, const Bytes32&) {
+        return std::make_unique<RpcSwapChainIo>(kNoDin, kNoBtc, s, rc);
+    };
+    light.tip_height = [] { return uint32_t{800}; };
+    light.deposit_address = [](const Bytes32&) { return std::string("bcrt1qdeposit"); };
+    light.deposit_status = [&](const Bytes32& key) {
+        if (!reachable) throw std::runtime_error("cannot reach any Bitcoin server to read the deposit");
+        ZecDepositStatus st;
+        st.seen_zat = st.confirmed_zat = held.count(key) ? held[key] : 0;
+        st.confirmations = st.seen_zat ? 6 : 0;
+        return st;
+    };
+    light.sweep_deposit = [&](const Bytes32& key, const std::vector<uint8_t>& to) {
+        sweeps.emplace_back(key, to);
+        held.erase(key);
+        return std::string(64, 'a' + static_cast<char>(sweeps.size()));
+    };
+    auto key_of = [&](uint32_t index) { return KeyAt(wb.Deriver(), {kSwapKeyPurpose, 2, 7, index}); };
+
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    bob.SetLightBitcoin(light);
+    // Index 0: a deposit still waiting. Index 1: a swap accepted, not locked yet. Both are spoken for.
+    const std::string offer0 = alice.MakeOffer(Request(), kNow);
+    bob.PrepareDeposit(offer0, home, kNow + 1);
+    OfferRequest second = Request();
+    second.din_amount_una += 1;  // another offer
+    const std::string offer1 = alice.MakeOffer(second, kNow);
+    bob.PrepareDeposit(offer1, home, kNow + 2);
+    held[key_of(0)] = 500'000;
+    held[key_of(1)] = 1'003'000;
+    ASSERT_TRUE(bob.Accept(offer1, P2trAddress("rdin", 0x31), "", kNow + 3).accept_text.has_value());
+    // A stray payment far beyond the indexes in use: what a restored wallet would hold.
+    held[key_of(9)] = 70'000;
+
+    auto r = bob.RecoverBtcDeposits(home, /*extra_indexes=*/5);  // looks at 0..6
+    EXPECT_EQ(r.indexes_checked, 7u);
+    EXPECT_TRUE(r.sweeps.empty());
+    ASSERT_EQ(r.skipped.size(), 2u);
+    EXPECT_EQ(r.skipped[0], "index 0: its deposit is waiting for you to accept or cancel");
+    EXPECT_EQ(r.skipped[1], "index 1: its swap has not locked yet");
+    EXPECT_TRUE(sweeps.empty());  // nothing that may still fund a swap was touched
+
+    r = bob.RecoverBtcDeposits(home, 20);  // far enough to reach index 9
+    ASSERT_EQ(r.sweeps.size(), 1u);
+    EXPECT_EQ(r.sweeps[0].index, 9u);
+    EXPECT_EQ(r.sweeps[0].amount_sat, 70'000u);
+    EXPECT_EQ(r.sweeps[0].txid.size(), 64u);
+    ASSERT_EQ(sweeps.size(), 1u);
+    EXPECT_EQ(sweeps[0].first, key_of(9));
+    EXPECT_EQ(sweeps[0].second, PayoutScriptFromAddress(home, "bcrt"));
+    EXPECT_TRUE(bob.RecoverBtcDeposits(home, 20).sweeps.empty());  // nothing left the second time
+
+    // The swap at index 1 has locked: a payment that reaches its address now is a stray.
+    {
+        const auto key = SwapStoreKeyFromSeed(wb.Deriver(), SwapNetwork::Regtest);
+        const std::string path = db.path + "/swap-1.swap";
+        auto s = EncryptedFileSwapStore::Load(path, key);
+        s.record.state = SwapState::BtcLocked;
+        EncryptedFileSwapStore(path, key).Save(s);
+    }
+    SwapManager later(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    later.SetLightBitcoin(light);
+    held[key_of(1)] = 25'000;  // the late payment
+    r = later.RecoverBtcDeposits(home, 0);
+    ASSERT_EQ(r.sweeps.size(), 1u);
+    EXPECT_EQ(r.sweeps[0].index, 1u);
+    EXPECT_EQ(r.sweeps[0].amount_sat, 25'000u);
+    ASSERT_EQ(r.skipped.size(), 1u);  // index 0 is still waiting
+    EXPECT_EQ(held.count(key_of(0)), 1u);
+
+    // A wallet restored from its seed on a new machine: no records at all, the coins are still found.
+    TempDir fresh("light_rec_restored");
+    SwapManager restored(Config(fresh.path), wb.Deriver(), kNoDin, kNoBtc);
+    restored.SetLightBitcoin(light);
+    held[key_of(3)] = 111'000;
+    r = restored.RecoverBtcDeposits(home, 10);
+    ASSERT_EQ(r.sweeps.size(), 2u);  // index 0 (no record here says it is waiting) and index 3
+    EXPECT_EQ(r.sweeps[0].index, 0u);
+    EXPECT_EQ(r.sweeps[1].index, 3u);
+    EXPECT_TRUE(r.skipped.empty());
+
+    // What cannot be proven (a payment older than the header chain's start) is still found, when the
+    // support can say so: recovery asks what could be sent back, not what could fund a swap.
+    TempDir old("light_rec_old");
+    LightBtcSupport with_recovery = light;
+    std::map<Bytes32, uint64_t> unprovable{{key_of(5), 64'000}};
+    with_recovery.recoverable_sat = [&](const Bytes32& key) { return unprovable.count(key) ? unprovable[key] : uint64_t{0}; };
+    with_recovery.sweep_deposit = [&](const Bytes32& key, const std::vector<uint8_t>&) {
+        unprovable.erase(key);
+        return std::string(64, 'c');
+    };
+    SwapManager aged(Config(old.path), wb.Deriver(), kNoDin, kNoBtc);
+    aged.SetLightBitcoin(with_recovery);
+    r = aged.RecoverBtcDeposits(home, 8);
+    ASSERT_EQ(r.sweeps.size(), 1u);  // deposit_status shows nothing for it: recoverable_sat does
+    EXPECT_EQ(r.sweeps[0].index, 5u);
+    EXPECT_EQ(r.sweeps[0].amount_sat, 64'000u);
+
+    // Refusals: a bad or foreign address, no server, an absurd range, a node that cannot pay BTC.
+    EXPECT_THROW(restored.RecoverBtcDeposits("nonsense", 5), std::invalid_argument);
+    EXPECT_THROW(restored.RecoverBtcDeposits("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2", 5), std::invalid_argument);
+    EXPECT_THROW(restored.RecoverBtcDeposits(home, 1001), std::invalid_argument);
+    reachable = false;
+    EXPECT_THROW(restored.RecoverBtcDeposits(home, 5), std::runtime_error);  // said, not reported as "nothing found"
+    reachable = true;
+    EXPECT_THROW(alice.RecoverBtcDeposits(home, 5), std::runtime_error);     // a Bitcoin Core node has no deposits
+    // A sweep the network refuses is reported for that address; the others still go.
+    light.sweep_deposit = [&](const Bytes32& key, const std::vector<uint8_t>&) -> std::string {
+        if (key == key_of(2)) throw std::runtime_error("Bitcoin transaction refused: dust");
+        held.erase(key);
+        return std::string(64, 'b');
+    };
+    TempDir other("light_rec_partial");
+    SwapManager partial(Config(other.path), wb.Deriver(), kNoDin, kNoBtc);
+    partial.SetLightBitcoin(light);
+    held[key_of(2)] = 3'000;
+    held[key_of(4)] = 40'000;
+    r = partial.RecoverBtcDeposits(home, 6);
+    ASSERT_EQ(r.sweeps.size(), 1u);
+    EXPECT_EQ(r.sweeps[0].index, 4u);
+    ASSERT_EQ(r.skipped.size(), 1u);
+    EXPECT_EQ(r.skipped[0], "index 2: 3000 sat found but not sent (Bitcoin transaction refused: dust)");
+}
+
+TEST(SwapManager, DepositsBelongToTheNodesThatCanUseThem) {
+    TempDir da("light_who_alice"), db("light_who_core"), dc("light_who_sell");
+    FakeWallet wa{0xf5}, wb{0xf6}, wc{0xf7};
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    const std::string offer = alice.MakeOffer(Request(), kNow);
+    auto refusal = [&](SwapManager& m) -> std::string {
+        try {
+            m.PrepareDeposit(offer, P2trAddress("bcrt", 0x55), kNow + 30);
+        } catch (const std::exception& e) {
+            return e.what();
+        }
+        return "";
+    };
+    // A node with Bitcoin Core pays from its wallet: no deposit.
+    SwapManager core(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    EXPECT_EQ(refusal(core), "this node pays BTC from Bitcoin Core: accept the offer directly (swap.accept)");
+    // A light node that cannot pay yet (no deposit support installed): it only sells.
+    FakeLightBtc lb;
+    SwapManager seller(Config(dc.path), wc.Deriver(), kNoDin, kNoBtc);
+    seller.SetLightBitcoin(lb.Support(/*can_pay=*/false));
+    EXPECT_NE(refusal(seller).find("buying DIN with BTC still needs Bitcoin Core"), std::string::npos);
+    // On mainnet a buyer needs a watchtower before he is asked to pay anything.
+    SwapManagerConfig mainnet = Config(dc.path + "-main");
+    mainnet.require_tower_for_bob = true;
+    TempDir dm("light_who_sell-main");
+    SwapManager no_tower(mainnet, wc.Deriver(), kNoDin, kNoBtc);
+    no_tower.SetLightBitcoin(lb.Support());
+    EXPECT_NE(refusal(no_tower).find("buying DIN needs a watchtower"), std::string::npos);
+    EXPECT_TRUE(lb.address_keys.empty());
+}
+
+// Both entry points take a legacy Bitcoin address: the seller's claim address
+// in the offer and the buyer's refund address in the accept.
+TEST(SwapManager, OfferAndAcceptTakeLegacyBitcoinAddresses) {
+    TempDir da("legacy_btc_alice"), db("legacy_btc_bob");
+    FakeWallet wa{0xd1}, wb{0xd2};
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    OfferRequest r = Request();
+    r.btc_claim_address = "mrS8eVKXguwufwvsVe9GtgGb7fif9UQeAu";
+    std::string offer;
+    ASSERT_NO_THROW(offer = alice.MakeOffer(r, kNow));
+    EXPECT_NO_THROW(bob.Accept(offer, P2trAddress("rdin", 0x31), "2N9hLwkSqr1cPQAPxbrGVUjxyjD11G2e1he", kNow + 1));
+    r.btc_claim_address = "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2";  // mainnet address on a regtest node
+    EXPECT_THROW(alice.MakeOffer(r, kNow), std::invalid_argument);
 }
 
 // Switching the key source is serialized here: no concurrent threads, IPC,
@@ -871,3 +1396,289 @@ TEST(SwapManager, PendingOfferCancelRefusesSidecarAndCipherDamage) {
 }
 
 }  // namespace
+
+// --- Zcash swaps (docs/design/din-zec-atomic-swaps.md) ---------------------------
+
+namespace {
+
+// A stand-in for swap_manager_zec.cpp: records what the manager asks for.
+struct FakeZec {
+    ZecDepositStatus status;              // what every deposit shows
+    bool upgrade_ahead{false};            // require_no_upgrade refuses
+    std::vector<std::pair<Bytes32, std::vector<uint8_t>>> sweeps;
+    std::set<std::string> deposit_keys;   // hex of each deposit key asked about
+    std::vector<bool> use_tower_seen;     // RunnerConfig::use_tower of each Zcash session started
+    RpcSwapChainIo* last_io{nullptr};     // the chain IO of the newest Zcash session
+    ZecSupport Support() {
+        ZecSupport z;
+        z.make_io = [this](const SwapSession& s, const RunnerConfig& rc, const Bytes32&) {
+            use_tower_seen.push_back(rc.use_tower);
+            auto io = std::make_unique<RpcSwapChainIo>(kNoDin, kNoBtc, s, rc);
+            last_io = io.get();  // owned by the manager while the swap is live
+            return io;
+        };
+        z.deposit_address = [this](const Bytes32& key) {
+            deposit_keys.insert(ToHex(std::vector<uint8_t>(key.begin(), key.end())));
+            return "tmDeposit" + ToHex(std::vector<uint8_t>(key.begin(), key.begin() + 4));
+        };
+        z.deposit_status = [this](const Bytes32&) { return status; };
+        z.sweep_deposit = [this](const Bytes32& key, const std::vector<uint8_t>& to) {
+            sweeps.emplace_back(key, to);
+            return std::string(64, 'e');
+        };
+        z.payout_script = [](const std::string& address) {
+            if (address.rfind("tm", 0) != 0) throw std::invalid_argument("not a regtest t-address: " + address);
+            return std::vector<uint8_t>(address.begin(), address.end());
+        };
+        z.require_no_upgrade = [this](const SwapOffer&, uint32_t) {
+            if (upgrade_ahead) throw std::runtime_error("Zcash network upgrade NU7 falls inside this swap");
+        };
+        z.tip_height = [] { return uint32_t{2000}; };
+        return z;
+    }
+    static std::string ToHex(const std::vector<uint8_t>& b) { return detail::ToHex(b); }
+};
+
+OfferRequest ZecRequest() {
+    OfferRequest r = Request();
+    r.chain = CounterChain::Zcash;
+    r.btc_amount_sat = 2'500'000;  // 0.025 ZEC
+    r.btc_claim_address = "tmAliceClaim";
+    return r;
+}
+
+}  // namespace
+
+TEST(SwapManager, ZecKeyPathsLeaveBitcoinKeysUnchanged) {
+    FakeWallet w{0x07};
+    const auto d = w.Deriver();
+    auto at = [&](uint32_t branch, uint32_t i) { return KeyAt(d, {kSwapKeyPurpose, uint32_t(SwapNetwork::Regtest), branch, i}); };
+    const auto btc = SwapKeysForIndex(d, SwapNetwork::Regtest, 3);
+    EXPECT_EQ(btc.keys.btc_secret_key, at(2, 3));  // BTC stays at 2'
+    EXPECT_EQ(SwapKeysForIndex(d, SwapNetwork::Regtest, 3, CounterChain::Bitcoin).keys.btc_secret_key, at(2, 3));
+    const auto zec = SwapKeysForIndex(d, SwapNetwork::Regtest, 3, CounterChain::Zcash);
+    EXPECT_EQ(zec.keys.btc_secret_key, at(5, 3));  // ZEC HTLC key at 5'
+    EXPECT_EQ(zec.keys.din_secret_key, btc.keys.din_secret_key);
+    EXPECT_EQ(ZecDepositKey(d, SwapNetwork::Regtest, 3), at(6, 3));  // deposit at 6'
+}
+
+TEST(SwapManager, ZecNeedsZcashSupportAndIsRefusedOnMainnet) {
+    TempDir dir("zec_support");
+    FakeWallet w{0xa1};
+    SwapManager plain(Config(dir.path), w.Deriver(), kNoDin, kNoBtc);
+    EXPECT_FALSE(plain.SupportsZec());
+    try {
+        plain.MakeOffer(ZecRequest(), kNow);
+        FAIL() << "a Zcash offer without Zcash support";
+    } catch (const std::runtime_error& e) {
+        EXPECT_NE(std::string(e.what()).find("built without Zcash"), std::string::npos) << e.what();
+    }
+    FakeZec z;
+    auto mc = Config(dir.path);
+    mc.network = SwapNetwork::Mainnet;
+    SwapManager main(mc, w.Deriver(), kNoDin, kNoBtc);
+    main.SetZecSupport(z.Support());
+    EXPECT_FALSE(main.SupportsZec());
+    EXPECT_THROW(main.MakeOffer(ZecRequest(), kNow), std::runtime_error);
+}
+
+TEST(SwapManager, ZecOfferIsV2WithFortyConfirmationsAndTheUpgradeGuard) {
+    TempDir dir("zec_offer");
+    FakeWallet w{0xa1};
+    FakeZec z;
+    SwapManager alice(Config(dir.path), w.Deriver(), kNoDin, kNoBtc);
+    alice.SetZecSupport(z.Support());
+    EXPECT_TRUE(alice.SupportsZec());
+    auto r = ZecRequest();
+    r.n_btc_confirmations = 3;  // raised to the Zcash minimum
+    const auto text = alice.MakeOffer(r, kNow);
+    EXPECT_EQ(text.rfind(kOffer2Prefix, 0), 0u);
+    const auto o = DecodeOffer(text);
+    EXPECT_EQ(o.chain, CounterChain::Zcash);
+    EXPECT_EQ(o.n_btc_confirmations, kMinZecConfirmations);
+    EXPECT_EQ(o.btc_claim_pubkey, detail::CompressedOf(KeyAt(w.Deriver(), {kSwapKeyPurpose, 2, 5, 0})));  // the 5' key
+    ASSERT_EQ(alice.List().size(), 1u);
+    EXPECT_EQ(alice.List()[0].chain, CounterChain::Zcash);
+
+    r.btc_claim_address = "bcrt1notzcash";
+    EXPECT_THROW(alice.MakeOffer(r, kNow), std::invalid_argument);
+    r = ZecRequest();
+    r.btc_amount_sat = 399'999;  // below 20 x the 20,000-zat spend fee
+    EXPECT_THROW(alice.MakeOffer(r, kNow), std::invalid_argument);
+    z.upgrade_ahead = true;
+    EXPECT_THROW(alice.MakeOffer(ZecRequest(), kNow), std::runtime_error);
+}
+
+TEST(SwapManager, BobAcceptsAZecOfferOnlyFromAConfirmedDeposit) {
+    TempDir da("zec_alice"), db("zec_bob");
+    FakeWallet wa{0xa1}, wb{0xb0};
+    FakeZec za, zb;
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    alice.SetZecSupport(za.Support());
+    bob.SetZecSupport(zb.Support());
+    const std::string offer = alice.MakeOffer(ZecRequest(), kNow);
+
+    // Accepting before any deposit: refused, nothing created.
+    EXPECT_THROW(bob.Accept(offer, P2trAddress("rdin", 0x31), "", kNow + 60), std::runtime_error);
+    EXPECT_TRUE(bob.List().empty());
+
+    const auto d = bob.PrepareDeposit(offer, "tmBobRefund", kNow + 60);
+    EXPECT_EQ(d.amount_due_zat, 2'500'000u + 20'000u);
+    EXPECT_EQ(d.address.rfind("tmDeposit", 0), 0u);
+    EXPECT_EQ(bob.PrepareDeposit(offer, "tmBobRefund", kNow + 61).index, d.index);  // the same deposit again
+    ASSERT_EQ(bob.List().size(), 1u);
+    EXPECT_TRUE(bob.List()[0].pending_deposit);
+    EXPECT_EQ(bob.List()[0].deposit_address, d.address);
+
+    zb.status = {2'520'000, 2'519'999, 10};  // one zatoshi short at 10 confirmations
+    try {
+        bob.Accept(offer, P2trAddress("rdin", 0x31), "", kNow + 120);
+        FAIL() << "accepted a short deposit";
+    } catch (const std::runtime_error& e) {
+        EXPECT_NE(std::string(e.what()).find("deposit is short by 0.00000001 ZEC"), std::string::npos) << e.what();
+    }
+    zb.status = {2'520'000, 2'520'000, 10};
+    const auto b = bob.Accept(offer, P2trAddress("rdin", 0x31), "", kNow + 120);
+    ASSERT_TRUE(b.accept_text.has_value());
+    const auto list = bob.List();
+    ASSERT_EQ(list.size(), 1u);
+    EXPECT_FALSE(list[0].pending_deposit);  // the deposit became the swap, same index
+    EXPECT_EQ(list[0].index, d.index);
+    EXPECT_EQ(list[0].chain, CounterChain::Zcash);
+    // Bob's ZEC refund key is his 5' key for that index.
+    EXPECT_EQ(DecodeAccept(*b.accept_text).btc_refund_pubkey,
+              detail::CompressedOf(KeyAt(wb.Deriver(), {kSwapKeyPurpose, 2, 5, d.index})));
+    const auto a = alice.Accept(*b.accept_text, "", "", kNow + 180);
+    EXPECT_EQ(a.id, b.id);
+}
+
+TEST(SwapManager, CancellingAZecDepositSweepsItBack) {
+    TempDir da("zec_cancel_a"), db("zec_cancel_b");
+    FakeWallet wa{0xa1}, wb{0xb0};
+    FakeZec za, zb;
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    alice.SetZecSupport(za.Support());
+    bob.SetZecSupport(zb.Support());
+    const auto d = bob.PrepareDeposit(alice.MakeOffer(ZecRequest(), kNow), "tmBobRefund", kNow + 60);
+
+    bob.Cancel(d.id);  // nothing paid yet: nothing to sweep
+    EXPECT_TRUE(zb.sweeps.empty());
+    EXPECT_TRUE(bob.List().empty());
+
+    const auto d2 = bob.PrepareDeposit(alice.MakeOffer(ZecRequest(), kNow), "tmBobRefund", kNow + 60);
+    zb.status = {1'000'000, 0, 2};
+    bob.Cancel(d2.id);
+    ASSERT_EQ(zb.sweeps.size(), 1u);
+    EXPECT_EQ(zb.sweeps[0].first, ZecDepositKey(wb.Deriver(), SwapNetwork::Regtest, d2.index));
+    EXPECT_EQ(std::string(zb.sweeps[0].second.begin(), zb.sweeps[0].second.end()), "tmBobRefund");
+    EXPECT_TRUE(bob.List().empty());
+
+    // After accepting (nothing locked yet): cancel aborts and sweeps the deposit too.
+    const std::string offer3 = alice.MakeOffer(ZecRequest(), kNow);
+    const auto d3 = bob.PrepareDeposit(offer3, "tmBobRefund", kNow + 60);
+    zb.status = {2'520'000, 2'520'000, 12};
+    bob.Accept(offer3, P2trAddress("rdin", 0x31), "", kNow + 120);
+    bob.Cancel(d3.id);
+    EXPECT_EQ(zb.sweeps.size(), 2u);
+    EXPECT_EQ(bob.Status(d3.id).state, SwapState::Aborted);
+}
+
+TEST(SwapManager, ZecSwapsNeverUseTheBitcoinOnlyTower) {
+    TempDir da("zec_tower_a"), db("zec_tower_b");
+    FakeWallet wa{0xa1}, wb{0xb0};
+    FakeZec za, zb;
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    alice.SetZecSupport(za.Support());
+    bob.SetZecSupport(zb.Support());
+    std::vector<std::string> delivered;
+    bob.SetTowerSink([&](const std::string& p) { delivered.push_back(p); });  // a tower inbox is configured
+    bob.SetTowerAck([](const std::string&, const std::string&) { return true; });
+    const std::string offer = alice.MakeOffer(ZecRequest(), kNow);
+    bob.PrepareDeposit(offer, "tmBobRefund", kNow + 60);
+    zb.status = {2'520'000, 2'520'000, 12};
+    bob.Accept(offer, P2trAddress("rdin", 0x31), "", kNow + 120);
+    ASSERT_FALSE(zb.use_tower_seen.empty());
+    EXPECT_FALSE(zb.use_tower_seen.back());  // dinero-swap-tower would refuse a Zcash package
+}
+
+// A Zcash swap's DIN lock is paid by the wallet's funding owner, like a
+// Bitcoin swap's: the Zcash chain IO must be handed that owner.
+TEST(SwapManager, AZecSellerFundsDinThroughTheWalletFundingOwner) {
+    TempDir da("zec_funding_owner_a"), db("zec_funding_owner_b");
+    FakeWallet wa{0xa4}, wb{0xb4};
+    FakeZec za, zb;
+    size_t funding_calls = 0;
+    DinFundingOwner owner = [&](const DinFundingRequest&, DinFundingOperation, const std::vector<uint8_t>&) -> PreparedDinFunding {
+        ++funding_calls;
+        throw std::runtime_error("test wallet: no coins");
+    };
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc, owner);
+    alice.SetZecSupport(za.Support());
+    SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    bob.SetZecSupport(zb.Support());
+    const std::string offer = alice.MakeOffer(ZecRequest(), kNow);
+    bob.PrepareDeposit(offer, "tmBobRefund", kNow + 60);
+    zb.status = {2'520'000, 2'520'000, 12};
+    const auto accepted = bob.Accept(offer, P2trAddress("rdin", 0x31), "", kNow + 120);
+    ASSERT_TRUE(accepted.accept_text.has_value());
+    alice.Accept(*accepted.accept_text, "", "", kNow + 180);
+    ASSERT_NE(za.last_io, nullptr);
+    // The runner pays the DIN lock through this call on the session's chain IO.
+    try {
+        za.last_io->PrepareDinFunding(DinFundingRequest{});
+        ADD_FAILURE() << "the test owner always throws";
+    } catch (const std::runtime_error& e) {
+        EXPECT_STREQ(e.what(), "test wallet: no coins");  // not "DIN funding owner unavailable"
+    }
+    EXPECT_EQ(funding_calls, 1u);
+}
+
+// The deposit address a buyer pays must belong to the wallet that owns this
+// manager's swaps: a key batch from another wallet is refused, not shown.
+TEST(SwapManager, AZecDepositKeyFromAnotherWalletIsRefused) {
+    TempDir db("zec_deposit_binding_b"), da("zec_deposit_binding_a");
+    FakeWallet wa{0xa5}, wb{0xb5}, other{0xc5};
+    FakeZec za, zb;
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    alice.SetZecSupport(za.Support());
+    const std::string offer = alice.MakeOffer(ZecRequest(), kNow);
+    // The wallet is switched between the store-key check and the deposit key.
+    KeyDeriver switching = [&](const std::vector<std::vector<uint32_t>>& paths, bool funding) {
+        bool deposit = false;
+        for (const auto& path : paths) deposit = deposit || (path.size() == 4 && path[2] == 6);
+        return deposit ? other.Deriver()(paths, funding) : wb.Deriver()(paths, funding);
+    };
+    SwapManager bob(Config(db.path), switching, kNoDin, kNoBtc);
+    bob.SetZecSupport(zb.Support());
+    EXPECT_THROW(bob.PrepareDeposit(offer, "tmBobRefund", kNow + 60), std::runtime_error);
+    EXPECT_TRUE(zb.deposit_keys.empty());  // no address of the other wallet was ever produced
+}
+
+TEST(SwapManager, AZecSwapWithoutZcashSupportIsReportedAsUnwatched) {
+    TempDir da("zec_unwatched_a"), db("zec_unwatched_b");
+    FakeWallet wa{0xa1}, wb{0xb0};
+    FakeZec za, zb;
+    SwapManager alice(Config(da.path), wa.Deriver(), kNoDin, kNoBtc);
+    alice.SetZecSupport(za.Support());
+    const std::string offer = alice.MakeOffer(ZecRequest(), kNow);
+    {
+        SwapManager bob(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+        bob.SetZecSupport(zb.Support());
+        const auto d = bob.PrepareDeposit(offer, "tmBobRefund", kNow + 60);
+        EXPECT_EQ(bob.List()[0].deposit_offer, offer);  // a wallet can resume the deposit after a restart
+        zb.status = {2'520'000, 2'520'000, 12};
+        bob.Accept(offer, P2trAddress("rdin", 0x31), "", kNow + 120);
+    }
+    // The same swaps directory under a dinerod without Zcash support (rebuilt
+    // with the option off, or swap.zec_rpc removed): it cannot watch the swap.
+    SwapManager bare(Config(db.path), wb.Deriver(), kNoDin, kNoBtc);
+    EXPECT_TRUE(bare.TickAll(kNow + 180));
+    const auto list = bare.List();
+    ASSERT_EQ(list.size(), 1u);
+    ASSERT_FALSE(list[0].last_events.empty());
+    EXPECT_NE(list[0].last_events[0].find("NOT being watched"), std::string::npos);
+}
+

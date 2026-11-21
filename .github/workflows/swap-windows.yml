@@ -13,6 +13,8 @@ on:
       - 'src/wallet/swap/**'
       - 'include/wallet/swap/**'
       - 'src/daemon/services/swap_service.cpp'
+      - 'src/daemon/swap_*'
+      - 'src/daemon/CMakeLists.txt'
       - 'tests/wallet/test_swap_encrypted_store.cpp'
       - 'qt/src/swap*'
       - 'cmake/SwapTower.cmake'
@@ -70,9 +72,13 @@ jobs:
         run: |
           cmake -S . -B build-msvc-swap -G 'Visual Studio 17 2022' -A x64 `
             -DDINERO_WINDOWS_SERVER_BUILD=ON -DDINERO_BUILD_SEEDER=OFF -DDINERO_BUILD_MINER=OFF `
-            -DDINERO_ENABLE_QUIC=ON `
+            -DDINERO_ENABLE_QUIC=ON -DDINERO_SWAP_LIGHT_BTC=ON `
             "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # The releases build swaps without Bitcoin Core in; this job proves that compiles and links here.
+          if (-not (Select-String -Path 'build-msvc-swap\CMakeCache.txt' -Pattern '^DINERO_SWAP_LIGHT_BTC:BOOL=ON$' -Quiet)) {
+            throw 'swaps without Bitcoin Core are not enabled in this build'
+          }
 
       - name: Build dinerod and the swap store tests
         shell: powershell

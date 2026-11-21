@@ -369,6 +369,7 @@ din::Json rpc_getblocktemplate_v14(const ExecutionContext& ctx, const din::Json&
         return result;
     }
     ::dinero::BlockAssembler assembler(chain_db);
+    assembler.SetHeaderChainSelector(ctx.daemon->header_chain);
     assembler.setMempool(&pool_use->Pool());
 
     // ========================================================================
@@ -1034,6 +1035,7 @@ din::Json rpc_mining_getjob(const ExecutionContext& ctx, const din::Json& params
         return result;
     }
     ::dinero::BlockAssembler assembler(chain_db);
+    assembler.SetHeaderChainSelector(ctx.daemon->header_chain);
     assembler.setMempool(&pool_use->Pool());
 
     const auto selected_tip = chain_db->getTip();

@@ -15,9 +15,9 @@ enum class RestoreErrorKind { None, NameExists, Other };
 // Classifies a wallet.restore error; NameExists means the daemon refused to overwrite.
 RestoreErrorKind classifyRestoreError(const QString& error);
 
-// Whether a wallet name may still be deleted when the setup wizard is cancelled.
-// If the node answered with an error it created nothing, and the name may belong
-// to an existing wallet; only a timeout (unknown outcome) or a success keeps it.
+// A name is safe to delete only after the node confirmed that this wizard
+// created the wallet. A timeout leaves ownership unknown: the same name may
+// already belong to an existing wallet, so preserve it for manual recovery.
 inline bool keepRollbackCandidateAfterRpc(bool daemonResponded, bool success) {
-  return success || !daemonResponded;
+  return daemonResponded && success;
 }

@@ -243,6 +243,42 @@ void test_w2_1_4_no_false_100_percent() {
                     "Progress should be < 100% when wallet scan incomplete");
     }
 
+    // A wallet thirteen blocks behind a long chain has a ratio above
+    // 0.9999. The count is still incomplete and the status must stay valid.
+    {
+        WalletSyncStatus status;
+        status.phase = SyncPhase::STEADY_STATE;
+        status.headers_synced = status.headers_total = 156101;
+        status.blocks_synced = status.blocks_total = 156101;
+        status.wallet_scan_height = 156088;
+        status.chain_height = 156101;
+        status.overall_progress = WalletSyncStatusAggregator::CalculateOverallProgress(status);
+        assert_true(status.overall_progress <= 0.999,
+                    "Large-chain wallet lag must be capped below 100%");
+        assert_true(status.IsValid(),
+                    "Large-chain wallet lag must produce valid sync status");
+        assert_true(!status.IsFullySynced(),
+                    "Lagging wallet must not report fully synced");
+    }
+
+    // Live mining can leave the selected body a few blocks behind the best
+    // header even when the wallet is current at that selected body.
+    {
+        WalletSyncStatus status;
+        status.phase = SyncPhase::STEADY_STATE;
+        status.headers_synced = status.headers_total = 156212;
+        status.blocks_synced = 156208;
+        status.blocks_total = 156212;
+        status.wallet_scan_height = status.chain_height = 156208;
+        status.overall_progress = WalletSyncStatusAggregator::CalculateOverallProgress(status);
+        assert_true(status.overall_progress <= 0.999,
+                    "Near-tip missing block bodies must stay below 100%");
+        assert_true(status.IsValid(),
+                    "Near-tip header lead must produce valid sync status");
+        assert_true(!status.IsFullySynced(),
+                    "Header lead must not report fully synced");
+    }
+
     // Test 4: Everything complete → allow 100%
     {
         WalletSyncStatus status;

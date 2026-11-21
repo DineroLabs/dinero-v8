@@ -17,6 +17,7 @@
 #include "orchardwidget.h"
 #include "rpcclient.h"
 #include "rpc_reply_test_access.h"
+#include <algorithm>
 #include <memory>
 
 namespace {
@@ -157,6 +158,20 @@ private Q_SLOTS:
     }
     void cleanup() { delete tab_; tab_ = nullptr; }
 
+    void transientOperationsErrorClearsAfterRecovery() {
+        ready();
+        QMetaObject::invokeMethod(tab_, "onPoll");
+        rawReply(last("wallet.orchard.listoperations"),
+                 QJsonObject{{"error", "Wallet recovery seed unavailable"}});
+        auto* status = Find<QLabel>(tab_, "orchardStatus");
+        QCOMPARE(status->text(), QString("Wallet recovery seed unavailable"));
+        QVERIFY(status->isVisible());
+
+        QMetaObject::invokeMethod(tab_, "onPoll");
+        rawReply(last("wallet.orchard.listoperations"), storedSnapshot());
+        QVERIFY(!status->isVisible());
+    }
+
 
     void structuredEnvelopeKeepsProofProgressAndBindingRefusal() {
         ready();fillSend();confirmNextDialog();Find<QPushButton>(tab_,"orchardReview")->click();
@@ -228,16 +243,62 @@ private Q_SLOTS:
         b["account"]=17;rawReply(last("wallet.orchard.getbalance"),b);
         QCOMPARE(Find<QLabel>(tab_,"orchardBalance")->text(),QString("0.00000000 DIN confirmed"));
     }
+    void originalOrchardAddressAppearsFromAccountDiscovery() {
+        tab_->setWalletScope("Hotel");tab_->setWalletUnlocked(true);
+        rawReply(last("getblockchaininfo"),QJsonObject{{"chain","regtest"}});
+        rawReply(last("wallet.orchard.getwalletbinding"),QJsonObject{
+            {"wallet_name","Hotel"},{"wallet_binding",QString(64,'a')}});
+        auto catalog=accountsFixture();
+        auto accounts=catalog["accounts"].toArray();
+        auto account=accounts[0].toObject();
+        account["first_receive_address"]="rdinorch1originalreceiver";
+        accounts[0]=account;catalog["accounts"]=accounts;
+        rawReply(last("wallet.orchard.listaccounts"),catalog);
+        auto* address=Find<QLineEdit>(tab_,"orchardReceiveAddress");
+        QCOMPARE(address->text(),QString("rdinorch1originalreceiver"));
+        QVERIFY(address->isVisible());
+        QCOMPARE(std::count_if(sent_.begin(),sent_.end(),[](const Sent& call) {
+            return call.method=="wallet.orchard.getnewaddress";
+        }),0);
+    }
     void failedAccountDiscoveryNeverEnablesCreationOrUsesOldBalance() {
         ready();rawReply(last("wallet.orchard.listaccounts"),QJsonObject{{"error","catalog missing"}});
+        QVERIFY(Find<QPushButton>(tab_,"orchardCreateAccount")->isVisible());
         QVERIFY(!Find<QPushButton>(tab_,"orchardCreateAccount")->isEnabled());
         QVERIFY(!Find<QPushButton>(tab_,"orchardNewAddress")->isEnabled());
         rawReply(last("wallet.orchard.getbalance"),balanceFixture());
         QCOMPARE(Find<QLabel>(tab_,"orchardBalance")->text(),QString("Unknown"));
         const auto count=sent_.size();QMetaObject::invokeMethod(tab_,"onCreateAccount");QCOMPARE(sent_.size(),count);
-        QMetaObject::invokeMethod(tab_,"onPoll");rawReply(last("wallet.orchard.listaccounts"),accountsFixture({}));
+        const auto catalogCalls=[&] {
+            return std::count_if(sent_.begin(),sent_.end(),[](const Sent& call) {
+                return call.method=="wallet.orchard.listaccounts";
+            });
+        };
+        const auto catalogCount=catalogCalls();
+        QMetaObject::invokeMethod(tab_,"onPoll");
+        QCOMPARE(catalogCalls(),catalogCount);
+        tab_->setWalletUnlocked(false);tab_->setWalletUnlocked(true);
+        QCOMPARE(catalogCalls(),catalogCount+1);
+        rawReply(last("wallet.orchard.listaccounts"),accountsFixture({}));
         QVERIFY(Find<QPushButton>(tab_,"orchardCreateAccount")->isEnabled());
         QCOMPARE(Find<QComboBox>(tab_,"orchardAccountSelector")->count(),0);
+    }
+    void missingSnapshotHistoryKeepsSetupDiscoverableUntilVerified() {
+        tab_->setWalletScope("golf");tab_->setWalletUnlocked(true);
+        rawReply(last("getblockchaininfo"),QJsonObject{{"chain","regtest"}});
+        rawReply(last("wallet.orchard.getwalletbinding"),QJsonObject{
+            {"wallet_name","golf"},{"wallet_binding",QString(64,'a')}});
+        rawReply(last("orchard.getactivationstatus"),activationFixture());
+        auto* setup=Find<QPushButton>(tab_,"orchardCreateAccount");
+        QVERIFY(setup->isVisible());QVERIFY(!setup->isEnabled());
+        rawReply(last("wallet.orchard.listaccounts"),
+            QJsonObject{{"error","Authenticated Orchard replay source unavailable"}});
+        QVERIFY(setup->isVisible());QVERIFY(!setup->isEnabled());
+        QVERIFY(Find<QLabel>(tab_,"orchardAccountStatus")->text().contains("Waiting for verified Orchard history"));
+        QMetaObject::invokeMethod(tab_,"onPoll");
+        tab_->setWalletUnlocked(false);tab_->setWalletUnlocked(true);
+        rawReply(last("wallet.orchard.listaccounts"),accountsFixture({}));
+        QVERIFY(setup->isVisible());QVERIFY(setup->isEnabled());
     }
     void activePaymentCannotBeRetargetedToAnotherAccount() {
         ready();rawReply(last("wallet.orchard.listaccounts"),accountsFixture({0,17}));fillSend();
@@ -288,6 +349,21 @@ private Q_SLOTS:
         ready();const auto before=sent_.size();QMetaObject::invokeMethod(tab_,"onPoll");
         const auto first=sent_.size();QVERIFY(first>before);
         QMetaObject::invokeMethod(tab_,"onPoll");QCOMPARE(sent_.size(),first);
+    }
+    void accountDiscoveryIsNotRepeatedOnEveryPollOrUnchangedUnlock() {
+        ready();rawReply(last("wallet.orchard.listaccounts"),accountsFixture());
+        const auto catalogCalls=[&] {
+            return std::count_if(sent_.begin(),sent_.end(),[](const Sent& call) {
+                return call.method=="wallet.orchard.listaccounts";
+            });
+        };
+        const auto before=catalogCalls();
+        tab_->setWalletUnlocked(true);
+        QMetaObject::invokeMethod(tab_,"onPoll");
+        QMetaObject::invokeMethod(tab_,"onPoll");
+        QCOMPARE(catalogCalls(),before);
+        tab_->setWalletUnlocked(false);tab_->setWalletUnlocked(true);
+        QCOMPARE(catalogCalls(),before+1);
     }
     void malformedOperationsDoNotEstablishAnAccount() {
         tab_->setChain("regtest");tab_->setWalletScope("alice");bind("alice");tab_->setWalletUnlocked(true);
