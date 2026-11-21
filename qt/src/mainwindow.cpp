@@ -913,7 +913,7 @@ QString miningButtonStyle() {
 
 QString miningStatStyle(const char* color = "#bec8d0", bool strong = false,
                         bool italic = false) {
-  // Match the 12 px text in the adjacent Session Finds button, including
+  // Match the 12 px text in the adjacent Session button, including
   // values whose color or emphasis changes as mining state changes.
   return QStringLiteral(
     "QLabel { font-size: 12px; color: %1; font-weight: %2; font-style: %3; }")
@@ -5045,7 +5045,7 @@ void MainWindow::setupUI() {
     lblMiningHeight_->setStyleSheet(miningStatStyle("#bec8d0", true));
     row2->addWidget(lblMiningHeight_);
 
-    auto* lblTargetBitsCaption = new QLabel("Target Bits:");
+    auto* lblTargetBitsCaption = new QLabel("Target:");
     lblTargetBitsCaption->setStyleSheet(miningStatStyle());
     lblTargetBitsCaption->setToolTip(
       "Compact proof-of-work target (nBits); this can stay at the network's easiest allowed target.");
@@ -5068,7 +5068,8 @@ void MainWindow::setupUI() {
     row2->addWidget(lblMiningUptimeCaption_);
     row2->addWidget(lblMiningUptime_);
 
-    btnMiningSessionFinds_ = new QPushButton("Session Finds");
+    btnMiningSessionFinds_ = new QPushButton("Session");
+    btnMiningSessionFinds_->setToolTip("Blocks found this mining session");
     btnMiningSessionFinds_->setStyleSheet(miningButtonStyle());
     btnMiningSessionFinds_->setFixedHeight(miningControlHeight);
     btnMiningSessionFinds_->setEnabled(false);
@@ -5422,12 +5423,12 @@ void MainWindow::setupUI() {
       if (btnMiningSessionFinds_) {
         btnMiningSessionFinds_->setEnabled(true);
         btnMiningSessionFinds_->setText(
-          QString("Session Finds (%1)").arg(miningSessionFinds_.size()));
+          QString("Session (%1)").arg(miningSessionFinds_.size()));
       }
       miningFoundPendingTemplate_ = true;
       // The live hash field is only for the visible mining session. Keeping
       // offscreen find rows made a return to this tab show hours of old hits
-      // as if they were live; Session finds already preserves their history.
+      // as if they were live; the Session button preserves their history.
       const bool miningTabActive = mainTabs_ && miningTabWidget_ &&
         mainTabs_->currentWidget() == miningTabWidget_;
       if (!miningTabActive) return;
@@ -5470,7 +5471,7 @@ void MainWindow::setupUI() {
             miningSessionFinds_.clear();
             miningHashSamples_.clear();
             if (btnMiningSessionFinds_) {
-                btnMiningSessionFinds_->setText("Session Finds");
+                btnMiningSessionFinds_->setText("Session");
                 btnMiningSessionFinds_->setEnabled(false);
             }
             if (mining_stats_.mining_started <= 0) {
