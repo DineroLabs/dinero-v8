@@ -2,7 +2,7 @@
 # Full-v6 image source. H160839 is the primary only after final-source native
 # import/restart and public signed-asset qualification; older bases remain fallbacks.
 ARG DINERO_VERSION=8.2.4
-ARG PRIMARY_SNAPSHOT_RELEASE=v8.2.4
+ARG PRIMARY_SNAPSHOT_RELEASE=v8.2.4-r1
 ARG RECOVERY_SNAPSHOT_RELEASE=v8.2.2
 ARG PRIMARY_SNAPSHOT_PAYLOAD_URL=
 ARG PRIMARY_SNAPSHOT_MANIFEST_URL=
@@ -36,8 +36,8 @@ COPY packaging/docker/check_recovery_manifests.py /verify/check_recovery_manifes
 COPY scripts/ci/check_snapshot_freshness.py /verify/check_snapshot_freshness.py
 WORKDIR /tmp/dl
 RUN set -eux; \
-    BASE="https://github.com/DineroLabs/dinero-v8/releases/download/v${DINERO_VERSION}"; \
     PRIMARY="https://github.com/DineroLabs/dinero-v8/releases/download/${PRIMARY_SNAPSHOT_RELEASE}"; \
+    BASE="${PRIMARY}"; \
     RECOVERY="https://github.com/DineroLabs/dinero-v8/releases/download/${RECOVERY_SNAPSHOT_RELEASE}"; \
     if [ -n "${PRIMARY_SNAPSHOT_PAYLOAD_URL}${PRIMARY_SNAPSHOT_MANIFEST_URL}${PRIMARY_SNAPSHOT_SIGNATURE_URL}" ]; then \
       test -n "${PRIMARY_SNAPSHOT_PAYLOAD_URL}" && test -n "${PRIMARY_SNAPSHOT_MANIFEST_URL}" && test -n "${PRIMARY_SNAPSHOT_SIGNATURE_URL}" || { echo 'all three signed snapshot URLs are required for pre-release bootstrap'; exit 1; }; \
@@ -130,7 +130,7 @@ LABEL org.opencontainers.image.title="Dinero Full Node"
 LABEL org.opencontainers.image.description="Post-quantum, Utreexo-native proof-of-work full node"
 LABEL org.opencontainers.image.source="https://github.com/DineroLabs/dinero-v8"
 LABEL org.opencontainers.image.version="${DINERO_VERSION}"
-RUN apt-get update && apt-get install -y --no-install-recommends libudev1 ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends libudev1 libcurl4t64 ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --create-home --home-dir /data dinero
 COPY --from=fetch /out/dinerod /usr/local/bin/dinerod

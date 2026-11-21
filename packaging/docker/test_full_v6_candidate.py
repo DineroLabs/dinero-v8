@@ -156,6 +156,16 @@ class FullV6DockerCandidateTest(unittest.TestCase):
         self.assertIn("- name: Build and load\n        if: github.event_name != 'pull_request'", workflow)
         self.assertIn("- name: Admit exact full-v6 catalog primary\n        if: github.event_name != 'pull_request'", workflow)
 
+    def test_release_revision_and_swap_runtime_are_present(self):
+        source = (ROOT / "Dockerfile").read_text()
+        self.assertIn('ARG PRIMARY_SNAPSHOT_RELEASE=v8.2.4-r1', source)
+        self.assertIn('BASE="${PRIMARY}"', source)
+        self.assertIn('libcurl4t64 ca-certificates', source)
+        workflow = (ROOT / ".github/workflows/linux-release.yml").read_text()
+        self.assertIn('libcurl.so.4', workflow)
+        self.assertIn('build-release/dinerod build-release/dinero-swap-tower', workflow)
+        self.assertIn('-DDINERO_SWAP_LIGHT_BTC=ON', (ROOT / 'debian/rules').read_text())
+
     def test_h153051_candidate_and_release_sources_are_distinct(self):
         source = (ROOT / "Dockerfile").read_text()
         conditional = source.split('if [ -n "${PRIMARY_SNAPSHOT_PAYLOAD_URL}${PRIMARY_SNAPSHOT_MANIFEST_URL}${PRIMARY_SNAPSHOT_SIGNATURE_URL}" ]; then', 1)[1]

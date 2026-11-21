@@ -8,6 +8,7 @@ Build-Depends:
  g++ (>= 11),
  pkg-config,
  perl,
+ libcurl4-openssl-dev,
  zlib1g-dev,
 Standards-Version: 4.6.2
 Homepage: https://github.com/DineroLabs/dinero-v8
@@ -34,8 +35,8 @@ Description: Dinero (DIN) full node and CLI
  gRPC stack (libgrpc++, libprotobuf, abseil, c-ares, re2) is
  excluded via DINERO_RELEASE=ON because the current gRPC server
  has not had TLS/mTLS landed; revisit when Lightning is actually
- shipping. ${shlibs:Depends} therefore narrows to base-system
- packages only.
+ shipping. ${shlibs:Depends} also includes libcurl for the optional
+ Bitcoin light swap client.
  .
  See /usr/share/doc/dinero/dinero.conf.example for configuration
  keys and /usr/share/doc/dinero/dinero.service.example for a
