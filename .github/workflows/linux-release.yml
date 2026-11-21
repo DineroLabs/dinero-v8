@@ -181,8 +181,10 @@ jobs:
             -DDINERO_REQUIRE_REACHABILITY_STACK=ON \
             -DDINERO_RELEASE_TAG=${{ steps.ver.outputs.version }}
 
-      - name: Build daemon, CLI and swap tower
-        run: cmake --build build-release --target dinerod dinero-cli dinero-swap-tower -j"$(nproc)"
+      - name: Build daemon, CLI and swap tower install component
+        # The swap-tower install component includes both the tower and intake
+        # targets. Building only the tower makes cmake --install fail later.
+        run: cmake --build build-release --target dinerod dinero-cli dinero-swap-tower dinero-swap-tower-intake -j"$(nproc)"
 
       - name: Assert OpenSSL policy pin (3.5.7)
         run: bash scripts/ci/check_openssl_version.sh build-release 3.5.7
