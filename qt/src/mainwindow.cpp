@@ -143,9 +143,8 @@
 
 namespace {
 
-// Keep mining telemetry accessible as label text while drawing numeric values
-// as compact seven-segment scoreboard digits. External miner status can also
-// use the Blocks label, so nonnumeric text retains normal QLabel rendering.
+// Keep mining telemetry accessible as label text while drawing compact
+// scoreboard glyphs. Unsupported external-miner text uses QLabel rendering.
 class MiningScoreboardLabel final : public QLabel {
 public:
   explicit MiningScoreboardLabel(const QString& value, QWidget* parent = nullptr)
@@ -153,31 +152,61 @@ public:
 
   QSize sizeHint() const override {
     const QString value = text();
-    if (!isDigits(value)) return QLabel::sizeHint();
-    return QSize(qCeil(value.size() * kDigitStep - kDigitGap),
+    if (!isScoreboardText(value)) return QLabel::sizeHint();
+    qreal width = 0;
+    for (const QChar glyph : value) width += glyphAdvance(glyph);
+    return QSize(qCeil(width - kDigitGap),
                  qMax(QLabel::sizeHint().height(), 18));
   }
 
 protected:
   void paintEvent(QPaintEvent* event) override {
     const QString value = text();
-    if (!isDigits(value)) {
+    if (!isScoreboardText(value)) {
       QLabel::paintEvent(event);
       return;
     }
 
-    static constexpr unsigned char segments[10] = {
-      0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f};
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
     painter.setPen(QPen(palette().color(QPalette::WindowText), 1.5,
                         Qt::SolidLine, Qt::RoundCap));
     const qreal top = (height() - kDigitHeight) / 2.0;
-    for (int i = 0; i < value.size(); ++i) {
-      const unsigned char bits = segments[value.at(i).unicode() - '0'];
-      const qreal left = i * kDigitStep;
+    qreal left = 0;
+    for (const QChar glyph : value) {
+      const QChar lower = glyph.toLower();
+      if (lower == QLatin1Char(' ')) {
+        left += kSpaceStep;
+        continue;
+      }
+      if (lower == QLatin1Char('.')) {
+        painter.drawPoint(QPointF(left + 1, top + kDigitHeight - 1));
+        left += kPointStep;
+        continue;
+      }
       const qreal right = left + kDigitWidth;
       const qreal middle = top + kDigitHeight / 2.0;
+      if (lower == QLatin1Char('x')) {
+        painter.drawLine(QPointF(left + 1, top + 3),
+                         QPointF(right - 1, top + kDigitHeight - 2));
+        painter.drawLine(QPointF(right - 1, top + 3),
+                         QPointF(left + 1, top + kDigitHeight - 2));
+        left += kDigitStep;
+        continue;
+      }
+      if (lower == QLatin1Char('m')) {
+        // A narrow two-hump glyph for the runtime unit, using the same pen.
+        const qreal bottom = top + kDigitHeight - 1.5;
+        painter.drawLine(QPointF(left + 1, bottom), QPointF(left + 1, middle + 1));
+        painter.drawLine(QPointF(left + 1, middle + 1), QPointF(left + 3, middle - 1));
+        painter.drawLine(QPointF(left + 3, middle - 1), QPointF(left + 4.25, middle + 1));
+        painter.drawLine(QPointF(left + 4.25, middle + 1), QPointF(left + 6, middle - 1));
+        painter.drawLine(QPointF(left + 6, middle - 1), QPointF(right - 1, middle + 1));
+        painter.drawLine(QPointF(right - 1, middle + 1), QPointF(right - 1, bottom));
+        left += kDigitStep;
+        continue;
+      }
+      const int bits = segmentMask(lower);
       if (bits & 0x01) {
         painter.drawLine(QPointF(left + 1.5, top + 1),
                          QPointF(right - 1.5, top + 1));
@@ -206,22 +235,52 @@ protected:
         painter.drawLine(QPointF(left + 1.5, middle),
                          QPointF(right - 1.5, middle));
       }
+      left += kDigitStep;
     }
   }
 
 private:
-  static bool isDigits(const QString& value) {
+  static int segmentMask(const QChar& glyph) {
+    static constexpr unsigned char digits[10] = {
+      0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f};
+    if (glyph >= QLatin1Char('0') && glyph <= QLatin1Char('9'))
+      return digits[glyph.unicode() - '0'];
+    switch (glyph.unicode()) {
+      case 'a': return 0x77;
+      case 'b': return 0x7c;
+      case 'c': return 0x58;
+      case 'd': return 0x5e;
+      case 'e': return 0x79;
+      case 'f': return 0x71;
+      case 'h': return 0x74;
+      case 's': return 0x6d;
+      default: return -1;
+    }
+  }
+
+  static bool isScoreboardText(const QString& value) {
     if (value.isEmpty()) return false;
-    for (const QChar digit : value) {
-      if (digit < QLatin1Char('0') || digit > QLatin1Char('9')) return false;
+    for (const QChar glyph : value) {
+      const QChar lower = glyph.toLower();
+      if (segmentMask(lower) < 0 && lower != QLatin1Char('x') &&
+          lower != QLatin1Char('m') && lower != QLatin1Char('.') &&
+          lower != QLatin1Char(' ')) return false;
     }
     return true;
+  }
+
+  static qreal glyphAdvance(const QChar& glyph) {
+    if (glyph == QLatin1Char(' ')) return kSpaceStep;
+    if (glyph == QLatin1Char('.')) return kPointStep;
+    return kDigitStep;
   }
 
   static constexpr qreal kDigitWidth = 8.5;
   static constexpr qreal kDigitGap = 2.0;
   static constexpr qreal kDigitStep = kDigitWidth + kDigitGap;
   static constexpr qreal kDigitHeight = 14.0;
+  static constexpr qreal kPointStep = 4.0;
+  static constexpr qreal kSpaceStep = 5.0;
 };
 
 constexpr int kWalletUnlockTimeoutSeconds = 60 * 60;
@@ -5050,18 +5109,18 @@ void MainWindow::setupUI() {
     lblTargetBitsCaption->setToolTip(
       "Compact proof-of-work target (nBits); this can stay at the network's easiest allowed target.");
     row2->addWidget(lblTargetBitsCaption);
-    lblMiningDifficulty_ = new QLabel("-");
+    lblMiningDifficulty_ = new MiningScoreboardLabel("-");
     lblMiningDifficulty_->setStyleSheet(miningStatStyle("#bec8d0", true));
     row2->addWidget(lblMiningDifficulty_);
     
-    lblCurrentHash_ = new QLabel("0.00");
+    lblCurrentHash_ = new MiningScoreboardLabel("0.00");
     lblCurrentHash_->setStyleSheet(miningStatStyle("#bec8d0", true));
     auto* lblHashrateCaption = new QLabel("MH/s:");
     lblHashrateCaption->setStyleSheet(miningStatStyle());
     row2->addWidget(lblHashrateCaption);
     row2->addWidget(lblCurrentHash_);
     
-    lblMiningUptime_ = new QLabel("-");
+    lblMiningUptime_ = new MiningScoreboardLabel("-");
     lblMiningUptime_->setStyleSheet(miningStatStyle("#bec8d0", true));
     lblMiningUptimeCaption_ = new QLabel("Run:");
     lblMiningUptimeCaption_->setStyleSheet(miningStatStyle());
