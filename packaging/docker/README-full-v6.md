@@ -2,10 +2,10 @@
 
 The root `Dockerfile`, `docker-entrypoint.sh`, and `docker-publish.yml` now
 prepare the next server image; the copies in this directory are review fixtures.
-No image is published by these source changes. The H160839 candidate still
+No image is published by these source changes. The H161527 candidate still
 requires burial and native import/restart qualification before release.
 
-The new image takes the exact H160839 full-v6 payload and original publisher
+The new image takes the exact H161527 full-v6 payload and original publisher
 manifest from the release, plus its detached signature. The fetch
 helper requires and verifies that signature and creates the normalized runtime
 manifest. It independently checks the payload profile, internal checksum,
@@ -28,7 +28,7 @@ remain mandatory. Manual runs with URL overrides cannot publish an image.
 The final release must carry
 the `.dat`, normalized `.dat.manifest.json`, original
 `.dat.publisher.manifest.json`, `.dat.publisher.manifest.sig`, and
-qualification receipt. Its exact H160839 payload SHA-256 and length must come
+qualification receipt. Its exact H161527 payload SHA-256 and length must come
 from a successful native export, import, and restart at the frozen source SHA.
 Pull-request CI runs source contracts only and explicitly reports that no
 image was qualified. It does not pair old 8.2.2 binaries with the new snapshot

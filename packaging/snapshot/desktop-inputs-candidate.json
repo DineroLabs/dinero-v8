@@ -1,14 +1,14 @@
 {
   "schema": "dinero.desktop-snapshot-inputs.v1",
-  "purpose": "H160839 full-v6 desktop primary with exact prior lifecycle bases",
+  "purpose": "H161527 full-v6 desktop primary with exact prior lifecycle bases",
   "primary": {
-    "filename": "dinero-assumeutxo-160839-v6-full.dat",
-    "height": 160839,
+    "filename": "dinero-assumeutxo-161527-v6-full.dat",
+    "height": 161527,
     "format_version": 6,
     "snapshot_profile": "full",
-    "block_hash": "00000014f7dd604dca7857bbfc2eacc757d34a3a6cb02ee27a01c8bbda7fe5b5",
-    "bytes": 148160603,
-    "sha256": "ea605388ddde030d126eee980a77b198a01282c56b878c89189bdc55355ed6db"
+    "block_hash": "0000002fea5b4993c1f38efc1caa64dce75e0cfa69dadcf3888edb6e6213f34a",
+    "bytes": 148636241,
+    "sha256": "d82c40ae2ba1a67fceadd6ab61dde84d0e071ed3bb5aed72659bcc2baf6d48de"
   },
   "fallbacks": [
     {
