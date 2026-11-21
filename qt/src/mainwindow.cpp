@@ -5130,9 +5130,10 @@ void MainWindow::setupUI() {
     lblTargetBitsCaption->setToolTip(
       "Compact proof-of-work target (nBits); this can stay at the network's easiest allowed target.");
     row2->addWidget(lblTargetBitsCaption);
+    constexpr qreal kTargetMiningStatScale = 0.7;
     constexpr qreal kSecondaryMiningStatScale = 0.75;
     auto* targetScoreboard = new MiningScoreboardLabel("-");
-    targetScoreboard->setGlyphScale(kSecondaryMiningStatScale);
+    targetScoreboard->setGlyphScale(kTargetMiningStatScale);
     lblMiningDifficulty_ = targetScoreboard;
     lblMiningDifficulty_->setStyleSheet(miningStatStyle("#bec8d0", true));
     row2->addWidget(lblMiningDifficulty_);
