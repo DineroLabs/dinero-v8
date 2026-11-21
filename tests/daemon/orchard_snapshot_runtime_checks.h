@@ -139,7 +139,9 @@ TEST(OrchardPhoneHistory, ReorgAboveVerifiedPrefixKeepsReplayAndReplacesRequest)
     CanonicalPoolFixture source(true);
     MutableParams().orchard_catalog_commitment_activation_height=102;
     MutableParams().state_commitment_burial_depth=0;
-    source.f.service->setRuntimeBlockNotifications(std::make_shared<CanonicalPoolNotices>());
+    // InvalidateBlock uses the typed runtime reorg handoff. This fixture must
+    // prepare that handoff before the old tip can be invalidated.
+    source.f.service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
     const auto first=SolveCatalogTemplate(source.Build());
     ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
     auto headers=std::make_shared<HeaderChainSelector>();
