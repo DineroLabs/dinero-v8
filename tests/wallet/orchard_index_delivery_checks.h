@@ -77,6 +77,7 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     CHECK(ordinary.addUTXO(historical.vtx.front().GetTxid().AsUint256().GetHex(),0,old_output.value.GetInt64(),"",script_hex(old_output.scriptPubKey),c.height-1,true));
     CHECK(ordinary_count("SELECT count(*) FROM utxos")==int64_t(baseline));
     CHECK(!RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session));
+    CHECK(ordinary.GetScanStatus(c.height).scan_height==0);
     size_t recovery_source_reads=0;
     const auto source=[&](RuntimeOutboxCursor cursor,size_t maximum) {
         CHECK(maximum>0 && maximum<=128);++recovery_source_reads;
@@ -105,6 +106,7 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     CHECK(ordinary_count("SELECT count(*) FROM utxos")==int64_t(baseline));
     CHECK(ordinary_count("SELECT count(*) FROM transactions")==0);
     CHECK(ordinary_count("SELECT count(*) FROM utxos WHERE is_spent=1")==0);
+    CHECK(ordinary.GetScanStatus(c.height).scan_height==0);
     ordinary_sql("DROP TRIGGER ordinary_reject_commit");
     { const auto lease=ordinary.AcquireDatabaseLease();
       CHECK(sqlite3_exec(lease->Database(),"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)==SQLITE_OK);
@@ -194,15 +196,23 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     // Index may commit first; ordinary progress remains absent until its own
     // effects commit. Retry from the same checked event closes that prefix.
     CHECK(!RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session));
+    CHECK(ordinary.getCurrentBlockchainHeight()!=c.height);  // as opened: not yet at the block about to be delivered
     CHECK(RuntimeOrdinaryDelivery::ApplyForWallet(ordinary,ordinary_session,event).cursor==first.cursor);
+    // A native wallet has no other publisher of its in-memory height: the
+    // delivery that just committed the tip must have published it, or a coin
+    // delivered now reads as unconfirmed until a restart.
+    CHECK(ordinary.getCurrentBlockchainHeight()==c.height);
+    CHECK(ordinary.GetScanStatus(c.height).scan_height==c.height);
+    CHECK(ordinary.GetScanStatus(c.height).is_synced());
     using Account=dinero::wallet::OrchardAccountDelivery;
     const Account::Profile account_profile{c.domain,c.activation_height,0};
     const auto account_view=RuntimeAccountReplayTestAccess::Capture(db,c);
+    CHECK(Account::CreateAccountForReplay(ordinary,ordinary_session,account_profile,*account_view).revision==1);
     auto next_receiver=([&]{
+        const auto initial=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*account_view);
+        auto issued=initial.account;
         const auto lease=ordinary.AcquireDatabaseLease();const auto secret=lease->CopyRecoverySeed(ordinary_session);
         const auto keys=orchard::WalletKeys::FromSeed(secret->Bytes(),0);
-        const auto initial=dinero::wallet::OrchardAccountState::Begin(c.domain,keys.ExportFullViewingKey(),c.activation_height,c.parent_hash);
-        auto issued=initial.IssueReceiver(orchard::WalletScope::External).first;
         // A genuine pending shield intent conflicts with the included transaction's
         // actual transparent inputs. Its completed archive shares this same DB.
         const auto auth_handle=account_view->Authorizations(1);const auto& auth=auth_handle->front();
@@ -218,28 +228,28 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
         CHECK(sqlite3_exec(lease->Database(),"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)==SQLITE_OK);
         orchard::WalletSnapshotStore::InitializeSchemaUnderTransaction(lease->Database());
         orchard::WalletSnapshotStore store(lease->Database(),{orchard::WalletNetwork::Regtest,c.domain.genesis_wire,identity,0},secret->Bytes());
-        CHECK(store.StageReplaceRetaining(0,issued.Encode())==1);
+        CHECK(store.StageReplaceRetaining(initial.revision,issued.Encode())==initial.revision+1);
         CHECK(sqlite3_exec(lease->Database(),"COMMIT",nullptr,nullptr,nullptr)==SQLITE_OK);
         return issued.IssueReceiver(orchard::WalletScope::External).second.Raw();
     })();
     // Creation is an explicit fixture. The actual coordinator must earn the
     // first source receipt by scanning the first event, not moving a cursor.
     const auto initial_saved=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*account_view);
-    CHECK(initial_saved.revision==1&&!initial_saved.account.Delivery().sequence&&initial_saved.account.Scan().BalanceUna()==0);
+    CHECK(initial_saved.revision==2&&!initial_saved.account.Delivery().sequence&&initial_saved.account.Scan().BalanceUna()==0);
     failure([&]{(void)RuntimeWalletRecoveryTestAccess::ResumeAccount(*account_view,
         [&](RuntimeOutboxCursor cursor,size_t n){auto page=source(cursor,n);
             if(!cursor.sequence)page.events.front().cursor.digest.data[0]^=1;
             return page;},ordinary,index,ordinary_session);},"account source origin mismatch");
-    CHECK(Account::ReadForReplay(ordinary,ordinary_session,account_profile,*account_view).revision==1);
+    CHECK(Account::ReadForReplay(ordinary,ordinary_session,account_profile,*account_view).revision==2);
     ordinary_sql("CREATE TRIGGER reject_origin_scan BEFORE UPDATE ON orchard_wallet_snapshots BEGIN SELECT RAISE(ABORT,'origin scan');END");
     failure([&]{(void)RuntimeWalletRecoveryTestAccess::ResumeAccount(*account_view,source,ordinary,index,ordinary_session);},
         "Orchard wallet storage integrity, transaction or I/O failure");
     const auto rejected_origin=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*account_view);
-    CHECK(rejected_origin.revision==1&&!rejected_origin.account.Delivery().sequence&&rejected_origin.account.Scan().BalanceUna()==0);
+    CHECK(rejected_origin.revision==2&&!rejected_origin.account.Delivery().sequence&&rejected_origin.account.Scan().BalanceUna()==0);
     ordinary_sql("DROP TRIGGER reject_origin_scan");
     CHECK(RuntimeWalletRecoveryTestAccess::ResumeAccount(*account_view,source,ordinary,index,ordinary_session).applied.cursor==event.cursor);
     auto account_first=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*account_view);
-    CHECK(account_first.account.Delivery().sequence==1&&account_first.account.ParentSnapshotRevision()==1);
+    CHECK(account_first.account.Delivery().sequence==1&&account_first.account.ParentSnapshotRevision()==2);
     CHECK(account_first.account.Scan().BalanceUna()==5000);
     {
         const auto lease=ordinary.AcquireDatabaseLease();const auto seed=lease->CopyRecoverySeed(ordinary_session);
@@ -344,10 +354,13 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     ordinary_sql("DROP TRIGGER ordinary_reject_restore");
 
     ordinary.open("ordinary");ordinary_session=ordinary.AcquireDatabaseLease()->Session();
+    CHECK(ordinary.GetScanStatus(c.height).scan_height==c.height);
     CHECK(recover().applied.cursor==second.cursor);
     CHECK(recover().applied.cursor==second.cursor);
     CHECK(ordinary_count("SELECT count(*) FROM utxos")==int64_t(baseline));
     CHECK(ordinary_count("SELECT count(*) FROM utxos WHERE is_spent=1")==0);
+    CHECK(ordinary.GetScanStatus(c.height).scan_height==c.height-1);
+    CHECK(ordinary.GetScanStatus(c.height).is_scanning);
 
     CHECK(second.cursor==down.cursor && second.tip_hash==c.parent_hash && index.GetUTXOCount().value()==baseline);
     for(const auto& spent:undo.spent)if(spent.height<c.height)CHECK(!index.GetUTXO(TxId(spent.prev_txid),spent.prev_vout)->spend_height);
@@ -512,23 +525,16 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     again=*up_view->Event(up_view->Head().sequence);
     // Discover nonconsecutive account numbers from actual snapshot rows. Every
     // row must authenticate/restore before advancing any lagging store.
-    const auto enroll=[&](uint32_t number){
-        const auto lease=ordinary.AcquireDatabaseLease();const auto seed=lease->CopyRecoverySeed(ordinary_session);
-        const auto keys=orchard::WalletKeys::FromSeed(seed->Bytes(),number);
-        auto initial=dinero::wallet::OrchardAccountState::Begin(c.domain,keys.ExportFullViewingKey(),c.activation_height,c.parent_hash)
-            .IssueReceiver(orchard::WalletScope::External).first;
-        orchard::Hash identity{};for(size_t i=0;i<32;++i)identity[i]=uint8_t(std::stoul(wallet_identity.substr(7+2*i,2),nullptr,16));
-        CHECK(sqlite3_exec(lease->Database(),"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)==SQLITE_OK);
-        orchard::WalletSnapshotStore store(lease->Database(),{orchard::WalletNetwork::Regtest,c.domain.genesis_wire,identity,number},seed->Bytes());
-        CHECK(store.StageReplaceRetaining(0,initial.Encode())==1);
-        CHECK(sqlite3_exec(lease->Database(),"COMMIT",nullptr,nullptr,nullptr)==SQLITE_OK);
+    const auto enroll=[&](uint32_t number,const RuntimeAccountReplay& view){
+        const Account::Profile profile{c.domain,c.activation_height,number};
+        CHECK(Account::CreateAccountForReplay(ordinary,ordinary_session,profile,view).revision==1);
     };
     const Account::Profile other_profile{c.domain,c.activation_height,7};
     const auto enrolled_recover=[&](const RuntimeAccountReplay& view){
         return RuntimeWalletRecoveryTestAccess::ResumeEnrolled(view,source,ordinary,index,ordinary_session);
     };
     const auto primary=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*up_view);
-    enroll(7);
+    enroll(7,*up_view);
     // A late account at the exact origin joins through real replay, even when
     // the transparent stores and another account already applied >128 events.
     auto other=Account::ReadForReplay(ordinary,ordinary_session,other_profile,*up_view);
@@ -583,7 +589,7 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     failure([&]{(void)RuntimeWalletRecoveryTestAccess::ResumeEnrolled(*multi_view,[&](RuntimeOutboxCursor cursor,size_t n){
         const auto page=source(cursor,n);
         if(!roster_changed){
-            roster_changed=true;enroll(19);
+            roster_changed=true;enroll(19,*multi_view);
             const Account::Profile added{c.domain,c.activation_height,19};
             (void)Account::Connect(ordinary,ordinary_session,added,1,account_view->Point({}),event,
                 *account_view->Block(1),*account_view->State(1),*account_view->Authorizations(1));

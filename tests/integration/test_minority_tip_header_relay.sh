@@ -340,15 +340,29 @@ run_variant() {
         esac
     }
     wait_connected() {
-        wait_for "[[ \$(conns_of ${a_rpc} ${a_dir}) -ge 1 && \$(conns_of ${b_rpc} ${b_dir}) -ge 1 ]]" 30
+        # RPC can be ready before the P2P listener accepts connections.  A
+        # single onetry request in that gap is lost, so retry the setup dial
+        # while keeping the same 30-second connection deadline.
+        local attempt
+        for (( attempt = 0; attempt < 30; attempt++ )); do
+            if (( $(conns_of "${a_rpc}" "${a_dir}") >= 1 &&
+                  $(conns_of "${b_rpc}" "${b_dir}") >= 1 )); then
+                return 0
+            fi
+            connect_ab
+            sleep 1
+        done
+        return 1
     }
 
     # --- common history: B mines BASE BEFORE connecting so a muted B still
     #     gets A synced via A's on-connect getheaders pull (same as the #214 test).
     mine "${b_rpc}" "${b_dir}" "${BASE}" "${addr_b}"
     wait_for "[[ \$(height_of ${b_rpc} ${b_dir}) -eq ${BASE} ]]" 30 || setup_error "[${variant}] B did not mine to ${BASE}"
-    connect_ab
-    wait_connected || setup_error "[${variant}] A and B never connected"
+    wait_connected || {
+        dump_diagnostics "${variant}-connect" "${a_rpc}" "${a_dir}" "${b_rpc}" "${b_dir}"
+        setup_error "[${variant}] A and B never connected"
+    }
     wait_for "[[ \$(tip_of ${a_rpc} ${a_dir}) == \$(tip_of ${b_rpc} ${b_dir}) ]]" 60 \
         || setup_error "[${variant}] A did not sync common history to ${BASE} (A=$(height_of "${a_rpc}" "${a_dir}"))"
     info "[${variant}] common history @${BASE} tip $(tip_of "${a_rpc}" "${a_dir}" | cut -c1-16)…; A sees B as inbound=$(peer_field "${a_rpc}" "${a_dir}" inbound)"
@@ -374,8 +388,10 @@ run_variant() {
         # --- heal ---
         rpc_call "${a_rpc}" "${a_dir}" setnetworkactive '[true]' >/dev/null
         rpc_call "${b_rpc}" "${b_dir}" setnetworkactive '[true]' >/dev/null
-        connect_ab
-        wait_connected || setup_error "[${variant}] A and B did not reconnect after heal"
+        wait_connected || {
+            dump_diagnostics "${variant}-reconnect" "${a_rpc}" "${a_dir}" "${b_rpc}" "${b_dir}"
+            setup_error "[${variant}] A and B did not reconnect after heal"
+        }
         info "[${variant}] healed (A sees B inbound=$(peer_field "${a_rpc}" "${a_dir}" inbound)); waiting up to ${CONVERGE_WAIT}s for A to reorg…"
         wait_for "[[ \$(tip_of ${a_rpc} ${a_dir}) == ${b_tip} ]]" "${CONVERGE_WAIT}" && converged=1
         ;;

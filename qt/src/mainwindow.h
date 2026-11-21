@@ -246,7 +246,7 @@ private:
   void applyPrimaryAddressesToReceiveTab();
   void updateSendModeUi();
   void updateWalletBalanceDisplay();
-  void showWalletBalanceUnavailable();
+  void showWalletBalanceUnavailable(bool transientCatchUp = false);
   void refreshShieldedBalanceSummary();
   void refreshConfidentialWalletState();
   bool collectSendForm(QString& recipient,
@@ -739,6 +739,7 @@ private:
 
   // Receive tab (address list)
   QTableWidget* tblAddresses_;
+  QLabel* lblAddressListStatus_ = nullptr;
   QPushButton* btnDeriveAddress_;
   class QComboBox* cmbReceiveMode_ = nullptr;
   QPushButton* btnLoadAllAddresses_ = nullptr;
@@ -749,6 +750,7 @@ private:
 
   // Transactions tab (history)
   QTableWidget* tblTransactions_;
+  QLabel* lblTransactionListStatus_ = nullptr;
   class QComboBox* cmbTxTypeFilter_ = nullptr;
   void loadTransactionHistory();
   void updateTransactionTable(const QJsonArray& transactions);
@@ -857,6 +859,7 @@ private:
   qint64 walletBalanceVerifiedAtMs_ = 0;
   bool walletSendReady_ = false;
   bool walletTransparentV3SendReady_ = false;
+  bool legacyShieldedBalanceUnsupported_ = false;
   QString walletSendUnavailableReason_ = "Waiting for a current wallet balance";
   double cachedP2mrBalance_ = 0.0;
   double cachedShieldedBalance_ = 0.0;

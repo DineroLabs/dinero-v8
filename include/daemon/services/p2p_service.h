@@ -1,4 +1,5 @@
 #pragma once
+#include "p2p/start_once_due.h"
 #include "daemon/iservice.h"
 #include "p2p/self_reachability.h"
 #include "daemon/p2p_manager.h"
@@ -59,6 +60,9 @@ class AddressManagerService;
  * - Thread-safe async message sending
  */
 class P2PService : public IService {
+#ifdef DINERO_TEST_ORCHARD_ORIGIN
+    friend struct SnapshotImportedKeyHistoryTestAccess;
+#endif
 public:
     struct NetworkTotals {
         uint64_t bytes_recv{0};
@@ -555,6 +559,11 @@ private:
     std::shared_ptr<p2p::OrchardCatalogDownload> CatalogDownload() const;
     void StopCatalogWorkers();
     void StartOrchardHistoryWorkers();
+    // Starts the snapshot-history workers the first time they are needed;
+    // safe to call again and again (see the definition).
+    void EnsureSnapshotHistoryWorkers();
+    std::mutex snapshot_history_start_mutex_;
+    p2p::StartOnceDue snapshot_history_start_;
     void StartSchedulerTickLoop();
     void StopSchedulerTickLoop();
     bool IsDynamicP2PActive() const;

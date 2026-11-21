@@ -629,7 +629,24 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
         if (ctx_ && ctx_->chainstate) {
             auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx_->chainstate);
             if (chainstate) {
-                chainstate->ActivateBestChain();
+                // A historical body below the snapshot base, stored while
+                // the snapshot's history is backfilled, cannot change the
+                // selected chain: it is not promoted until the replay proves
+                // the snapshot, and the below-base fork guard blocks its
+                // activation (see the precheck above). An activation pass for
+                // it only re-audits the unchanged tip under the selected lock.
+                // Measured on a snapshot node: ~236 ms per body, about four
+                // bodies a second for hours, the selected lock held 84% to
+                // 95% of the time, and the wallet's recovery and the Orchard
+                // history download, which need that lock, starved. The audit
+                // itself is untouched: every block that can become the tip
+                // still runs the pass, and the periodic safety net still does.
+                const bool pre_base_history_body =
+                    chainstate->IsAssumeUTXOActive() &&
+                    newHeight < chainstate->GetAssumeUTXOBaseHeight();
+                if (!pre_base_history_body) {
+                    chainstate->ActivateBestChain();
+                }
             }
         }
 

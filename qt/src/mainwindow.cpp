@@ -150,6 +150,87 @@ public:
   }
 };
 
+// Keep mining telemetry accessible as label text while drawing numeric values
+// as compact seven-segment scoreboard digits. External miner status can also
+// use the Blocks label, so nonnumeric text retains normal QLabel rendering.
+class MiningScoreboardLabel final : public QLabel {
+public:
+  explicit MiningScoreboardLabel(const QString& value, QWidget* parent = nullptr)
+      : QLabel(value, parent) {}
+
+  QSize sizeHint() const override {
+    const QString value = text();
+    if (!isDigits(value)) return QLabel::sizeHint();
+    return QSize(qCeil(value.size() * kDigitStep - kDigitGap),
+                 qMax(QLabel::sizeHint().height(), 18));
+  }
+
+protected:
+  void paintEvent(QPaintEvent* event) override {
+    const QString value = text();
+    if (!isDigits(value)) {
+      QLabel::paintEvent(event);
+      return;
+    }
+
+    static constexpr unsigned char segments[10] = {
+      0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f};
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(palette().color(QPalette::WindowText), 1.5,
+                        Qt::SolidLine, Qt::RoundCap));
+    const qreal top = (height() - kDigitHeight) / 2.0;
+    for (int i = 0; i < value.size(); ++i) {
+      const unsigned char bits = segments[value.at(i).unicode() - '0'];
+      const qreal left = i * kDigitStep;
+      const qreal right = left + kDigitWidth;
+      const qreal middle = top + kDigitHeight / 2.0;
+      if (bits & 0x01) {
+        painter.drawLine(QPointF(left + 1.5, top + 1),
+                         QPointF(right - 1.5, top + 1));
+      }
+      if (bits & 0x02) {
+        painter.drawLine(QPointF(right - 1, top + 2.5),
+                         QPointF(right - 1, middle - 1));
+      }
+      if (bits & 0x04) {
+        painter.drawLine(QPointF(right - 1, middle + 1),
+                         QPointF(right - 1, top + kDigitHeight - 2.5));
+      }
+      if (bits & 0x08) {
+        painter.drawLine(QPointF(left + 1.5, top + kDigitHeight - 1),
+                         QPointF(right - 1.5, top + kDigitHeight - 1));
+      }
+      if (bits & 0x10) {
+        painter.drawLine(QPointF(left + 1, middle + 1),
+                         QPointF(left + 1, top + kDigitHeight - 2.5));
+      }
+      if (bits & 0x20) {
+        painter.drawLine(QPointF(left + 1, top + 2.5),
+                         QPointF(left + 1, middle - 1));
+      }
+      if (bits & 0x40) {
+        painter.drawLine(QPointF(left + 1.5, middle),
+                         QPointF(right - 1.5, middle));
+      }
+    }
+  }
+
+private:
+  static bool isDigits(const QString& value) {
+    if (value.isEmpty()) return false;
+    for (const QChar digit : value) {
+      if (digit < QLatin1Char('0') || digit > QLatin1Char('9')) return false;
+    }
+    return true;
+  }
+
+  static constexpr qreal kDigitWidth = 8.5;
+  static constexpr qreal kDigitGap = 2.0;
+  static constexpr qreal kDigitStep = kDigitWidth + kDigitGap;
+  static constexpr qreal kDigitHeight = 14.0;
+};
+
 constexpr int kWalletUnlockTimeoutSeconds = 60 * 60;
 // A main tab's real name. Narrow windows show icon-only tabs (empty text, name
 // in the tooltip), so look tabs up through this, never through tabText().
@@ -835,6 +916,16 @@ QString miningButtonStyle() {
     "QPushButton:pressed { background: #182127; } "
     "QPushButton:disabled { background: #000000; color: #747e86; "
     "border-color: #252c31; }");
+}
+
+QString miningStatStyle(const char* color = "#bec8d0", bool strong = false,
+                        bool italic = false) {
+  // Match the 12 px text in the adjacent Session Finds button, including
+  // values whose color or emphasis changes as mining state changes.
+  return QStringLiteral(
+    "QLabel { font-size: 12px; color: %1; font-weight: %2; font-style: %3; }")
+    .arg(QString::fromLatin1(color), strong ? QStringLiteral("600") : QStringLiteral("400"),
+         italic ? QStringLiteral("italic") : QStringLiteral("normal"));
 }
 
 QString miningComboStyle() {
@@ -2573,6 +2664,11 @@ void MainWindow::setupUI() {
   connect(tabs, &QTabWidget::currentChanged, this, [this](int index) {
     updateMiningFocusDimState();
     setMiningOutputCinematicEnabled(isMining_);
+    const QString selectedTab = mainTabName(mainTabs_, index);
+    if (selectedTab == QStringLiteral("Receive"))
+      rpc_->callNamed("wallet.listaddresses", QJsonObject{{"count", 200}});
+    else if (selectedTab == QStringLiteral("Transactions"))
+      loadTransactionHistory();
     if (isUtxoTabActive()) {
       renderUtxoPage();
       requestUtxoRefresh();
@@ -4023,6 +4119,13 @@ void MainWindow::setupUI() {
 
     layout->addLayout(headerLayout);
 
+    lblAddressListStatus_ = new QLabel(receive);
+    lblAddressListStatus_->setObjectName("addressListStatus");
+    lblAddressListStatus_->setStyleSheet(
+        "QLabel { color: #f0b429; padding: 6px; background: #2c2618; border-radius: 4px; }");
+    lblAddressListStatus_->setVisible(false);
+    layout->addWidget(lblAddressListStatus_);
+
     // Single unified address table. Filter is applied in the listaddresses
     // response handler based on cmbReceiveMode_'s current value.
     tblAddresses_ = new QTableWidget(0, 6);
@@ -4084,6 +4187,13 @@ void MainWindow::setupUI() {
     headerLayout->addWidget(btnRefreshTxs);
     
     layout->addLayout(headerLayout);
+
+    lblTransactionListStatus_ = new QLabel(transactions);
+    lblTransactionListStatus_->setObjectName("transactionListStatus");
+    lblTransactionListStatus_->setStyleSheet(
+        "QLabel { color: #f0b429; padding: 6px; background: #2c2618; border-radius: 4px; }");
+    lblTransactionListStatus_->setVisible(false);
+    layout->addWidget(lblTransactionListStatus_);
     
     // Transaction table
     tblTransactions_ = new QTableWidget(0, 7);
@@ -4270,6 +4380,7 @@ void MainWindow::setupUI() {
       const int legacyTab = shieldedTabs->addTab(legacyPage, "Retired pool");
       shieldedTabs->setTabVisible(legacyTab, false);
       shieldedTabs->setCurrentIndex(0);
+      shieldedTabs->tabBar()->hide();
       connect(shieldedWidget_, &ShieldedWidget::retiredPoolVisibilityChanged, shieldedTabs,
               [shieldedTabs, legacyPage](bool visible, const QString& label) {
                 const int index = shieldedTabs->indexOf(legacyPage);
@@ -4277,6 +4388,7 @@ void MainWindow::setupUI() {
                 shieldedTabs->setTabText(index, label);
                 if (!visible && shieldedTabs->currentIndex() == index) shieldedTabs->setCurrentIndex(0);
                 shieldedTabs->setTabVisible(index, visible);
+                shieldedTabs->tabBar()->setVisible(visible);
               });
       tabs->addTab(shieldedTabs, navigationIcon(NavigationGlyph::Shield), "Shielded");
     }
@@ -4920,34 +5032,44 @@ void MainWindow::setupUI() {
             this, &MainWindow::onMiningModeChanged);
 
     // Tiny stats
-    lblBlocksFound_ = new QLabel("0");
-    lblBlocksFound_->setStyleSheet("QLabel { font-weight: bold; color: #bec8d0; }");
-    row2->addWidget(new QLabel("Blocks:"));
+    lblBlocksFound_ = new MiningScoreboardLabel("0");
+    lblBlocksFound_->setStyleSheet(miningStatStyle("#bec8d0", true));
+    auto* lblBlocksCaption = new QLabel("Blocks:");
+    lblBlocksCaption->setStyleSheet(miningStatStyle());
+    row2->addWidget(lblBlocksCaption);
     row2->addWidget(lblBlocksFound_);
 
-    row2->addWidget(new QLabel("Height:"));
-    lblMiningHeight_ = new QLabel("-");
-    lblMiningHeight_->setStyleSheet("QLabel { font-weight: bold; color: #bec8d0; }");
+    auto* lblHeightCaption = new QLabel("Height:");
+    lblHeightCaption->setStyleSheet(miningStatStyle());
+    row2->addWidget(lblHeightCaption);
+    lblMiningHeight_ = new MiningScoreboardLabel("-");
+    lblMiningHeight_->setStyleSheet(miningStatStyle("#bec8d0", true));
     row2->addWidget(lblMiningHeight_);
 
-    row2->addWidget(new QLabel("Difficulty:"));
+    auto* lblTargetBitsCaption = new QLabel("Target Bits:");
+    lblTargetBitsCaption->setStyleSheet(miningStatStyle());
+    lblTargetBitsCaption->setToolTip(
+      "Compact proof-of-work target (nBits); this can stay at the network's easiest allowed target.");
+    row2->addWidget(lblTargetBitsCaption);
     lblMiningDifficulty_ = new QLabel("-");
-    lblMiningDifficulty_->setStyleSheet(
-      "QLabel { font-family: monospace; font-weight: bold; color: #bec8d0; }");
+    lblMiningDifficulty_->setStyleSheet(miningStatStyle("#bec8d0", true));
     row2->addWidget(lblMiningDifficulty_);
     
     lblCurrentHash_ = new QLabel("0.00");
-    lblCurrentHash_->setStyleSheet("QLabel { font-weight: bold; color: #bec8d0; font-size: 10px; }");
-    row2->addWidget(new QLabel("MH/s:"));
+    lblCurrentHash_->setStyleSheet(miningStatStyle("#bec8d0", true));
+    auto* lblHashrateCaption = new QLabel("MH/s:");
+    lblHashrateCaption->setStyleSheet(miningStatStyle());
+    row2->addWidget(lblHashrateCaption);
     row2->addWidget(lblCurrentHash_);
     
     lblMiningUptime_ = new QLabel("-");
-    lblMiningUptime_->setStyleSheet("QLabel { font-size: 10px; }");
+    lblMiningUptime_->setStyleSheet(miningStatStyle("#bec8d0", true));
     lblMiningUptimeCaption_ = new QLabel("Run:");
+    lblMiningUptimeCaption_->setStyleSheet(miningStatStyle());
     row2->addWidget(lblMiningUptimeCaption_);
     row2->addWidget(lblMiningUptime_);
 
-    btnMiningSessionFinds_ = new QPushButton("Session finds");
+    btnMiningSessionFinds_ = new QPushButton("Session Finds");
     btnMiningSessionFinds_->setStyleSheet(miningButtonStyle());
     btnMiningSessionFinds_->setFixedHeight(miningControlHeight);
     btnMiningSessionFinds_->setEnabled(false);
@@ -4956,11 +5078,11 @@ void MainWindow::setupUI() {
 
       auto* dialog = new QDialog(this);
       dialog->setAttribute(Qt::WA_DeleteOnClose);
-      dialog->setWindowTitle("Blocks found this session");
+      dialog->setWindowTitle("Blocks Found This Session");
       auto* dialogLayout = new QVBoxLayout(dialog);
       auto* table = new QTableWidget(miningSessionFinds_.size(), 6, dialog);
       table->setHorizontalHeaderLabels(
-        {"Height", "Hash", "Merkle root", "Utreexo root", "Nonce", "Difficulty"});
+        {"Height", "Hash", "Merkle Root", "Utreexo Root", "Nonce", "Target Bits"});
       table->setEditTriggers(QAbstractItemView::NoEditTriggers);
       table->setSelectionBehavior(QAbstractItemView::SelectRows);
       table->setWordWrap(false);
@@ -5000,8 +5122,7 @@ void MainWindow::setupUI() {
     // SV2-only: live share counter. Updated in place so we never spam
     // the mining-output panel with one line per accept.
     lblSv2Shares_ = new QLabel("Shares: 0");
-    lblSv2Shares_->setStyleSheet(
-      "QLabel { font-size: 10px; color: #bec8d0; font-weight: bold; }");
+    lblSv2Shares_->setStyleSheet(miningStatStyle("#bec8d0", true));
     lblSv2Shares_->setVisible(false);
     row2->addWidget(lblSv2Shares_);
 
@@ -5285,7 +5406,7 @@ void MainWindow::setupUI() {
       if (btnMiningSessionFinds_) {
         btnMiningSessionFinds_->setEnabled(true);
         btnMiningSessionFinds_->setText(
-          QString("Session finds (%1)").arg(miningSessionFinds_.size()));
+          QString("Session Finds (%1)").arg(miningSessionFinds_.size()));
       }
       miningFoundPendingTemplate_ = true;
       // The live hash field is only for the visible mining session. Keeping
@@ -5314,6 +5435,7 @@ void MainWindow::setupUI() {
       foundSample.highlightUntilMs = QDateTime::currentMSecsSinceEpoch() +
                                      dinero::qt::kBlockFoundHighlightMs;
       miningHashSamples_.append(std::move(foundSample));
+      updateMiningOutputCinematicFrame();
     });
 
     // Forward embedded miner state into the daemon's relay auto-mode so
@@ -5332,7 +5454,7 @@ void MainWindow::setupUI() {
             miningSessionFinds_.clear();
             miningHashSamples_.clear();
             if (btnMiningSessionFinds_) {
-                btnMiningSessionFinds_->setText("Session finds");
+                btnMiningSessionFinds_->setText("Session Finds");
                 btnMiningSessionFinds_->setEnabled(false);
             }
             if (mining_stats_.mining_started <= 0) {
@@ -5366,7 +5488,7 @@ void MainWindow::setupUI() {
             mining_stats_.mining_started = 0;
             if (lblMiningUptime_) {
                 lblMiningUptime_->setText("-");
-                lblMiningUptime_->setStyleSheet("QLabel { color: #868e96; }");
+                lblMiningUptime_->setStyleSheet(miningStatStyle("#868e96"));
             }
             setMiningModeControlsLocked(false);
             resetOverviewMiningTelemetry();
@@ -5619,7 +5741,9 @@ void MainWindow::setupUI() {
     lblTemplateFees_->setStyleSheet("QLabel { font-weight: bold; color: #d6dde6; }");
     statsLayout->addWidget(lblTemplateFees_, 1, 1);
 
-    statsLayout->addWidget(new QLabel("Difficulty:"), 1, 2);
+    auto *lblTemplateTargetBits = new QLabel("Target bits:");
+    lblTemplateTargetBits->setToolTip("Compact proof-of-work target (nBits).");
+    statsLayout->addWidget(lblTemplateTargetBits, 1, 2);
     lblTemplateDifficulty_ = new QLabel("-");
     lblTemplateDifficulty_->setStyleSheet("QLabel { font-weight: bold; }");
     statsLayout->addWidget(lblTemplateDifficulty_, 1, 3);
@@ -6255,8 +6379,15 @@ void MainWindow::refresh() {
   refreshShieldedBalanceSummary();
   rpc_->call("wallet.listwallets", QJsonArray());
 
-  // ✅ Load all addresses to populate Receive tab (regardless of balance)
-  rpc_->callNamed("wallet.listaddresses", QJsonObject{{"count", 200}});
+  // History and address reads can briefly refuse while a newly mined block
+  // is delivered. Retry while their panel is visible, without polling hidden
+  // tables or surfacing a global error on every block.
+  const QString selectedTab = mainTabs_
+      ? mainTabName(mainTabs_, mainTabs_->currentIndex()) : QString();
+  if (selectedTab == QStringLiteral("Receive"))
+    rpc_->callNamed("wallet.listaddresses", QJsonObject{{"count", 200}});
+  else if (selectedTab == QStringLiteral("Transactions"))
+    loadTransactionHistory();
   // Large mining wallets may contain thousands of UTXOs. Fetch them only
   // while their panel is visible instead of rebuilding a hidden table every
   // five seconds on Qt's UI thread.
@@ -6715,14 +6846,36 @@ void MainWindow::updateWalletBalanceDisplay() {
   }
 }
 
-void MainWindow::showWalletBalanceUnavailable() {
+void MainWindow::showWalletBalanceUnavailable(bool transientCatchUp) {
+  const bool firstUnavailable = !walletBalanceUnavailable_;
   walletBalanceUnavailable_ = true;
   walletSendReady_ = false;
   walletTransparentV3SendReady_ = false;
   walletSendUnavailableReason_ = "Waiting for a current wallet balance";
   updateWalletBalanceDisplay();
   updateWalletUIState();
+  if (transientCatchUp && walletBalanceAccepted_) {
+    // A newly mined block can briefly make getinfo and getbalance refuse in
+    // either order. Pause sending now, retry the financial read, and reserve
+    // the global warning for a balance that stays stale beyond one refresh.
+    if (firstUnavailable) {
+      const QString wallet = currentWalletName_;
+      const qint64 verifiedAt = walletBalanceVerifiedAtMs_;
+      QTimer::singleShot(1500, this, [this, wallet, verifiedAt]() {
+        if (rpc_ && currentWalletName_ == wallet && walletBalanceUnavailable_ &&
+            walletBalanceVerifiedAtMs_ == verifiedAt)
+          rpc_->getBalance();
+      });
+      QTimer::singleShot(6000, this, [this, wallet, verifiedAt]() {
+        if (currentWalletName_ == wallet && walletBalanceUnavailable_ &&
+            walletBalanceVerifiedAtMs_ == verifiedAt)
+          showWalletBalanceUnavailable();
+      });
+    }
+    return;
+  }
   if (lblErrorMessage_) {
+    errorMessageMethod_.clear();
     lblErrorMessage_->setText(walletRecoveryUnlockNeeded_ && !walletUnlocked_
         ? "Wallet history is incomplete. Unlock this wallet to finish recovery; sending is paused."
         : walletBalanceAccepted_
@@ -6738,6 +6891,7 @@ void MainWindow::refreshShieldedBalanceSummary() {
     updateWalletBalanceDisplay();
     return;
   }
+  if (legacyShieldedBalanceUnsupported_) return;
   rpc_->call("wallet.shieldedbalance", QJsonArray());
 }
 
@@ -7183,6 +7337,15 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
           (sendReady.isBool() && sendReady.toBool());
       walletTransparentV3SendReady_ = walletSendReady_ &&
           obj.value("send_scope").toString() == "transparent_recovered_v3";
+      const QString sendScope = obj.value("send_scope").toString();
+      const bool nativeOrTransparentOnly =
+          sendScope == "transparent_native_v3" ||
+          obj.value("wallet_scope").toString() == "legacy_transparent_only" ||
+          obj.value("send_unavailable_code").toString() == "wallet_native_send_unavailable_on_v3";
+      if (nativeOrTransparentOnly) legacyShieldedBalanceUnsupported_ = true;
+      else if (!sendScope.isEmpty() || obj.contains("wallet_scope"))
+        legacyShieldedBalanceUnsupported_ = false;
+      if (legacyShieldedBalanceUnsupported_) cachedShieldedBalance_ = 0.0;
       walletSendUnavailableReason_ = walletSendReady_ ? QString() :
           obj.value("send_unavailable_reason").toString(
               "Sending is unavailable for this wallet");
@@ -8716,41 +8879,43 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
     }
   } else if (method == "wallet.listtransactions") {
     if (result.isArray()) {
+      if (lblTransactionListStatus_) lblTransactionListStatus_->setVisible(false);
       updateTransactionTable(result.toArray());
     } else {
       qWarning() << "listtransactions returned non-array result";
-      tblTransactions_->setRowCount(0);
-      tblTransactions_->insertRow(0);
-      auto *item = new QTableWidgetItem("No transactions found");
-      item->setForeground(QBrush(QColor("#868e96")));
-      item->setTextAlignment(Qt::AlignCenter);
-      tblTransactions_->setItem(0, 0, item);
-      tblTransactions_->setSpan(0, 0, 1, 7);
+      if (lblTransactionListStatus_) {
+        lblTransactionListStatus_->setText("Transaction history is unavailable. Refresh to try again.");
+        lblTransactionListStatus_->setVisible(true);
+      }
     }
   } else if (method == "wallet.listunspent") {
     utxoRequestPending_ = false;
     if (result.isArray()) {
       const QJsonArray incoming = result.toArray();
-      const bool changed = incoming != cachedUtxos_;
       cachedUtxos_ = incoming;
-      if (isUtxoTabActive() && (changed || (tblUTXOs_ && tblUTXOs_->rowCount() == 0))) {
+      if (isUtxoTabActive()) {
         updateUTXOTable(cachedUtxos_);
       }
     } else {
       qWarning() << "listunspent returned non-array result";
+      cachedUtxos_ = {};
+      cachedUtxoCount_ = 0;
       auto *tblUTXOs = tblUTXOs_;
       if (tblUTXOs && isUtxoTabActive()) {
         tblUTXOs->setRowCount(0);
         tblUTXOs->insertRow(0);
-        auto *item = new QTableWidgetItem("No UTXOs found");
+        auto *item = new QTableWidgetItem("UTXO data is unavailable");
         item->setForeground(QBrush(QColor("#868e96")));
         item->setTextAlignment(Qt::AlignCenter);
         tblUTXOs->setItem(0, 0, item);
-        tblUTXOs->setSpan(0, 0, 1, 6);
+        tblUTXOs->setSpan(0, 0, 1, 7);
+        if (lblUtxoPage_) lblUtxoPage_->setText("UTXOs unavailable");
+        if (btnConsolidate_) btnConsolidate_->setVisible(false);
       }
     }
   } else if (method == "wallet.listaddresses") {
     if (result.isArray()) {
+      if (lblAddressListStatus_) lblAddressListStatus_->setVisible(false);
       tblAddresses_->setSortingEnabled(false);
       tblAddresses_->setUpdatesEnabled(false);
       tblAddresses_->blockSignals(true);
@@ -8873,6 +9038,9 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       } else {
         qDebug() << "Loaded" << addresses.size() << "addresses";
       }
+    } else if (lblAddressListStatus_) {
+      lblAddressListStatus_->setText("Addresses are unavailable. Reload to try again.");
+      lblAddressListStatus_->setVisible(true);
     }
   } else if (method == "wallet.listaddresseswithbalances") {
     // Update address table with balances
@@ -8991,12 +9159,20 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
   // state and explains it there. A poll failing every few seconds must not
   // become a sticky global "Error" bar.
   if (method.startsWith(QStringLiteral("orchardtab|")) ||
-      method == QStringLiteral("wallet.shieldedbalance") ||
       method == QStringLiteral("wallet.getshieldedaddress") ||
       method == QStringLiteral("wallet.listshielded") ||
       method == QStringLiteral("orchard.getactivationstatus"))
     return;
 
+  if (method == QStringLiteral("wallet.shieldedbalance")) {
+    if (!walletSwitchInFlight_ && code == -32603 &&
+        message.contains("wallet index v3", Qt::CaseInsensitive)) {
+      legacyShieldedBalanceUnsupported_ = true;
+      cachedShieldedBalance_ = 0.0;
+      updateWalletBalanceDisplay();
+    }
+    return;
+  }
   if (method.startsWith(QLatin1String("overview.miningrewards:"))) {
     if (!walletSwitchInFlight_ && method == miningRewardsReplyAlias()) {
       // The HTTP dispatcher normalizes a wallet_balance_not_current result to
@@ -9013,6 +9189,40 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
 
   if (method == "wallet.listunspent") {
     utxoRequestPending_ = false;
+    cachedUtxos_ = {};
+    cachedUtxoCount_ = 0;
+    if (btnConsolidate_) btnConsolidate_->setVisible(false);
+    if (isUtxoTabActive() && tblUTXOs_) {
+      const bool catchingUp = code == -32603 && isWalletBalancePendingRefusal(message);
+      tblUTXOs_->setRowCount(0);
+      tblUTXOs_->setRowCount(1);
+      auto* item = new QTableWidgetItem(catchingUp
+          ? "Wallet is catching up. UTXOs are temporarily unavailable."
+          : "UTXO data is unavailable. Refresh to try again.");
+      item->setForeground(QBrush(QColor(catchingUp ? "#fab005" : "#868e96")));
+      item->setTextAlignment(Qt::AlignCenter);
+      tblUTXOs_->setItem(0, 0, item);
+      tblUTXOs_->setSpan(0, 0, 1, 7);
+      if (lblUtxoPage_) lblUtxoPage_->setText("UTXOs unavailable");
+    }
+    if (code == -32603 && isWalletBalancePendingRefusal(message)) return;
+  }
+
+  if (code == -32603 && isWalletBalancePendingRefusal(message)) {
+    if (method == "wallet.listaddresses") {
+      if (lblAddressListStatus_) {
+        lblAddressListStatus_->setText("Wallet is catching up. Addresses will refresh automatically.");
+        lblAddressListStatus_->setVisible(true);
+      }
+      return;
+    }
+    if (method == "wallet.listtransactions") {
+      if (lblTransactionListStatus_) {
+        lblTransactionListStatus_->setText("Wallet is catching up. Transaction history will refresh automatically.");
+        lblTransactionListStatus_->setVisible(true);
+      }
+      return;
+    }
   }
 
   if (method == "network.setonionservice" || method == "network.setrelayservice" ||
@@ -9106,12 +9316,13 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
       }
       updateWalletSwitcherState();
     }
-    showWalletBalanceUnavailable();
+    showWalletBalanceUnavailable(!isWalletUnlockRequiredRefusal(message));
     return;
   }
 
   if (method == "wallet.getbalance") {
-    showWalletBalanceUnavailable();
+    showWalletBalanceUnavailable(code == -32603 &&
+                                 message == kWalletCatchingUpRefusal);
     return;
   }
 
@@ -11582,18 +11793,37 @@ void MainWindow::updateMiningOutputCinematicFrame() {
       // Only the current find is orange.
       const auto colour = dinero::qt::hashRowColor(
         sample.blockFound, sample.highlightUntilMs > nowMs, miningHashColorRgb_);
-      int alpha = colour.a;
-      // A solved template is retired during submission. Pulse only its text
-      // during this real handoff; never invent candidate hashes to fill it.
-      if (sample.blockFound && miningFoundPendingTemplate_) {
-        const int phase = miningCinematicFrame_ % 8;
-        alpha = 180 + qMin(phase, 8 - phase) * 15;
-      }
-      painter.setPen(QColor(colour.r, colour.g, colour.b, alpha));
+      painter.setPen(QColor(colour.r, colour.g, colour.b, colour.a));
       const qreal textTop = frameSize.height() - 6 - visual * rowHeight - metrics.ascent();
-      painter.drawStaticText(
-        QPointF(8, textTop),
-        sample.renderedLine);
+      const qint64 remainingMs = sample.highlightUntilMs - nowMs;
+      if (sample.blockFound && remainingMs > 0 &&
+          remainingMs <= dinero::qt::kBlockFoundHighlightMs) {
+        // The solved template stops producing samples while the next one is
+        // loaded. For exactly one second, jolt only the orange text in three
+        // slices. The cached line is still the real winning header; no fake
+        // hashes, divider lines, or extra animation timer are needed.
+        static constexpr int offsets[5][3] = {
+          {-4,  6, -2}, { 3, -5,  1}, {-2,  4, -6},
+          { 5, -3,  2}, {-3,  2,  5}
+        };
+        const int elapsedMs = dinero::qt::kBlockFoundHighlightMs -
+                              static_cast<int>(remainingMs);
+        const int phase = std::clamp(
+          elapsedMs / dinero::qt::kHashEngineIntervalMs, 0, 4);
+        const int textHeight = metrics.height();
+        for (int slice = 0; slice < 3; ++slice) {
+          const int top = textHeight * slice / 3;
+          const int bottom = textHeight * (slice + 1) / 3;
+          painter.save();
+          painter.setClipRect(QRectF(0, textTop + top,
+                                     frameSize.width(), bottom - top));
+          painter.drawStaticText(
+            QPointF(8 + offsets[phase][slice], textTop), sample.renderedLine);
+          painter.restore();
+        }
+      } else {
+        painter.drawStaticText(QPointF(8, textTop), sample.renderedLine);
+      }
     }
     if (miningHashOverlay_) {
       miningHashOverlay_->setGeometry(viewport->rect());
@@ -11982,7 +12212,7 @@ void MainWindow::updateMiningRuntimeLabel() {
 
   if (mining_stats_.mining_started <= 0) {
     lblMiningUptime_->setText("-");
-    lblMiningUptime_->setStyleSheet("QLabel { color: #868e96; }");
+    lblMiningUptime_->setStyleSheet(miningStatStyle("#868e96"));
     return;
   }
 
@@ -12003,7 +12233,7 @@ void MainWindow::updateMiningRuntimeLabel() {
   }
 
   lblMiningUptime_->setText(runtime);
-  lblMiningUptime_->setStyleSheet("QLabel { color: #bec8d0; font-weight: bold; }");
+  lblMiningUptime_->setStyleSheet(miningStatStyle("#bec8d0", true));
 }
 
 // Handle external miner stats response from daemon
@@ -12057,15 +12287,15 @@ void MainWindow::handleExternalMinerStats(const QJsonObject& stats) {
 
     // Color: green if accepted, red if rejections, neutral otherwise
     if (acceptedBlocks > 0 && rejectedBlocks == 0) {
-      lblBlocksFound_->setStyleSheet("QLabel { color: #bec8d0; font-weight: bold; }");
+      lblBlocksFound_->setStyleSheet(miningStatStyle("#bec8d0", true));
     } else if (rejectedBlocks > 0) {
-      lblBlocksFound_->setStyleSheet("QLabel { color: #b7c0ca; }");
+      lblBlocksFound_->setStyleSheet(miningStatStyle("#b7c0ca"));
     } else {
-      lblBlocksFound_->setStyleSheet("");
+      lblBlocksFound_->setStyleSheet(miningStatStyle());
     }
   } else {
     lblBlocksFound_->setText("No block submissions yet");
-    lblBlocksFound_->setStyleSheet("QLabel { color: #868e96; font-style: italic; }");
+    lblBlocksFound_->setStyleSheet(miningStatStyle("#868e96", false, true));
   }
 
   // Build detailed tooltip with rejection reasons breakdown
@@ -12513,7 +12743,8 @@ void MainWindow::updateUTXOTable(const QJsonArray& utxos) {
   // If no UTXOs, show helpful message
   if (page.total_rows == 0) {
     tblUTXOs->setRowCount(1);
-    auto *item = new QTableWidgetItem("No UTXOs found. Start mining or receive DIN to see unspent outputs!");
+    auto *item = new QTableWidgetItem(
+        "No mature UTXOs yet. Mined rewards appear here after 100 confirmations.");
     item->setForeground(QBrush(QColor("#868e96")));
     item->setTextAlignment(Qt::AlignCenter);
     tblUTXOs->setItem(0, 0, item);
@@ -13956,7 +14187,7 @@ void MainWindow::stopExternalMiner() {
   }
   if (lblMiningUptime_) {
     lblMiningUptime_->setText("-");
-    lblMiningUptime_->setStyleSheet("QLabel { color: #868e96; }");
+    lblMiningUptime_->setStyleSheet(miningStatStyle("#868e96"));
   }
   resetOverviewMiningTelemetry();
 }
@@ -15348,8 +15579,7 @@ bool MainWindow::shouldIgnoreWalletScopedResult(const QString& method) const {
   static const QSet<QString> walletScopedMethods = {
     QStringLiteral("wallet.getbalance"),
     QStringLiteral("wallet.shieldedbalance"),
-    // wallet.listaddresses removed from polling — too expensive with 24K+ addresses
-    // Loaded on-demand when user opens receive tab instead
+    QStringLiteral("wallet.listaddresses"),
     QStringLiteral("wallet.listunspent"),
     QStringLiteral("wallet.listtransactions"),
     QStringLiteral("wallet.getsyncstatus"),
@@ -15399,6 +15629,7 @@ void MainWindow::clearWalletScopedUiState() {
   walletBalanceVerifiedAtMs_ = 0;
   walletSendReady_ = false;
   walletTransparentV3SendReady_ = false;
+  legacyShieldedBalanceUnsupported_ = false;
   walletSendUnavailableReason_ = "Waiting for the selected wallet balance";
   if (btnSend_) btnSend_->setEnabled(false);
   if (privateCovenantWidget_) privateCovenantWidget_->setWalletScope({});
@@ -15409,9 +15640,11 @@ void MainWindow::clearWalletScopedUiState() {
   if (tblAddresses_) {
     tblAddresses_->setRowCount(0);
   }
+  if (lblAddressListStatus_) lblAddressListStatus_->setVisible(false);
   if (tblTransactions_) {
     tblTransactions_->setRowCount(0);
   }
+  if (lblTransactionListStatus_) lblTransactionListStatus_->setVisible(false);
   if (tblUTXOs_) tblUTXOs_->setRowCount(0);
   cachedUtxos_ = {};
   currentUtxoPage_ = 0;

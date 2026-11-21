@@ -183,4 +183,44 @@ void WalletSnapshotStore::PruneRecovery(const std::vector<uint64_t>& keep,uint64
         Check(sqlite3_step(q.p)==SQLITE_DONE&&sqlite3_changes(db_)==1);
     }
 }
+void WalletSnapshotStore::PruneActive(const std::vector<uint64_t>& keep,uint64_t cut,const WalletStateBytes* state){
+    // An empty keep set (current has no parent link) deletes every retained
+    // row of this owner after authenticating each one; nothing is re-sealed.
+    Durable(db_,true);Check(scope_==Scope::Active&&keep.size()<=256&&bool(cut)==bool(state)&&(!keep.empty()||!cut));
+    Check(!sqlite3_get_autocommit(db_));const auto current=Read();Check(current.has_value());
+    std::vector<uint64_t> sorted=keep;std::sort(sorted.begin(),sorted.end());
+    Check(std::adjacent_find(sorted.begin(),sorted.end())==sorted.end());
+    for(const auto revision:sorted)Check(revision>0&&revision<current->revision&&revision<=uint64_t(INT64_MAX));
+    // Authenticate EVERY retained row of this owner (kept and to be deleted)
+    // under this key immediately before deleting, so a tampered or foreign
+    // old ciphertext refuses here instead of being silently erased.
+    {
+        std::vector<uint64_t> all;
+        Statement rows(db_,"SELECT revision FROM orchard_wallet_retained WHERE wallet_id=? AND account=? ORDER BY revision");
+        rows.Blob(1,identity_.wallet_id);rows.Int(2,identity_.account);int rc;
+        while((rc=sqlite3_step(rows.p))==SQLITE_ROW){Check(sqlite3_column_type(rows.p,0)==SQLITE_INTEGER);
+            const auto revision=sqlite3_column_int64(rows.p,0);Check(revision>0);all.push_back(uint64_t(revision));}
+        Check(rc==SQLITE_DONE);
+        for(const auto revision:sorted)Check(std::binary_search(all.begin(),all.end(),revision));
+        for(const auto revision:all)(void)ReadRetained(revision);
+    }
+    std::string sql="DELETE FROM orchard_wallet_retained WHERE wallet_id=? AND account=?";
+    if(!sorted.empty()){
+        sql+=" AND revision NOT IN (";
+        for(size_t i=0;i<sorted.size();++i){if(i)sql+=",";sql+=std::to_string(sorted[i]);}sql+=")";
+    }
+    {Statement erase(db_,sql.c_str());erase.Blob(1,identity_.wallet_id);erase.Int(2,identity_.account);
+     Check(sqlite3_step(erase.p)==SQLITE_DONE);}
+    if(state){
+        Check(std::binary_search(sorted.begin(),sorted.end(),cut));(void)ReadRetained(cut);
+        const auto sealed=Seal(cut,state->Bytes());
+        Statement q(db_,"UPDATE orchard_wallet_retained SET sealed=? WHERE wallet_id=? AND account=? AND revision=?");
+        q.Blob(1,sealed);q.Blob(2,identity_.wallet_id);q.Int(3,identity_.account);q.Int(4,cut);
+        Check(sqlite3_step(q.p)==SQLITE_DONE&&sqlite3_changes(db_)==1);
+        (void)ReadRetained(cut);
+    }
+    Statement count(db_,"SELECT count(*) FROM orchard_wallet_retained WHERE wallet_id=? AND account=?");
+    count.Blob(1,identity_.wallet_id);count.Int(2,identity_.account);
+    Check(sqlite3_step(count.p)==SQLITE_ROW&&uint64_t(sqlite3_column_int64(count.p,0))==sorted.size());
+}
 } // namespace dinero::orchard
