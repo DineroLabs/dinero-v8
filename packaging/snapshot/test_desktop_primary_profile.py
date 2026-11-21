@@ -17,7 +17,7 @@ from fetch_desktop_primary import fetch, helper_dirs
 
 
 class DesktopPrimaryProfileTest(unittest.TestCase):
-    name = "dinero-assumeutxo-155650-v6-full.dat"
+    name = "dinero-assumeutxo-159922-v6-full.dat"
     block_hash = "ab" * 32
 
     def setUp(self):
@@ -34,11 +34,11 @@ class DesktopPrimaryProfileTest(unittest.TestCase):
         header[:4] = b"UXTO"
         struct.pack_into("<I", header, 4, 6)
         header[8:40] = bytes.fromhex(self.block_hash)[::-1]
-        struct.pack_into("<I", header, 40, 155650)
+        struct.pack_into("<I", header, 40, 159922)
         section = b"ORCH" + struct.pack("<I", 1) + bytes([profile])
         body = bytes(header) + struct.pack("<Q", len(section)) + section
         self.payload.write_bytes(body + hashlib.sha256(body).digest())
-        identity = {"snapshot_file": self.name, "height": 155650,
+        identity = {"snapshot_file": self.name, "height": 159922,
                     "block_hash": self.block_hash, "bytes": self.payload.stat().st_size,
                     "sha256": hashlib.sha256(self.payload.read_bytes()).hexdigest()}
         self.manifest.write_text(json.dumps({"network": "mainnet", "format_version": 6,

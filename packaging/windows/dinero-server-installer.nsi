@@ -25,9 +25,9 @@
 !endif
 
 ; Bundled AssumeUTXO snapshot filename. Passed in by build-server-installer.ps1
-; (/DSNAPSHOT_FILE=...). Defaults to the height-155650 full-v6 snapshot.
+; (/DSNAPSHOT_FILE=...). Defaults to the height-159922 full-v6 snapshot.
 !ifndef SNAPSHOT_FILE
-  !define SNAPSHOT_FILE "dinero-assumeutxo-155650-v6-full.dat"
+  !define SNAPSHOT_FILE "dinero-assumeutxo-159922-v6-full.dat"
 !endif
 
 !define APP_NAME       "Dinero Server"

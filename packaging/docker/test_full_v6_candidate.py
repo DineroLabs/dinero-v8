@@ -302,9 +302,9 @@ case "$1" in
   exec)
     case "$*" in
       *getsnapshotbootstrapstatus*)
-        echo '{"snapshot_bootstrap":{"assumeutxo_active":true,"fatal":false,"snapshot_base_height":155650,"snapshot_base_block":"0000001fd43981b118ab562cabbbdf2356527d8821d70e868fa12a021429340e"}}' ;;
+        echo '{"snapshot_bootstrap":{"assumeutxo_active":true,"fatal":false,"snapshot_base_height":159922,"snapshot_base_block":"0000001be3acca3bd374ef850830aa8385788fb87d1561675647498992e97312"}}' ;;
       *getblockchaininfo*) echo '{"blocks":155651}' ;;
-      *getblockhash*) echo '"0000001fd43981b118ab562cabbbdf2356527d8821d70e868fa12a021429340e"' ;;
+      *getblockhash*) echo '"0000001be3acca3bd374ef850830aa8385788fb87d1561675647498992e97312"' ;;
       *) exit 1 ;;
     esac
     exit 0 ;;
@@ -328,7 +328,7 @@ exit 1
         self.assertIn('Docker restart daemon reached RPC readiness', result.stdout)
         starts = [line for line in calls.read_text().splitlines() if line.startswith('run -d ')]
         self.assertEqual(len(starts), 2)
-        for rpc in ('getsnapshotbootstrapstatus', 'getblockchaininfo', 'getblockhash 155650'):
+        for rpc in ('getsnapshotbootstrapstatus', 'getblockchaininfo', 'getblockhash 159922'):
             self.assertGreaterEqual(
                 sum(line.startswith('exec ') and rpc in line for line in calls.read_text().splitlines()),
                 2, f'{rpc} was not checked on both the fresh and restart passes')

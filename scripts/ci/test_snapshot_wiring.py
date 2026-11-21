@@ -15,6 +15,7 @@ class SnapshotWiring(unittest.TestCase):
         # older recovery inputs. Native admission is qualified separately.
         self.names = pinned
         self.primary_height = catalog['primary']['height']
+        self.primary_sha256 = catalog['primary']['sha256']
         self.assertEqual(len(self.names), 6)
         self.assertEqual(catalog['fallbacks'][0]['height'], 153578)
         self.assertEqual(catalog['fallbacks'][0]['sha256'],
@@ -112,14 +113,15 @@ class SnapshotWiring(unittest.TestCase):
             self.assertIn('cmp -s "${GITHUB_WORKSPACE}/tooling/packaging/mac/build-installer.sh" packaging/mac/build-installer.sh', source)
 
         smoke = (ROOT / '.github/workflows/windows-openssl-release-smoke.yml').read_text(encoding='utf-8')
-        self.assertIn("-SnapshotFileName 'dinero-assumeutxo-155650-v6-full.dat'", smoke)
+        self.assertIn("-SnapshotFileName 'dinero-assumeutxo-159922-v6-full.dat'", smoke)
         self.assertIn('fetch_desktop_primary.py', smoke)
-        candidate_url = f'https://seed3.dinerolabs.org/v823-candidate/v824/h{self.primary_height}'
+        candidate_url = (f'https://seed3.dinerolabs.org/v824-candidate/'
+                         f'h{self.primary_height}-{self.primary_sha256[:8]}')
         for name, flag in [('snapshot.dat', '--payload-url'),
                            ('manifest.json', '--manifest-url'),
                            ('manifest.sig', '--signature-url')]:
             self.assertIn(f"{flag} '{candidate_url}/{name}'", smoke)
-        self.assertIn('--publisher-signature snapshot-inputs/dinero-assumeutxo-155650-v6-full.dat.publisher.manifest.sig', smoke)
+        self.assertIn('--publisher-signature snapshot-inputs/dinero-assumeutxo-159922-v6-full.dat.publisher.manifest.sig', smoke)
         version = re.search(r"-Version '([^']+)'", smoke)[1]
         filename = 'Dinero-Server-' + version + '-windows-x86_64-Setup.exe'
         self.assertEqual(smoke.count(filename), 2, 'Install and artifact paths must match the built version')
