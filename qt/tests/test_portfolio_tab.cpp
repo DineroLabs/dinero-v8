@@ -55,6 +55,67 @@ private Q_SLOTS:
         tab_ = nullptr;
     }
 
+    // There was a way to turn the Bitcoin wallet on and none to turn it off.
+    void theBitcoinWalletCanBeTurnedOffAndBackOn() {
+        auto* off = Find<QPushButton>(tab_, "bitcoinTurnOff");
+        auto* on = Find<QPushButton>(tab_, "bitcoinTurnOn");
+        auto* intro = Find<QLabel>(tab_, "bitcoinIntro");
+        auto* coins = Find<QTableWidget>(tab_, "coinsTable");
+        auto* address = Find<QLineEdit>(tab_, "bitcoinAddress");
+        QStringList asked;
+        bool answer = false;
+        tab_->setTurnOffConfirmer([&](const QString& q) { asked << q; return answer; });
+        QSettings().setValue(SwapLaunchPolicy::bitcoinWalletKey(), true);
+        Q_EMIT rpc_->rpcResult("portfolio.btcstatus", kOn);
+        Q_EMIT rpc_->rpcResult("portfolio.btcbalance", QJsonObject{{"sat", 10044}});
+        QVERIFY(off->isVisible() && address->isVisible());
+
+        // Asked first, with the balance; "no" changes nothing.
+        off->click();
+        QCOMPARE(asked.size(), 1);
+        QVERIFY2(asked[0].contains("0.00010044 BTC") && asked[0].contains("Nothing is deleted"), qPrintable(asked[0]));
+        QVERIFY(QSettings().value(SwapLaunchPolicy::bitcoinWalletKey()).toBool());
+        QVERIFY(address->isVisible());
+
+        // "Yes": the switch is stored off (the node is started without it next time), the wallet leaves the page.
+        answer = true;
+        off->click();
+        QVERIFY(QSettings().contains(SwapLaunchPolicy::bitcoinWalletKey()));
+        QVERIFY(!QSettings().value(SwapLaunchPolicy::bitcoinWalletKey()).toBool());
+        QVERIFY(SwapLaunchPolicy::daemonArgs(false, QSettings().value(SwapLaunchPolicy::bitcoinWalletKey()).toBool()).isEmpty());
+        QVERIFY(!address->isVisible() && !off->isVisible());
+        QVERIFY2(intro->text().contains("switched off") && intro->text().contains("show again"), qPrintable(intro->text()));
+        QCOMPARE(coins->item(1, 2)->text(), QString("Not turned on"));
+        QVERIFY2(!coins->item(1, 1)->text().contains("BTC"), "no balance on show while off");
+        // The node still runs it until Dinero restarts: its answers do not bring the wallet back by themselves.
+        Q_EMIT rpc_->rpcResult("portfolio.btcstatus", kOn);
+        QVERIFY(!address->isVisible());
+
+        // Back on: one click, the same address, nothing to start.
+        QVERIFY(on->isVisible());
+        on->click();
+        QVERIFY(QSettings().value(SwapLaunchPolicy::bitcoinWalletKey()).toBool());
+        QVERIFY(address->isVisible() && off->isVisible());
+        QCOMPARE(address->text(), QString("bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu"));
+
+        // A balance that could not be read is said so in the question, not passed over as nothing.
+        Q_EMIT rpc_->rpcResult("portfolio.btcstatus", kOn);
+        Q_EMIT rpc_->rpcResult("portfolio.btcbalance", QJsonObject{{"error", "cannot reach any Bitcoin server"}});
+        answer = false;
+        off->click();
+        QVERIFY2(asked.last().contains("could not be read"), qPrintable(asked.last()));
+
+        // Swaps use the same Bitcoin connection: refused, with the way out, and nothing is asked or stored.
+        QSettings().setValue(SwapLaunchPolicy::enabledKey(), true);
+        const int before = asked.size();
+        answer = true;
+        off->click();
+        QCOMPARE(asked.size(), before);
+        QVERIFY(QSettings().value(SwapLaunchPolicy::bitcoinWalletKey()).toBool());
+        QVERIFY2(Find<QLabel>(tab_, "portfolioStatus")->text().contains("Turn swaps off first"), "the way out is said");
+        QVERIFY(address->isVisible());
+    }
+
     void amountsAreReadStrictly() {
         using PortfolioPolicy::parseBtc;
         QCOMPARE(parseBtc("0.0002").value_or(-1), qint64(20000));

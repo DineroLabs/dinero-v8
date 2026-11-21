@@ -17,6 +17,7 @@
 #include <QJsonArray>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSettings>
 #include <QShowEvent>
@@ -177,6 +178,13 @@ PortfolioWidget::PortfolioWidget(RpcClient* rpc, QWidget* parent, Place place)
     historyRow->addStretch();
     on->addWidget(history_);
     on->addLayout(historyRow);
+    turnOff_ = Button("Turn off the Bitcoin wallet",
+                      "Dinero stops following the Bitcoin network. Nothing is deleted: your addresses and any bitcoin "
+                      "at them show again when you turn it back on", "bitcoinTurnOff", btcOn_);
+    auto* turnOffRow = new QHBoxLayout;
+    turnOffRow->addStretch();
+    turnOffRow->addWidget(turnOff_);
+    on->addLayout(turnOffRow);
     btcLayout->addWidget(btcOn_);
 
     status_ = new QLabel(btcBox_);
@@ -192,6 +200,7 @@ PortfolioWidget::PortfolioWidget(RpcClient* rpc, QWidget* parent, Place place)
     connect(rpc_, &RpcClient::rpcError, this, &PortfolioWidget::onRpcError);
     connect(refresh_, &QPushButton::clicked, this, &PortfolioWidget::refresh);
     connect(turnOn_, &QPushButton::clicked, this, &PortfolioWidget::onTurnOn);
+    connect(turnOff_, &QPushButton::clicked, this, &PortfolioWidget::onTurnOff);
     connect(newAddress_, &QPushButton::clicked, this, &PortfolioWidget::onNewAddress);
     connect(copyAddress_, &QPushButton::clicked, this, [this] {
         QApplication::clipboard()->setText(address_->text());
@@ -231,8 +240,18 @@ void PortfolioWidget::say(const QString& text, bool problem) {
     status_->setVisible(!text.isEmpty());
 }
 
+bool PortfolioWidget::switchedOff() const {
+    const QSettings settings;
+    const QString key = SwapLaunchPolicy::bitcoinWalletKey();
+    // Only the user's own "off" counts (a stored false), and not while swaps keep Bitcoin running.
+    return settings.contains(key) && !settings.value(key).toBool() &&
+           !settings.value(SwapLaunchPolicy::enabledKey(), false).toBool();
+}
+
 void PortfolioWidget::showCoins() {
-    const auto rows = PortfolioPolicy::coinRows(dinTotal_, btcStatus_, btcBalance_, btcProblem_, place_ == Place::Standalone);
+    // Switched off: no balance on show, whatever the node still knows until it restarts.
+    const QJsonObject status = switchedOff() && btcStatus_.value("enabled").toBool() ? QJsonObject{{"offered", true}} : btcStatus_;
+    const auto rows = PortfolioPolicy::coinRows(dinTotal_, status, btcBalance_, btcProblem_, place_ == Place::Standalone);
     coins_->setRowCount(rows.size());
     for (int i = 0; i < rows.size(); ++i) {
         const QString values[3] = {rows[i].coin, rows[i].amount.isEmpty() ? QString::fromUtf8("—") : rows[i].amount, rows[i].note};
@@ -247,6 +266,13 @@ void PortfolioWidget::showCoins() {
 void PortfolioWidget::showBitcoin() {
     const bool enabled = btcStatus_.value("enabled").toBool();
     const bool offered = btcStatus_.value("offered").toBool();
+    if (enabled && switchedOff()) {  // off by the user; the node drops it at its next start
+        btcOn_->setVisible(false);
+        turnOn_->setVisible(true);
+        turnOn_->setEnabled(true);
+        btcIntro_->setText(PortfolioPolicy::switchedOffText());
+        return;
+    }
     btcOn_->setVisible(enabled);
     // The node does not run the Bitcoin wallet at all: the user's own switch,
     // which takes effect at the next start of Dinero.
@@ -298,7 +324,32 @@ void PortfolioWidget::onFormChanged() {
     review_->setEnabled(!sendTo_->text().trimmed().isEmpty() && amountOk);
 }
 
+void PortfolioWidget::onTurnOff() {
+    if (QSettings().value(SwapLaunchPolicy::enabledKey(), false).toBool()) {
+        return say(PortfolioPolicy::turnOffRefusedBySwaps(), true);
+    }
+    const qlonglong sat = btcProblem_.isEmpty() && !btcBalance_.isEmpty() ? btcBalance_.value("sat").toVariant().toLongLong() : -1;
+    const QString question = PortfolioPolicy::turnOffQuestion(sat);
+    const bool yes = confirmTurnOff_ ? confirmTurnOff_(question)
+                                     : QMessageBox::question(this, "Turn off the Bitcoin wallet", question) == QMessageBox::Yes;
+    if (!yes) return;
+    QSettings().setValue(SwapLaunchPolicy::bitcoinWalletKey(), false);
+    clearReview();
+    say({}, false);
+    showBitcoin();
+    showCoins();
+}
+
 void PortfolioWidget::onTurnOn() {
+    // Switched off a moment ago and the node still runs it: on again, nothing to start.
+    if (switchedOff() && btcStatus_.value("enabled").toBool()) {
+        QSettings().setValue(SwapLaunchPolicy::bitcoinWalletKey(), true);
+        showBitcoin();
+        showCoins();
+        return refresh();
+    }
+    // The user's switch, remembered for every later start (swaps, when on, bring Bitcoin anyway).
+    QSettings().setValue(SwapLaunchPolicy::bitcoinWalletKey(), true);
     // Not running on this node yet: store the user's switch; the node gets it at its next start.
     if (PortfolioPolicy::bitcoinStartView(false, btcStatus_.value("why_not").toString()).notRunning &&
         !btcStatus_.value("offered").toBool()) {

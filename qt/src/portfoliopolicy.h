@@ -120,6 +120,32 @@ inline BitcoinStartView bitcoinStartView(bool wanted, const QString& nodeMessage
     return v;
 }
 
+// Turning the Bitcoin wallet off: what the user is told first. Nothing is
+// deleted; the addresses come from the recovery words either way.
+// `sat` < 0: the balance is not known at the moment.
+inline QString turnOffQuestion(qlonglong sat) {
+    QString q = "Turn off the Bitcoin wallet?\n\nDinero stops following the Bitcoin network the next time it starts. "
+                "Nothing is deleted: your Bitcoin addresses come from your recovery words, and they and any bitcoin at "
+                "them show again when you turn this back on.";
+    if (sat > 0) {
+        q += "\n\nYou have " + formatBtc(sat) + " here. It stays yours, but you will not see it or be able to send it "
+             "from Dinero while this is off.";
+    } else if (sat < 0) {
+        q += "\n\nYour Bitcoin balance could not be read just now. Whatever is here stays yours, but you will not see "
+             "it or be able to send it from Dinero while this is off.";
+    }
+    return q;
+}
+// Swaps reach Bitcoin through the same connection.
+inline QString turnOffRefusedBySwaps() {
+    return "Swaps are switched on, and they use the same Bitcoin connection. Turn swaps off first (Swap tab), then "
+           "turn the Bitcoin wallet off here.";
+}
+inline QString switchedOffText() {
+    return "The Bitcoin wallet is switched off. Dinero stops following the Bitcoin network the next time it starts. "
+           "Your Bitcoin addresses, and any bitcoin at them, show again when you turn this back on.";
+}
+
 // A payment before it is sent (btc.preview / btc.bumpfee), line by line.
 inline QStringList paymentReview(const QJsonObject& p) {
     const qint64 amount = p.value("amount_sat").toVariant().toLongLong(), fee = p.value("fee_sat").toVariant().toLongLong();

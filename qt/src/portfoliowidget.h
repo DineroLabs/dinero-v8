@@ -2,6 +2,7 @@
 // Portfolio tab: every coin this wallet holds, and the built-in Bitcoin
 // wallet's receive, send and history (docs/design/multi-coin-wallet.md).
 // The node does the work (btc.* RPCs); this tab only asks and shows.
+#include <functional>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QWidget>
@@ -23,6 +24,9 @@ public:
     enum class Place { Standalone, WithinWallet };
     explicit PortfolioWidget(RpcClient* rpc, QWidget* parent = nullptr, Place place = Place::Standalone);
 
+    // Tests answer the "turn off?" question without a dialog.
+    void setTurnOffConfirmer(std::function<bool(const QString&)> confirm) { confirmTurnOff_ = std::move(confirm); }
+
 protected:
     void showEvent(QShowEvent* event) override;
 
@@ -31,6 +35,7 @@ private Q_SLOTS:
     void onRpcError(const QString& method, int code, const QString& message);
     void refresh();
     void onTurnOn();
+    void onTurnOff();
     void onNewAddress();
     void onReview();
     void onSend();
@@ -40,6 +45,10 @@ private Q_SLOTS:
 private:
     void showCoins();
     void showBitcoin();
+    // The user turned the Bitcoin wallet off here, and nothing else (swaps) keeps it on.
+    bool switchedOff() const;
+    std::function<bool(const QString&)> confirmTurnOff_;
+    QPushButton* turnOff_;
     void showReview(const QJsonObject& payment, bool isBump);
     void clearReview();
     void say(const QString& text, bool problem);
