@@ -927,7 +927,7 @@ TEST(SnapshotWalletBirth, FirstRunRefusesABirthBelowTheSnapshotBase) {
     for(const uint32_t birth:{0u,1u,base-1,base,base+1,200000u}) {
         EXPECT_TRUE(ChainstateService::WalletBirthPrecedesSnapshot(State::Pending,base,birth)) << birth;
         EXPECT_TRUE(ChainstateService::WalletBirthPrecedesSnapshot(State::Loading,base,birth)) << birth;
-        // Pending is published before the base height is written.
+        // Pending refuses without needing to read the base height.
         EXPECT_TRUE(ChainstateService::WalletBirthPrecedesSnapshot(State::Pending,0,birth)) << birth;
     }
     EXPECT_TRUE(ChainstateService::WalletBirthPrecedesSnapshot(State::Loaded,base,0));
