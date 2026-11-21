@@ -163,7 +163,15 @@ TEST(OrchardPhoneHistory, ReorgAboveVerifiedPrefixKeepsReplayAndReplacesRequest)
     std::copy(prefix.begin(),prefix.end(),replacement_bytes.begin());
     const auto replacement_hash=replacement_header.GetHash();
     ASSERT_NE(old_hash,replacement_hash);
-    ASSERT_TRUE(ShieldedStateStartupTestAccess::DisconnectBoundary(*source.f.service,source.f.service->GetActiveTip()));
+    // The source fixture only supplies both branches' authenticated catalogs
+    // to the independent history downloader below. Invalidating its old tip
+    // removes that candidate before admitting the equal-work replacement;
+    // a bare disconnect leaves the old valid tip eligible and can select it
+    // again instead of the replacement.
+    std::string invalidate_error;
+    ASSERT_TRUE(source.f.service->InvalidateBlock(old_hash,invalidate_error))<<invalidate_error;
+    ASSERT_NE(source.f.service->GetActiveTip(),nullptr);
+    ASSERT_EQ(source.f.service->GetActiveTip()->hash,first->Header().GetHash());
     ASSERT_TRUE(source.Submit(replacement_bytes).connected);
     const auto replacement_catalog=source.f.db.getOrchardCatalogState(replacement_hash);
     ASSERT_TRUE(replacement_catalog.ok());
