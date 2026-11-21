@@ -51,6 +51,12 @@ public:
     // material limits), discarding the in-memory projection, never wallet
     // state.
     void SetFirstEvent(const RuntimeOutboxEvent&);
+    // v8.2.4: a full-v6 snapshot outbox starts at base+1, never at the
+    // activation height. Only the producer's sealed-fresh-birth path may root
+    // a projection there; the caller proves base and birth (see
+    // ChainstateService::captureRuntimeWalletOrigin). Same shape checks,
+    // except the first event is the Connect directly after `base_height`.
+    void SetFirstSnapshotBaseEvent(const RuntimeOutboxEvent&,uint32_t base_height,const uint256& base_block);
     void AppendValidated(const Block&,uint32_t height);
     void SetImportedCohort(std::map<std::string,std::string> cohort) { imported_cohort_=std::move(cohort); }
 private:

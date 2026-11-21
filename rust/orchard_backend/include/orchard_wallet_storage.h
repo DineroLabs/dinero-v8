@@ -47,6 +47,15 @@ private:
     // store's immutable retention contract is unchanged. Caller authenticated
     // the kept lineage and cuts its oldest parent to zero before adoption.
     void PruneRecovery(const std::vector<uint64_t>& keep,uint64_t cut,const WalletStateBytes*);
+    // v8.2.4 active retention bound. Same shape recovery adoption already
+    // installs in the active namespace: keep at most the 256-parent linked
+    // window (every kept row authenticated BEFORE any delete), delete this
+    // owner's other retained rows, and re-seal `cut` (a kept revision) with
+    // its parent link cut to zero. Requires the caller's durable transaction.
+    // An empty keep (current has no parent link) authenticates and deletes
+    // every retained row of this owner. Never touches another owner's rows
+    // or the current snapshot.
+    void PruneActive(const std::vector<uint64_t>& keep,uint64_t cut,const WalletStateBytes*);
     std::vector<uint8_t> AssociatedData(uint64_t revision)const;
     std::vector<uint8_t> Seal(uint64_t revision,std::span<const uint8_t>)const;
     WalletStateBytes Open(uint64_t revision,std::span<const uint8_t>)const;

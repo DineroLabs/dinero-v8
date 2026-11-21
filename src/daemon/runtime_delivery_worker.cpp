@@ -171,13 +171,17 @@ void RuntimeDeliveryWorker::RecoverWallet(Report& report,
             }
         }
 #endif
+        bool advanced_partial=false;
         const auto recovered=full_archive_v3 ?
             source_->resumeRuntimeWalletRecoveryV3IfNeeded(use->Wallet(),index->Index(),session,
-                limits_.legacy_material_limit_bytes) :
+                limits_.legacy_material_limit_bytes,1,&advanced_partial) :
             source_->resumeRuntimeWalletRecoveryIfNeeded(use->Wallet(),index->Index(),session,
                 limits_.legacy_material_limit_bytes);
         if (!recovered.ok()){refuse_resource_limit(recovered.status());return;}
-        if (!*recovered) {report.wallet=WalletOutcome::NoLog;return;}
+        if (!*recovered) {
+            report.wallet=advanced_partial?WalletOutcome::AdvancedPending:WalletOutcome::NoLog;
+            return;
+        }
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
         report.wallet=WalletOutcome::AppliedPrefix;report.wallet_head=(*recovered)->observed_head;
 #endif
@@ -238,7 +242,13 @@ void RuntimeDeliveryWorker::Run() noexcept {
             bool restart=false;
             {
                 std::unique_lock lock(state_->mutex);
-                if (!continue_pass) state_->wake.wait_for(lock,limits_.retry_interval,[&]{return state_->stopping||state_->requested;});
+                // A bounded v3 prefix just committed and more work is known.
+                // Revisit it promptly while yielding between durable writes;
+                // ordinary no-work and locked-wallet retries keep their normal interval.
+                const auto retry=pass.wallet==WalletOutcome::AdvancedPending?
+                    std::min(limits_.retry_interval,std::chrono::milliseconds(10)):
+                    limits_.retry_interval;
+                if (!continue_pass) state_->wake.wait_for(lock,retry,[&]{return state_->stopping||state_->requested;});
                 if (state_->stopping) break;
                 restart=state_->requested||!continue_pass;state_->requested=false;
             }

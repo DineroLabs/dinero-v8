@@ -181,6 +181,15 @@ OrchardAccountState::IssueReceiver(WalletScope scope) const {
   }
   return {OrchardAccountState(std::move(next)), receiver};
 }
+
+std::optional<WalletReceiver> OrchardAccountState::FirstIssuedExternalReceiver() const {
+  const auto& next = data_->next[static_cast<uint8_t>(WalletScope::External)];
+  if (!data_->exhausted[static_cast<uint8_t>(WalletScope::External)] &&
+      std::all_of(next.begin(), next.end(), [](uint8_t byte) { return byte == 0; }))
+    return std::nullopt;
+  return WalletReceiver::FromViewingKey(data_->fvk, WalletScope::External, {});
+}
+
 OrchardAccountState OrchardAccountState::Advance(
     const OrchardBlockContext &context, const OrchardBlockCandidate &block,
     const PreparedOrchardState &prepared,

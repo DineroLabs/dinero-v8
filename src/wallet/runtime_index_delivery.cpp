@@ -632,6 +632,15 @@ void RuntimeWalletOriginProjection::SetFirstEvent(const RuntimeOutboxEvent& firs
         Fail("Origin projection first event is not a checked activation origin");
     first_=first;
 }
+void RuntimeWalletOriginProjection::SetFirstSnapshotBaseEvent(const RuntimeOutboxEvent& first,
+        uint32_t base_height,const uint256& base_block) {
+    if(first_.cursor.sequence)Fail("Origin projection first event already set");
+    if(first.cursor.sequence!=1||first.direction!=RuntimeBlockDirection::Connect||!base_height||
+       base_block.IsNull()||first.context.height<=first.context.activation_height||
+       first.context.height!=uint64_t(base_height)+1||first.context.parent_hash!=base_block)
+        Fail("Origin projection first event is not the checked snapshot base successor");
+    first_=first;
+}
 void RuntimeWalletOriginProjection::AppendValidated(const Block& block,uint32_t height) {
     // Projection arithmetic only (see the header contract): the producer calls
     // this only AFTER owned consensus replay of this body, and body ordering /
@@ -1710,6 +1719,7 @@ RuntimeIndexProgress RuntimeOrdinaryDelivery::AdvanceCoverage(WalletManager& wal
         RuntimeIndexDelivery::CheckCoverageImportedCohort(index,origin);
         transaction.Commit(); // Index's ACTUAL owners remain held through here.
     },&origin.historical_scripts_,previous.get(),&source,owners_current);
+    wallet.publishNativeDeliveredTipHeight(*lease,applied.tip_height);
     return applied;
 }
 
@@ -1881,6 +1891,12 @@ void RuntimeOrdinaryDelivery::ReconcileCoverage(WalletManager& wallet,UTXOIndex&
     }
     RuntimeIndexDelivery::ReconcileCoverage(index,source,[&] {
         WriteCoverageOrdinary(db,wallet.current_wallet_id_,scripts,source,plan);
+        // The ordinary receipt and the status watermark describe the same
+        // committed coverage. Write the watermark first: its guard revokes
+        // the old receipt, which is replaced below in this transaction.
+        Statement scan(db,"UPDATE sync_meta SET last_scanned_height=?,scan_complete=1 WHERE id=1");
+        scan.Int(1,source.TipHeight());scan.Done();
+        if(sqlite3_changes(db)!=1)Fail("Coverage scan watermark unavailable");
         Receipt next{{source.Head(),origin.OriginHash(),source.TipHash(),origin.OriginHeight(),source.TipHeight()},Profile(origin.first_.context)};
         Statement receipt(db,"UPDATE wallet_meta SET runtime_ordinary_receipt=?,runtime_ordinary_invalid=0 WHERE id=1");
         receipt.Blob(1,Encode(next,origin.identity_,scripts.digest,"DNOW01"));receipt.Done();
@@ -1889,6 +1905,7 @@ void RuntimeOrdinaryDelivery::ReconcileCoverage(WalletManager& wallet,UTXOIndex&
         if(source_before_commit)source_before_commit();
         transaction.Commit();
     },source_before_commit);
+    wallet.publishNativeDeliveredTipHeight(*lease,source.TipHeight());  // committed above; see the declaration
 }
 
 void RuntimeOrdinaryDelivery::ReconcileLegacyTransparentCoverage(WalletManager& wallet,UTXOIndex& index,
@@ -2313,7 +2330,9 @@ RuntimeIndexProgress RuntimeOrdinaryDelivery::Apply(WalletManager& wallet,uint64
     if(wallet.current_wallet_id_<0)Fail("Ordinary delivery wallet unavailable");
     OrdinaryTransaction transaction(db);
     const auto applied=ApplyInTransaction(wallet,lease.get(),identity,event,origin);
-    transaction.Commit();return applied;
+    transaction.Commit();
+    wallet.publishNativeDeliveredTipHeight(*lease,applied.tip_height);
+    return applied;
 }
 RuntimeIndexProgress RuntimeOrdinaryDelivery::ApplyInTransaction(WalletManager& wallet,WalletManager::DatabaseLease* lease,
         const std::string& identity,const RuntimeOutboxEvent& event,const RuntimeWalletOriginProjection* origin) {
@@ -2408,11 +2427,12 @@ RuntimeIndexProgress RuntimeOrdinaryDelivery::ApplyInTransaction(WalletManager& 
     Exec(db,"UPDATE utxos SET is_mature=CASE WHEN is_coinbase=0 OR confirmations>=100 THEN 1 ELSE 0 END");
     OrdinaryInt(db,"UPDATE transactions SET confirmations=CASE WHEN height>0 THEN MAX(0,?-height+1) ELSE 0 END",after.second);
     OrdinaryInt(db,"INSERT INTO tip(rowid,height) VALUES(1,?) ON CONFLICT(rowid) DO UPDATE SET height=excluded.height",after.second);
-    if(lease->TypedTransparentState()==WalletManager::LegacyTransparentState::Complete) {
-        Statement scan(db,"UPDATE sync_meta SET last_scanned_height=?,scan_complete=1 WHERE id=1");
-        scan.Int(1,after.second);scan.Done();
-        if(sqlite3_changes(db)!=1)Fail("Legacy transparent incremental scan watermark unavailable");
-    }
+    // Both native and migrated wallets report the height their ordinary
+    // delivery actually committed. The sync_meta guard revokes the previous
+    // receipt; seal the new one only after this write, in the same commit.
+    Statement scan(db,"UPDATE sync_meta SET last_scanned_height=?,scan_complete=1 WHERE id=1");
+    scan.Int(1,after.second);scan.Done();
+    if(sqlite3_changes(db)!=1)Fail("Ordinary incremental scan watermark unavailable");
     Receipt next;next.profile=profile;next.progress={event.cursor,old?old->progress.origin_hash:before.first,after.first,old?old->progress.origin_height:before.second,after.second};
     const auto bytes=Encode(next,identity,scripts.digest,"DNOW01");
     Statement checkpoint(db,"UPDATE wallet_meta SET runtime_ordinary_receipt=?,runtime_ordinary_invalid=0 WHERE id=1");checkpoint.Blob(1,bytes);checkpoint.Done();

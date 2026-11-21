@@ -231,7 +231,7 @@ jobs:
           log=open('snapshot-shutdown-execution.log').read()
           assert sorted(re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log))==['NotifyDrainWorker','OrchardSnapshotRuntime']
           for suite,cases in {
-              'OrchardSnapshotRuntime': ['FullNodeRejectsBadDnorst02WithCompactBootstrapOff','RealRegtestActivationFullAndCompactImportReopenAndFloor','DeferredV5WaitsForBurialBeforeLoaderAttempt','CompactPreloadedHeadersDeferImportUntilStart','ActualServiceBootstrapExportAndRestartBothProfiles','IndependentLaterRegtestGatePreservesRoot1ThenExportsRoot2','DormantCoinbaseProfileV6FileImportsUnderH1Schedule','QueuedDownloadedHeaderIsRevalidatedWithoutSelectedPublication','UnmarkedEmptyReadyStoreCannotSelfInitializeGenesis'],
+              'OrchardSnapshotRuntime': ['FullNodeRejectsBadDnorst02WithCompactBootstrapOff','RealRegtestActivationFullAndCompactImportReopenAndFloor','DeferredV5WaitsForBurialBeforeLoaderAttempt','CompactPreloadedHeadersDeferImportUntilStart','ActualServiceBootstrapExportAndRestartBothProfiles','ImportedPrebirthKeyCannotUseFreshSnapshotOrigin','IndependentLaterRegtestGatePreservesRoot1ThenExportsRoot2','DormantCoinbaseProfileV6FileImportsUnderH1Schedule','QueuedDownloadedHeaderIsRevalidatedWithoutSelectedPublication','UnmarkedEmptyReadyStoreCannotSelfInitializeGenesis'],
               'NotifyDrainWorker': ['NotifierNeverBlocksOnSlowDrain','DrainRunsOnWorkerThread','NotifyDuringDrainIsNotLost','DrainsAllQueuedWorkWithoutFurtherNotifies','StopInterruptsContinuousProgress','StopJoinsPromptly'],
           }.items():
               assert sorted(re.findall(r'\[       OK \] '+suite+r'\.(\w+)',log))==sorted(cases),suite
@@ -3183,7 +3183,7 @@ jobs:
           if owned != ['SelectedWalletHistory.ValidatesBeforeEffectsAndUsesOwnedBodies']:
               raise SystemExit('Selected wallet history service case did not execute exactly once')
           projection = re.findall(r'\[ RUN\s+\] (RuntimeOriginProjection\.\S+)', open('orchard-history-replay-execution.log').read())
-          if sorted(projection) != ['RuntimeOriginProjection.ArchivalBudgetRequiresExplicitBoundedSelection', 'RuntimeOriginProjection.BindsCapturedWalletAndScriptDomain', 'RuntimeOriginProjection.KeepsSpentCoinsAndExactTransactionHistory', 'RuntimeOriginProjection.PhoneRecoveryMaterialBoundIs128MiB']:
+          if sorted(projection) != ['RuntimeOriginProjection.ArchivalBudgetRequiresExplicitBoundedSelection', 'RuntimeOriginProjection.BindsCapturedWalletAndScriptDomain', 'RuntimeOriginProjection.KeepsSpentCoinsAndExactTransactionHistory', 'RuntimeOriginProjection.PhoneRecoveryMaterialBoundIs128MiB', 'RuntimeOriginProjection.SnapshotBaseOriginAcceptsOnlyTheBaseSuccessor']:
               raise SystemExit('Origin projection case did not execute exactly once')
           PYTEST
       - name: Require and execute wallet recovery key ownership

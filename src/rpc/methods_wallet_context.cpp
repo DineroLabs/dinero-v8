@@ -2433,6 +2433,7 @@ din::Json rpc_context_wallet_listaddresses(const ExecutionContext& ctx, const di
                         dinero::wallet::BuildP2MRScriptPubKey(p2mr.merkle_root);
                     const std::string script_pubkey_hex = BytesToHex(script_pubkey);
                     auto balance = wallet_service->get().getScriptPubKeyBalance(script_pubkey_hex);
+                    if (hidden.count(p2mr.address) && balance.utxo_count == 0) continue;
                     addr_obj["address"]    = p2mr.address;
                     if (!p2mr.label.empty()) {
                         addr_obj["label"]  = p2mr.label;

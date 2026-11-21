@@ -6,6 +6,19 @@
 #include <memory>
 namespace dinero { struct Block; }
 namespace dinero::wallet {
+// RAII, thread-local: while alive, a viewing key proven valid once in this
+// call is not re-proven for each further state of the same account. Nested
+// scopes share one memo; the outermost destructor wipes it. Install around a
+// single catalog capture/restore only, never across a lock or session change.
+class ValidatedViewingKeyScope {
+public:
+  ValidatedViewingKeyScope() noexcept;
+  ~ValidatedViewingKeyScope();
+  ValidatedViewingKeyScope(const ValidatedViewingKeyScope&)=delete;
+  ValidatedViewingKeyScope& operator=(const ValidatedViewingKeyScope&)=delete;
+  // Process-wide count of actual key proofs (tests only; no key material).
+  static uint64_t ProofsForTest() noexcept;
+};
 struct ScannedOrchardNote {
   std::shared_ptr<const orchard::WalletNote> note;
   std::shared_ptr<const orchard::WalletWitness> witness;

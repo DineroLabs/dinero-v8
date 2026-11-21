@@ -140,6 +140,7 @@ private:
     bool retired_ = false;
     bool retiredKnown_ = false;
     bool holdsNotes_ = false;
+    bool legacyWalletStateUnavailable_ = false;
     qint64 retiredAtHeight_ = 0;
     int lastVisibility_ = -1;
     QString lastLabel_;
