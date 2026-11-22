@@ -1,3 +1,4 @@
+#include "recoverywordspolicy.h"
 #include "privatecovenantwidget.h"
 #include "covenantformpolicy.h"
 #include "build_identity.h"
@@ -72,6 +73,7 @@
 #include <QIcon>
 #include <QTimer>
 #include <QPointer>
+#include <QUuid>
 #include <QThread>
 #include <QGroupBox>
 #include <QScrollArea>
@@ -2337,7 +2339,7 @@ MainWindow::MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
     auto* box = new QDialog(this);
     box->setAttribute(Qt::WA_DeleteOnClose);
     box->setModal(false);
-    box->setWindowTitle("Starting Dinero…");
+    box->setWindowTitle("Starting Dinero.");
 
     auto* layout = new QVBoxLayout(box);
     auto* titleLabel = new QLabel(box);
@@ -2384,6 +2386,17 @@ MainWindow::MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
       render(*elapsed);
     });
     tick->start();
+
+    // A small three-step motion in the title shows that startup is alive
+    // even while the elapsed time advances more slowly below it.
+    auto* dots = new QTimer(box);
+    dots->setInterval(600);
+    auto dotCount = std::make_shared<int>(1);
+    QObject::connect(dots, &QTimer::timeout, box, [box, dotCount]() {
+      *dotCount = *dotCount % 3 + 1;
+      box->setWindowTitle(QStringLiteral("Starting Dinero") + QString(*dotCount, QChar('.')));
+    });
+    dots->start();
 
     // Close the moment the daemon connects, even between ticks.
     QObject::connect(connectionMgr_, &ConnectionManager::connected, box,
@@ -3403,6 +3416,24 @@ void MainWindow::setupUI() {
       walletControlLayout->addWidget(action, 1);
     }
     walletSetupLayout->addLayout(walletControlLayout);
+    // The wallet's recovery words were never confirmed as written down
+    // (recoverywordspolicy.h): said here until the user has seen and confirmed them.
+    recoveryReminder_ = new QFrame(wallet);
+    recoveryReminder_->setObjectName("walletRecoveryReminder");
+    recoveryReminder_->setStyleSheet(
+      "QFrame#walletRecoveryReminder { background: #3a2f12; border: 1px solid #b8860b; border-radius: 8px; }"
+      "QFrame#walletRecoveryReminder QLabel { color: #f3e3b0; background: transparent; }");
+    auto *reminderLayout = new QHBoxLayout(recoveryReminder_);
+    auto *lblReminder = new QLabel(RecoveryWordsPolicy::reminderText(), recoveryReminder_);
+    lblReminder->setWordWrap(true);
+    auto *btnShowWords = new QPushButton(RecoveryWordsPolicy::reminderButton(), recoveryReminder_);
+    btnShowWords->setObjectName("walletShowRecoveryWords");
+    btnShowWords->setStyleSheet(chromeButtonStyle());
+    connect(btnShowWords, &QPushButton::clicked, this, &MainWindow::onExportSeed);
+    reminderLayout->addWidget(lblReminder, 1);
+    reminderLayout->addWidget(btnShowWords);
+    recoveryReminder_->setVisible(false);
+    layout->addWidget(recoveryReminder_);
     layout->addWidget(walletSetupGroup);
     
     // Cross-Platform Compatibility Banner
@@ -8669,6 +8700,11 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       // A retryable wallet-delivery refusal is not evidence that the wallet
       // was unloaded or locked. Keep the last known identity/security state.
       if (obj.contains("error")) return;
+      if (recoveryReminder_ && !walletSwitchInFlight_ &&
+          !currentWalletName_.isEmpty() &&
+          obj.value("wallet_name").toString() == currentWalletName_) {
+        recoveryReminder_->setVisible(RecoveryWordsPolicy::reminderNeeded(obj));
+      }
       bool hdEnabled = obj["hd_enabled"].toBool(false);
       bool unlocked = walletUnlockedFromRpc(obj);
       
@@ -11947,12 +11983,12 @@ void MainWindow::updateMiningOutputCinematicFrame() {
       qreal brightness = 0;
       if (sample.blockFound && remainingMs > 0 &&
           remainingMs <= dinero::qt::kBlockFoundHighlightMs) {
-        // Keep the winning hash still while the next template loads. Its
-        // orange light swells three times, fading fully between glows.
+        // The winning row keeps glowing as new template samples move it up.
+        // Its orange light swells four times, fading fully between glows.
         const qreal progress = 1.0 - static_cast<qreal>(remainingMs) /
                                    dinero::qt::kBlockFoundHighlightMs;
         constexpr qreal kPi = 3.14159265358979323846;
-        const qreal wave = std::sin(progress * 3.0 * kPi);
+        const qreal wave = std::sin(progress * 4.0 * kPi);
         brightness = wave * wave;
         rowColor.setGreen(qRound(176 + 44 * brightness));
         rowColor.setBlue(qRound(48 + 48 * brightness));
@@ -14742,6 +14778,42 @@ void MainWindow::onExportSeed() {
       layout->addWidget(fp);
     }
 
+    // The node checks the words against the wallet's own before recording
+    // confirmation. Keep this dialog open if that check fails.
+    if (obj.value("backup_required").toBool(false)) {
+      auto* btnConfirm = new QPushButton(RecoveryWordsPolicy::confirmButton(obj));
+      btnConfirm->setObjectName("seedBackupConfirm");
+      btnConfirm->setStyleSheet(chromeButtonStyle());
+      connect(btnConfirm, &QPushButton::clicked, dialog, [this, dialog, btnConfirm, seedPhrase, obj]() {
+        btnConfirm->setEnabled(false);
+        const QString walletName = currentWalletName_;
+        const QString replyAlias = QStringLiteral("wallet.backup-confirmation.%1")
+            .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+        connect(rpc_, &RpcClient::rpcResult, dialog,
+                [this, dialog, btnConfirm, replyAlias, walletName](const QString& method, const QJsonValue& result) {
+          if (method != replyAlias) return;
+          const QJsonObject response = result.toObject();
+          if (!RecoveryWordsPolicy::confirmationRecorded(response, walletName)) {
+            btnConfirm->setEnabled(true);
+            QMessageBox::warning(dialog, "Recovery Words Not Confirmed",
+                response.value("error").toString("The wallet did not record your backup. Please try again."));
+            return;
+          }
+          rpc_->call("wallet.getinfo", QJsonArray());
+          dialog->accept();
+        });
+        connect(rpc_, &RpcClient::rpcError, dialog,
+                [dialog, btnConfirm, replyAlias](const QString& method, int, const QString& message) {
+          if (method != replyAlias) return;
+          btnConfirm->setEnabled(true);
+          QMessageBox::warning(dialog, "Recovery Words Not Confirmed", message);
+        });
+        rpc_->callAs("wallet.acknowledgeseedbackup",
+                     RecoveryWordsPolicy::confirmParams(seedPhrase, obj), replyAlias);
+      });
+      layout->addWidget(btnConfirm);
+    }
+
     auto* btnClose = new QPushButton("Close");
     btnClose->setStyleSheet(chromeButtonStyle());
     connect(btnClose, &QPushButton::clicked, dialog, &QDialog::accept);
@@ -15774,6 +15846,7 @@ void MainWindow::clearWalletScopedUiState() {
   walletTransparentV3SendReady_ = false;
   legacyShieldedBalanceUnsupported_ = false;
   walletSendUnavailableReason_ = "Waiting for the selected wallet balance";
+  if (recoveryReminder_) recoveryReminder_->setVisible(false);
   if (btnSend_) btnSend_->setEnabled(false);
   if (privateCovenantWidget_) privateCovenantWidget_->setWalletScope({});
   paymentRecipientDraft_.clear(); paymentAmountDraft_.clear();
@@ -16098,6 +16171,10 @@ void MainWindow::checkRescanStatus() {
       }
 
       // Update all wallet-dependent UI
+      if (recoveryReminder_ && !walletSwitchInFlight_ &&
+          !walletName.isEmpty() && walletName == currentWalletName_) {
+        recoveryReminder_->setVisible(RecoveryWordsPolicy::reminderNeeded(obj));
+      }
       updateWalletUIState();
   });
 

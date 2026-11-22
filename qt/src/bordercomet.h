@@ -3,6 +3,7 @@
 #include <QElapsedTimer>
 #include <QPixmap>
 #include <QPointF>
+#include <QPointer>
 #include <QRect>
 #include <QRegion>
 #include <QTimer>
@@ -38,10 +39,13 @@ private:
     void start();
     void relayout();
     void tick();
+    void updateNavigationUnderline();
     QRegion cometRegion(double head) const;
     bool onScreen() const;
 
     QWidget* host_;
+    QTabWidget* navigationTabs_ = nullptr;
+    QPointer<QWidget> navigationUnderline_;
     QWidget* watchedWindow_ = nullptr;
     std::function<QRect()> frame_;
     qreal radius_;

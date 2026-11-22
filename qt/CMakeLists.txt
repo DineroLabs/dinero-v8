@@ -903,11 +903,11 @@ if(APPLE)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
   # Copy resources to build directory
-  configure_file(${CMAKE_SOURCE_DIR}/Dinero-Coin.png
+  configure_file(${CMAKE_CURRENT_SOURCE_DIR}/Dinero-Coin.png
                  ${CMAKE_BINARY_DIR}/Dinero-Coin.png COPYONLY)
-  configure_file(${CMAKE_SOURCE_DIR}/Dinero.png
+  configure_file(${CMAKE_CURRENT_SOURCE_DIR}/Dinero.png
                  ${CMAKE_BINARY_DIR}/Dinero.png COPYONLY)
-  configure_file(${CMAKE_SOURCE_DIR}/icons/Dinero.icns
+  configure_file(${CMAKE_CURRENT_SOURCE_DIR}/icons/Dinero.icns
                  ${CMAKE_BINARY_DIR}/Dinero.icns COPYONLY)
 
   # Resolve macdeployqt now, but run it after bundling the daemon/resources so
@@ -970,7 +970,7 @@ if(APPLE)
 
   add_custom_command(TARGET dinero-qt POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy
-      "${CMAKE_SOURCE_DIR}/icons/Dinero.icns"
+      "${CMAKE_CURRENT_SOURCE_DIR}/icons/Dinero.icns"
       "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/Resources/Dinero.icns"
     COMMENT "Installing app icon..."
   )
@@ -978,7 +978,7 @@ if(APPLE)
   # Copy logo for QR codes
   add_custom_command(TARGET dinero-qt POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy
-      "${CMAKE_SOURCE_DIR}/Dinero-Coin.png"
+      "${CMAKE_CURRENT_SOURCE_DIR}/Dinero-Coin.png"
       "$<TARGET_BUNDLE_DIR:dinero-qt>/Contents/Resources/Dinero-Coin.png"
     COMMENT "Installing logo for QR codes..."
   )
@@ -1438,11 +1438,11 @@ endif()
 
 if(APPLE)
   install(TARGETS dinero-qt BUNDLE DESTINATION .)
-  install(FILES ${CMAKE_SOURCE_DIR}/Dinero-Coin.png
+  install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/Dinero-Coin.png
     DESTINATION dinero-qt.app/Contents/Resources)
 else()
   install(TARGETS dinero-qt RUNTIME DESTINATION bin)
-  install(FILES ${CMAKE_SOURCE_DIR}/Dinero-Coin.png DESTINATION bin)
+  install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/Dinero-Coin.png DESTINATION bin)
 endif()
 
 if(BUILD_TESTING)
@@ -1544,6 +1544,13 @@ if(BUILD_TESTING)
   target_link_libraries(test_swap_form_policy PRIVATE Qt6::Core Qt6::Test)
   target_compile_definitions(test_swap_form_policy PRIVATE QT_NO_KEYWORDS)
   add_test(NAME SwapFormPolicy COMMAND test_swap_form_policy)
+
+  # The "recovery words are not confirmed" reminder: when it shows, what is sent on confirmation.
+  add_executable(test_recovery_words_policy tests/test_recovery_words_policy.cpp)
+  target_include_directories(test_recovery_words_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_recovery_words_policy PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_recovery_words_policy PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME RecoveryWordsPolicy COMMAND test_recovery_words_policy)
 
   # Pure request classification; no RPC client, server, socket or node.
   add_executable(test_rpc_retry_policy tests/test_rpc_retry_policy.cpp)

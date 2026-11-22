@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QFrame>
 #include <QMainWindow>
 
 #include "daemonstartuppolicy.h"
@@ -712,6 +713,7 @@ private:
 
   // Wallet lock/unlock (single toggle button with status in text)
   QPushButton* btnWalletLock_;      // Shows status + toggles Lock/Unlock
+  QFrame* recoveryReminder_ = nullptr;  // "your recovery words are not confirmed" (recoverywordspolicy.h)
   QPushButton* btnEncryptWallet_;
   class QComboBox* cmbWalletSelector_;
   QPushButton* btnLoadWallet_;
