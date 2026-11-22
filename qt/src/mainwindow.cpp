@@ -9,6 +9,7 @@
 #include "segwitaddress.h"
 #include "miningrewards.h"
 #include "inforow.h"
+#include "scoreboardlabel.h"
 #include "mainwindow.h"
 #include "bordercomet.h"
 #include "daemonoutput.h"
@@ -127,6 +128,8 @@
 #include <QRandomGenerator>
 #include <QScrollBar>
 #include <QFontDatabase>
+#include <QFocusEvent>
+#include <QResizeEvent>
 #include <QThread>
 #include <QStackedWidget>
 #include <cmath>
@@ -145,164 +148,52 @@
 
 namespace {
 
-// Keep mining telemetry accessible as label text while drawing compact
-// scoreboard glyphs. Unsupported external-miner text uses QLabel rendering.
-class MiningScoreboardLabel final : public QLabel {
+// Show the same small scoreboard digits as Run until the user edits the thread
+// count. Focusing the field restores normal editable text and the caret.
+class ScoreboardNumberEdit final : public QLineEdit {
 public:
-  explicit MiningScoreboardLabel(const QString& value, QWidget* parent = nullptr)
-      : QLabel(value, parent) {}
-
-  void setGlyphScale(qreal scale) {
-    glyphScale_ = scale;
-    updateGeometry();
-    update();
+  explicit ScoreboardNumberEdit(const QString& value, QWidget* parent = nullptr)
+      : QLineEdit(value, parent), display_(new MiningScoreboardLabel(value, this)) {
+    display_->setGlyphScale(0.75);
+    display_->setAlignment(Qt::AlignCenter);
+    display_->setStyleSheet(
+        "QLabel { color: #c2cbd2; background: transparent; } "
+        "QLabel:disabled { color: #747e86; }");
+    display_->setAttribute(Qt::WA_TransparentForMouseEvents);
+    connect(this, &QLineEdit::textChanged, display_, &QLabel::setText);
   }
 
-  QSize sizeHint() const override {
-    const QString value = text();
-    if (!isScoreboardText(value)) return QLabel::sizeHint();
-    qreal width = 0;
-    for (const QChar glyph : value) width += glyphAdvance(glyph);
-    return QSize(qCeil((width - kDigitGap) * glyphScale_),
-                 qMax(QLabel::sizeHint().height(), 18));
-  }
-
-  QSize minimumSizeHint() const override {
-    if (!isScoreboardText(text())) return QLabel::minimumSizeHint();
-    return sizeHint();
+  void setControlStyleSheet(const QString& style) {
+    baseStyle_ = style;
+    refreshDisplay();
   }
 
 protected:
-  void paintEvent(QPaintEvent* event) override {
-    const QString value = text();
-    if (!isScoreboardText(value)) {
-      QLabel::paintEvent(event);
-      return;
-    }
+  void resizeEvent(QResizeEvent* event) override {
+    QLineEdit::resizeEvent(event);
+    display_->setGeometry(rect().adjusted(1, 1, -1, -1));
+  }
 
-    QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing);
-    painter.setPen(QPen(palette().color(QPalette::WindowText), 1.5,
-                        Qt::SolidLine, Qt::RoundCap));
-    painter.translate(0, (height() - kDigitHeight * glyphScale_) / 2.0);
-    painter.scale(glyphScale_, glyphScale_);
-    const qreal top = 0;
-    qreal left = 0;
-    for (const QChar glyph : value) {
-      const QChar lower = glyph.toLower();
-      if (lower == QLatin1Char(' ')) {
-        left += kSpaceStep;
-        continue;
-      }
-      if (lower == QLatin1Char('.')) {
-        painter.drawPoint(QPointF(left + 1, top + kDigitHeight - 1));
-        left += kPointStep;
-        continue;
-      }
-      if (lower == QLatin1Char(':')) {
-        painter.drawPoint(QPointF(left + 1, top + 4));
-        painter.drawPoint(QPointF(left + 1, top + kDigitHeight - 4));
-        left += kPointStep;
-        continue;
-      }
-      const qreal right = left + kDigitWidth;
-      const qreal middle = top + kDigitHeight / 2.0;
-      if (lower == QLatin1Char('x')) {
-        painter.drawLine(QPointF(left + 1, top + 3),
-                         QPointF(right - 1, top + kDigitHeight - 2));
-        painter.drawLine(QPointF(right - 1, top + 3),
-                         QPointF(left + 1, top + kDigitHeight - 2));
-        left += kDigitStep;
-        continue;
-      }
-      if (lower == QLatin1Char('m')) {
-        // A narrow two-hump glyph for the runtime unit, using the same pen.
-        const qreal bottom = top + kDigitHeight - 1.5;
-        painter.drawLine(QPointF(left + 1, bottom), QPointF(left + 1, middle + 1));
-        painter.drawLine(QPointF(left + 1, middle + 1), QPointF(left + 3, middle - 1));
-        painter.drawLine(QPointF(left + 3, middle - 1), QPointF(left + 4.25, middle + 1));
-        painter.drawLine(QPointF(left + 4.25, middle + 1), QPointF(left + 6, middle - 1));
-        painter.drawLine(QPointF(left + 6, middle - 1), QPointF(right - 1, middle + 1));
-        painter.drawLine(QPointF(right - 1, middle + 1), QPointF(right - 1, bottom));
-        left += kDigitStep;
-        continue;
-      }
-      const int bits = segmentMask(lower);
-      if (bits & 0x01) {
-        painter.drawLine(QPointF(left + 1.5, top + 1),
-                         QPointF(right - 1.5, top + 1));
-      }
-      if (bits & 0x02) {
-        painter.drawLine(QPointF(right - 1, top + 2.5),
-                         QPointF(right - 1, middle - 1));
-      }
-      if (bits & 0x04) {
-        painter.drawLine(QPointF(right - 1, middle + 1),
-                         QPointF(right - 1, top + kDigitHeight - 2.5));
-      }
-      if (bits & 0x08) {
-        painter.drawLine(QPointF(left + 1.5, top + kDigitHeight - 1),
-                         QPointF(right - 1.5, top + kDigitHeight - 1));
-      }
-      if (bits & 0x10) {
-        painter.drawLine(QPointF(left + 1, middle + 1),
-                         QPointF(left + 1, top + kDigitHeight - 2.5));
-      }
-      if (bits & 0x20) {
-        painter.drawLine(QPointF(left + 1, top + 2.5),
-                         QPointF(left + 1, middle - 1));
-      }
-      if (bits & 0x40) {
-        painter.drawLine(QPointF(left + 1.5, middle),
-                         QPointF(right - 1.5, middle));
-      }
-      left += kDigitStep;
-    }
+  void focusInEvent(QFocusEvent* event) override {
+    QLineEdit::focusInEvent(event);
+    refreshDisplay();
+  }
+
+  void focusOutEvent(QFocusEvent* event) override {
+    QLineEdit::focusOutEvent(event);
+    refreshDisplay();
   }
 
 private:
-  static int segmentMask(const QChar& glyph) {
-    static constexpr unsigned char digits[10] = {
-      0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f};
-    if (glyph >= QLatin1Char('0') && glyph <= QLatin1Char('9'))
-      return digits[glyph.unicode() - '0'];
-    switch (glyph.unicode()) {
-      case 'a': return 0x77;
-      case 'b': return 0x7c;
-      case 'c': return 0x58;
-      case 'd': return 0x5e;
-      case 'e': return 0x79;
-      case 'f': return 0x71;
-      case 'h': return 0x74;
-      case 's': return 0x6d;
-      default: return -1;
-    }
+  void refreshDisplay() {
+    const bool editing = hasFocus();
+    display_->setVisible(!editing);
+    QLineEdit::setStyleSheet(baseStyle_ + (editing ? QString() :
+        QStringLiteral(" QLineEdit { color: transparent; }")));
   }
 
-  static bool isScoreboardText(const QString& value) {
-    if (value.isEmpty()) return false;
-    for (const QChar glyph : value) {
-      const QChar lower = glyph.toLower();
-      if (segmentMask(lower) < 0 && lower != QLatin1Char('x') &&
-          lower != QLatin1Char('m') && lower != QLatin1Char('.') &&
-          lower != QLatin1Char(':') && lower != QLatin1Char(' ')) return false;
-    }
-    return true;
-  }
-
-  static qreal glyphAdvance(const QChar& glyph) {
-    if (glyph == QLatin1Char(' ')) return kSpaceStep;
-    if (glyph == QLatin1Char('.') || glyph == QLatin1Char(':')) return kPointStep;
-    return kDigitStep;
-  }
-
-  static constexpr qreal kDigitWidth = 8.5;
-  static constexpr qreal kDigitGap = 2.0;
-  static constexpr qreal kDigitStep = kDigitWidth + kDigitGap;
-  static constexpr qreal kDigitHeight = 14.0;
-  static constexpr qreal kPointStep = 4.0;
-  static constexpr qreal kSpaceStep = 5.0;
-  qreal glyphScale_ = 1.0;
+  MiningScoreboardLabel* display_;
+  QString baseStyle_;
 };
 
 constexpr int kWalletUnlockTimeoutSeconds = 60 * 60;
@@ -2881,6 +2772,11 @@ void MainWindow::setupUI() {
     lblPhase_ = new InfoRow("Next halving: -");
     lblSupply_ = new InfoRow("Supply: -");
     lblReward_ = new InfoRow("Next Reward: -");
+    lblHeight_->setValueStyle(InfoRow::ValueStyle::Scoreboard);
+    lblHeaders_->setValueStyle(InfoRow::ValueStyle::Scoreboard);
+    for (InfoRow* row : {lblConnections_, lblPhase_, lblSupply_, lblReward_}) {
+      row->setValueStyle(InfoRow::ValueStyle::SmallScoreboard);
+    }
     lblSyncProgress_ = new QLabel("");
     lblSyncProgress_->setStyleSheet("QLabel { color: #cbd3dc; font-weight: 600; background: #262b32; border: 1px solid #373d46; border-radius: 6px; padding: 5px; }");
     
@@ -5119,9 +5015,10 @@ void MainWindow::setupUI() {
     connect(btnUseWalletAddr_, &QPushButton::clicked, this, &MainWindow::onSetMiningAddress);
     row1->addWidget(btnUseWalletAddr_);
     row1->addWidget(new QLabel("Threads:"));
-    edtMiningThreads_ = new QLineEdit(QString::number(kDefaultMiningThreads));
+    auto* threadsEdit = new ScoreboardNumberEdit(QString::number(kDefaultMiningThreads));
+    edtMiningThreads_ = threadsEdit;
     edtMiningThreads_->setObjectName("miningThreads");
-    edtMiningThreads_->setStyleSheet(miningControlFieldStyle());
+    threadsEdit->setControlStyleSheet(miningControlFieldStyle());
     edtMiningThreads_->setAlignment(Qt::AlignCenter);
     edtMiningThreads_->setFixedSize(56, 30);
     row1->addWidget(edtMiningThreads_);
@@ -5221,10 +5118,40 @@ void MainWindow::setupUI() {
     row2->addWidget(lblMiningUptimeCaption_);
     row2->addWidget(lblMiningUptime_);
 
-    btnMiningSessionFinds_ = new QPushButton("Session");
+    btnMiningSessionFinds_ = new QPushButton;
     btnMiningSessionFinds_->setToolTip("Blocks found this mining session");
+    btnMiningSessionFinds_->setAccessibleName("Session");
     btnMiningSessionFinds_->setStyleSheet(miningButtonStyle());
     btnMiningSessionFinds_->setFixedHeight(miningControlHeight);
+    btnMiningSessionFinds_->setMinimumWidth(110);
+    auto* sessionContents = new QHBoxLayout(btnMiningSessionFinds_);
+    sessionContents->setContentsMargins(9, 0, 9, 0);
+    sessionContents->setSpacing(3);
+    const QString sessionTextStyle = QStringLiteral(
+        "QLabel { font-size: 12px; font-weight: 600; color: #c2cbd2; "
+        "background: transparent; } QLabel:disabled { color: #747e86; }");
+    auto* sessionCaption = new QLabel("Session", btnMiningSessionFinds_);
+    sessionCaption->setStyleSheet(sessionTextStyle);
+    sessionCaption->setAttribute(Qt::WA_TransparentForMouseEvents);
+    sessionContents->addWidget(sessionCaption);
+    miningSessionCountGroup_ = new QWidget(btnMiningSessionFinds_);
+    miningSessionCountGroup_->setAttribute(Qt::WA_TransparentForMouseEvents);
+    auto* countContents = new QHBoxLayout(miningSessionCountGroup_);
+    countContents->setContentsMargins(0, 0, 0, 0);
+    countContents->setSpacing(0);
+    auto* openParen = new QLabel("(", miningSessionCountGroup_);
+    openParen->setStyleSheet(sessionTextStyle);
+    countContents->addWidget(openParen);
+    auto* sessionCount = new MiningScoreboardLabel("0", miningSessionCountGroup_);
+    sessionCount->setGlyphScale(kSecondaryMiningStatScale);
+    sessionCount->setStyleSheet(sessionTextStyle);
+    lblMiningSessionCount_ = sessionCount;
+    countContents->addWidget(sessionCount);
+    auto* closeParen = new QLabel(")", miningSessionCountGroup_);
+    closeParen->setStyleSheet(sessionTextStyle);
+    countContents->addWidget(closeParen);
+    miningSessionCountGroup_->hide();
+    sessionContents->addWidget(miningSessionCountGroup_);
     btnMiningSessionFinds_->setEnabled(false);
     connect(btnMiningSessionFinds_, &QPushButton::clicked, this, [this]() {
       if (miningSessionFinds_.isEmpty()) return;
@@ -5579,8 +5506,11 @@ void MainWindow::setupUI() {
       }
       if (btnMiningSessionFinds_) {
         btnMiningSessionFinds_->setEnabled(true);
-        btnMiningSessionFinds_->setText(
-          QString("Session (%1)").arg(miningSessionFinds_.size()));
+        const QString count = QString::number(miningSessionFinds_.size());
+        lblMiningSessionCount_->setText(count);
+        miningSessionCountGroup_->show();
+        btnMiningSessionFinds_->setMinimumWidth(88 + count.size() * 8);
+        btnMiningSessionFinds_->setAccessibleName(QString("Session (%1)").arg(count));
       }
       miningFoundPendingTemplate_ = true;
       // The live hash field is only for the visible mining session. Keeping
@@ -5628,7 +5558,9 @@ void MainWindow::setupUI() {
             miningSessionFinds_.clear();
             miningHashSamples_.clear();
             if (btnMiningSessionFinds_) {
-                btnMiningSessionFinds_->setText("Session");
+                miningSessionCountGroup_->hide();
+                lblMiningSessionCount_->setText("0");
+                btnMiningSessionFinds_->setAccessibleName("Session");
                 btnMiningSessionFinds_->setEnabled(false);
             }
             if (mining_stats_.mining_started <= 0) {
@@ -10128,9 +10060,12 @@ void MainWindow::updateEconomics(const QJsonObject& economics) {
       const qint64 epoch = economics["current_halving_epoch"].toInt();
       const qint64 nextHalving = (epoch + 1) * interval + 1;  // halvings = (height - 1) / interval
       const qint64 blocksLeft = nextHalving - qMax(0, cachedHeight_);
+      QString until = chainTiming_.approxDuration(blocksLeft);
+      until.replace(QStringLiteral(" years"), QStringLiteral(" Years"));
+      until.replace(QStringLiteral(" year"), QStringLiteral(" Year"));
       lblPhase_->setText(cachedHeight_ > 0 && blocksLeft > 0
-          ? QString("Next halving: block %1 · %2").arg(nextHalving).arg(chainTiming_.approxDuration(blocksLeft))
-          : QString("Next halving: block %1").arg(nextHalving));
+          ? QString("Next halving: Block %1 · %2").arg(nextHalving).arg(until)
+          : QString("Next halving: Block %1").arg(nextHalving));
     } else {
       lblPhase_->setVisible(false); // Hide if not available
     }

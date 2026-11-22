@@ -23,7 +23,10 @@ on:
       - 'qt/tests/test_swap_tab.cpp'
       - 'qt/src/mainwindow.cpp'
       - 'qt/src/mainwindow.h'
+      - 'qt/src/inforow.*'
+      - 'qt/src/scoreboardlabel.h'
       - 'qt/tests/test_mining_output_zoom.cpp'
+      - 'qt/tests/test_info_row.cpp'
 
 jobs:
   swap-windows:
@@ -166,7 +169,7 @@ jobs:
       - name: Build dinero-qt and Qt layout tests
         shell: powershell
         run: |
-          cmake --build build-msvc-qt --config Release --parallel 2 --target dinero-qt test_swap_tab test_overview_columns test_mining_output_zoom
+          cmake --build build-msvc-qt --config Release --parallel 2 --target dinero-qt test_swap_tab test_overview_columns test_mining_output_zoom test_info_row
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run Swap tab, overview, and mining UI tests (offscreen)
@@ -175,8 +178,8 @@ jobs:
           $env:QT_QPA_PLATFORM = 'offscreen'
           $env:QT_QPA_FONTDIR = "$env:WINDIR\Fonts"
           $env:PATH = "$env:QT_ROOT_DIR\bin;$env:PATH"
-          ctest --test-dir build-msvc-qt -C Release -R '^(SwapTab|OverviewColumns|MiningOutputZoom)$' --output-on-failure | Tee-Object ctest.log
+          ctest --test-dir build-msvc-qt -C Release -R '^(SwapTab|OverviewColumns|MiningOutputZoom|InfoRow)$' --output-on-failure | Tee-Object ctest.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not (Select-String -Path ctest.log -Pattern '100% tests passed, 0 tests failed out of 3')) {
-            throw 'SwapTab, OverviewColumns, and MiningOutputZoom did not each run once'
+          if (-not (Select-String -Path ctest.log -Pattern '100% tests passed, 0 tests failed out of 4')) {
+            throw 'SwapTab, OverviewColumns, MiningOutputZoom, and InfoRow did not each run once'
           }

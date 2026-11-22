@@ -696,6 +696,8 @@ private:
   };
   QVector<MiningSessionFind> miningSessionFinds_;
   QPushButton* btnMiningSessionFinds_ = nullptr;
+  QWidget* miningSessionCountGroup_ = nullptr;
+  QLabel* lblMiningSessionCount_ = nullptr;
   QLabel* mottoTickerLabel_ = nullptr;
   void updateMiningStats();
   void updateMiningRuntimeLabel();
