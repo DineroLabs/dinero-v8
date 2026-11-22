@@ -2272,7 +2272,13 @@ void P2PService::EnsureSnapshotHistoryWorkers() {
                         return peers;},[this](const auto& peer,const auto& command,const auto& bytes){
                         ::P2PMessage message{};message.command=command;message.payload=bytes;
                         return p2p_mgr_&&p2p_mgr_->is_network_active()&&p2p_mgr_->send_to_peer(peer.address,message,peer.session);
-                    },cache);
+                    },cache,
+                    // Undocumented field fallback: support can set
+                    // orchard.history_window=1 (the previous one-request
+                    // behaviour) without a new build. Clamped to 1..16.
+                    size_t(std::max(1,config_?config_->GetInt("orchard.history_window",
+                        int(p2p::OrchardPhoneHistoryDownload::kDefaultWindow)):
+                        int(p2p::OrchardPhoneHistoryDownload::kDefaultWindow))));
                 {std::lock_guard lock(orchard_catalog_download_mutex_);orchard_phone_history_=std::move(history);}
             }
         }
