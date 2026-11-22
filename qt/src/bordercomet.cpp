@@ -103,6 +103,21 @@ private:
     QTabBar* bar_;
     int litTab_ = -1;
 };
+
+// Each underline's horizontal span is the hit mask for a comet tip. Mapping
+// through the shared QTabWidget matters: the comet and QTabBar are siblings.
+int navigationUnderlineAt(const QWidget& comet, QTabWidget& tabs, const QPointF& tip) {
+    QTabBar* bar = tabs.tabBar();
+    const QPoint inTabs = comet.mapTo(&tabs, tip.toPoint());
+    const int x = bar->mapFrom(&tabs, inTabs).x();
+    for (int i = 0; i < bar->count(); ++i) {
+        if (!bar->isTabVisible(i)) continue;
+        const QRect tab = bar->tabRect(i).intersected(bar->rect());
+        if (tab.isEmpty() || tab.width() <= 2) continue;
+        if (x >= tab.left() && x <= tab.right() - 2) return i;
+    }
+    return -1;
+}
 }
 
 bool BorderComet::Enabled() {
@@ -149,8 +164,13 @@ void BorderComet::start() {
     host_->installEventFilter(this);
     if (navigationTabs_) {
         navigationUnderline_ = new NavigationCometUnderline(navigationTabs_->tabBar());
-        connect(navigationTabs_, &QTabWidget::currentChanged, this,
-                [this] { updateNavigationUnderline(); });
+        connect(navigationTabs_, &QTabWidget::currentChanged, this, [this] {
+            if (navigationUnderline_) {
+                navigationUnderline_->hide();
+                static_cast<NavigationCometUnderline*>(navigationUnderline_.data())->setLitTab(-1);
+            }
+            update(); // restore the effect only after the comet is repainted
+        });
     }
     // Step aside while the user scrolls: a see-through layer over a scrolling
     // page defeats Qt's scroll fast path (stale areas, stutter on macOS).
@@ -232,7 +252,6 @@ void BorderComet::relayout() {
     }
     head_ = progress * path_.size();
     update();
-    updateNavigationUnderline();
 }
 
 bool BorderComet::onScreen() const {
@@ -272,7 +291,6 @@ void BorderComet::tick() {
     const QRegion before = cometRegion(head_);
     head_ = std::fmod(head_ + elapsed / kLapMs * path_.size(), double(path_.size()));
     update(before.united(cometRegion(head_)));
-    updateNavigationUnderline();
 }
 
 void BorderComet::updateNavigationUnderline() {
@@ -305,11 +323,8 @@ void BorderComet::updateNavigationUnderline() {
         const double frac = position - head;
         const QPointF tip = path_[head] + (path_[(head + 1) % n] - path_[head]) * frac;
         if (tip.y() > radius_ + 1.5) continue; // only the top edge passes the menu
-        const QPoint inBar = mapTo(bar, tip.toPoint());
-        const QPoint hit(inBar.x(), bar->height() / 2);
-        if (!bar->rect().contains(hit)) continue;
-        const int index = bar->tabAt(hit);
-        if (index < 0 || !bar->isTabVisible(index)) continue;
+        const int index = navigationUnderlineAt(*this, *navigationTabs_, tip);
+        if (index < 0) continue;
         if (index == underline->litTab()) { chosen = index; break; }
         if (chosen < 0) chosen = index;
     }
@@ -360,4 +375,9 @@ void BorderComet::paintEvent(QPaintEvent* event) {
         painter.drawEllipse(tip, kGlow, kGlow);
         painter.setBrush(Qt::NoBrush);
     }
+    painter.end();
+    // Follow the tip that was actually rendered. Under mining load the pane's
+    // queued paint may lag timer ticks; lighting the tab in tick() would put
+    // the "piano key" ahead of the visible comet.
+    updateNavigationUnderline();
 }

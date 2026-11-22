@@ -2339,7 +2339,7 @@ MainWindow::MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
     auto* box = new QDialog(this);
     box->setAttribute(Qt::WA_DeleteOnClose);
     box->setModal(false);
-    box->setWindowTitle("Starting Dinero…");
+    box->setWindowTitle("Starting Dinero.");
 
     auto* layout = new QVBoxLayout(box);
     auto* titleLabel = new QLabel(box);
@@ -2386,6 +2386,17 @@ MainWindow::MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
       render(*elapsed);
     });
     tick->start();
+
+    // A small three-step motion in the title shows that startup is alive
+    // even while the elapsed time advances more slowly below it.
+    auto* dots = new QTimer(box);
+    dots->setInterval(600);
+    auto dotCount = std::make_shared<int>(1);
+    QObject::connect(dots, &QTimer::timeout, box, [box, dotCount]() {
+      *dotCount = *dotCount % 3 + 1;
+      box->setWindowTitle(QStringLiteral("Starting Dinero") + QString(*dotCount, QChar('.')));
+    });
+    dots->start();
 
     // Close the moment the daemon connects, even between ticks.
     QObject::connect(connectionMgr_, &ConnectionManager::connected, box,
