@@ -204,6 +204,8 @@ Both are for after the release, once there is evidence about which peers actuall
 
   Requests in flight are kept for the same reason buffered bodies are. A reply is matched by hash, peer and session, and revalidated before it's appended. A retarget drops what a reorganisation made stale. The 30 s deadline still applies. Clearing them would have handed up to `kWindow` replies per pause to the normal block path, and requested the same heights again.
 
+  A paused worker retries at the normal `ActiveWait` (50 ms), even though the body for `next` is still buffered and would otherwise satisfy the wait at once. Without this it would spin on `target_()` and the header selector, the same locks the node needs to finish the tip change it's waiting for.
+
   On the next iteration, each buffered body is revalidated against the selected chain's hash at its height before it's appended (section 4 step 3), and a body that no longer matches is dropped and re-requested. This is what keeps section 4's promise that a pause never turns buffered bodies, or requests still in flight, into re-downloads.
 
 Because a reply is accepted only by the expected hash for the current selected chain, a reply for a block that a reorganisation replaced can never be appended.

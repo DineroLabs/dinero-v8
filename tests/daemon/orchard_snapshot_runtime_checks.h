@@ -2588,6 +2588,10 @@ TEST(OrchardPhoneHistory, PipelinedWindowAppendsInOrderAndFailsOverAsAWhole){
         ASSERT_GE(empty.load(),3u)<<"the append of 102 was retried, not abandoned";
         EXPECT_LT(host->Observe().verified_height,102u);
         {std::lock_guard lock(wire.mutex);EXPECT_EQ(wire.sent.size(),6u)<<"an empty append re-requests nothing";}
+        // A paused worker retries at the ActiveWait cadence (50 ms), it does
+        // not spin on the body it keeps buffered.
+        const auto before=empty.load();std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        EXPECT_LE(empty.load()-before,20u)<<"retries while paused are paced, not a busy loop";
         stuck=false;
         const auto drained=std::chrono::steady_clock::now()+std::chrono::seconds(5);
         while(host->Observe().verified_height<106u&&std::chrono::steady_clock::now()<drained)std::this_thread::sleep_for(std::chrono::milliseconds(10));
