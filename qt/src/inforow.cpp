@@ -109,8 +109,10 @@ void InfoRow::updateDigitalValue(const QString& formatted) {
             part->setStyleSheet("QLabel { color: #ccd3dc; background: transparent; }");
             part->setAlignment(Qt::AlignVCenter);
             if (isNumber) {
-                static_cast<MiningScoreboardLabel*>(part)->setGlyphScale(
+                auto* scoreboard = static_cast<MiningScoreboardLabel*>(part);
+                scoreboard->setGlyphScale(
                     valueStyle_ == ValueStyle::Scoreboard ? 1.0 : 0.75);
+                scoreboard->setFitToWidth(true);
             }
             valueLayout_->addWidget(part);
             valueParts_.append(part);

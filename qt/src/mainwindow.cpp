@@ -155,6 +155,7 @@ public:
   explicit ScoreboardNumberEdit(const QString& value, QWidget* parent = nullptr)
       : QLineEdit(value, parent), display_(new MiningScoreboardLabel(value, this)) {
     display_->setGlyphScale(0.75);
+    display_->setFitToWidth(true);
     display_->setAlignment(Qt::AlignCenter);
     display_->setStyleSheet(
         "QLabel { color: #c2cbd2; background: transparent; } "
@@ -194,6 +195,17 @@ private:
 
   MiningScoreboardLabel* display_;
   QString baseStyle_;
+};
+
+class SessionFindsButton final : public QPushButton {
+public:
+  using QPushButton::QPushButton;
+
+  QSize sizeHint() const override {
+    QSize hint = QPushButton::sizeHint();
+    if (layout()) hint.setWidth(qMax(hint.width(), layout()->sizeHint().width() + 2));
+    return hint;
+  }
 };
 
 constexpr int kWalletUnlockTimeoutSeconds = 60 * 60;
@@ -5073,7 +5085,9 @@ void MainWindow::setupUI() {
             this, &MainWindow::onMiningModeChanged);
 
     // Tiny stats
-    lblBlocksFound_ = new MiningScoreboardLabel("0");
+    auto* blocksScoreboard = new MiningScoreboardLabel("0");
+    blocksScoreboard->setFitToWidth(true);
+    lblBlocksFound_ = blocksScoreboard;
     lblBlocksFound_->setStyleSheet(miningStatStyle("#bec8d0", true));
     auto* lblBlocksCaption = new QLabel("Blocks:");
     lblBlocksCaption->setStyleSheet(miningStatStyle());
@@ -5083,7 +5097,9 @@ void MainWindow::setupUI() {
     auto* lblHeightCaption = new QLabel("Height:");
     lblHeightCaption->setStyleSheet(miningStatStyle());
     row2->addWidget(lblHeightCaption);
-    lblMiningHeight_ = new MiningScoreboardLabel("-");
+    auto* heightScoreboard = new MiningScoreboardLabel("-");
+    heightScoreboard->setFitToWidth(true);
+    lblMiningHeight_ = heightScoreboard;
     lblMiningHeight_->setStyleSheet(miningStatStyle("#bec8d0", true));
     row2->addWidget(lblMiningHeight_);
 
@@ -5096,12 +5112,14 @@ void MainWindow::setupUI() {
     constexpr qreal kSecondaryMiningStatScale = 0.75;
     auto* targetScoreboard = new MiningScoreboardLabel("-");
     targetScoreboard->setGlyphScale(kTargetMiningStatScale);
+    targetScoreboard->setFitToWidth(true);
     lblMiningDifficulty_ = targetScoreboard;
     lblMiningDifficulty_->setStyleSheet(miningStatStyle("#bec8d0", true));
     row2->addWidget(lblMiningDifficulty_);
     
     auto* hashRateScoreboard = new MiningScoreboardLabel("0.00");
     hashRateScoreboard->setGlyphScale(kSecondaryMiningStatScale);
+    hashRateScoreboard->setFitToWidth(true);
     lblCurrentHash_ = hashRateScoreboard;
     lblCurrentHash_->setStyleSheet(miningStatStyle("#bec8d0", true));
     auto* lblHashrateCaption = new QLabel("MH/s:");
@@ -5111,6 +5129,7 @@ void MainWindow::setupUI() {
     
     auto* runtimeScoreboard = new MiningScoreboardLabel("-");
     runtimeScoreboard->setGlyphScale(kSecondaryMiningStatScale);
+    runtimeScoreboard->setFitToWidth(true);
     lblMiningUptime_ = runtimeScoreboard;
     lblMiningUptime_->setStyleSheet(miningStatStyle("#bec8d0", true));
     lblMiningUptimeCaption_ = new QLabel("Run:");
@@ -5118,7 +5137,7 @@ void MainWindow::setupUI() {
     row2->addWidget(lblMiningUptimeCaption_);
     row2->addWidget(lblMiningUptime_);
 
-    btnMiningSessionFinds_ = new QPushButton;
+    btnMiningSessionFinds_ = new SessionFindsButton;
     btnMiningSessionFinds_->setToolTip("Blocks found this mining session");
     btnMiningSessionFinds_->setAccessibleName("Session");
     btnMiningSessionFinds_->setStyleSheet(miningButtonStyle());
@@ -5144,6 +5163,7 @@ void MainWindow::setupUI() {
     countContents->addWidget(openParen);
     auto* sessionCount = new MiningScoreboardLabel("0", miningSessionCountGroup_);
     sessionCount->setGlyphScale(kSecondaryMiningStatScale);
+    sessionCount->setFitToWidth(true);
     sessionCount->setStyleSheet(sessionTextStyle);
     lblMiningSessionCount_ = sessionCount;
     countContents->addWidget(sessionCount);
@@ -5509,7 +5529,7 @@ void MainWindow::setupUI() {
         const QString count = QString::number(miningSessionFinds_.size());
         lblMiningSessionCount_->setText(count);
         miningSessionCountGroup_->show();
-        btnMiningSessionFinds_->setMinimumWidth(88 + count.size() * 8);
+        btnMiningSessionFinds_->updateGeometry();
         btnMiningSessionFinds_->setAccessibleName(QString("Session (%1)").arg(count));
       }
       miningFoundPendingTemplate_ = true;

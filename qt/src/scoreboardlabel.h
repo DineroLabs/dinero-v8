@@ -19,6 +19,13 @@ public:
     update();
   }
 
+  void setFitToWidth(bool enabled) {
+    if (fitToWidth_ == enabled) return;
+    fitToWidth_ = enabled;
+    updateGeometry();
+    update();
+  }
+
   QSize sizeHint() const override {
     const QString value = text();
     if (!isScoreboardText(value)) return QLabel::sizeHint();
@@ -30,6 +37,12 @@ public:
 
   QSize minimumSizeHint() const override {
     if (!isScoreboardText(text())) return QLabel::minimumSizeHint();
+    if (fitToWidth_) {
+      // Let a crowded stat row contract without forcing neighboring values
+      // outside the window. paintEvent scales the complete value to fit.
+      return QSize(qMin(sizeHint().width(), 24),
+                   qMax(QLabel::sizeHint().height(), 18));
+    }
     return sizeHint();
   }
 
@@ -47,14 +60,18 @@ protected:
                         Qt::SolidLine, Qt::RoundCap));
     qreal advance = 0;
     for (const QChar glyph : value) advance += glyphAdvance(glyph);
-    const qreal drawnWidth = (advance - kDigitGap) * glyphScale_;
+    const qreal naturalWidth = advance - kDigitGap;
+    const qreal renderScale = fitToWidth_
+        ? qMin(glyphScale_, qMax<qreal>(0.01, width() / naturalWidth))
+        : glyphScale_;
+    const qreal drawnWidth = naturalWidth * renderScale;
     qreal leftOffset = 0;
     if (alignment() & Qt::AlignHCenter)
       leftOffset = qMax<qreal>(0, (width() - drawnWidth) / 2.0);
     else if (alignment() & Qt::AlignRight)
       leftOffset = qMax<qreal>(0, width() - drawnWidth);
-    painter.translate(leftOffset, (height() - kDigitHeight * glyphScale_) / 2.0);
-    painter.scale(glyphScale_, glyphScale_);
+    painter.translate(leftOffset, (height() - kDigitHeight * renderScale) / 2.0);
+    painter.scale(renderScale, renderScale);
     const qreal top = 0;
     qreal left = 0;
     for (const QChar glyph : value) {
@@ -180,4 +197,5 @@ private:
   static constexpr qreal kPointStep = 4.0;
   static constexpr qreal kSpaceStep = 5.0;
   qreal glyphScale_ = 1.0;
+  bool fitToWidth_ = false;
 };
