@@ -250,7 +250,9 @@ jobs:
                     'ExtensionSeenMidIterationPreservesVerifiedPrefix',
                     'SequentialBodiesExtendWithoutSkippingAndReadyDataIsNotState',
                     'ABlockAfterVerificationKeepsTheCheckpointAndAReorganisationWithdrawsIt',
-                    'CorruptFirstBodyNeverPublishesAndStopDiscardsFlight']
+                    'CorruptFirstBodyNeverPublishesAndStopDiscardsFlight',
+                    'PipelinedWindowAppendsInOrderAndFailsOverAsAWhole',
+                    'VerifierStartsForATargetTheTipHasAlreadyPassed']
           ran=re.findall(r'\[ RUN\s+\] OrchardPhoneHistory\.(\w+)',log)
           passed=re.findall(r'\[       OK \] OrchardPhoneHistory\.(\w+)',log)
           assert sorted(ran)==sorted(expected) and sorted(passed)==sorted(expected)
