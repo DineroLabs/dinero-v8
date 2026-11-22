@@ -70,10 +70,12 @@ public:
     struct Progress {bool requested=false,ready=false;uint32_t verified_height=0,target_height=0;uint256 target_hash;std::string error;};
     OrchardPhoneHistoryDownload(std::shared_ptr<const consensus::HeaderChainSelector> headers,
         std::filesystem::path work,TargetSource target,ProofSource proof,Verifier verify,Peers peers,Send send,
-        std::shared_ptr<OrchardHistoryCache> cache={},size_t window=kDefaultWindow)
+        std::shared_ptr<OrchardHistoryCache> cache={},size_t window=kDefaultWindow,
+        size_t received_cap=kReceivedBytesCap,std::function<bool(uint32_t)> test_unselected={})
         :headers_(std::move(headers)),work_(std::move(work)),target_(std::move(target)),proof_(std::move(proof)),
          verify_(std::move(verify)),peers_(std::move(peers)),send_(std::move(send)),cache_(std::move(cache)),
-         window_(std::clamp<size_t>(window,1,kMaxWindow)),worker_([this]{Run();}){}
+         window_(std::clamp<size_t>(window,1,kMaxWindow)),received_cap_(received_cap),
+         test_unselected_(std::move(test_unselected)),worker_([this]{Run();}){}
     ~OrchardPhoneHistoryDownload(){Stop();}
     bool Enqueue(const Peer& peer,std::span<const uint8_t> bytes){
         if(bytes.size()<128||bytes.size()>OrchardBlockCandidate::MaxWireSize())return false;
@@ -91,10 +93,12 @@ public:
         const auto height=it->first;inflight_.erase(it);
         // Charged once, here, whether it is buffered or later found stale.
         charged_bytes_+=bytes.size();
-        // Hard memory bound: a body that would exceed the cap is dropped (and
-        // re-requested once the buffer drains). History bodies are a few
-        // hundred bytes, so this does not bind in practice.
-        if(!received_.contains(height)&&received_bytes_+bytes.size()<=kReceivedBytesCap){
+        // Hard memory bound: a body above the next one to append that would
+        // exceed the cap is dropped (and re-requested once the buffer drains).
+        // The next body is always held, so the bound is the cap plus one body
+        // (MaxWireSize). History bodies are a few hundred bytes, so this does
+        // not bind in practice.
+        if(!received_.contains(height)&&(height==head_||received_bytes_+bytes.size()<=received_cap_)){
             received_.emplace(height,Received{Bytes(bytes.begin(),bytes.end()),hash,peer.address,peer.session,false});
             received_bytes_+=bytes.size();
         }
@@ -189,6 +193,12 @@ private:
     const TargetSource target_;const ProofSource proof_;const Verifier verify_;const Peers peers_;const Send send_;
     const std::shared_ptr<OrchardHistoryCache> cache_;
     const size_t window_;
+    const size_t received_cap_; // kReceivedBytesCap except in tests
+    // Tests only; empty in the daemon. Returning true for a height makes that
+    // append behave as if AppendForSelectedHistory found the target not
+    // selected at that instant, which a real selector cannot be made to do
+    // deterministically between the loop's own selection check and the append.
+    const std::function<bool(uint32_t)> test_unselected_;
     // The public cache is an optimization over revalidated bytes. Its first
     // refusal (for example records written under another datadir root
     // identity) retires it for this download: bodies are then fetched from
@@ -209,6 +219,10 @@ private:
     // selected chain's hash at its height, at append time. Guarded by mutex_.
     struct Received {Bytes bytes;uint256 hash;std::string address;uint64_t session=0;bool cached=false;};
     std::map<uint32_t,Received> received_;size_t received_bytes_=0;
+    // The lowest height not yet appended (Run's `next`). The cap never applies
+    // to it: otherwise bodies above it could fill the buffer, the next body
+    // could never be held, and nothing could drain. Guarded by mutex_.
+    uint32_t head_=0;
     uint64_t charged_bytes_=0; // wire bytes accepted by Enqueue, taken into the per-minute budget by Run
     std::shared_ptr<const Data> ready_;Progress progress_;
     // The last fully verified history; kept across pure tip extensions (ready_ is not).
@@ -234,12 +248,14 @@ private:
         // the checkpoint checks it against the selected chain itself
         // (ReadyCheckpoint, ReadyCheckpointFor). Withdrawing it here would
         // make it last only until the next block arrives. Requests in flight
-        // are dropped; bodies already received are KEPT (they are revalidated
-        // by hash before they are appended), so a pause never turns them into
-        // re-downloads or a gap.
+        // and bodies already received are both KEPT: a reply is matched by
+        // hash and revalidated against the selected chain before it is
+        // appended, a retarget drops what a reorganisation made stale, and the
+        // deadline still applies. So a pause never re-downloads the window or
+        // hands its replies to the block path.
         const auto pause=[&]{
             std::lock_guard lock(mutex_);
-            inflight_.clear();ready_.reset();
+            ready_.reset();
             if(replay)progress_.ready=false;
             else progress_={};
         };
@@ -296,19 +312,22 @@ private:
                         discard();
                     } else {
                         selected = current;
-                        // Drop requests whose block is no longer the selected
-                        // chain's at that height, and anything above the new
-                        // target; buffered bodies are revalidated at append.
-                        std::vector<std::pair<uint32_t,uint256>> outstanding;
+                        // Drop requests and buffered bodies whose block is no
+                        // longer the selected chain's at that height, and
+                        // anything above the new target (append revalidates too).
+                        std::vector<std::pair<uint32_t,uint256>> outstanding,buffered;
                         {std::lock_guard lock(mutex_);ready_.reset();
-                         for(const auto& [height,flight]:inflight_)outstanding.push_back({height,flight.hash});}
-                        std::vector<uint32_t> stale;
-                        for(const auto& [height,hash]:outstanding)
-                            if(height>selected->height||expected_at(height)!=hash)stale.push_back(height);
+                         for(const auto& [height,flight]:inflight_)outstanding.push_back({height,flight.hash});
+                         for(const auto& [height,body]:received_)buffered.push_back({height,body.hash});}
+                        const auto stale=[&](const auto& entries){std::vector<uint32_t> heights;
+                            for(const auto& [height,hash]:entries)
+                                if(height>selected->height||expected_at(height)!=hash)heights.push_back(height);
+                            return heights;};
+                        const auto stale_flights=stale(outstanding),stale_bodies=stale(buffered);
                         std::lock_guard lock(mutex_);
-                        for(const auto height:stale)inflight_.erase(height);
-                        for(auto it=received_.upper_bound(selected->height);it!=received_.end();){
-                            received_bytes_-=it->second.bytes.size();it=received_.erase(it);}
+                        for(const auto height:stale_flights)inflight_.erase(height);
+                        for(const auto height:stale_bodies)if(const auto it=received_.find(height);it!=received_.end()){
+                            received_bytes_-=it->second.bytes.size();received_.erase(it);}
                     }
                 }
                 if(!replay){
@@ -324,7 +343,7 @@ private:
                     corpus=std::make_shared<Data::Corpus>(work_);next=selected->activation;
                     {std::lock_guard lock(mutex_);clear_window();}
                 }
-                {std::lock_guard lock(mutex_);progress_={true,false,next-1,selected->height,selected->hash,{}};}
+                {std::lock_guard lock(mutex_);progress_={true,false,next-1,selected->height,selected->hash,{}};head_=next;}
                 if(next>selected->height){
                     if (!replay->AtSelectedTarget()) {
                         if (!HeaderSelected(*selected)) {
@@ -361,7 +380,8 @@ private:
                     const auto space=std::filesystem::space(work_);
                     if(space.available<(uint64_t(512)<<20)+3*body->bytes.size())throw std::runtime_error("phone history disk reserve unavailable");
                     const auto now=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-                    const auto checked=replay->AppendForSelectedHistory(decoded,uint64_t(now));
+                    std::unique_ptr<const consensus::ValidatedOrchardBlock> checked;
+                    if(!(test_unselected_&&test_unselected_(next)))checked=replay->AppendForSelectedHistory(decoded,uint64_t(now));
                     // Not selected at this instant: the body stays buffered and is retried.
                     if(!checked){pause();paused=true;break;}
                     if(checked->Context().height!=next||!checked->MatchesWire(decoded))throw std::runtime_error("phone history validation unavailable");
@@ -374,7 +394,7 @@ private:
                     // further is requested (as with one request at a time).
                     {std::lock_guard lock(mutex_);
                      if(const auto it=received_.find(next-1);it!=received_.end()){received_bytes_-=it->second.bytes.size();received_.erase(it);}
-                     progress_.verified_height=next-1;}
+                     progress_.verified_height=next-1;head_=next;}
                     // Retarget before requesting anything on a changed chain.
                     if(next>selected->height||target_()!=selected){moved=true;break;}
                 }
@@ -397,7 +417,7 @@ private:
                     const auto height=uint32_t(h);
                     {std::lock_guard lock(mutex_);
                      if(inflight_.contains(height)||received_.contains(height))continue;
-                     if(received_bytes_>=kReceivedBytesCap)break;}
+                     if(height!=next&&received_bytes_>=received_cap_)break;}
                     const auto wanted=expected_at(height);
                     // The cache path sends no request for a body it holds.
                     if(Cached()){

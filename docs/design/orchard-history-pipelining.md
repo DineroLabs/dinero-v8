@@ -75,7 +75,7 @@ size_t received_bytes_ = 0;              // bytes in received_
 
 **Reorder-buffer bound:**
 - Count: at most `kWindow` entries. A reply is accepted only for a height in `inflight_`, so the buffer can never exceed the window.
-- Bytes: `OrchardBlockCandidate::MaxWireSize()` is `MAX_BLOCK_WEIGHT` = 4,000,000 bytes, so the theoretical ceiling is 32 MB at a window of 8 and 64 MB at 16. A fixed cap `kReceivedBytesCap = 32 MiB` applies to `received_bytes_`, and no new request is sent while it's reached. Ordinary history bodies are a few hundred bytes (about 480 measured), so the cap never binds in practice. It exists so memory use has a hard bound regardless of window size.
+- Bytes: `OrchardBlockCandidate::MaxWireSize()` is `MAX_BLOCK_WEIGHT` = 4,000,000 bytes, so the theoretical ceiling is 32 MB at a window of 8 and 64 MB at 16. A fixed cap `kReceivedBytesCap = 32 MiB` applies to `received_bytes_`, and no new request is sent while it's reached, **except for `next`**, the lowest height not yet appended. The body for `next` is always requested and always held, even when the buffer is full. Without that exception, bodies above `next` could fill the buffer (eight maximum-size bodies at a window of 16), `next` could never be held, and nothing could drain: a permanent stall with no timeout to break it. The memory bound is therefore the cap plus one body (`MaxWireSize()`). Ordinary history bodies are a few hundred bytes (about 480 measured), so the cap never binds in practice. It exists so memory use has a hard bound regardless of window size.
 
 **Wire budget, precisely:**
 - Today the worker charges `window_bytes` when it takes the packet, including abandoned requests and invalid bodies.
@@ -198,11 +198,13 @@ Both are for after the release, once there is evidence about which peers actuall
   This generalises today's single-request `next_on_branch` check.
 - **`PrefixChanged`** / `discard()`: clear `inflight_`, `received_` and `received_bytes_`, along with what `discard()` already resets.
 - **`Unselected`** / `pause()` (the target isn't selected at this instant, including `AppendForSelectedHistory` returning empty):
-  - clear `inflight_`;
+  - **keep `inflight_`** (decided at review of bf272e50c);
   - **keep `received_`**;
   - keep the checkpoint, as today.
 
-  On the next iteration, each buffered body is revalidated against the selected chain's hash at its height before it's appended (section 4 step 3), and a body that no longer matches is dropped and re-requested. This is what keeps section 4's promise that a pause never turns buffered bodies into re-downloads.
+  Requests in flight are kept for the same reason buffered bodies are. A reply is matched by hash, peer and session, and revalidated before it's appended. A retarget drops what a reorganisation made stale. The 30 s deadline still applies. Clearing them would have handed up to `kWindow` replies per pause to the normal block path, and requested the same heights again.
+
+  On the next iteration, each buffered body is revalidated against the selected chain's hash at its height before it's appended (section 4 step 3), and a body that no longer matches is dropped and re-requested. This is what keeps section 4's promise that a pause never turns buffered bodies, or requests still in flight, into re-downloads.
 
 Because a reply is accepted only by the expected hash for the current selected chain, a reply for a block that a reorganisation replaced can never be appended.
 
@@ -231,7 +233,8 @@ Each test is to be shown failing with the relevant handling removed:
 | append retried after a pause | a body whose `AppendForSelectedHistory` returns empty stays buffered, and is appended on the next iteration without being re-downloaded |
 | bad body from one peer | the cooldown goes to the peer that sent it, and the window, buffer and prefix are discarded (today's behaviour) |
 | silent serving peer | after 30 s the window fails over to the next eligible peer, buffered bodies from the silent peer are kept and revalidated by hash, and its late replies are dropped |
-| pause keeps the buffer | after an `Unselected` pause, buffered bodies are kept and appended once the target is selected again, without re-download |
+| pause keeps the buffer | after a pause, buffered bodies and requests in flight are kept, a reply arriving during the pause is accepted, and nothing is requested again |
+| full buffer never blocks `next` | with the buffer filled by bodies above `next`, the body for `next` is still requested and held, and the history completes |
 | window = 1 regression | every existing `OrchardPhoneHistory.*` test also passes with the window set to 1 (identical to today's behaviour) and to 8 |
 | cached and network copies | a network reply for a height the cache filled is dropped, and a cached body for a replaced block is dropped and looked up by the new hash |
 | budget charged once | matching bodies are charged once in `Enqueue`, and unsolicited ones aren't charged |
