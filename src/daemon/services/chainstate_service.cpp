@@ -83,6 +83,7 @@
 #include "daemon/services/p2p_service.h"  // Phase C.1 v2: For block broadcasting
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 #include "p2p/orchard_phone_history.h"
+#include "p2p/orchard_history_checkpoint.h"
 #include "p2p/wallet_funding_download.h"
 #include "p2p/wallet_input_proof.h"
 #include "wallet/authenticated_shield_inputs.h"
@@ -21234,11 +21235,29 @@ std::unique_ptr<OrchardBoundaryReplay> ChainstateService::PreparePhoneHistoryVer
     if(activation_mutex_.HeldByCurrentThread())return {};
     try{
         auto use=std::make_unique<SelectedReadUse>(weak_from_this().lock());
-        if(PhoneHistoryTarget()!=std::optional(target))return {};
         std::shared_ptr<const consensus::HeaderChainSelector> headers;
         {std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);headers=header_chain_selector_;}
-        auto replay=OrchardSnapshotStore::ReplayActivation(std::move(proof),std::move(headers),target.height,target.hash);
-        if(PhoneHistoryTarget()!=std::optional(target))return {};
+        if(!headers)return {};
+        // The target must still stand on the selected chain: the current
+        // target, or an ancestor of it with the same snapshot base and
+        // activation. During catch-up the tip moves faster than the
+        // download's cached target, so requiring the exact current tip here
+        // refused every start until catch-up ended (a first run waited ~20 min
+        // with its target available). The download retargets as the tip moves;
+        // a reorganisation that replaces the target still refuses.
+        const auto stands=[&]{
+            const auto current=PhoneHistoryTarget();
+            if(!current)return false;
+            return p2p::OrchardHistoryCheckpointStands(target,*current,
+                [&headers,&current](const uint256& tip,uint32_t height)->std::optional<uint256>{
+                    uint256 at;uint32_t found=0;
+                    if(!headers->GetAncestorHashByHash(tip,height,at,found)||found!=current->height)return std::nullopt;
+                    return at;
+                });
+        };
+        if(!stands())return {};
+        auto replay=OrchardSnapshotStore::ReplayActivation(std::move(proof),headers,target.height,target.hash);
+        if(!stands())return {};
         return replay;
     }catch(...){return {};}
 }
