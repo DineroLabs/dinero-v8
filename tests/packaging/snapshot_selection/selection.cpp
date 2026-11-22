@@ -13,8 +13,8 @@ int main(int argc, char** argv) {
         const std::string name = argv[1];
         using dinero::qt::SelectBundledSnapshots;
         if (name == "FreshPrimary") {
-            const auto selected = SelectBundledSnapshots({"161527-v6-full.dat", "155650-v6-full.dat", "153578-v6-full.dat", "153051-v6-full.dat", "148375.dat", "99677.dat", "65300.dat"});
-            Require(selected.primary == "161527-v6-full.dat", "newest snapshot was not selected");
+            const auto selected = SelectBundledSnapshots({"163965-v6-full.dat", "155650-v6-full.dat", "153578-v6-full.dat", "153051-v6-full.dat", "148375.dat", "99677.dat", "65300.dat"});
+            Require(selected.primary == "163965-v6-full.dat", "newest snapshot was not selected");
             Require(selected.fallbacks == std::vector<std::string>{"155650-v6-full.dat", "153578-v6-full.dat", "153051-v6-full.dat", "148375.dat", "99677.dat", "65300.dat"}, "exact full-v6 recovery base was lost");
         } else if (name == "MissingPrimary") {
             const auto selected = SelectBundledSnapshots({"", "155650-v6-full.dat", "153578-v6-full.dat", "153051-v6-full.dat", "148375.dat", "99677.dat", "65300.dat"});
