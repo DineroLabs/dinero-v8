@@ -1,3 +1,4 @@
+#include "recoverywordspolicy.h"
 #include "walletwizard.h"
 #include "rpcclient.h"
 #include "connection_manager.h"
@@ -1186,6 +1187,13 @@ void ConfirmSeedPage::initializePage() {
   edtWord3_->clear();
 }
 
+void CreateSeedPage::recordBackupConfirmed() {
+  if (!connMgr_ || seedPhrase_.isEmpty()) return;
+  const QJsonArray params = RecoveryWordsPolicy::confirmParams(seedPhrase_, QJsonObject{});
+  connMgr_->callNamed("wallet.acknowledgeseedbackup",
+                      QJsonObject{{"mnemonic", params.at(0)}, {"passphrase_backed_up", params.at(1)}});
+}
+
 bool ConfirmSeedPage::validatePage() {
   // Get the seed from the previous page
   auto* createPage = qobject_cast<CreateSeedPage*>(wizard()->page(WalletWizard::Page_CreateSeed));
@@ -1207,6 +1215,7 @@ bool ConfirmSeedPage::validatePage() {
     return false;
   }
   
+  createPage->recordBackupConfirmed();
   return true;
 }
 

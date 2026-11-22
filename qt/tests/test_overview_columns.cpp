@@ -427,6 +427,37 @@ private Q_SLOTS:
     }
     // The other coins a wallet can hold live on the Wallet page, as a section:
     // most users hold only DIN, and the main menu has no room to spare.
+    // A wallet whose recovery words were never confirmed says so on the
+    // Wallet page, with the way to see them; the node's answers switch it.
+    void unconfirmedRecoveryWordsAreSaidOnTheWalletPage() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QTcpServer endpoint;
+        QVERIFY(endpoint.listen(QHostAddress::LocalHost));
+        qputenv("DINERO_RPC_URL", QString("http://127.0.0.1:%1/").arg(endpoint.serverPort()).toUtf8());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        auto* rpc = window.findChild<RpcClient*>();
+        auto* reminder = window.findChild<QFrame*>("walletRecoveryReminder");
+        auto* show = window.findChild<QPushButton*>("walletShowRecoveryWords");
+        QVERIFY(rpc && reminder && show);
+        QCOMPARE(show->text(), QString("Show my recovery words"));
+        QVERIFY2(reminder->isHidden(), "nothing is said before the node has answered");
+
+        const QJsonObject unconfirmed{{"hd_enabled", true}, {"wallet_name", "w"}, {"mnemonic_backup_available", true},
+                                      {"backup_required", true}, {"backup_acknowledged", false}};
+        Q_EMIT rpc->rpcResult("wallet.getinfo", unconfirmed);
+        QVERIFY2(!reminder->isHidden(), "an unconfirmed wallet is reminded");
+        // A refusal while the wallet catches up says nothing about the backup: the reminder stays.
+        Q_EMIT rpc->rpcResult("wallet.getinfo", QJsonObject{{"error", "wallet balance is not current"}});
+        QVERIFY(!reminder->isHidden());
+        QJsonObject confirmed = unconfirmed;
+        confirmed["backup_required"] = false;
+        confirmed["backup_acknowledged"] = true;
+        Q_EMIT rpc->rpcResult("wallet.getinfo", confirmed);
+        QVERIFY2(reminder->isHidden(), "confirmed: the reminder goes");
+    }
+
     void otherCoinsAreASectionOfTheWalletPageNotAMenuEntry() {
 #if defined(DIN_ENABLE_SWAP_UI) && DIN_ENABLE_SWAP_UI
         QTemporaryDir dir;
