@@ -11972,12 +11972,12 @@ void MainWindow::updateMiningOutputCinematicFrame() {
       qreal brightness = 0;
       if (sample.blockFound && remainingMs > 0 &&
           remainingMs <= dinero::qt::kBlockFoundHighlightMs) {
-        // Keep the winning hash still while the next template loads. Its
-        // orange light swells three times, fading fully between glows.
+        // The winning row keeps glowing as new template samples move it up.
+        // Its orange light swells four times, fading fully between glows.
         const qreal progress = 1.0 - static_cast<qreal>(remainingMs) /
                                    dinero::qt::kBlockFoundHighlightMs;
         constexpr qreal kPi = 3.14159265358979323846;
-        const qreal wave = std::sin(progress * 3.0 * kPi);
+        const qreal wave = std::sin(progress * 4.0 * kPi);
         brightness = wave * wave;
         rowColor.setGreen(qRound(176 + 44 * brightness));
         rowColor.setBlue(qRound(48 + 48 * brightness));
