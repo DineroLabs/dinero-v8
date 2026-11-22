@@ -48,6 +48,19 @@ private Q_SLOTS:
         QCOMPARE(confirmParams(words, withPassphrase).at(1).toBool(false), true);
         QVERIFY(confirmButton(withPassphrase).contains("passphrase"));
         QVERIFY(reminderText().contains("only backup"));
+
+        const QJsonObject recorded{{"success", true}, {"backup_acknowledged", true},
+                                   {"wallet_name", "hotel"}};
+        QVERIFY(confirmationRecorded(recorded, "hotel"));
+        QVERIFY(!confirmationRecorded(recorded, "buyer"));
+        QVERIFY(!confirmationRecorded(recorded, QString()));
+        QJsonObject failed = recorded;
+        failed["success"] = false;
+        QVERIFY(!confirmationRecorded(failed, "hotel"));
+        failed = recorded;
+        failed["error"] = "backup acknowledgment failed";
+        failed.remove("success");
+        QVERIFY(!confirmationRecorded(failed, "hotel"));
     }
 };
 
