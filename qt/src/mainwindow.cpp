@@ -5115,7 +5115,7 @@ void MainWindow::setupUI() {
     btnUseWalletAddr_ = new QPushButton("Use Wallet");
     btnUseWalletAddr_->setStyleSheet(miningButtonStyle());
     btnUseWalletAddr_->setFixedSize(100, 30);
-    btnUseWalletAddr_->setToolTip("Fill mining address from your wallet (requires unlocked wallet)");
+    btnUseWalletAddr_->setToolTip("Use your wallet's first Taproot receive address (requires unlock)");
     connect(btnUseWalletAddr_, &QPushButton::clicked, this, &MainWindow::onSetMiningAddress);
     row1->addWidget(btnUseWalletAddr_);
     row1->addWidget(new QLabel("Threads:"));
@@ -7249,6 +7249,57 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
   // Guard: if RPC client has been destroyed (app shutting down), bail out
   if (!rpc_) return;
 
+  if (method == QLatin1String("mining.use_wallet_address")) {
+    miningWalletAddressPending_ = false;
+    const QString requestedWallet = miningWalletAddressRequestWallet_;
+    miningWalletAddressRequestWallet_.clear();
+    updateWalletUIState();
+    if (walletSwitchInFlight_ || !walletUnlocked_ || currentWalletName_ != requestedWallet)
+      return;
+
+    if (!result.isArray()) {
+      const QString detail = result.isObject()
+          ? result.toObject().value("error").toString() : QString();
+      QMessageBox::warning(this, "Mining Address Unavailable",
+          detail.isEmpty() ? "Could not read your wallet's addresses. Please try again."
+                           : detail);
+      return;
+    }
+
+    QString firstTaprootAddress;
+    for (const QJsonValue& value : result.toArray()) {
+      if (!value.isObject()) continue;
+      const QJsonObject row = value.toObject();
+      const QString address = row.value("address").toString();
+      const QString label = row.value("label").toString();
+      if (row.value("account").toInt(-1) != 0 ||
+          row.value("change").toInt(-1) != 0 ||
+          row.value("index").toInt(-1) != 0 ||
+          (label == QLatin1String("shieldcoins") ||
+           label == QLatin1String("consolidate") ||
+           label == QLatin1String("shield_change") ||
+           label == QLatin1String("consolidation")))
+        continue;
+      if (address.startsWith(QLatin1String("din1p")) ||
+          address.startsWith(QLatin1String("tdin1p")) ||
+          address.startsWith(QLatin1String("rdin1p"))) {
+        firstTaprootAddress = address;
+        break;
+      }
+    }
+
+    if (firstTaprootAddress.isEmpty()) {
+      QMessageBox::warning(this, "No Taproot Wallet Address",
+          "The wallet's first Taproot receive address is unavailable. "
+          "Check the Receive tab before using this wallet for mining.");
+      return;
+    }
+    // A user may have pasted a different address while the RPC was in flight.
+    if (edtMiningAddress_ && edtMiningAddress_->text() == miningWalletAddressPriorText_)
+      edtMiningAddress_->setText(firstTaprootAddress);
+    return;
+  }
+
   // A call that failed earlier has now succeeded: its error is resolved.
   if (!errorMessageMethod_.isEmpty() && method == errorMessageMethod_ && lblErrorMessage_ &&
       !(result.isObject() && result.toObject().contains(QStringLiteral("error")) &&
@@ -9318,6 +9369,16 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
   if (method == "wallet.sendtoaddress" || method == "sendtoaddress" || method == "wallet.covenant.ctvfund")
     sendSubmissionPending_ = false;
   if (!rpc_) return;  // Guard: shutting down
+  if (method == QLatin1String("mining.use_wallet_address")) {
+    miningWalletAddressPending_ = false;
+    const QString requestedWallet = miningWalletAddressRequestWallet_;
+    miningWalletAddressRequestWallet_.clear();
+    updateWalletUIState();
+    if (!walletSwitchInFlight_ && walletUnlocked_ && currentWalletName_ == requestedWallet)
+      QMessageBox::warning(this, "Mining Address Unavailable",
+          "Could not read your wallet's addresses: " + message);
+    return;
+  }
   // A background probe can race the embedded daemon's first RPC listener.
   // The startup dialog already explains this state; don't turn it into a
   // frightening global error. After the first connection, show refusals.
@@ -11262,47 +11323,14 @@ void MainWindow::onSetMiningAddress() {
     return;
   }
 
-  // Use the latest address from the Receive tab
-  if (tblAddresses_->rowCount() > 0) {
-    int lastRow = tblAddresses_->rowCount() - 1;
-    QString address = tblAddresses_->item(lastRow, 1)->text();
-
-    // v7: mining accepts Taproot (din1p...) or P2MR (din1r...)
-    const bool isTaproot = address.startsWith("din1p") ||
-                           address.startsWith("tdin1p") ||
-                           address.startsWith("rdin1p");
-    const bool isP2mr    = address.startsWith("din1r") ||
-                           address.startsWith("tdin1r") ||
-                           address.startsWith("rdin1r");
-
-    if (!isTaproot && !isP2mr) {
-      QMessageBox::StandardButton reply = QMessageBox::warning(this,
-        "Address Not Eligible for Mining",
-        QString("The selected address is neither Taproot nor P2MR:\n\n%1\n\n"
-                "Mining requires a Taproot (din1p...) or P2MR (din1r...) address.\n\n"
-                "Would you like to generate a new eligible address?")
-                .arg(address),
-        QMessageBox::Yes | QMessageBox::No,
-        QMessageBox::Yes);
-
-      if (reply == QMessageBox::Yes) {
-        onDeriveNewAddress();
-        return;
-      }
-      return;
-    }
-
-    edtMiningAddress_->setText(address);
-    QMessageBox::information(this, "Mining Address Set",
-      "Taproot mining address set to:\n" + address);
-  } else {
-    QMessageBox::warning(this, "No Wallet Address",
-      "No addresses found in your wallet.\n\n"
-      "Please generate a new Taproot address first:\n"
-      "1. Go to Receive tab\n"
-      "2. Click 'New Transparent Address' to generate a Taproot address\n"
-      "3. Return here and click 'Use Wallet' again");
-  }
+  if (!rpc_ || miningWalletAddressPending_ || currentWalletName_.isEmpty()) return;
+  miningWalletAddressPending_ = true;
+  miningWalletAddressRequestWallet_ = currentWalletName_;
+  miningWalletAddressPriorText_ = edtMiningAddress_ ? edtMiningAddress_->text() : QString();
+  updateWalletUIState();
+  // The Receive table may be empty or filtered even when this wallet owns
+  // addresses. Ask the wallet directly and select its first Taproot receive row.
+  rpc_->callNamedAs("wallet.listaddresses", QJsonObject{}, "mining.use_wallet_address");
 }
 
 void MainWindow::onBrowseMinerBinary() {
@@ -16343,7 +16371,7 @@ void MainWindow::updateWalletUIState() {
   // Note: Manual address entry and mining still work without wallet (pool mining)
   // =========================================================================
   if (btnUseWalletAddr_) {
-    btnUseWalletAddr_->setEnabled(canUseWalletAddress);
+    btnUseWalletAddr_->setEnabled(canUseWalletAddress && !miningWalletAddressPending_);
     if (!hasWallet) {
       btnUseWalletAddr_->setToolTip("Create or load a wallet first");
       btnUseWalletAddr_->setStyleSheet(miningButtonStyle());
@@ -16354,7 +16382,7 @@ void MainWindow::updateWalletUIState() {
       btnUseWalletAddr_->setToolTip("Unlock wallet to use your Taproot address");
       btnUseWalletAddr_->setStyleSheet(miningButtonStyle());
     } else {
-      btnUseWalletAddr_->setToolTip("Fill mining address from your wallet");
+      btnUseWalletAddr_->setToolTip("Use your wallet's first Taproot receive address");
       btnUseWalletAddr_->setStyleSheet(miningButtonStyle()); // Uniform mining control style
     }
   }
