@@ -237,6 +237,10 @@ private:
         std::unique_ptr<OrchardBoundaryReplay> replay;std::shared_ptr<Data::Corpus> corpus;
         std::map<std::string,Clock::time_point> cooldown;Clock::time_point window=Clock::now();
         uint64_t window_bytes=0;uint32_t next=0;
+        // Set by a pause: the next wait runs its full ActiveWait even though the
+        // body for `next` is still buffered, so a paused worker retries at the
+        // same 50 ms cadence as before instead of spinning.
+        bool paused_wait=false;
         // Caller holds mutex_.
         const auto clear_window=[&]{inflight_.clear();received_.clear();received_bytes_=0;};
         // Only on a discard (a reorganisation, another target, a failed check): a pure extension keeps the checkpoint.
@@ -254,6 +258,7 @@ private:
         // deadline still applies. So a pause never re-downloads the window or
         // hands its replies to the block path.
         const auto pause=[&]{
+            paused_wait=true;
             std::lock_guard lock(mutex_);
             ready_.reset();
             if(replay)progress_.ready=false;
@@ -283,8 +288,8 @@ private:
         };
         bool idle=false;
         for(;;){
-            {std::unique_lock lock(mutex_);cv_.wait_for(lock,idle?IdleWait:ActiveWait,[&]{return stop_||received_.contains(next);});
-             if(stop_)break;
+            {std::unique_lock lock(mutex_);cv_.wait_for(lock,idle?IdleWait:ActiveWait,[&]{return stop_||(!paused_wait&&received_.contains(next));});
+             paused_wait=false;if(stop_)break;
              // Include abandoned requests and bodies later found stale in the wire budget.
              window_bytes+=charged_bytes_;charged_bytes_=0;}
             ++iterations_;idle=false;
