@@ -399,6 +399,8 @@ jobs:
       # AssumeUtxoPrebaseMempoolResolution turned the whole lane into a no-op,
       # and the only surface signal was a red X naming an unrelated test.
       # Coverage must not depend on every other test passing first.
+      # SnapshotPendingWalletGuard also starts isolated nodes, so run it here
+      # rather than losing its integration-labelled coverage in the broad sweep.
       - name: Run serial e2e tests (daemon-spawning)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
@@ -424,7 +426,7 @@ jobs:
           set +e
           failed=""
           ran=0
-          for t in CompactDefaultActivation PowEnforcedRegtest CheckpointForkAcceptance BlockAcceptorFeeLifecycle CsnCpfpDisconnect CsnReplayMetadataRecovery CsnReplayMetadataLocalUndo SixtySecondActivation SixtySecondShieldedLifecycle DaemonServiceRelease RPCListenerStartup VaultExplicitStartup OrchardCapabilityAdvertisement CsnManualInvalidation CsnStoredProofRetry ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ContextualLocksLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime SnapshotBindingMutations SnapshotNullifierRestart StatefulSnapshotRestart CSNSnapshotProofRestart CSNSnapshotHistory StateCommitmentMining CsnEpochResetCrashAtomicity ShieldedNullifierCrashBoundary ShieldedPromotionBoundary ShieldedOutgoingRecoveryLifecycle ShieldedAuthRelayLifecycle UtreexoBatchProofCanonicalCoins PrivateCovenantLifecycle ReconsiderRestartBoundary InvalidityRestartSticky CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence ShieldedRootMultinodeDeepReorg DeferredBaseChildForgedRoot MinorityTipHeaderRelay GetChainTipsValidFork WalletReorgDelivery WalletReorgPendingRestart WalletIndexV3StartupRefusal WalletIndexV3Status; do
+          for t in CompactDefaultActivation PowEnforcedRegtest CheckpointForkAcceptance BlockAcceptorFeeLifecycle CsnCpfpDisconnect CsnReplayMetadataRecovery CsnReplayMetadataLocalUndo SixtySecondActivation SixtySecondShieldedLifecycle DaemonServiceRelease RPCListenerStartup VaultExplicitStartup OrchardCapabilityAdvertisement CsnManualInvalidation CsnStoredProofRetry ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ContextualLocksLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime SnapshotBindingMutations SnapshotNullifierRestart SnapshotPendingWalletGuard StatefulSnapshotRestart CSNSnapshotProofRestart CSNSnapshotHistory StateCommitmentMining CsnEpochResetCrashAtomicity ShieldedNullifierCrashBoundary ShieldedPromotionBoundary ShieldedOutgoingRecoveryLifecycle ShieldedAuthRelayLifecycle UtreexoBatchProofCanonicalCoins PrivateCovenantLifecycle ReconsiderRestartBoundary InvalidityRestartSticky CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence ShieldedRootMultinodeDeepReorg DeferredBaseChildForgedRoot MinorityTipHeaderRelay GetChainTipsValidFork WalletReorgDelivery WalletReorgPendingRestart WalletIndexV3StartupRefusal WalletIndexV3Status; do
             echo "=== $t ==="
             ctest --test-dir build-tests \
               --output-on-failure \
