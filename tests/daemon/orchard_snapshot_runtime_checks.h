@@ -3574,6 +3574,111 @@ TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles)
 // A key funded in the snapshot's base block must not inherit the later
 // birthday of a generated wallet that imports it. Exercise the full-v6
 // origin path, including its verified Orchard history checkpoint.
+TEST(OrchardPhoneHistory, VerifierStartsForATargetTheTipHasAlreadyPassed) {
+    using namespace consensus;
+    using Access=OrchardSnapshotStoreTestAccess;
+    struct ConfigurationScope {
+        std::string profile=GetConfig().sync_profile;
+        bool stateless=GetConfig().utreexo_stateless;
+        ~ConfigurationScope() {GetConfig().sync_profile=profile;GetConfig().utreexo_stateless=stateless;}
+    } configuration;
+    GetConfig().sync_profile.clear();GetConfig().utreexo_stateless=false;
+    OrchardCycleFixture source(true);
+    MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    std::array<uint8_t,32> secret{},internal{},output{};secret.back()=91;int parity=0;
+    ASSERT_TRUE(TaprootKeys::DeriveXOnlyPubkey(secret,internal,parity));
+    ASSERT_TRUE(TaprootKeys::ComputeTweakedPubkey(internal,output));
+    const auto funded_address=TaprootKeys::CreateTaprootAddress(output,"rdin");
+    ASSERT_FALSE(funded_address.empty());
+    BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+    const auto base=SolveCatalogTemplate(assembler.CreateOrchardBlock(funded_address));ASSERT_TRUE(base);
+    ASSERT_TRUE(source.Submit(base->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();
+    for(const auto& block:source.f.blocks)ASSERT_TRUE(headers->AddHeader(block.header));
+    ASSERT_TRUE(headers->AddHeader(base->Header()));
+    source.f.service->setHeaderChainSelector(headers);
+    shielded_store_fixture::TempDir exports;
+    const auto full_path=exports.path/"funded-base.v6";
+    ASSERT_TRUE(source.f.service->ExportSnapshot(full_path).success);
+    const auto proof=std::make_shared<const OrchardSnapshotSection>(Access::CaptureActivation(source.f.db,*headers));
+    const auto catalog=source.f.db.getOrchardCatalogState(base->Header().GetHash());ASSERT_TRUE(catalog.ok());
+    const auto next=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(next);
+    ASSERT_TRUE(source.Submit(next->WireBytes()).connected);
+    ASSERT_TRUE(headers->AddHeader(next->Header()));
+    const auto after=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(after);
+    ASSERT_TRUE(source.Submit(after->WireBytes()).connected);
+    ASSERT_TRUE(headers->AddHeader(after->Header()));
+
+    shielded_store_fixture::TempDir directory;const auto path=directory.path/"chainstate";
+    Access::CreateFresh(path);
+    auto db=std::make_shared<ChainDB>();ASSERT_EQ(db->init(path),Status::Ok);
+    DaemonContext context;context.config=std::make_shared<ConfigService>();
+    context.config->Set("datadir",directory.path.string());
+    context.config->Set("assumeutxo_compact_bootstrap","0");
+    context.logger=std::make_shared<LoggerService>("");
+    context.logger_interface=source.f.logger.get();
+    context.block_storage=std::make_shared<BlockStorage>();
+    ASSERT_EQ(context.block_storage->init(directory.path/"files"),Status::Ok);
+    auto service=std::make_shared<ChainstateService>();context.chainstate=service;
+    struct ContextScope {
+        DaemonContext* prior=DaemonContext::instance();
+        ~ContextScope(){BlockAcceptor::SetContext(prior);DaemonContext::setInstance(prior);}
+    } context_scope;
+    DaemonContext::setInstance(&context);service->setOwnedChainDB(db);
+    ASSERT_TRUE(service->Init(context));
+    service->setHeaderChainSelector(headers);
+    service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
+    ASSERT_TRUE(service->Start());
+    struct StopScope {
+        std::shared_ptr<ChainstateService> service;DaemonContext& context;
+        ~StopScope(){
+            if(auto peer=std::dynamic_pointer_cast<P2PService>(context.p2p))peer->Stop();
+            context.p2p.reset();
+            if(auto wallet=std::dynamic_pointer_cast<WalletService>(context.wallet))wallet->Stop();
+            context.wallet.reset();
+            if(context.validation_queue)context.validation_queue->stop();
+            context.validation_queue.reset();context.block_ingress=nullptr;
+            if(auto pool=std::dynamic_pointer_cast<MempoolService>(context.mempool))pool->Stop();
+            context.mempool.reset();service->Stop();context.chainstate.reset();
+        }
+    } stop{service,context};
+    const auto loaded=service->LoadSnapshot(full_path);ASSERT_TRUE(loaded.success)<<loaded.error_message;
+    auto pool=std::make_shared<MempoolService>();ASSERT_TRUE(pool->Init(context));context.mempool=pool;
+    auto queue=ValidationQueue::CreateCanonicalOnly();context.validation_queue=queue;
+    auto ingress=std::make_shared<BlockIngressService>();ASSERT_TRUE(ingress->Init(context));
+    ASSERT_TRUE(ingress->Start());context.block_ingress=ingress.get();queue->start();
+    const auto connected=ingress->SubmitHex(util::hex(next->WireBytes()),BlockOrigin::P2P);
+    ASSERT_TRUE(connected.connected)<<connected.reason;
+    EXPECT_EQ(service->GetActiveTip()->hash,next->Header().GetHash());
+
+    // During catch-up the tip moves every few seconds, faster than the
+    // download's 5 s target cache, so the target it starts the verifier for is
+    // usually one or more blocks behind the tip. That target's history is
+    // still valid: it is an ancestor on the selected chain. The verifier must
+    // start for it (the download then retargets as the tip moves) instead of
+    // refusing until a moment when no block has arrived.
+    service->RequestRetainedPhoneHistoryData();
+    const auto lagging=service->PhoneHistoryTarget();ASSERT_TRUE(lagging);
+    EXPECT_EQ(lagging->hash,next->Header().GetHash());
+    const auto moved=ingress->SubmitHex(util::hex(after->WireBytes()),BlockOrigin::P2P);
+    ASSERT_TRUE(moved.connected)<<moved.reason;
+    const auto current=service->PhoneHistoryTarget();ASSERT_TRUE(current);
+    ASSERT_EQ(current->hash,after->Header().GetHash());
+    ASSERT_EQ(current->height,lagging->height+1);
+    EXPECT_TRUE(service->PreparePhoneHistoryVerifier(proof,*current))<<"the current target";
+    EXPECT_TRUE(service->PreparePhoneHistoryVerifier(proof,*lagging))<<"a target the tip has already passed";
+    // Not on the selected chain (a reorganisation replaced it): refused.
+    auto replaced=*lagging;replaced.hash=uint256::FromHexUnsafe(std::string(63,'0')+"5");
+    EXPECT_FALSE(service->PreparePhoneHistoryVerifier(proof,replaced));
+    // Another snapshot base or activation: refused.
+    auto other_base=*lagging;other_base.base=uint256::FromHexUnsafe(std::string(63,'0')+"6");
+    EXPECT_FALSE(service->PreparePhoneHistoryVerifier(proof,other_base));
+    // Above the tip: refused.
+    auto ahead=*current;ahead.height=current->height+1;
+    EXPECT_FALSE(service->PreparePhoneHistoryVerifier(proof,ahead));
+}
+
 TEST(OrchardSnapshotRuntime, ImportedPrebirthKeyCannotUseFreshSnapshotOrigin) {
     using namespace consensus;
     using Access=OrchardSnapshotStoreTestAccess;
