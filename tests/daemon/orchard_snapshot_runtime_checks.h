@@ -2499,6 +2499,108 @@ TEST(OrchardPhoneHistory, SequentialBodiesExtendWithoutSkippingAndReadyDataIsNot
     EXPECT_FALSE(host.Enqueue({"archive",71,0},second->WireBytes()));
     EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(source.f.db),unchanged);
 }
+// Several body requests in flight (docs/design/orchard-history-pipelining.md):
+// the window fills, replies arriving out of order are appended strictly in
+// height order, a duplicate is refused, a pause keeps buffered bodies, a
+// disconnected serving peer's whole window fails over to the next peer, and
+// the window bound holds (1 behaves as one request at a time).
+TEST(OrchardPhoneHistory, PipelinedWindowAppendsInOrderAndFailsOverAsAWhole){
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;using Download=p2p::OrchardPhoneHistoryDownload;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    source.f.service->setRuntimeBlockNotifications(std::make_shared<CanonicalPoolNotices>());
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));
+    auto proof=std::make_shared<const OrchardSnapshotSection>(Access::CaptureActivation(source.f.db,*headers));
+    // History 102..107: six bodies.
+    std::vector<std::vector<uint8_t>> body{first->WireBytes()};std::vector<uint256> hash{first->Header().GetHash()};
+    BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+    for(int i=0;i<5;++i){
+        const auto next=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(next);
+        ASSERT_TRUE(source.Submit(next->WireBytes()).connected);ASSERT_TRUE(headers->AddHeader(next->Header()));
+        body.push_back(next->WireBytes());hash.push_back(next->Header().GetHash());
+    }
+    const auto catalog=source.f.db.getOrchardCatalogState(hash.back());ASSERT_TRUE(catalog.ok());
+    const Download::Target target{102,107,hash.back(),storage::catalog::Hash(*catalog),hash.front()};
+    const auto request_for=[&](size_t i){std::vector<uint8_t> r{1,2,0,0,0};r.insert(r.end(),hash[i].begin(),hash[i].end());return r;};
+
+    struct Wire {std::mutex mutex;std::condition_variable cv;std::vector<std::pair<std::string,std::vector<uint8_t>>> sent;};
+    const auto make=[&](Wire& wire,std::function<std::optional<Download::Target>()> source_target,
+                        std::function<std::vector<Download::Peer>()> peers,size_t window){
+        return std::make_unique<Download>(headers,source.f.path.parent_path(),std::move(source_target),[&]{return proof;},
+            [&](auto p,const auto& t){return Access::ReplayActivation(std::move(p),headers,t.height,t.hash);},std::move(peers),
+            [&wire](const auto& peer,const auto& command,const auto& bytes){
+                std::lock_guard lock(wire.mutex);EXPECT_EQ(command,"getdata");wire.sent.push_back({peer.address,bytes});wire.cv.notify_all();return true;},
+            std::shared_ptr<p2p::OrchardHistoryCache>{},window);
+    };
+    const auto wait_sent=[](Wire& wire,size_t count){std::unique_lock lock(wire.mutex);
+        return wire.cv.wait_for(lock,std::chrono::seconds(5),[&]{return wire.sent.size()>=count;});};
+    const auto ready=[](Download& host){const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(std::chrono::steady_clock::now()<deadline){if(host.Ready())return true;std::this_thread::sleep_for(std::chrono::milliseconds(10));}return false;};
+    const Download::Peer a{"archive-a",71,ServiceFlags::NODE_NETWORK},b{"archive-b",72,ServiceFlags::NODE_NETWORK};
+
+    { // The window fills at once, and out-of-order replies append in order.
+        Wire wire;auto host=make(wire,[&]{return std::optional(target);},[&]{return std::vector<Download::Peer>{a};},8);
+        ASSERT_EQ(host->Window(),8u);
+        ASSERT_TRUE(wait_sent(wire,6))<<"all six bodies are requested without waiting for replies";
+        {std::lock_guard lock(wire.mutex);for(size_t i=0;i<6;++i){EXPECT_EQ(wire.sent[i].first,"archive-a");EXPECT_EQ(wire.sent[i].second,request_for(i));}}
+        for(const size_t i:{3u,1u,5u}){ASSERT_TRUE(host->Enqueue({"archive-a",71,0},body[i]));}
+        EXPECT_FALSE(host->Enqueue({"archive-a",71,0},body[3]))<<"a duplicate reply is refused";
+        EXPECT_FALSE(host->Enqueue({"archive-b",72,0},body[4]))<<"a body from a peer that was not asked is refused";
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        EXPECT_LT(host->Observe().verified_height,102u)<<"nothing is appended across the gap at 102";
+        for(const size_t i:{0u,4u,2u}){ASSERT_TRUE(host->Enqueue({"archive-a",71,0},body[i]));}
+        ASSERT_TRUE(ready(*host))<<host->Observe().error;
+        const auto complete=host->Ready();ASSERT_TRUE(complete);
+        for(size_t i=0;i<6;++i)EXPECT_EQ(complete->Body(uint32_t(102+i)),body[i]);
+        EXPECT_EQ(host->Observe().verified_height,107u);
+        std::lock_guard lock(wire.mutex);EXPECT_EQ(wire.sent.size(),6u)<<"no body was requested twice";
+    }
+    { // A pause keeps bodies already received: they are not requested again.
+        Wire wire;std::atomic<bool> available{true};
+        auto host=make(wire,[&]{return available?std::optional(target):std::nullopt;},[&]{return std::vector<Download::Peer>{a};},8);
+        ASSERT_TRUE(wait_sent(wire,6));
+        for(const size_t i:{1u,2u,3u,4u,5u}){ASSERT_TRUE(host->Enqueue({"archive-a",71,0},body[i]));}
+        available=false;std::this_thread::sleep_for(std::chrono::milliseconds(300));available=true;
+        ASSERT_TRUE(wait_sent(wire,7))<<"after the pause, only the body still missing is requested again";
+        {std::lock_guard lock(wire.mutex);EXPECT_EQ(wire.sent[6].second,request_for(0));}
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        {std::lock_guard lock(wire.mutex);EXPECT_EQ(wire.sent.size(),7u)<<"bodies kept across the pause are not re-requested";}
+        ASSERT_TRUE(host->Enqueue({"archive-a",71,0},body[0]));
+        ASSERT_TRUE(ready(*host))<<host->Observe().error;EXPECT_EQ(host->Observe().verified_height,107u);
+    }
+    { // The serving peer disconnects: its whole window moves to the next peer
+      // at once, and its late replies are refused.
+        Wire wire;std::atomic<bool> a_connected{true};
+        auto host=make(wire,[&]{return std::optional(target);},
+            [&]{return a_connected?std::vector<Download::Peer>{a,b}:std::vector<Download::Peer>{b};},8);
+        ASSERT_TRUE(wait_sent(wire,6));
+        {std::lock_guard lock(wire.mutex);for(size_t i=0;i<6;++i)EXPECT_EQ(wire.sent[i].first,"archive-a")<<"one serving peer, not round-robin";}
+        ASSERT_TRUE(host->Enqueue({"archive-a",71,0},body[0]));
+        a_connected=false;
+        ASSERT_TRUE(wait_sent(wire,11))<<"the five outstanding requests are re-sent to the next peer together";
+        {std::lock_guard lock(wire.mutex);for(size_t i=6;i<11;++i){EXPECT_EQ(wire.sent[i].first,"archive-b");EXPECT_EQ(wire.sent[i].second,request_for(i-5));}}
+        EXPECT_FALSE(host->Enqueue({"archive-a",71,0},body[1]))<<"a late reply from the failed peer is refused";
+        for(size_t i=1;i<6;++i)ASSERT_TRUE(host->Enqueue({"archive-b",72,0},body[i]));
+        ASSERT_TRUE(ready(*host))<<host->Observe().error;EXPECT_EQ(host->Observe().verified_height,107u);
+    }
+    for(const size_t window:{1u,3u}){ // The window bound holds; 1 is one request at a time.
+        Wire wire;auto host=make(wire,[&]{return std::optional(target);},[&]{return std::vector<Download::Peer>{a};},window);
+        ASSERT_EQ(host->Window(),window);
+        ASSERT_TRUE(wait_sent(wire,window));std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        {std::lock_guard lock(wire.mutex);EXPECT_EQ(wire.sent.size(),window)<<"never more than the window in flight";}
+        for(size_t i=0;i<6;++i){
+            ASSERT_TRUE(wait_sent(wire,i+1));
+            ASSERT_TRUE(host->Enqueue({"archive-a",71,0},body[i]))<<window<<" "<<i;
+        }
+        ASSERT_TRUE(ready(*host))<<host->Observe().error;
+        std::lock_guard lock(wire.mutex);EXPECT_EQ(wire.sent.size(),6u);
+    }
+    EXPECT_EQ(Download(headers,source.f.path.parent_path(),[]{return std::optional<Download::Target>{};},[&]{return proof;},
+        [](auto,const auto&){return std::unique_ptr<OrchardBoundaryReplay>{};},[]{return std::vector<Download::Peer>{};},
+        [](const auto&,const auto&,const auto&){return true;},{},99).Window(),Download::kMaxWindow)<<"the window is clamped";
+}
 // A block arrives between the end of verification and the wallet's use of it.
 // The verified history is a checkpoint: it stays usable while the selected
 // chain extends it, and is withdrawn when a reorganisation replaces it.
