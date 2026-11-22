@@ -1,3 +1,4 @@
+#include "recoverywordspolicy.h"
 #include "privatecovenantwidget.h"
 #include "covenantformpolicy.h"
 #include "build_identity.h"
@@ -3403,6 +3404,24 @@ void MainWindow::setupUI() {
       walletControlLayout->addWidget(action, 1);
     }
     walletSetupLayout->addLayout(walletControlLayout);
+    // The wallet's recovery words were never confirmed as written down
+    // (recoverywordspolicy.h): said here until the user has seen and confirmed them.
+    recoveryReminder_ = new QFrame(wallet);
+    recoveryReminder_->setObjectName("walletRecoveryReminder");
+    recoveryReminder_->setStyleSheet(
+      "QFrame#walletRecoveryReminder { background: #3a2f12; border: 1px solid #b8860b; border-radius: 8px; }"
+      "QFrame#walletRecoveryReminder QLabel { color: #f3e3b0; background: transparent; }");
+    auto *reminderLayout = new QHBoxLayout(recoveryReminder_);
+    auto *lblReminder = new QLabel(RecoveryWordsPolicy::reminderText(), recoveryReminder_);
+    lblReminder->setWordWrap(true);
+    auto *btnShowWords = new QPushButton(RecoveryWordsPolicy::reminderButton(), recoveryReminder_);
+    btnShowWords->setObjectName("walletShowRecoveryWords");
+    btnShowWords->setStyleSheet(chromeButtonStyle());
+    connect(btnShowWords, &QPushButton::clicked, this, &MainWindow::onExportSeed);
+    reminderLayout->addWidget(lblReminder, 1);
+    reminderLayout->addWidget(btnShowWords);
+    recoveryReminder_->setVisible(false);
+    layout->addWidget(recoveryReminder_);
     layout->addWidget(walletSetupGroup);
     
     // Cross-Platform Compatibility Banner
@@ -8669,6 +8688,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       // A retryable wallet-delivery refusal is not evidence that the wallet
       // was unloaded or locked. Keep the last known identity/security state.
       if (obj.contains("error")) return;
+      if (recoveryReminder_) recoveryReminder_->setVisible(RecoveryWordsPolicy::reminderNeeded(obj));
       bool hdEnabled = obj["hd_enabled"].toBool(false);
       bool unlocked = walletUnlockedFromRpc(obj);
       
@@ -14740,6 +14760,21 @@ void MainWindow::onExportSeed() {
       auto* fp = new QLabel("Master fingerprint: " + fingerprint);
       fp->setTextInteractionFlags(Qt::TextSelectableByMouse);
       layout->addWidget(fp);
+    }
+
+    // Not yet confirmed as written down: the user confirms here. The node
+    // checks the words against the wallet's own before recording it, and the
+    // next wallet.getinfo decides whether the reminder stays.
+    if (obj.value("backup_required").toBool(false)) {
+      auto* btnConfirm = new QPushButton(RecoveryWordsPolicy::confirmButton(obj));
+      btnConfirm->setObjectName("seedBackupConfirm");
+      btnConfirm->setStyleSheet(chromeButtonStyle());
+      connect(btnConfirm, &QPushButton::clicked, dialog, [this, dialog, seedPhrase, obj]() {
+        rpc_->call("wallet.acknowledgeseedbackup", RecoveryWordsPolicy::confirmParams(seedPhrase, obj));
+        rpc_->call("wallet.getinfo", QJsonArray());
+        dialog->accept();
+      });
+      layout->addWidget(btnConfirm);
     }
 
     auto* btnClose = new QPushButton("Close");

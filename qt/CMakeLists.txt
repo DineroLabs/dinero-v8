@@ -1545,6 +1545,13 @@ if(BUILD_TESTING)
   target_compile_definitions(test_swap_form_policy PRIVATE QT_NO_KEYWORDS)
   add_test(NAME SwapFormPolicy COMMAND test_swap_form_policy)
 
+  # The "recovery words are not confirmed" reminder: when it shows, what is sent on confirmation.
+  add_executable(test_recovery_words_policy tests/test_recovery_words_policy.cpp)
+  target_include_directories(test_recovery_words_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_recovery_words_policy PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_recovery_words_policy PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME RecoveryWordsPolicy COMMAND test_recovery_words_policy)
+
   # Pure request classification; no RPC client, server, socket or node.
   add_executable(test_rpc_retry_policy tests/test_rpc_retry_policy.cpp)
   target_include_directories(test_rpc_retry_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

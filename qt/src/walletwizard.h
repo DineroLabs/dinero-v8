@@ -50,6 +50,11 @@ public:
   int nextId() const override;
   
   QString getSeedPhrase() const { return seedPhrase_; }
+  // The user has just proved they hold the words (ConfirmSeedPage): the node
+  // records it, and the Wallet page's "recovery words are not confirmed"
+  // reminder does not appear for this wallet. If the request is lost, the
+  // reminder appears and the user confirms there.
+  void recordBackupConfirmed();
   
 private Q_SLOTS:
   void onGenerateSeed();
