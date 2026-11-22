@@ -1,12 +1,17 @@
 #include <QtTest/QtTest>
+#include <QApplication>
 #include <QPushButton>
 #include <QImage>
+#include <QLineEdit>
+#include <QMessageBox>
 #include <QSettings>
 #include <QTabBar>
 #include <QTabWidget>
+#include <QTableWidget>
 #include <QTcpServer>
 #include <QTemporaryDir>
 #include <QTextEdit>
+#include <QTimer>
 #include "mainwindow.h"
 #include "rpcclient.h"
 
@@ -54,6 +59,63 @@ private Q_SLOTS:
         QSettings().setValue("updates/check_enabled", false);
     }
     void init() { QSettings().remove("mining/outputFontPx"); }
+
+    void useWalletSelectsFirstTaprootAddressWithoutReceiveTab() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        window->currentWalletName_ = "Hotel";
+        window->walletUnlocked_ = true;
+        window->walletSwitchInFlight_ = false;
+        window->walletRescanning_ = false;
+        window->tblAddresses_->setRowCount(0);
+        window->updateWalletUIState();
+
+        window->edtMiningAddress_->setText("din1pmanual");
+        window->onSetMiningAddress();
+        QVERIFY(window->miningWalletAddressPending_);
+        QCOMPARE(window->edtMiningAddress_->text(), QString("din1pmanual"));
+
+        const QJsonArray addresses{
+            QJsonObject{{"address", "din1plater"}, {"account", 0}, {"change", 0}, {"index", 8}},
+            QJsonObject{{"address", "din1rquantum"}, {"account", 0}, {"change", 0}, {"index", 0}},
+            QJsonObject{{"address", "din1pimported"}, {"account", -1}, {"change", 0}, {"index", 0}},
+            QJsonObject{{"address", "din1pchange"}, {"account", 0}, {"change", 1}, {"index", 0}},
+            QJsonObject{{"address", "din1pfirst"}, {"account", 0}, {"change", 0}, {"index", 0}}
+        };
+        window->onRpcResult("mining.use_wallet_address", addresses);
+        QVERIFY(!window->miningWalletAddressPending_);
+        QCOMPARE(window->edtMiningAddress_->text(), QString("din1pfirst"));
+        QCOMPARE(window->tblAddresses_->rowCount(), 0);
+
+        // A paste made after the click wins over the delayed RPC reply.
+        window->onSetMiningAddress();
+        window->edtMiningAddress_->setText("din1pnewmanual");
+        window->onRpcResult("mining.use_wallet_address", addresses);
+        QCOMPARE(window->edtMiningAddress_->text(), QString("din1pnewmanual"));
+    }
+
+    void useWalletDoesNotFallBackToAnotherAddress() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        window->currentWalletName_ = "Hotel";
+        window->walletUnlocked_ = true;
+        window->walletSwitchInFlight_ = false;
+        window->walletRescanning_ = false;
+        window->edtMiningAddress_->setText("din1pmanual");
+        window->onSetMiningAddress();
+        QVERIFY(window->miningWalletAddressPending_);
+
+        QTimer::singleShot(0, [] {
+            for (QWidget* widget : QApplication::topLevelWidgets()) {
+                if (auto* box = qobject_cast<QMessageBox*>(widget)) box->accept();
+            }
+        });
+        window->onRpcResult("mining.use_wallet_address",
+            QJsonArray{QJsonObject{{"address", "din1plater"},
+                                   {"account", 0}, {"change", 0}, {"index", 1}}});
+        QVERIFY(!window->miningWalletAddressPending_);
+        QCOMPARE(window->edtMiningAddress_->text(), QString("din1pmanual"));
+    }
 
     void buttonsSitInTheTopRightCorner() {
         auto window = makeWindow();

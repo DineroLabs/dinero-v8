@@ -1,7 +1,7 @@
 # Swap code on Windows (MSVC): dinerod links it on every platform, and the
 # swap store must replace its files in place on every tick. Builds dinerod and
 # runs the swap store tests (repeated save / reopen) natively under MSVC; and
-# builds dinero-qt with the Swap tab and runs its offscreen test.
+# builds dinero-qt with the Swap tab and runs its offscreen UI tests.
 name: Swap Windows
 
 on:
@@ -21,6 +21,12 @@ on:
       - 'tools/dinero_swap_tower.cpp'
       - 'qt/src/chromestyle.h'
       - 'qt/tests/test_swap_tab.cpp'
+      - 'qt/src/mainwindow.cpp'
+      - 'qt/src/mainwindow.h'
+      - 'qt/src/inforow.*'
+      - 'qt/src/scoreboardlabel.h'
+      - 'qt/tests/test_mining_output_zoom.cpp'
+      - 'qt/tests/test_info_row.cpp'
 
 jobs:
   swap-windows:
@@ -163,17 +169,17 @@ jobs:
       - name: Build dinero-qt and Qt layout tests
         shell: powershell
         run: |
-          cmake --build build-msvc-qt --config Release --parallel 2 --target dinero-qt test_swap_tab test_overview_columns
+          cmake --build build-msvc-qt --config Release --parallel 2 --target dinero-qt test_swap_tab test_overview_columns test_mining_output_zoom test_info_row
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Run Swap tab and overview layout tests (offscreen)
+      - name: Run Swap tab, overview, and mining UI tests (offscreen)
         shell: powershell
         run: |
           $env:QT_QPA_PLATFORM = 'offscreen'
           $env:QT_QPA_FONTDIR = "$env:WINDIR\Fonts"
           $env:PATH = "$env:QT_ROOT_DIR\bin;$env:PATH"
-          ctest --test-dir build-msvc-qt -C Release -R '^(SwapTab|OverviewColumns)$' --output-on-failure | Tee-Object ctest.log
+          ctest --test-dir build-msvc-qt -C Release -R '^(SwapTab|OverviewColumns|MiningOutputZoom|InfoRow)$' --output-on-failure | Tee-Object ctest.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not (Select-String -Path ctest.log -Pattern '100% tests passed, 0 tests failed out of 2')) {
-            throw 'SwapTab and OverviewColumns did not each run once'
+          if (-not (Select-String -Path ctest.log -Pattern '100% tests passed, 0 tests failed out of 4')) {
+            throw 'SwapTab, OverviewColumns, MiningOutputZoom, and InfoRow did not each run once'
           }

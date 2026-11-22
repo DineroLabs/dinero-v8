@@ -549,6 +549,9 @@ private:
   QPushButton* btnStartMining_;  // v0.14.0.4: Single toggle button (Start ↔ Stop)
   QPushButton* btnStopMining_;   // Legacy - kept for compatibility, hidden in UI
   QPushButton* btnUseWalletAddr_;  // "Use Wallet" button for mining address
+  bool miningWalletAddressPending_ = false;
+  QString miningWalletAddressRequestWallet_;
+  QString miningWalletAddressPriorText_;
   QLabel* lblMiningStatus_ = nullptr;
   QLabel* lblMiningReadiness_ = nullptr;
   QLabel* lblHashrate_;
@@ -693,6 +696,8 @@ private:
   };
   QVector<MiningSessionFind> miningSessionFinds_;
   QPushButton* btnMiningSessionFinds_ = nullptr;
+  QWidget* miningSessionCountGroup_ = nullptr;
+  QLabel* lblMiningSessionCount_ = nullptr;
   QLabel* mottoTickerLabel_ = nullptr;
   void updateMiningStats();
   void updateMiningRuntimeLabel();
