@@ -121,7 +121,7 @@ QStringList currentBootstrapAddnodes() {
 // All remain armed on every start. The daemon treats them as inert on an
 // ordinary synced datadir, but an interrupted first sync needs the exact old
 // artifact even after the app bundle has been upgraded.
-constexpr char kBundledSnapshotPrimary[] = "dinero-assumeutxo-161527-v6-full.dat";
+constexpr char kBundledSnapshotPrimary[] = "dinero-assumeutxo-163965-v6-full.dat";
 constexpr char kBundledSnapshotPreviousPrimary[] = "dinero-assumeutxo-155650-v6-full.dat";
 constexpr char kBundledSnapshotPriorFullV6[] = "dinero-assumeutxo-153578-v6-full.dat";
 constexpr char kBundledSnapshotRecentFallback[] = "dinero-assumeutxo-153051-v6-full.dat";
