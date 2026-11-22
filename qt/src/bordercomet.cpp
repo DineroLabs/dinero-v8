@@ -54,10 +54,11 @@ public:
 
     void setLitTab(int index) {
         if (index == litTab_) return;
-        const int previous = litTab_;
         litTab_ = index;
-        repaintTab(previous);
-        repaintTab(index);
+        // A queued partial update can leave the previous key orange while
+        // mining keeps the UI busy. Paint all underline colors immediately in
+        // the same timer tick that moved the comet tip.
+        repaint();
     }
 
 protected:
@@ -99,11 +100,6 @@ protected:
     }
 
 private:
-    void repaintTab(int index) {
-        if (index >= 0 && index < bar_->count())
-            update(bar_->tabRect(index).adjusted(0, -8, 0, 0));
-    }
-
     QTabBar* bar_;
     int litTab_ = -1;
 };
