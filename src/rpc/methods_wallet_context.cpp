@@ -1,3 +1,4 @@
+#include "daemon/services/runtime_replay_retry.h"
 #include "rpc/wallet_request_dispatch.h"
 #include "daemon/mempool_wallet_view.h"
 #include "storage/chain_db_wallet_view.h"
@@ -8089,7 +8090,7 @@ din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Js
         return result;
     }
 
-    const uint32_t birth_height = ctx.daemon->chainstate ? ctx.daemon->chainstate->getBlockHeight() : 0;
+    uint32_t birth_height = ctx.daemon->chainstate ? ctx.daemon->chainstate->getBlockHeight() : 0;
     // A first run bootstrapping from a snapshot must not seal a placeholder
     // birth (0 before the load, or a height not yet advanced to the base).
     // Refuse before creating anything; the caller retries once the node is at
@@ -8108,7 +8109,13 @@ din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Js
     // instead of returning a partial wallet with a silently missing address.
     if (birth_height >= dinero::Params().orchard_activation_height) {
         const auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
-        const auto replay = source ? source->getRuntimeAccountReplay() :
+        // The read refuses when a block is delivered while it runs, which
+        // during a first run's catch-up is nearly every time. It is asked
+        // again for a few seconds before the user is told to come back
+        // (runtime_replay_retry.h): the same read, the same checks.
+        const auto replay = source ? dinero::ReadRuntimeReplayWithRetry(
+                [&] { return source->getRuntimeAccountReplay(); },
+                [&] { return source->PhoneReplayCaptureCounts().first > 0; }) :
             dinero::StatusOr<std::shared_ptr<const dinero::RuntimeAccountReplay>>(dinero::Status::Invalid);
         if (!replay.ok()) {
             result["error"] = "Orchard history is not ready; wallet was not created. Retry after history sync.";
@@ -8120,6 +8127,25 @@ din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Js
         }
     }
 #endif
+    // The history read above takes from a moment to a minute or more (its
+    // first build, then the bounded retry), and blocks keep arriving: the
+    // birth is the chain height when the wallet is created, not when the
+    // request came in. Nothing is held across that wait (no selected lock, no
+    // wallet lease, no creation owner). A height that moved is put through
+    // the snapshot guard again before anything is created.
+    if (ctx.daemon->chainstate) {
+        const uint32_t now_height = ctx.daemon->chainstate->getBlockHeight();
+        if (now_height != birth_height) {
+            birth_height = now_height;
+            if (const auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+                source && source->WalletBirthPrecedesSnapshot(birth_height)) {
+                result["error"] = "The node is still loading its starting snapshot; wallet was not created. Retry in a few minutes.";
+                result["error_code"] = "snapshot_bootstrap_pending";
+                result["retryable"] = true;
+                return result;
+            }
+        }
+    }
     auto creation_owner = wallet_service->AcquireCreationOwner();
     result = dinero::rpc::RpcCreateHDWallet(params, &wallet_service->get(), birth_height);
     if (!result.isMember("error")) {
