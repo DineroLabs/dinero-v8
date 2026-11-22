@@ -73,6 +73,7 @@
 #include <QIcon>
 #include <QTimer>
 #include <QPointer>
+#include <QUuid>
 #include <QThread>
 #include <QGroupBox>
 #include <QScrollArea>
@@ -8688,7 +8689,11 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       // A retryable wallet-delivery refusal is not evidence that the wallet
       // was unloaded or locked. Keep the last known identity/security state.
       if (obj.contains("error")) return;
-      if (recoveryReminder_) recoveryReminder_->setVisible(RecoveryWordsPolicy::reminderNeeded(obj));
+      if (recoveryReminder_ && !walletSwitchInFlight_ &&
+          !currentWalletName_.isEmpty() &&
+          obj.value("wallet_name").toString() == currentWalletName_) {
+        recoveryReminder_->setVisible(RecoveryWordsPolicy::reminderNeeded(obj));
+      }
       bool hdEnabled = obj["hd_enabled"].toBool(false);
       bool unlocked = walletUnlockedFromRpc(obj);
       
@@ -14762,17 +14767,38 @@ void MainWindow::onExportSeed() {
       layout->addWidget(fp);
     }
 
-    // Not yet confirmed as written down: the user confirms here. The node
-    // checks the words against the wallet's own before recording it, and the
-    // next wallet.getinfo decides whether the reminder stays.
+    // The node checks the words against the wallet's own before recording
+    // confirmation. Keep this dialog open if that check fails.
     if (obj.value("backup_required").toBool(false)) {
       auto* btnConfirm = new QPushButton(RecoveryWordsPolicy::confirmButton(obj));
       btnConfirm->setObjectName("seedBackupConfirm");
       btnConfirm->setStyleSheet(chromeButtonStyle());
-      connect(btnConfirm, &QPushButton::clicked, dialog, [this, dialog, seedPhrase, obj]() {
-        rpc_->call("wallet.acknowledgeseedbackup", RecoveryWordsPolicy::confirmParams(seedPhrase, obj));
-        rpc_->call("wallet.getinfo", QJsonArray());
-        dialog->accept();
+      connect(btnConfirm, &QPushButton::clicked, dialog, [this, dialog, btnConfirm, seedPhrase, obj]() {
+        btnConfirm->setEnabled(false);
+        const QString walletName = currentWalletName_;
+        const QString replyAlias = QStringLiteral("wallet.backup-confirmation.%1")
+            .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+        connect(rpc_, &RpcClient::rpcResult, dialog,
+                [this, dialog, btnConfirm, replyAlias, walletName](const QString& method, const QJsonValue& result) {
+          if (method != replyAlias) return;
+          const QJsonObject response = result.toObject();
+          if (!RecoveryWordsPolicy::confirmationRecorded(response, walletName)) {
+            btnConfirm->setEnabled(true);
+            QMessageBox::warning(dialog, "Recovery Words Not Confirmed",
+                response.value("error").toString("The wallet did not record your backup. Please try again."));
+            return;
+          }
+          rpc_->call("wallet.getinfo", QJsonArray());
+          dialog->accept();
+        });
+        connect(rpc_, &RpcClient::rpcError, dialog,
+                [dialog, btnConfirm, replyAlias](const QString& method, int, const QString& message) {
+          if (method != replyAlias) return;
+          btnConfirm->setEnabled(true);
+          QMessageBox::warning(dialog, "Recovery Words Not Confirmed", message);
+        });
+        rpc_->callAs("wallet.acknowledgeseedbackup",
+                     RecoveryWordsPolicy::confirmParams(seedPhrase, obj), replyAlias);
       });
       layout->addWidget(btnConfirm);
     }
@@ -15809,6 +15835,7 @@ void MainWindow::clearWalletScopedUiState() {
   walletTransparentV3SendReady_ = false;
   legacyShieldedBalanceUnsupported_ = false;
   walletSendUnavailableReason_ = "Waiting for the selected wallet balance";
+  if (recoveryReminder_) recoveryReminder_->setVisible(false);
   if (btnSend_) btnSend_->setEnabled(false);
   if (privateCovenantWidget_) privateCovenantWidget_->setWalletScope({});
   paymentRecipientDraft_.clear(); paymentAmountDraft_.clear();
@@ -16133,6 +16160,10 @@ void MainWindow::checkRescanStatus() {
       }
 
       // Update all wallet-dependent UI
+      if (recoveryReminder_ && !walletSwitchInFlight_ &&
+          !walletName.isEmpty() && walletName == currentWalletName_) {
+        recoveryReminder_->setVisible(RecoveryWordsPolicy::reminderNeeded(obj));
+      }
       updateWalletUIState();
   });
 

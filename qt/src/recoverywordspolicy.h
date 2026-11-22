@@ -43,4 +43,11 @@ inline QJsonArray confirmParams(const QString& words, const QJsonObject& shown) 
     return QJsonArray{words.simplified(), shown.value("passphrase_required").toBool(false)};
 }
 
+inline bool confirmationRecorded(const QJsonObject& response, const QString& walletName) {
+    return !walletName.isEmpty() &&
+           response.value("success").toBool(false) &&
+           response.value("backup_acknowledged").toBool(false) &&
+           response.value("wallet_name").toString() == walletName;
+}
+
 }  // namespace RecoveryWordsPolicy

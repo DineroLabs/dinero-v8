@@ -444,6 +444,7 @@ private Q_SLOTS:
         QCOMPARE(show->text(), QString("Show my recovery words"));
         QVERIFY2(reminder->isHidden(), "nothing is said before the node has answered");
 
+        window.currentWalletName_ = "w";
         const QJsonObject unconfirmed{{"hd_enabled", true}, {"wallet_name", "w"}, {"mnemonic_backup_available", true},
                                       {"backup_required", true}, {"backup_acknowledged", false}};
         Q_EMIT rpc->rpcResult("wallet.getinfo", unconfirmed);
@@ -456,6 +457,32 @@ private Q_SLOTS:
         confirmed["backup_acknowledged"] = true;
         Q_EMIT rpc->rpcResult("wallet.getinfo", confirmed);
         QVERIFY2(reminder->isHidden(), "confirmed: the reminder goes");
+
+        // A wallet switch hides the previous warning at once. Neither a
+        // late reply from the old wallet nor a result received during the
+        // switch may attach that warning to the new selection.
+        Q_EMIT rpc->rpcResult("wallet.getinfo", unconfirmed);
+        QVERIFY(!reminder->isHidden());
+        window.walletSwitchInFlight_ = true;
+        window.pendingWalletOpenName_ = "buyer";
+        window.clearWalletScopedUiState();
+        QVERIFY(reminder->isHidden());
+        Q_EMIT rpc->rpcResult("wallet.getinfo", unconfirmed);
+        QVERIFY(reminder->isHidden());
+
+        window.checkRescanStatus();
+        QJsonObject buyer = unconfirmed;
+        buyer["wallet_name"] = "buyer";
+        Q_EMIT rpc->rpcResult("wallet.getinfo", buyer);
+        QCOMPARE(window.currentWalletName_, QString("buyer"));
+        QVERIFY(!window.walletSwitchInFlight_);
+        QVERIFY(!reminder->isHidden());
+        Q_EMIT rpc->rpcResult("wallet.getinfo", confirmed);
+        QVERIFY2(!reminder->isHidden(), "a late old-wallet reply cannot hide the new wallet's reminder");
+        buyer["backup_required"] = false;
+        buyer["backup_acknowledged"] = true;
+        Q_EMIT rpc->rpcResult("wallet.getinfo", buyer);
+        QVERIFY(reminder->isHidden());
     }
 
     void otherCoinsAreASectionOfTheWalletPageNotAMenuEntry() {
