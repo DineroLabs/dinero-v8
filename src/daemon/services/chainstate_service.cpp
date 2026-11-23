@@ -7017,6 +7017,15 @@ ChainstateService::getOrchardAnnouncementSnapshot(const uint256& hash,uint32_t h
 }
 
 StatusOr<MempoolTransaction> ChainstateService::getTransactionBody(const uint256& txid) const {
+    auto found=getTransactionInclusion(txid);
+    if(!found.ok())return found.status();
+    return std::move(found->body);
+}
+
+// The transaction and where it is on the selected chain. One reader for every
+// transaction format: blocks from Orchard activation on are read as runtime
+// blocks, which hold historical and Orchard transactions side by side.
+StatusOr<ChainstateService::TransactionInclusion> ChainstateService::getTransactionInclusion(const uint256& txid) const {
     std::lock_guard<AnnotatedRecursiveMutex> guard(activation_mutex_);
     if (!chain_db_ || !consensus::OrchardProfileConfigurationValid(Params())) return Status::Internal;
     const auto location = chain_db_->getTxLocation(txid);
@@ -7043,8 +7052,9 @@ StatusOr<MempoolTransaction> ChainstateService::getTransactionBody(const uint256
         if (ordinal >= transactions.size()) return Status::Corruption;
         const auto& transaction = transactions[ordinal];
         if (transaction.GetTxid().AsUint256() != txid) return Status::Corruption;
-        return transaction.IsOrchard() ? MempoolTransaction::FromOrchard(transaction.Orchard())
-                                       : MempoolTransaction(transaction.Historical());
+        return TransactionInclusion{transaction.IsOrchard() ? MempoolTransaction::FromOrchard(transaction.Orchard())
+                                                            : MempoolTransaction(transaction.Historical()),
+            hash,static_cast<uint32_t>(*height),static_cast<uint32_t>(tip->height)};
 #else
         return Status::Internal;
 #endif
@@ -7053,7 +7063,8 @@ StatusOr<MempoolTransaction> ChainstateService::getTransactionBody(const uint256
     if (!block.ok()) return block.status()==Status::NotFound ? Status::Corruption : block.status();
     if (block->GetHash() != hash || ordinal >= block->vtx.size() ||
         block->vtx[ordinal].GetTxid().AsUint256() != txid) return Status::Corruption;
-    return MempoolTransaction(block->vtx[ordinal]);
+    return TransactionInclusion{MempoolTransaction(block->vtx[ordinal]),hash,
+        static_cast<uint32_t>(*height),static_cast<uint32_t>(tip->height)};
 }
 
 StatusOr<ChainstateService::BlockHeaderRpcSnapshot> ChainstateService::getBlockHeaderRpcSnapshot(
