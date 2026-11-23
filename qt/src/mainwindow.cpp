@@ -9,6 +9,7 @@
 #include "segwitaddress.h"
 #include "miningrewards.h"
 #include "inforow.h"
+#include "scoreboardlabel.h"
 #include "mainwindow.h"
 #include "bordercomet.h"
 #include "daemonoutput.h"
@@ -127,6 +128,8 @@
 #include <QRandomGenerator>
 #include <QScrollBar>
 #include <QFontDatabase>
+#include <QFocusEvent>
+#include <QResizeEvent>
 #include <QThread>
 #include <QStackedWidget>
 #include <cmath>
@@ -145,164 +148,64 @@
 
 namespace {
 
-// Keep mining telemetry accessible as label text while drawing compact
-// scoreboard glyphs. Unsupported external-miner text uses QLabel rendering.
-class MiningScoreboardLabel final : public QLabel {
+// Show the same small scoreboard digits as Run until the user edits the thread
+// count. Focusing the field restores normal editable text and the caret.
+class ScoreboardNumberEdit final : public QLineEdit {
 public:
-  explicit MiningScoreboardLabel(const QString& value, QWidget* parent = nullptr)
-      : QLabel(value, parent) {}
-
-  void setGlyphScale(qreal scale) {
-    glyphScale_ = scale;
-    updateGeometry();
-    update();
+  explicit ScoreboardNumberEdit(const QString& value, QWidget* parent = nullptr)
+      : QLineEdit(value, parent), display_(new MiningScoreboardLabel(value, this)) {
+    display_->setGlyphScale(0.75);
+    display_->setFitToWidth(true);
+    display_->setAlignment(Qt::AlignCenter);
+    display_->setStyleSheet(
+        "QLabel { color: #c2cbd2; background: transparent; } "
+        "QLabel:disabled { color: #747e86; }");
+    display_->setAttribute(Qt::WA_TransparentForMouseEvents);
+    connect(this, &QLineEdit::textChanged, display_, &QLabel::setText);
   }
 
-  QSize sizeHint() const override {
-    const QString value = text();
-    if (!isScoreboardText(value)) return QLabel::sizeHint();
-    qreal width = 0;
-    for (const QChar glyph : value) width += glyphAdvance(glyph);
-    return QSize(qCeil((width - kDigitGap) * glyphScale_),
-                 qMax(QLabel::sizeHint().height(), 18));
-  }
-
-  QSize minimumSizeHint() const override {
-    if (!isScoreboardText(text())) return QLabel::minimumSizeHint();
-    return sizeHint();
+  void setControlStyleSheet(const QString& style) {
+    baseStyle_ = style;
+    refreshDisplay();
   }
 
 protected:
-  void paintEvent(QPaintEvent* event) override {
-    const QString value = text();
-    if (!isScoreboardText(value)) {
-      QLabel::paintEvent(event);
-      return;
-    }
+  void resizeEvent(QResizeEvent* event) override {
+    QLineEdit::resizeEvent(event);
+    display_->setGeometry(rect().adjusted(1, 1, -1, -1));
+  }
 
-    QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing);
-    painter.setPen(QPen(palette().color(QPalette::WindowText), 1.5,
-                        Qt::SolidLine, Qt::RoundCap));
-    painter.translate(0, (height() - kDigitHeight * glyphScale_) / 2.0);
-    painter.scale(glyphScale_, glyphScale_);
-    const qreal top = 0;
-    qreal left = 0;
-    for (const QChar glyph : value) {
-      const QChar lower = glyph.toLower();
-      if (lower == QLatin1Char(' ')) {
-        left += kSpaceStep;
-        continue;
-      }
-      if (lower == QLatin1Char('.')) {
-        painter.drawPoint(QPointF(left + 1, top + kDigitHeight - 1));
-        left += kPointStep;
-        continue;
-      }
-      if (lower == QLatin1Char(':')) {
-        painter.drawPoint(QPointF(left + 1, top + 4));
-        painter.drawPoint(QPointF(left + 1, top + kDigitHeight - 4));
-        left += kPointStep;
-        continue;
-      }
-      const qreal right = left + kDigitWidth;
-      const qreal middle = top + kDigitHeight / 2.0;
-      if (lower == QLatin1Char('x')) {
-        painter.drawLine(QPointF(left + 1, top + 3),
-                         QPointF(right - 1, top + kDigitHeight - 2));
-        painter.drawLine(QPointF(right - 1, top + 3),
-                         QPointF(left + 1, top + kDigitHeight - 2));
-        left += kDigitStep;
-        continue;
-      }
-      if (lower == QLatin1Char('m')) {
-        // A narrow two-hump glyph for the runtime unit, using the same pen.
-        const qreal bottom = top + kDigitHeight - 1.5;
-        painter.drawLine(QPointF(left + 1, bottom), QPointF(left + 1, middle + 1));
-        painter.drawLine(QPointF(left + 1, middle + 1), QPointF(left + 3, middle - 1));
-        painter.drawLine(QPointF(left + 3, middle - 1), QPointF(left + 4.25, middle + 1));
-        painter.drawLine(QPointF(left + 4.25, middle + 1), QPointF(left + 6, middle - 1));
-        painter.drawLine(QPointF(left + 6, middle - 1), QPointF(right - 1, middle + 1));
-        painter.drawLine(QPointF(right - 1, middle + 1), QPointF(right - 1, bottom));
-        left += kDigitStep;
-        continue;
-      }
-      const int bits = segmentMask(lower);
-      if (bits & 0x01) {
-        painter.drawLine(QPointF(left + 1.5, top + 1),
-                         QPointF(right - 1.5, top + 1));
-      }
-      if (bits & 0x02) {
-        painter.drawLine(QPointF(right - 1, top + 2.5),
-                         QPointF(right - 1, middle - 1));
-      }
-      if (bits & 0x04) {
-        painter.drawLine(QPointF(right - 1, middle + 1),
-                         QPointF(right - 1, top + kDigitHeight - 2.5));
-      }
-      if (bits & 0x08) {
-        painter.drawLine(QPointF(left + 1.5, top + kDigitHeight - 1),
-                         QPointF(right - 1.5, top + kDigitHeight - 1));
-      }
-      if (bits & 0x10) {
-        painter.drawLine(QPointF(left + 1, middle + 1),
-                         QPointF(left + 1, top + kDigitHeight - 2.5));
-      }
-      if (bits & 0x20) {
-        painter.drawLine(QPointF(left + 1, top + 2.5),
-                         QPointF(left + 1, middle - 1));
-      }
-      if (bits & 0x40) {
-        painter.drawLine(QPointF(left + 1.5, middle),
-                         QPointF(right - 1.5, middle));
-      }
-      left += kDigitStep;
-    }
+  void focusInEvent(QFocusEvent* event) override {
+    QLineEdit::focusInEvent(event);
+    refreshDisplay();
+  }
+
+  void focusOutEvent(QFocusEvent* event) override {
+    QLineEdit::focusOutEvent(event);
+    refreshDisplay();
   }
 
 private:
-  static int segmentMask(const QChar& glyph) {
-    static constexpr unsigned char digits[10] = {
-      0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f};
-    if (glyph >= QLatin1Char('0') && glyph <= QLatin1Char('9'))
-      return digits[glyph.unicode() - '0'];
-    switch (glyph.unicode()) {
-      case 'a': return 0x77;
-      case 'b': return 0x7c;
-      case 'c': return 0x58;
-      case 'd': return 0x5e;
-      case 'e': return 0x79;
-      case 'f': return 0x71;
-      case 'h': return 0x74;
-      case 's': return 0x6d;
-      default: return -1;
-    }
+  void refreshDisplay() {
+    const bool editing = hasFocus();
+    display_->setVisible(!editing);
+    QLineEdit::setStyleSheet(baseStyle_ + (editing ? QString() :
+        QStringLiteral(" QLineEdit { color: transparent; }")));
   }
 
-  static bool isScoreboardText(const QString& value) {
-    if (value.isEmpty()) return false;
-    for (const QChar glyph : value) {
-      const QChar lower = glyph.toLower();
-      if (segmentMask(lower) < 0 && lower != QLatin1Char('x') &&
-          lower != QLatin1Char('m') && lower != QLatin1Char('.') &&
-          lower != QLatin1Char(':') && lower != QLatin1Char(' ')) return false;
-    }
-    return true;
-  }
+  MiningScoreboardLabel* display_;
+  QString baseStyle_;
+};
 
-  static qreal glyphAdvance(const QChar& glyph) {
-    if (glyph == QLatin1Char(' ')) return kSpaceStep;
-    if (glyph == QLatin1Char('.') || glyph == QLatin1Char(':')) return kPointStep;
-    return kDigitStep;
-  }
+class SessionFindsButton final : public QPushButton {
+public:
+  using QPushButton::QPushButton;
 
-  static constexpr qreal kDigitWidth = 8.5;
-  static constexpr qreal kDigitGap = 2.0;
-  static constexpr qreal kDigitStep = kDigitWidth + kDigitGap;
-  static constexpr qreal kDigitHeight = 14.0;
-  static constexpr qreal kPointStep = 4.0;
-  static constexpr qreal kSpaceStep = 5.0;
-  qreal glyphScale_ = 1.0;
+  QSize sizeHint() const override {
+    QSize hint = QPushButton::sizeHint();
+    if (layout()) hint.setWidth(qMax(hint.width(), layout()->sizeHint().width() + 2));
+    return hint;
+  }
 };
 
 constexpr int kWalletUnlockTimeoutSeconds = 60 * 60;
@@ -2881,6 +2784,11 @@ void MainWindow::setupUI() {
     lblPhase_ = new InfoRow("Next halving: -");
     lblSupply_ = new InfoRow("Supply: -");
     lblReward_ = new InfoRow("Next Reward: -");
+    lblHeight_->setValueStyle(InfoRow::ValueStyle::Scoreboard);
+    lblHeaders_->setValueStyle(InfoRow::ValueStyle::Scoreboard);
+    for (InfoRow* row : {lblConnections_, lblPhase_, lblSupply_, lblReward_}) {
+      row->setValueStyle(InfoRow::ValueStyle::SmallScoreboard);
+    }
     lblSyncProgress_ = new QLabel("");
     lblSyncProgress_->setStyleSheet("QLabel { color: #cbd3dc; font-weight: 600; background: #262b32; border: 1px solid #373d46; border-radius: 6px; padding: 5px; }");
     
@@ -5115,13 +5023,14 @@ void MainWindow::setupUI() {
     btnUseWalletAddr_ = new QPushButton("Use Wallet");
     btnUseWalletAddr_->setStyleSheet(miningButtonStyle());
     btnUseWalletAddr_->setFixedSize(100, 30);
-    btnUseWalletAddr_->setToolTip("Fill mining address from your wallet (requires unlocked wallet)");
+    btnUseWalletAddr_->setToolTip("Use your wallet's first Taproot receive address (requires unlock)");
     connect(btnUseWalletAddr_, &QPushButton::clicked, this, &MainWindow::onSetMiningAddress);
     row1->addWidget(btnUseWalletAddr_);
     row1->addWidget(new QLabel("Threads:"));
-    edtMiningThreads_ = new QLineEdit(QString::number(kDefaultMiningThreads));
+    auto* threadsEdit = new ScoreboardNumberEdit(QString::number(kDefaultMiningThreads));
+    edtMiningThreads_ = threadsEdit;
     edtMiningThreads_->setObjectName("miningThreads");
-    edtMiningThreads_->setStyleSheet(miningControlFieldStyle());
+    threadsEdit->setControlStyleSheet(miningControlFieldStyle());
     edtMiningThreads_->setAlignment(Qt::AlignCenter);
     edtMiningThreads_->setFixedSize(56, 30);
     row1->addWidget(edtMiningThreads_);
@@ -5176,7 +5085,9 @@ void MainWindow::setupUI() {
             this, &MainWindow::onMiningModeChanged);
 
     // Tiny stats
-    lblBlocksFound_ = new MiningScoreboardLabel("0");
+    auto* blocksScoreboard = new MiningScoreboardLabel("0");
+    blocksScoreboard->setFitToWidth(true);
+    lblBlocksFound_ = blocksScoreboard;
     lblBlocksFound_->setStyleSheet(miningStatStyle("#bec8d0", true));
     auto* lblBlocksCaption = new QLabel("Blocks:");
     lblBlocksCaption->setStyleSheet(miningStatStyle());
@@ -5186,7 +5097,9 @@ void MainWindow::setupUI() {
     auto* lblHeightCaption = new QLabel("Height:");
     lblHeightCaption->setStyleSheet(miningStatStyle());
     row2->addWidget(lblHeightCaption);
-    lblMiningHeight_ = new MiningScoreboardLabel("-");
+    auto* heightScoreboard = new MiningScoreboardLabel("-");
+    heightScoreboard->setFitToWidth(true);
+    lblMiningHeight_ = heightScoreboard;
     lblMiningHeight_->setStyleSheet(miningStatStyle("#bec8d0", true));
     row2->addWidget(lblMiningHeight_);
 
@@ -5199,12 +5112,14 @@ void MainWindow::setupUI() {
     constexpr qreal kSecondaryMiningStatScale = 0.75;
     auto* targetScoreboard = new MiningScoreboardLabel("-");
     targetScoreboard->setGlyphScale(kTargetMiningStatScale);
+    targetScoreboard->setFitToWidth(true);
     lblMiningDifficulty_ = targetScoreboard;
     lblMiningDifficulty_->setStyleSheet(miningStatStyle("#bec8d0", true));
     row2->addWidget(lblMiningDifficulty_);
     
     auto* hashRateScoreboard = new MiningScoreboardLabel("0.00");
     hashRateScoreboard->setGlyphScale(kSecondaryMiningStatScale);
+    hashRateScoreboard->setFitToWidth(true);
     lblCurrentHash_ = hashRateScoreboard;
     lblCurrentHash_->setStyleSheet(miningStatStyle("#bec8d0", true));
     auto* lblHashrateCaption = new QLabel("MH/s:");
@@ -5214,6 +5129,7 @@ void MainWindow::setupUI() {
     
     auto* runtimeScoreboard = new MiningScoreboardLabel("-");
     runtimeScoreboard->setGlyphScale(kSecondaryMiningStatScale);
+    runtimeScoreboard->setFitToWidth(true);
     lblMiningUptime_ = runtimeScoreboard;
     lblMiningUptime_->setStyleSheet(miningStatStyle("#bec8d0", true));
     lblMiningUptimeCaption_ = new QLabel("Run:");
@@ -5221,10 +5137,41 @@ void MainWindow::setupUI() {
     row2->addWidget(lblMiningUptimeCaption_);
     row2->addWidget(lblMiningUptime_);
 
-    btnMiningSessionFinds_ = new QPushButton("Session");
+    btnMiningSessionFinds_ = new SessionFindsButton;
     btnMiningSessionFinds_->setToolTip("Blocks found this mining session");
+    btnMiningSessionFinds_->setAccessibleName("Session");
     btnMiningSessionFinds_->setStyleSheet(miningButtonStyle());
     btnMiningSessionFinds_->setFixedHeight(miningControlHeight);
+    btnMiningSessionFinds_->setMinimumWidth(110);
+    auto* sessionContents = new QHBoxLayout(btnMiningSessionFinds_);
+    sessionContents->setContentsMargins(9, 0, 9, 0);
+    sessionContents->setSpacing(3);
+    const QString sessionTextStyle = QStringLiteral(
+        "QLabel { font-size: 12px; font-weight: 600; color: #c2cbd2; "
+        "background: transparent; } QLabel:disabled { color: #747e86; }");
+    auto* sessionCaption = new QLabel("Session", btnMiningSessionFinds_);
+    sessionCaption->setStyleSheet(sessionTextStyle);
+    sessionCaption->setAttribute(Qt::WA_TransparentForMouseEvents);
+    sessionContents->addWidget(sessionCaption);
+    miningSessionCountGroup_ = new QWidget(btnMiningSessionFinds_);
+    miningSessionCountGroup_->setAttribute(Qt::WA_TransparentForMouseEvents);
+    auto* countContents = new QHBoxLayout(miningSessionCountGroup_);
+    countContents->setContentsMargins(0, 0, 0, 0);
+    countContents->setSpacing(0);
+    auto* openParen = new QLabel("(", miningSessionCountGroup_);
+    openParen->setStyleSheet(sessionTextStyle);
+    countContents->addWidget(openParen);
+    auto* sessionCount = new MiningScoreboardLabel("0", miningSessionCountGroup_);
+    sessionCount->setGlyphScale(kSecondaryMiningStatScale);
+    sessionCount->setFitToWidth(true);
+    sessionCount->setStyleSheet(sessionTextStyle);
+    lblMiningSessionCount_ = sessionCount;
+    countContents->addWidget(sessionCount);
+    auto* closeParen = new QLabel(")", miningSessionCountGroup_);
+    closeParen->setStyleSheet(sessionTextStyle);
+    countContents->addWidget(closeParen);
+    miningSessionCountGroup_->hide();
+    sessionContents->addWidget(miningSessionCountGroup_);
     btnMiningSessionFinds_->setEnabled(false);
     connect(btnMiningSessionFinds_, &QPushButton::clicked, this, [this]() {
       if (miningSessionFinds_.isEmpty()) return;
@@ -5579,8 +5526,11 @@ void MainWindow::setupUI() {
       }
       if (btnMiningSessionFinds_) {
         btnMiningSessionFinds_->setEnabled(true);
-        btnMiningSessionFinds_->setText(
-          QString("Session (%1)").arg(miningSessionFinds_.size()));
+        const QString count = QString::number(miningSessionFinds_.size());
+        lblMiningSessionCount_->setText(count);
+        miningSessionCountGroup_->show();
+        btnMiningSessionFinds_->updateGeometry();
+        btnMiningSessionFinds_->setAccessibleName(QString("Session (%1)").arg(count));
       }
       miningFoundPendingTemplate_ = true;
       // The live hash field is only for the visible mining session. Keeping
@@ -5628,7 +5578,9 @@ void MainWindow::setupUI() {
             miningSessionFinds_.clear();
             miningHashSamples_.clear();
             if (btnMiningSessionFinds_) {
-                btnMiningSessionFinds_->setText("Session");
+                miningSessionCountGroup_->hide();
+                lblMiningSessionCount_->setText("0");
+                btnMiningSessionFinds_->setAccessibleName("Session");
                 btnMiningSessionFinds_->setEnabled(false);
             }
             if (mining_stats_.mining_started <= 0) {
@@ -7248,6 +7200,57 @@ void MainWindow::onRefreshBlocks() {
 void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
   // Guard: if RPC client has been destroyed (app shutting down), bail out
   if (!rpc_) return;
+
+  if (method == QLatin1String("mining.use_wallet_address")) {
+    miningWalletAddressPending_ = false;
+    const QString requestedWallet = miningWalletAddressRequestWallet_;
+    miningWalletAddressRequestWallet_.clear();
+    updateWalletUIState();
+    if (walletSwitchInFlight_ || !walletUnlocked_ || currentWalletName_ != requestedWallet)
+      return;
+
+    if (!result.isArray()) {
+      const QString detail = result.isObject()
+          ? result.toObject().value("error").toString() : QString();
+      QMessageBox::warning(this, "Mining Address Unavailable",
+          detail.isEmpty() ? "Could not read your wallet's addresses. Please try again."
+                           : detail);
+      return;
+    }
+
+    QString firstTaprootAddress;
+    for (const QJsonValue& value : result.toArray()) {
+      if (!value.isObject()) continue;
+      const QJsonObject row = value.toObject();
+      const QString address = row.value("address").toString();
+      const QString label = row.value("label").toString();
+      if (row.value("account").toInt(-1) != 0 ||
+          row.value("change").toInt(-1) != 0 ||
+          row.value("index").toInt(-1) != 0 ||
+          (label == QLatin1String("shieldcoins") ||
+           label == QLatin1String("consolidate") ||
+           label == QLatin1String("shield_change") ||
+           label == QLatin1String("consolidation")))
+        continue;
+      if (address.startsWith(QLatin1String("din1p")) ||
+          address.startsWith(QLatin1String("tdin1p")) ||
+          address.startsWith(QLatin1String("rdin1p"))) {
+        firstTaprootAddress = address;
+        break;
+      }
+    }
+
+    if (firstTaprootAddress.isEmpty()) {
+      QMessageBox::warning(this, "No Taproot Wallet Address",
+          "The wallet's first Taproot receive address is unavailable. "
+          "Check the Receive tab before using this wallet for mining.");
+      return;
+    }
+    // A user may have pasted a different address while the RPC was in flight.
+    if (edtMiningAddress_ && edtMiningAddress_->text() == miningWalletAddressPriorText_)
+      edtMiningAddress_->setText(firstTaprootAddress);
+    return;
+  }
 
   // A call that failed earlier has now succeeded: its error is resolved.
   if (!errorMessageMethod_.isEmpty() && method == errorMessageMethod_ && lblErrorMessage_ &&
@@ -9318,6 +9321,16 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
   if (method == "wallet.sendtoaddress" || method == "sendtoaddress" || method == "wallet.covenant.ctvfund")
     sendSubmissionPending_ = false;
   if (!rpc_) return;  // Guard: shutting down
+  if (method == QLatin1String("mining.use_wallet_address")) {
+    miningWalletAddressPending_ = false;
+    const QString requestedWallet = miningWalletAddressRequestWallet_;
+    miningWalletAddressRequestWallet_.clear();
+    updateWalletUIState();
+    if (!walletSwitchInFlight_ && walletUnlocked_ && currentWalletName_ == requestedWallet)
+      QMessageBox::warning(this, "Mining Address Unavailable",
+          "Could not read your wallet's addresses: " + message);
+    return;
+  }
   // A background probe can race the embedded daemon's first RPC listener.
   // The startup dialog already explains this state; don't turn it into a
   // frightening global error. After the first connection, show refusals.
@@ -10067,9 +10080,12 @@ void MainWindow::updateEconomics(const QJsonObject& economics) {
       const qint64 epoch = economics["current_halving_epoch"].toInt();
       const qint64 nextHalving = (epoch + 1) * interval + 1;  // halvings = (height - 1) / interval
       const qint64 blocksLeft = nextHalving - qMax(0, cachedHeight_);
+      QString until = chainTiming_.approxDuration(blocksLeft);
+      until.replace(QStringLiteral(" years"), QStringLiteral(" Years"));
+      until.replace(QStringLiteral(" year"), QStringLiteral(" Year"));
       lblPhase_->setText(cachedHeight_ > 0 && blocksLeft > 0
-          ? QString("Next halving: block %1 · %2").arg(nextHalving).arg(chainTiming_.approxDuration(blocksLeft))
-          : QString("Next halving: block %1").arg(nextHalving));
+          ? QString("Next halving: Block %1 · %2").arg(nextHalving).arg(until)
+          : QString("Next halving: Block %1").arg(nextHalving));
     } else {
       lblPhase_->setVisible(false); // Hide if not available
     }
@@ -11262,47 +11278,14 @@ void MainWindow::onSetMiningAddress() {
     return;
   }
 
-  // Use the latest address from the Receive tab
-  if (tblAddresses_->rowCount() > 0) {
-    int lastRow = tblAddresses_->rowCount() - 1;
-    QString address = tblAddresses_->item(lastRow, 1)->text();
-
-    // v7: mining accepts Taproot (din1p...) or P2MR (din1r...)
-    const bool isTaproot = address.startsWith("din1p") ||
-                           address.startsWith("tdin1p") ||
-                           address.startsWith("rdin1p");
-    const bool isP2mr    = address.startsWith("din1r") ||
-                           address.startsWith("tdin1r") ||
-                           address.startsWith("rdin1r");
-
-    if (!isTaproot && !isP2mr) {
-      QMessageBox::StandardButton reply = QMessageBox::warning(this,
-        "Address Not Eligible for Mining",
-        QString("The selected address is neither Taproot nor P2MR:\n\n%1\n\n"
-                "Mining requires a Taproot (din1p...) or P2MR (din1r...) address.\n\n"
-                "Would you like to generate a new eligible address?")
-                .arg(address),
-        QMessageBox::Yes | QMessageBox::No,
-        QMessageBox::Yes);
-
-      if (reply == QMessageBox::Yes) {
-        onDeriveNewAddress();
-        return;
-      }
-      return;
-    }
-
-    edtMiningAddress_->setText(address);
-    QMessageBox::information(this, "Mining Address Set",
-      "Taproot mining address set to:\n" + address);
-  } else {
-    QMessageBox::warning(this, "No Wallet Address",
-      "No addresses found in your wallet.\n\n"
-      "Please generate a new Taproot address first:\n"
-      "1. Go to Receive tab\n"
-      "2. Click 'New Transparent Address' to generate a Taproot address\n"
-      "3. Return here and click 'Use Wallet' again");
-  }
+  if (!rpc_ || miningWalletAddressPending_ || currentWalletName_.isEmpty()) return;
+  miningWalletAddressPending_ = true;
+  miningWalletAddressRequestWallet_ = currentWalletName_;
+  miningWalletAddressPriorText_ = edtMiningAddress_ ? edtMiningAddress_->text() : QString();
+  updateWalletUIState();
+  // The Receive table may be empty or filtered even when this wallet owns
+  // addresses. Ask the wallet directly and select its first Taproot receive row.
+  rpc_->callNamedAs("wallet.listaddresses", QJsonObject{}, "mining.use_wallet_address");
 }
 
 void MainWindow::onBrowseMinerBinary() {
@@ -16343,7 +16326,7 @@ void MainWindow::updateWalletUIState() {
   // Note: Manual address entry and mining still work without wallet (pool mining)
   // =========================================================================
   if (btnUseWalletAddr_) {
-    btnUseWalletAddr_->setEnabled(canUseWalletAddress);
+    btnUseWalletAddr_->setEnabled(canUseWalletAddress && !miningWalletAddressPending_);
     if (!hasWallet) {
       btnUseWalletAddr_->setToolTip("Create or load a wallet first");
       btnUseWalletAddr_->setStyleSheet(miningButtonStyle());
@@ -16354,7 +16337,7 @@ void MainWindow::updateWalletUIState() {
       btnUseWalletAddr_->setToolTip("Unlock wallet to use your Taproot address");
       btnUseWalletAddr_->setStyleSheet(miningButtonStyle());
     } else {
-      btnUseWalletAddr_->setToolTip("Fill mining address from your wallet");
+      btnUseWalletAddr_->setToolTip("Use your wallet's first Taproot receive address");
       btnUseWalletAddr_->setStyleSheet(miningButtonStyle()); // Uniform mining control style
     }
   }

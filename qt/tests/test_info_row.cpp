@@ -1,5 +1,6 @@
 #include <QtTest/QtTest>
 #include "inforow.h"
+#include "scoreboardlabel.h"
 
 class InfoRowTest : public QObject {
     Q_OBJECT
@@ -24,6 +25,25 @@ private Q_SLOTS:
         row.setText("Loading");
         QCOMPARE(row.nameText(), QString());
         QCOMPARE(row.valueText(), QString("Loading"));
+    }
+    void longDigitalValueFitsNarrowRow() {
+        InfoRow row("Supply: 123456789012345678 DIN");
+        row.setValueStyle(InfoRow::ValueStyle::SmallScoreboard);
+        row.resize(160, 32);
+        row.show();
+        QCoreApplication::processEvents();
+
+        const MiningScoreboardLabel* number = nullptr;
+        for (const auto* label : row.findChildren<QLabel*>()) {
+            if (const auto* scoreboard = dynamic_cast<const MiningScoreboardLabel*>(label)) {
+                QVERIFY(number == nullptr);
+                number = scoreboard;
+            }
+        }
+        QVERIFY(number != nullptr);
+        QVERIFY(number->width() < number->sizeHint().width());
+        QVERIFY(number->parentWidget()->geometry().right() < row.width());
+        QVERIFY(number->geometry().right() < number->parentWidget()->width());
     }
 };
 QTEST_MAIN(InfoRowTest)
