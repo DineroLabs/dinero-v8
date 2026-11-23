@@ -124,6 +124,38 @@ while True:
             dest=Path(export);dest.mkdir(parents=True,exist_ok=True)
             for name in ('snapshot.dat','manifest.json','manifest.sig'):shutil.copyfile(latest/name,dest/name)
             (dest/'public-key.raw').write_bytes(pub)
+    def test_v5_boundary_cannot_downgrade_a_v6_phone_endpoint(self):
+        # A compact publisher pointed at the compact-v6 phone root shares the
+        # pending slot with the exact H149999 capture. It must never serve that
+        # v5 payload to v6 phones, and must keep the capture for its own path.
+        root,payload,_,r=self.run_publication(boundary=True,previous_profile='compact')
+        self.assertNotEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertIn('format downgrade',r.stdout+r.stderr)
+        self.assertEqual(os.readlink(root/'www/latest'),'archive/previous')
+        self.assertEqual(json.loads((root/'www/latest/manifest.json').read_text())['format_version'],6)
+        self.assertEqual((root/'data/snapshots/pending.dat').read_bytes(),payload)
+        self.assertTrue((root/'data/snapshots/pending.json').is_file())
+        self.assertFalse((root/'www/pinned').exists())
+    def test_minimum_format_refuses_older_candidate_into_empty_root(self):
+        # An endpoint without a latest yet still declares its floor explicitly.
+        root,payload,_,env=self.run_publication(boundary=True,prepare_only=True)
+        os.unlink(root/'www/latest')
+        env['SNAPSHOT_MIN_FORMAT']='6'
+        r=subprocess.run(['bash',str(SCRIPT)],env=env,capture_output=True,text=True,timeout=15)
+        self.assertNotEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertIn('below the endpoint minimum',r.stdout+r.stderr)
+        self.assertFalse((root/'www/latest').exists())
+        self.assertEqual((root/'data/snapshots/pending.dat').read_bytes(),payload)
+    def test_phone_namespace_exports_beside_retained_boundary(self):
+        root,boundary_payload,_,env=self.run_publication(boundary=True,prepare_only=True)
+        env['SNAPSHOT_COMPACT_PENDING_NAMESPACE']='phone-v6-qualification'
+        (root/'tip').write_text('149999')
+        r=subprocess.run(['bash',str(SCRIPT)],env=env,capture_output=True,text=True,timeout=15)
+        self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertIn('waiting for tip',r.stdout)
+        self.assertTrue((root/'data/snapshots/phone-v6-qualification/pending.json').is_file())
+        self.assertEqual((root/'data/snapshots/pending.dat').read_bytes(),boundary_payload)
+        self.assertEqual(os.readlink(root/'www/latest'),'archive/previous')
     def test_last_v5_is_pinned_outside_rotating_archive(self):
         root,payload,_,r=self.run_publication(boundary=True);self.assertEqual(r.returncode,0,r.stdout+r.stderr)
         pin=root/'www/pinned/v5-h149999'

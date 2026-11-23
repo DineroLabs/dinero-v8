@@ -95,6 +95,14 @@ manifest also fails closed. A new full endpoint must start with its own empty
 PUBROOT; the native gate and mirror/consumer checks are still required before
 advertising it.
 
+An endpoint never moves to an older snapshot format than its current `latest`
+serves, and never below `SNAPSHOT_MIN_FORMAT` when that is set (use `6` for a
+v6-only root that has no `latest` yet). The compact pending slot is shared with
+the exact H149999 v5 capture, so a compact publisher pointed at a v6 phone root
+refuses that capture instead of serving it; the refusal leaves `latest` and the
+pending candidate untouched. A private phone run sets
+`SNAPSHOT_COMPACT_PENDING_NAMESPACE` to export into its own pending slot.
+
 The manifest includes `format_version` and `snapshot_profile` (`legacy` before
 v6). Phone publication requires an Ed25519 key, preserving both mobile apps'
 existing signature policy. Full chain-bound publication may omit that extra
