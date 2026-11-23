@@ -179,7 +179,13 @@ jobs:
           $env:QT_QPA_FONTDIR = "$env:WINDIR\Fonts"
           $env:PATH = "$env:QT_ROOT_DIR\bin;$env:PATH"
           ctest --test-dir build-msvc-qt -C Release -R '^(SwapTab|OverviewColumns|MiningOutputZoom|InfoRow)$' --output-on-failure | Tee-Object ctest.log
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) {
+            # Windows GUI binaries may not write QtTest failures to ctest's console.
+            # Capture the named assertion if this gate fails again.
+            & 'build-msvc-qt\bin\Release\test_overview_columns.exe' -o 'overview-columns.txt,txt'
+            if (Test-Path 'overview-columns.txt') { Get-Content 'overview-columns.txt' }
+            exit 1
+          }
           if (-not (Select-String -Path ctest.log -Pattern '100% tests passed, 0 tests failed out of 4')) {
             throw 'SwapTab, OverviewColumns, MiningOutputZoom, and InfoRow did not each run once'
           }

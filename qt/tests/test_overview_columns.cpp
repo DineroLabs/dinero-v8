@@ -609,7 +609,7 @@ private Q_SLOTS:
         QVERIFY2(rows.contains("Height"), "Height row");
         QCOMPARE(rows["Height"]->valueText(), QString("121,208"));
         QVERIFY2(rows.contains("Next halving"), "Next halving row");
-        QCOMPARE(rows["Next halving"]->valueText(), QString("block 1,314,001 · ~4.5 years"));
+        QCOMPARE(rows["Next halving"]->valueText(), QString("Block 1,314,001 · ~4.5 Years"));
         // The Mempool card already shows mempool size; no duplicate row here.
         for (auto* r : info->findChildren<InfoRow*>())
             QVERIFY2(r->nameText() != "Mempool" || r->isHidden(), "duplicate Mempool row is visible");
