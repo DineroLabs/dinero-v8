@@ -1319,6 +1319,7 @@ int main(int argc, char** argv) {
 
   QApplication app(argc, argv);
   app.setApplicationName("Dinero");
+  app.setApplicationVersion(QStringLiteral(DINERO_RELEASE_TAG));
   app.setOrganizationName("Dinero");
 
   // Install suppressing message handler early to prevent console output

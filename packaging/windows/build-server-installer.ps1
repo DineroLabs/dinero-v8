@@ -26,7 +26,7 @@ param(
     [string]$SnapshotManifestPath = '',
     [string]$SnapshotAssetName  = '',
     [string]$SnapshotFileName   = 'dinero-assumeutxo-163965-v6-full.dat',
-    [string]$SnapshotReleaseTag = 'v8.2.4',
+    [string]$SnapshotReleaseTag = 'v8.2.5',
     [switch]$SkipBuild,
     [switch]$CiOrchardQualification
 )

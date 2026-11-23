@@ -64,7 +64,7 @@ param(
     [string]$SnapshotFileName   = '',
     [string]$SnapshotPath       = '',
     [string]$SnapshotManifestPath = '',
-    [string]$SnapshotReleaseTag = 'v8.2.4',
+    [string]$SnapshotReleaseTag = 'v8.2.5',
     [string]$SnapshotRecentFallbackFileName = '',
     [string]$SnapshotRecentFallbackPath = '',
     [string]$SnapshotRecentFallbackManifestPath = '',
