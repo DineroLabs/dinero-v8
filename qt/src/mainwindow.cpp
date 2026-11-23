@@ -888,12 +888,18 @@ bool walletUnlockedFromRpc(const QJsonObject& obj) {
   return false;
 }
 
+// The Mining page's status line is the tagline and nothing else, on every
+// platform and in every wallet state (the owner's wording). Whether mining is
+// running is said by the Start/Stop button and the counters beside it; what a
+// missing or locked wallet means for "Use Wallet" is said by that button's
+// tooltip. Short-lived states (stopping, verifying a found block) still add
+// their own words after the tagline.
 QString miningStatusActiveText() {
-  return QStringLiteral("Dinero: Real Money For Free People - Post-Quantum Native");
+  return QStringLiteral("Dinero: Real Money For Free People");
 }
 
 QString miningStatusInactiveText() {
-  return QStringLiteral("Not-Mining - Dinero: Real Money For Free People - Post-Quantum Native");
+  return QStringLiteral("Dinero: Real Money For Free People");
 }
 
 QString chromePillStyle() {
@@ -5067,6 +5073,7 @@ void MainWindow::setupUI() {
     btnStopMining_->setVisible(false);  // Hidden - we use toggle button instead
 
     lblMiningStatus_ = new QLabel(miningStatusInactiveText());
+    lblMiningStatus_->setObjectName("miningStatusLine");
     QFont miningStatusFont = lblMiningStatus_->font();
     if (miningStatusFont.pointSizeF() > 0) {
       miningStatusFont.setPointSizeF(miningStatusFont.pointSizeF() * 0.9);
@@ -16342,14 +16349,6 @@ void MainWindow::updateWalletUIState() {
     }
   }
 
-  // Mining status hint when wallet affects mining
-  if (lblMiningStatus_ && !canTransact && edtMiningAddress_ && edtMiningAddress_->text().isEmpty()) {
-    if (!hasWallet) {
-      lblMiningStatus_->setText(miningStatusInactiveText() + " | No wallet - enter address manually or create wallet");
-    } else if (!walletUnlocked_) {
-      lblMiningStatus_->setText(miningStatusInactiveText() + " | Unlock wallet to use 'Use Wallet' button");
-    }
-  }
 }
 
 void MainWindow::onEncryptWallet() {
