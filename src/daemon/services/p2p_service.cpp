@@ -44,6 +44,7 @@
 #include "daemon/wallet_input_proof_source.h"
 #include "daemon/config.h"
 #endif
+#include <iostream>
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
