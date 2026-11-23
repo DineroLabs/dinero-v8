@@ -68,3 +68,23 @@ dinero-main), #975 (phone prepare re-arm, on codex/compact-v6-phone-publication)
   dinerod. A v8.2.6 dinerod refuses the still-pending H149999 v5 boundary
   capture, consistent with keeping H149999 only as the phones' bundled
   wallet-recovery source.
+
+## Related NodeCore bugs found on the Android phone (2026-11-23)
+
+1. **Block apply rescans the whole header gap per block.** After a fast sync
+   from H150074 with headers at ~H164947, `din-blkapply` spent >50 CPU-minutes
+   at H150334 (blocks there are coinbase-only). simpleperf (no root; evidence
+   `~/src/dinero-evidence/2026-11-23-android-h153110-stall/perf-blkapply-*`):
+   `QueuedOrchardBlock::ValidateAndApply` → `TryAcceptOrchardBlockFromRPC` →
+   `ActivateBestChain` → `ActivateBestChainPass` spends its time in
+   `HasStoredBlockBody` (fstat + header-metadata RocksDB read + hex decode per
+   header) and `AddCandidate` → `HasBranchDataToConnectedBase`. Cost per block
+   scales with the unapplied gap, so a node far behind crawls. Fix: bound the
+   pass (stop at the first missing body / cache per-header body presence),
+   with a regression test that fails on gap-proportional work.
+2. **Failed start leaks the datadir lock.** After a force-stop mid-apply, one
+   `nodecore_start` failed and left `dinerod.lock` plus the chaindb LOCK/LOG
+   open in the app process with no node threads; every later start returned
+   `NODECORE_ERROR_INIT_FAILED (-3)` ("Start stateless node" did nothing) until
+   the process was killed. Fix: release the DatadirGuard and databases on every
+   failed-start path; test a forced Init failure followed by a successful start.
