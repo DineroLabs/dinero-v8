@@ -117,7 +117,9 @@ public:
                     socket->setProperty("handled", true);
                     const QJsonObject request = doc.object();
                     const QString method = request.value("method").toString();
-                    if (method == QLatin1String("blockchain.getaddressbalance")) {
+                    if (method == QLatin1String("blockchain.getblockcount")) {
+                        respond(socket, QJsonObject{{"height", 1}});
+                    } else if (method == QLatin1String("blockchain.getaddressbalance")) {
                         if (!held_pool_balance_) {
                             held_pool_balance_ = socket;
                         } else {
@@ -259,16 +261,32 @@ private Q_SLOTS:
         QCOMPARE(pool.requests, 1);  // no automatic connect without a token
     }
 
-    void feeAddressFillsInAndEarningsStart() {
+    void feeAddressWaitsForLocalNodeThenEarningsLoad() {
         FakePool pool;
+        InterleavedHistoryRpc localNode;
         QHash<QString, QString> keychain;
         auto rpc = makeRpc();
         PoolPanel panel(rpc.get(), nullptr, std::make_unique<FakeStore>(&keychain));
         connectTo(panel, pool.endpoint(), "SJ", false);
         QTRY_VERIFY2_WITH_TIMEOUT(connected(panel), qPrintable(named<QLabel>(panel, "poolStatusMessage")->text()), 5000);
         QCOMPARE(named<QLineEdit>(panel, "poolFeeAddress")->text(), kFeeAddress);
-        QVERIFY2(named<QLabel>(panel, "poolLifetime")->text().contains("reading the chain"),
+        QVERIFY2(named<QLabel>(panel, "poolLifetime")->text().contains("Waiting for your local node"),
                  qPrintable(named<QLabel>(panel, "poolLifetime")->text()));
+        QVERIFY(!localNode.hasHeldPoolHistory());
+
+        // The saved pool can connect before the app's local daemon. Once an
+        // ordinary RPC establishes that daemon connection, both earnings
+        // requests resume without another click or another pool refresh.
+        rpc->setEndpoint(localNode.url());
+        rpc->getBlockCount();
+        QTRY_VERIFY_WITH_TIMEOUT(localNode.hasHeldPoolHistory(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(localNode.hasHeldPoolBalance(), 5000);
+        localNode.releasePoolHistory();
+        localNode.releasePoolBalance();
+        QTRY_VERIFY_WITH_TIMEOUT(
+            named<QLabel>(panel, "poolLifetime")->text().contains("123.00000000 DIN"), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            named<QLabel>(panel, "poolUnspent")->text().contains("123.00000000 DIN"), 5000);
     }
 
     void sameAddressExplorerHistoryCannotFinishPoolEarnings() {
@@ -276,6 +294,8 @@ private Q_SLOTS:
         QHash<QString, QString> keychain;
         auto rpc = makeRpc();
         rpc->setEndpoint(server.url());
+        rpc->getBlockCount();
+        QTRY_VERIFY_WITH_TIMEOUT(rpc->isConnected(), 5000);
         PoolPanel panel(rpc.get(), nullptr, std::make_unique<FakeStore>(&keychain));
         QSignalSpy results(rpc.get(), &RpcClient::rpcResult);
         named<QLineEdit>(panel, "poolFeeAddress")->setText(kFeeAddress);

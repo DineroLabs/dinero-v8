@@ -66,6 +66,7 @@ private Q_SLOTS:
     void onChangePayoutClicked();
     void onChangeFeeClicked();
     void onCheckEarningsClicked();
+    void onLocalNodeReady();
     void onOpsReplyFinished(QNetworkReply* reply);
     void onRpcResult(const QString& method, const QJsonValue& result);
     void onRpcError(const QString& method, int code, const QString& message);
@@ -120,6 +121,7 @@ private:
     bool fee_in_flight_ = false;
     bool earnings_in_flight_ = false;
     bool lifetime_in_flight_ = false;
+    bool earnings_waiting_for_node_ = false;
     /// Address echoed by a reply is checked as well as its per-call route.
     QString earnings_address_;
     /// Per-request reply aliases separate this panel from MainWindow's
