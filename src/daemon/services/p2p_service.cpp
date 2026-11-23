@@ -2279,7 +2279,9 @@ void P2PService::EnsureSnapshotHistoryWorkers() {
                     size_t(std::max(1,config_?config_->GetInt("orchard.history_window",
                         int(p2p::OrchardPhoneHistoryDownload::kDefaultWindow)):
                         int(p2p::OrchardPhoneHistoryDownload::kDefaultWindow))));
-                if(logger_interface_)logger_interface_->info("[OrchardHistory] body window "+std::to_string(history->Window()));
+                // On stderr, with the other [OrchardHistory] lines: a
+                // capture of the node's stderr (a phone) must show it too.
+                std::cerr<<"[OrchardHistory] body window "<<history->Window()<<std::endl;
                 {std::lock_guard lock(orchard_catalog_download_mutex_);orchard_phone_history_=std::move(history);}
             }
         }
