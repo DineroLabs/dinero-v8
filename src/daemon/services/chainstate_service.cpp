@@ -1,3 +1,4 @@
+#include "daemon/services/retained_replay_policy.h"
 #include "storage/validated_tip_transition.h"
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 #include "daemon/services/chainstate_recovery_source.h"  // R1 adapter (Task 6.3)
@@ -8378,8 +8379,10 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             static std::mutex said_mutex;static std::string said;
             const std::string line=std::string("wallet replay waits: ")+why+(detail.empty()?"":" ("+detail+")");
             std::lock_guard<std::mutex> lock(said_mutex);
-            static uint64_t refusals=0;++refusals;
-            if(said!=line){said=line;std::cerr<<"[OrchardHistory] "<<stamp()<<" "<<line<<" [refusal "<<refusals<<"]"<<std::endl;}
+            static uint64_t refusals=0;static uint64_t repeats=0;++refusals;
+            if(said!=line){said=line;repeats=0;std::cerr<<"[OrchardHistory] "<<stamp()<<" "<<line<<" [refusal "<<refusals<<"]"<<std::endl;}
+            else if(RepeatedRefusalIsLogged(++repeats))
+                std::cerr<<"[OrchardHistory] "<<stamp()<<" "<<line<<" [the same refusal "<<repeats<<" more times; refusal "<<refusals<<"]"<<std::endl;
             return Status::Invalid;
         };
         // The history was verified up to a checkpoint (`target`). It is
@@ -8439,6 +8442,12 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             const auto& [source,target,download,history]=*ready;
             const auto base=*phone_replay_base_;
             if(base.second==target.base&&base.first>=target.activation&&base.first<=target.height){
+                // Readers hold the view briefly; wait for one before deciding
+                // that it cannot be extended (as for the full view above).
+                const auto phone_held_since=std::chrono::steady_clock::now();
+                while(!RuntimeAccountReplay::SoleOwner(phone_replay_)&&
+                      std::chrono::steady_clock::now()-phone_held_since<kFullReplayHeldWait)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 std::shared_ptr<const RuntimeAccountReplay> extended;
                 try{extended=RuntimeAccountReplay::ExtendTail(std::move(phone_replay_),read);}
                 // Before ExtendTail takes the view only the first read can throw:
@@ -8447,15 +8456,30 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
                 catch(const consensus::OrchardStateLookupError&){if(phone_replay_)throw;phone_replay_base_.reset();}
                 catch(...){phone_replay_.reset();phone_replay_base_.reset();}
                 if(extended){
-                    phone_replay_=extended;++phone_replay_extensions_;
+                    phone_replay_=extended;++phone_replay_extensions_;phone_replay_held_refusals_.store(0);
                     return adopt(extended,source,target,download);
                 }
-                // Another holder is still reading the retained view: reuse it while
-                // current; otherwise rebuild below and retain the new view instead.
+                // Another holder is still reading the retained view, so it
+                // cannot be extended now. It is handed out while it is still
+                // at the head; behind the head it is KEPT and the caller
+                // retries (retained_replay_policy.h). It used to be dropped
+                // here and built again from the checkpoint, on every block
+                // that arrived while a reader held it.
                 if(phone_replay_){
                     auto current=adopt(phone_replay_,source,target,download);
-                    if(current.ok())return current;
-                    phone_replay_.reset();phone_replay_base_.reset();
+                    switch(WhenRetainedReplayIsHeld(current.ok(),phone_replay_held_refusals_.load())){
+                    case RetainedReplayAction::ReturnCurrent:
+                        phone_replay_held_refusals_.store(0);return current;
+                    case RetainedReplayAction::KeepAndRetry:
+                        ++phone_replay_held_refusals_;
+                        return refuse("the retained replay is held by another reader and a block has arrived (kept, not rebuilt)");
+                    case RetainedReplayAction::DropAndRebuild:
+                        std::cerr<<"[OrchardHistory] "<<stamp()<<" wallet replay: the retained replay stayed held for "
+                                 <<phone_replay_held_refusals_.load()<<" attempts; rebuilding from the checkpoint"<<std::endl;
+                        phone_replay_held_refusals_.store(0);
+                        phone_replay_.reset();phone_replay_base_.reset();
+                        break;
+                    }
                 }
             }else{phone_replay_.reset();phone_replay_base_.reset();}
             captured_head.reset();

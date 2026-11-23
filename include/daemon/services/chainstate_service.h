@@ -2255,6 +2255,8 @@ private:
     // retained view stays held, before one of them pays for a full capture.
     static constexpr uint32_t kFullReplayWorkerRefusals=30;
     mutable std::atomic<uint32_t> full_replay_worker_refusals_{0};
+    // Consecutive "kept, retry" answers for a held phone replay (retained_replay_policy.h).
+    mutable std::atomic<uint32_t> phone_replay_held_refusals_{0};
     // Test only, empty in the daemon: runs in the v3 Pending branch between
     // the transparent reconcile and the Orchard delivery read, so a test can
     // land a block there.
