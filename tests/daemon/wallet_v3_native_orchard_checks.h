@@ -1,5 +1,6 @@
 #pragma once
 #include <chrono>
+#include <thread>
 #include "wallet/orchard_ownership_inventory.h"
 #include <cstdio>
 #include <cstdlib>
@@ -50,6 +51,59 @@ TEST(WalletV3NativeOrchard, FullAccountReplayReusesPrefixAndExtendsTail) {
         f.f.service->GetActiveTip()->hash);
     EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,cached.first);
     EXPECT_EQ(f.f.service->FullReplayCaptureCounts().second,cached.second+2);
+}
+
+// The retained full view is not rebuilt from the origin because another
+// reader happened to hold it when a block arrived. A rebuild takes minutes on
+// a long chain, and until it ends nothing is delivered and every balance read
+// is refused (seen on a mainnet wallet: ten minutes without a balance while
+// mining). The reader is waited for, briefly; one that does not let go still
+// gets a full capture, as before.
+TEST(WalletV3NativeOrchard, FullAccountReplayWaitsForAReaderInsteadOfRebuilding) {
+    OrchardCreationFixture f;
+    {const auto first=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(first.ok());}
+    const auto built=f.f.service->FullReplayCaptureCounts();
+
+    // Another thread holds the view for a moment while a block arrives.
+    {
+        auto held=f.f.service->getRuntimeAccountReplay();
+        ASSERT_TRUE(held.ok());
+        f.MineEmpty();
+        std::thread reader([view=std::move(*held)]() mutable {
+            std::this_thread::sleep_for(std::chrono::milliseconds(60));
+            view.reset();
+        });
+        held=Status::Invalid;
+        const auto extended=f.f.service->getRuntimeAccountReplay();
+        reader.join();
+        ASSERT_TRUE(extended.ok());
+        EXPECT_EQ((*extended)->Point((*extended)->Head()).checkpoint.block_hash,f.f.service->GetActiveTip()->hash);
+    }
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,built.first) << "no full capture for a reader that lets go";
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().second,built.second+1);
+
+    // A holder that does not let go (here, the caller itself) is answered
+    // all the same, by a full capture, after the bounded wait.
+    {
+        const auto held=f.f.service->getRuntimeAccountReplay();
+        ASSERT_TRUE(held.ok());
+        f.MineEmpty();
+        const auto started=std::chrono::steady_clock::now();
+        const auto answer=f.f.service->getRuntimeAccountReplay();
+        const auto waited=std::chrono::steady_clock::now()-started;
+        ASSERT_TRUE(answer.ok());
+        EXPECT_EQ((*answer)->Point((*answer)->Head()).checkpoint.block_hash,f.f.service->GetActiveTip()->hash);
+        EXPECT_GE(waited,std::chrono::milliseconds(200));
+        EXPECT_LT(waited,std::chrono::seconds(10));
+    }
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,built.first+1);
+
+    // The new capture is the cache: the next block is a tail extension again.
+    const auto after_capture=f.f.service->FullReplayCaptureCounts();
+    f.MineEmpty();
+    {const auto next=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(next.ok());}
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,after_capture.first);
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().second,after_capture.second+1);
 }
 
 // A native-complete wallet on v3 creates an Orchard account, and an Orchard

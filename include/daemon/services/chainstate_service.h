@@ -2237,6 +2237,9 @@ private:
     // sole owner and otherwise falls back to a fresh verified capture.
     mutable std::mutex full_replay_mutex_;
     mutable std::shared_ptr<const RuntimeAccountReplay> full_replay_;
+    // How long a caller waits for another reader to let go of the retained
+    // full view before a full capture is paid for.
+    static constexpr std::chrono::milliseconds kFullReplayHeldWait{250};
     mutable std::atomic<uint64_t> full_replay_full_builds_{0},full_replay_extensions_{0};
     // Outbox head whose material needs the phone activation prefix while no
     // verified history is available. Until the head changes or history is

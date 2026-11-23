@@ -8275,6 +8275,21 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
         // fixed-prefix reader rechecks continuity and the selected after-tip.
         std::unique_lock<std::mutex> full_retained(full_replay_mutex_,std::defer_lock);
         if(!orchard_phone_history_requested_.load())full_retained.lock();
+        // A full capture rebuilds the whole activation-origin replay (minutes on
+        // a long chain), and while it runs nothing is delivered to the wallet
+        // and every balance read is refused. It is said in the log with its
+        // reason, and the retained view is not given up for a reason that a
+        // moment's wait or a tail extension cures.
+        const auto replay_stamp=[]{
+            const std::time_t now=std::time(nullptr);std::tm local{};
+#ifdef _WIN32
+            localtime_s(&local,&now);
+#else
+            localtime_r(&now,&local);
+#endif
+            char text[16];std::strftime(text,sizeof(text),"%H:%M:%S",&local);return std::string(text);
+        };
+        const char* full_capture_reason="no retained view";
         if(full_retained.owns_lock()&&full_replay_){
             if(full_replay_->Head()==outbox_head){
                 const auto final=getRuntimeDeliveryPageAtPrefix(outbox_head,outbox_head,1,16*1024*1024);
@@ -8283,17 +8298,34 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
                 if((*final)->head!=outbox_head||(*final)->next!=outbox_head||!(*final)->events.empty()||
                    !(*final)->after_tip||(*final)->after_tip->first!=point.block_hash||
                    (*final)->after_tip->second!=point.height){
-                    full_replay_.reset();return Status::Invalid;
+                    full_replay_.reset();
+                    std::cerr<<"[RuntimeReplay] "<<replay_stamp()<<" retained full account replay dropped: "
+                                "it does not match the node's record at its own head"<<std::endl;
+                    return Status::Invalid;
                 }
                 return full_replay_;
             }
+            // The view can be extended only while nobody else holds it. Some
+            // twenty call sites take it, wallet requests among them, and most
+            // hold it for milliseconds: a reader on another thread that
+            // happens to hold it when a block arrives is waited for, briefly.
+            // (Without the wait that coincidence cost a full capture: ten
+            // minutes without a balance on a mainnet wallet.) A holder that
+            // does not let go in that time, including this thread's own
+            // caller, gets today's behaviour: a new full capture.
+            const auto held_since=std::chrono::steady_clock::now();
+            while(full_replay_.use_count()!=1&&
+                  std::chrono::steady_clock::now()-held_since<kFullReplayHeldWait)
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
             std::shared_ptr<const RuntimeAccountReplay> extended;
             try{extended=RuntimeAccountReplay::ExtendTail(std::move(full_replay_),read);}
             catch(const consensus::OrchardStateLookupError&){if(full_replay_)throw;captured_head.reset();}
-            catch(...){full_replay_.reset();captured_head.reset();}
+            catch(...){full_replay_.reset();captured_head.reset();
+                full_capture_reason="extending the retained view failed";}
             if(extended){full_replay_=extended;++full_replay_extensions_;return extended;}
             // A concurrent reader still owns the old immutable view. A new
             // full capture keeps this call's semantics and becomes the cache.
+            if(full_replay_)full_capture_reason="the retained view stayed held by another reader";
             captured_head.reset();
         }
         // Phone activation-prefix material has its own retained view and
@@ -8429,8 +8461,14 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
                      <<(retained.owns_lock()?", kept for the next attempt)":", NOT kept)")<<std::endl;
             return adopt(replay,source,target,download);
         }
+        const auto full_capture_started=std::chrono::steady_clock::now();
         auto replay=RuntimeAccountReplay::Build(std::move(material));
-        if(full_retained.owns_lock()){full_replay_=replay;++full_replay_full_builds_;}
+        if(full_retained.owns_lock()){
+            full_replay_=replay;++full_replay_full_builds_;
+            const auto took=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now()-full_capture_started).count();
+            std::cerr<<"[RuntimeReplay] "<<replay_stamp()<<" full account replay built (full build "<<full_replay_full_builds_.load()
+                     <<", "<<took<<" s, reason: "<<full_capture_reason<<")"<<std::endl;
+        }
         return replay;
     } catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
       catch(...){return Status::Internal;}
