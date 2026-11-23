@@ -17096,11 +17096,16 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(
         // check above), so the V3 boundary can be evaluated here rather than
         // deeper in, where a rejection would have to unwind work.
         // ═════════════════════════════════════════════════════════════════════
+        // v8.2.6: mainnet bootstraps only from Orchard (v6) snapshots. Other
+        // networks keep their historical fixtures. Wallet recovery reads its
+        // H149999 source through runtime_recovery_source, never this loader.
         switch (consensus::EvaluateSnapshotFormat(
                     header.version, header.block_height,
                     Params().shielded_activation_height,
                     Params().state_commitment_activation_height,
-                    Params().orchard_activation_height)) {
+                    Params().orchard_activation_height,
+                    Params().orchard_catalog_commitment_activation_height,
+                    Params().network_id == "main")) {
             case consensus::SnapshotFormatVerdict::RejectV2Deprecated:
                 result.error_message =
                     "Snapshot container v2 is no longer supported (deprecated). "
@@ -17150,6 +17155,15 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(
                     "Legacy snapshot container cannot bootstrap Orchard at height " +
                     std::to_string(header.block_height) +
                     "; authenticated v6 Orchard and catalog state is required";
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
+            case consensus::SnapshotFormatVerdict::RejectPreOrchardBootstrap:
+                result.error_message =
+                    "Pre-Orchard snapshot (v" + std::to_string(header.version) +
+                    " at height " + std::to_string(header.block_height) +
+                    ") is no longer accepted for mainnet bootstrap; use a v6 "
+                    "Orchard snapshot at or above height " +
+                    std::to_string(Params().orchard_activation_height);
                 logger_->error("[LoadSnapshot] " + result.error_message);
                 return result;
             case consensus::SnapshotFormatVerdict::Accept:
