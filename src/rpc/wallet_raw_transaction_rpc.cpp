@@ -62,6 +62,10 @@ din::Json DescribeOrchard(const dinero::MempoolTransaction& body) {
 #endif
 }
 }
+// The public fields of an Orchard transaction, for other RPC files
+// (blockchain.gettransaction).
+din::Json DescribeOrchardTransactionForRpc(const dinero::MempoolTransaction& body) { return DescribeOrchard(body); }
+
 din::Json rpc_context_wallet_decoderawtransaction(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
 

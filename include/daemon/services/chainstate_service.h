@@ -1098,6 +1098,16 @@ public:
     // Captures an indexed transaction from the selected canonical block under
     // the activation lock. Preserves its family and verifies ordinal and txid.
     StatusOr<MempoolTransaction> getTransactionBody(const uint256& txid) const;
+    // The same transaction with its block. NotFound means the transaction is
+    // not on the selected chain; any other failure means it could not be
+    // read, which a caller must report as such and never as "not found".
+    struct TransactionInclusion {
+        MempoolTransaction body;
+        uint256 block_hash;
+        uint32_t height;
+        uint32_t tip_height;
+    };
+    StatusOr<TransactionInclusion> getTransactionInclusion(const uint256& txid) const;
     struct BlockHeaderRpcSnapshot {
         BlockHeader header;
         uint32_t height;
