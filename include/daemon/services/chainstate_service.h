@@ -654,6 +654,10 @@ public:
     // must use the default and satisfy the full header burial rule.
     consensus::SnapshotImportResult LoadSnapshot(const std::filesystem::path& snapshot_path,
                                                  bool persisted_base_rehydrate = false);
+    // RPC import of the configured first-run snapshot shares the bootstrap
+    // single-flight state with the automatic loader. A successful manual load
+    // must publish Loaded so wallet creation can leave the pending guard.
+    consensus::SnapshotImportResult LoadSnapshotFromRpc(const std::filesystem::path& snapshot_path);
 
     // Phase 42: AssumeUTXO State Management
     bool IsAssumeUTXOActive() const { return assumeutxo_active_; }
@@ -872,9 +876,39 @@ public:
     // Safe to poll from any thread.
     bool IsStarted() const { return started_flag_.load(); }
 
+    // Snapshot bootstrap lifecycle (see snapshot_bootstrap_state_ below).
+    enum class SnapshotBootstrapState { Inactive = 0, Pending, Loading, Loaded, Fallback };
     bool IsSnapshotBootstrapPending() const {
         const auto s = snapshot_bootstrap_state_.load();
         return s == SnapshotBootstrapState::Pending || s == SnapshotBootstrapState::Loading;
+    }
+    // A wallet created now would record `birth_height` as its birth. On a node
+    // bootstrapping from a snapshot, a birth below the snapshot base is never a
+    // real birth: the selected height is still a placeholder (0 before the load,
+    // or not yet advanced right after it). Such a wallet would sit below the
+    // base forever, where neither the Orchard receiver check nor the snapshot
+    // base origin applies, so it would never recover its coins. Callers refuse,
+    // retryably, while this is true. Nodes without a snapshot bootstrap
+    // (full sync, regtest, an existing datadir) are never affected.
+    static bool WalletBirthPrecedesSnapshot(SnapshotBootstrapState state, uint32_t base_height,
+                                            uint32_t birth_height) {
+        switch (state) {
+            case SnapshotBootstrapState::Pending:
+            case SnapshotBootstrapState::Loading: return true;
+            case SnapshotBootstrapState::Loaded: return birth_height < base_height;
+            case SnapshotBootstrapState::Inactive:
+            case SnapshotBootstrapState::Fallback: return false;
+        }
+        return true;
+    }
+    bool WalletBirthPrecedesSnapshot(uint32_t birth_height) const {
+        // Read the base only after observing a state that is published after
+        // it (Start writes path/base before Pending); Pending/Loading refuse
+        // without reading it.
+        const auto state = snapshot_bootstrap_state_.load();
+        if (state != SnapshotBootstrapState::Loaded)
+            return WalletBirthPrecedesSnapshot(state, 0, birth_height);
+        return WalletBirthPrecedesSnapshot(state, snapshot_bootstrap_base_height_, birth_height);
     }
     // Drive the deferred bootstrap: load if the base hash is now on the header
     // chain; give up (→ full IBD) if headers passed the base height without it.
@@ -2374,7 +2408,6 @@ private:
     //   Inactive --(startup: fresh + snapshot configured)--> Pending
     //   Pending  --(base hash on header chain; CAS winner)---> Loading --> Loaded
     //   Pending  --(load failed | headers passed base height)-> Fallback
-    enum class SnapshotBootstrapState { Inactive = 0, Pending, Loading, Loaded, Fallback };
     std::atomic<SnapshotBootstrapState> snapshot_bootstrap_state_{SnapshotBootstrapState::Inactive};
     std::string snapshot_bootstrap_path_;
     uint256 snapshot_bootstrap_base_hash_;

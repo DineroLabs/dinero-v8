@@ -249,6 +249,14 @@ bool WalletService::Start() {
             // one explicitly (wallet.createhd), which the native route enrolls.
             logger_interface_->info("[WalletService] No wallets found; on a wallet index v3 node "
                                     "create one with wallet.createhd");
+        } else if (wallets.empty() && chainstate_ &&
+                   chainstate_->WalletBirthPrecedesSnapshot(actual_blockchain_height)) {
+            // A first run from a snapshot: the height here is a placeholder
+            // below the snapshot base, and a wallet sealed with it would never
+            // recover its coins. Create no implicit wallet; the user creates one
+            // with wallet.createhd once the node is at its snapshot base.
+            logger_interface_->info("[WalletService] No wallets found; the node is still loading its starting "
+                                    "snapshot. Create a wallet with wallet.createhd once it has loaded");
         } else if (wallets.empty()) {
             logger_interface_->info("[WalletService] No wallets found - creating default HD wallet");
             try {

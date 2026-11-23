@@ -1214,6 +1214,23 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_minority_tip_header_relay.sh)
     message(STATUS "  ✓ MinorityTipHeaderRelay registered")
 endif()
 
+# v8.2.4 first run from a snapshot: no wallet may be created or restored (and no
+# implicit default wallet made) while the node is still loading its starting
+# snapshot; a placeholder height would seal a birth below the snapshot base.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_snapshot_pending_wallet_guard.sh)
+    add_test(
+        NAME SnapshotPendingWalletGuard
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_snapshot_pending_wallet_guard.sh
+    )
+    set_tests_properties(SnapshotPendingWalletGuard PROPERTIES
+        LABELS "integration;wallet;snapshot"
+        TIMEOUT 300
+    )
+    message(STATUS "  ✓ SnapshotPendingWalletGuard registered")
+endif()
+
 # Issue #741: after a reorg, getchaintips must still list the abandoned branch
 # (status valid-fork, branchlen = branch length) instead of only the active tip.
 # Two-node regtest: A mines a 2-block side branch while partitioned, B mines a

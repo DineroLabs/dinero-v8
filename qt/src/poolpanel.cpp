@@ -491,6 +491,7 @@ void PoolPanel::setupConnections() {
     connect(&refresh_timer_, &QTimer::timeout, this, &PoolPanel::refresh);
     connect(rpc_, &RpcClient::rpcResult, this, &PoolPanel::onRpcResult);
     connect(rpc_, &RpcClient::rpcError, this, &PoolPanel::onRpcError);
+    connect(rpc_, &RpcClient::connectionOk, this, &PoolPanel::onLocalNodeReady);
 }
 
 void PoolPanel::refresh() {
@@ -1358,6 +1359,14 @@ void PoolPanel::onCheckEarningsClicked() {
         lbl_earnings_->setText("<span style='color:#f0b429;'>Enter your fee address.</span>");
         return;
     }
+    if (!rpc_->isConnected()) {
+        earnings_waiting_for_node_ = true;
+        const QString waiting = QStringLiteral("Waiting for your local node to connect. Fee earnings will load automatically.");
+        lbl_lifetime_->setText(waiting);
+        lbl_earnings_->setText(waiting);
+        return;
+    }
+    earnings_waiting_for_node_ = false;
     // Two questions, two calls. The balance is a UTXO-set sum and comes
     // back immediately; the lifetime total makes the node walk its blocks
     // backwards, which is seconds rather than milliseconds on a synced
@@ -1374,6 +1383,14 @@ void PoolPanel::onCheckEarningsClicked() {
         QUuid::createUuid().toString(QUuid::WithoutBraces);
     rpc_->callAs("blockchain.getaddressbalance", QJsonArray{addr}, expected_balance_reply_);
     requestHistoryPage();
+}
+
+void PoolPanel::onLocalNodeReady() {
+    if (!earnings_waiting_for_node_ || earnings_in_flight_ || lifetime_in_flight_) return;
+    // The node can come online after the remembered pool profile connects.
+    // The connection signal is emitted only for a successful local RPC reply.
+    earnings_waiting_for_node_ = false;
+    onCheckEarningsClicked();
 }
 
 void PoolPanel::requestHistoryPage(std::optional<int> from_height) {
@@ -1497,6 +1514,7 @@ void PoolPanel::onRpcResult(const QString& method, const QJsonValue& result) {
 }
 
 void PoolPanel::onRpcError(const QString& method, int code, const QString& message) {
+    const bool node_disconnected = code == -1 && !rpc_->isConnected();
     const QString rendered = QString("<span style='color:#ff6b6b;'>Node could not answer: %1 [%2]</span>")
                                  .arg(message.toHtmlEscaped())
                                  .arg(code);
@@ -1509,7 +1527,10 @@ void PoolPanel::onRpcError(const QString& method, int code, const QString& messa
         }
         expected_history_reply_.clear();
         lifetime_in_flight_ = false;
-        lbl_lifetime_->setText(rendered);
+        if (node_disconnected) earnings_waiting_for_node_ = true;
+        lbl_lifetime_->setText(node_disconnected
+            ? QStringLiteral("Waiting for your local node to reconnect. Fee earnings will retry automatically.")
+            : rendered);
         finishEarningsRequest();
         return;
     }
@@ -1520,5 +1541,8 @@ void PoolPanel::onRpcError(const QString& method, int code, const QString& messa
     expected_balance_reply_.clear();
     earnings_in_flight_ = false;
     finishEarningsRequest();
-    lbl_earnings_->setText(rendered);
+    if (node_disconnected) earnings_waiting_for_node_ = true;
+    lbl_earnings_->setText(node_disconnected
+        ? QStringLiteral("Waiting for your local node to reconnect. Fee earnings will retry automatically.")
+        : rendered);
 }

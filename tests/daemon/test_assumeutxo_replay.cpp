@@ -1,3 +1,4 @@
+#include "daemon/services/runtime_replay_retry.h"
 #include "dinero/core/common/AddressCodec.h"
 #include "consensus/pow.hpp"
 #include "consensus/pow.h"
@@ -917,6 +918,76 @@ TEST(RuntimeOriginProjection, BindsCapturedWalletAndScriptDomain) {
     EXPECT_THROW(RuntimeOriginProjectionTestAccess::Check(wallet,*p),std::runtime_error);
 }
 
+// Wallet creation asks for the verified history again for a bounded time when
+// a block is delivered during the read (runtime_replay_retry.h).
+TEST(RuntimeReplayRetry, AsksAgainOnlyWhileItCanWinAndOnlyForABoundedTime) {
+    using Result=StatusOr<int>;
+    using Ms=std::chrono::milliseconds;
+    struct Run { std::vector<Status> answers; bool built=true; Ms per_read{0}; };
+    const auto run=[](Run plan,int* reads,Ms* waited){
+        Ms clock{0};*reads=0;*waited=Ms{0};
+        return dinero::ReadRuntimeReplayWithRetry(
+            [&]()->Result{
+                const size_t i=std::min<size_t>(size_t((*reads)++),plan.answers.size()-1);
+                clock+=plan.per_read;
+                return plan.answers[i]==Status::Ok?Result(7):Result(plan.answers[i]);},
+            [&]{return plan.built;},
+            [&]{return std::chrono::steady_clock::time_point(clock);},
+            [&](Ms pause){clock+=pause;*waited+=pause;});
+    };
+    int reads=0;Ms waited{0};
+    // The first attempt wins: nothing else happens.
+    EXPECT_TRUE(run({{Status::Ok}},&reads,&waited).ok());
+    EXPECT_EQ(reads,1);EXPECT_EQ(waited,Ms{0});
+    // A block landed during the read, three times; the fourth attempt wins (the case seen live, once a minute for nine minutes).
+    auto won=run({{Status::Invalid,Status::Invalid,Status::Invalid,Status::Ok}},&reads,&waited);
+    ASSERT_TRUE(won.ok());EXPECT_EQ(*won,7);
+    EXPECT_EQ(reads,4);EXPECT_EQ(waited,Ms{750});
+    // Nothing verified and built yet: asking again cannot win, so the caller is told at once.
+    EXPECT_EQ(run({{Status::Invalid},false},&reads,&waited).status(),Status::Invalid);
+    EXPECT_EQ(reads,1);EXPECT_EQ(waited,Ms{0});
+    // A hard failure is the answer, not something to ask again.
+    EXPECT_EQ(run({{Status::Corruption}},&reads,&waited).status(),Status::Corruption);
+    EXPECT_EQ(reads,1);
+    EXPECT_EQ(run({{Status::Invalid,Status::Internal,Status::Ok}},&reads,&waited).status(),Status::Internal);
+    EXPECT_EQ(reads,2);
+    // Never winning: about ten seconds of asking, then the refusal.
+    EXPECT_EQ(run({{Status::Invalid}},&reads,&waited).status(),Status::Invalid);
+    EXPECT_EQ(waited,Ms{10000});EXPECT_EQ(reads,41);
+    // The first attempt may be the long build and is not counted against the time.
+    EXPECT_TRUE(run({{Status::Invalid,Status::Ok},true,Ms{60000}},&reads,&waited).ok());
+    EXPECT_EQ(reads,2);
+    // But if every further attempt is itself that long (the kept history was lost), one more is all that is tried.
+    EXPECT_EQ(run({{Status::Invalid},true,Ms{60000}},&reads,&waited).status(),Status::Invalid);
+    EXPECT_EQ(reads,2);
+}
+
+TEST(SnapshotWalletBirth, FirstRunRefusesABirthBelowTheSnapshotBase) {
+    // A first run from a snapshot must not seal a placeholder birth: 0 before
+    // the snapshot loads, or a height not yet advanced to the base after it.
+    // Such a wallet sits below the base, where neither the Orchard receiver
+    // check nor the snapshot-base origin applies, and never recovers.
+    using State=ChainstateService::SnapshotBootstrapState;
+    constexpr uint32_t base=161527;
+    for(const uint32_t birth:{0u,1u,base-1,base,base+1,200000u}) {
+        EXPECT_TRUE(ChainstateService::WalletBirthPrecedesSnapshot(State::Pending,base,birth)) << birth;
+        EXPECT_TRUE(ChainstateService::WalletBirthPrecedesSnapshot(State::Loading,base,birth)) << birth;
+        // Pending refuses without needing to read the base height.
+        EXPECT_TRUE(ChainstateService::WalletBirthPrecedesSnapshot(State::Pending,0,birth)) << birth;
+    }
+    EXPECT_TRUE(ChainstateService::WalletBirthPrecedesSnapshot(State::Loaded,base,0));
+    EXPECT_TRUE(ChainstateService::WalletBirthPrecedesSnapshot(State::Loaded,base,base-1));
+    EXPECT_FALSE(ChainstateService::WalletBirthPrecedesSnapshot(State::Loaded,base,base));
+    EXPECT_FALSE(ChainstateService::WalletBirthPrecedesSnapshot(State::Loaded,base,base+1));
+    // No snapshot bootstrap (full sync, regtest, existing datadir) or a
+    // snapshot that fell back to full sync: a low birth is a real birth.
+    for(const uint32_t birth:{0u,1u,base-1,base}) {
+        EXPECT_FALSE(ChainstateService::WalletBirthPrecedesSnapshot(State::Inactive,base,birth)) << birth;
+        EXPECT_FALSE(ChainstateService::WalletBirthPrecedesSnapshot(State::Fallback,base,birth)) << birth;
+        EXPECT_FALSE(ChainstateService::WalletBirthPrecedesSnapshot(State::Inactive,0,birth)) << birth;
+    }
+}
+
 TEST(RuntimeOriginProjection, SnapshotBaseOriginAcceptsOnlyTheBaseSuccessor) {
     // A full-v6 snapshot outbox starts at base+1. Only that exact Connect,
     // child of the authenticated base and above activation, may root an
@@ -1218,6 +1289,7 @@ int main(int argc, char** argv) {
 #include "wallet_v3_native_orchard_spend_checks.h"
 #include "wallet_v3_native_restore_checks.h"
 #include "wallet_v3_native_p2mr_pool_checks.h"
+#include "wallet_v3_native_swap_checks.h"
 #endif
 
 #include "orchard_finish_rpc_checks.h"
@@ -1257,12 +1329,7 @@ int main(int argc, char** argv) {
 #include "replay_forest_partitions_checks.h"
 
 #include "orchard_canonical_catalog_checks.h"
-#ifndef _WIN32
-// POSIX-only coverage: these cases exercise chmod/fchmod/fsync/O_NOFOLLOW
-// permission bits and symlink/hardlink attack surfaces with POSIX
-// semantics. They have never been registered on Windows (the TU did not
-// compile there before the mkdtemp shim above); porting them is a
-// separate task, not a build fix.
+#if defined(DINERO_TEST_ORCHARD_ORIGIN) || !defined(_WIN32)
 #include "orchard_snapshot_runtime_checks.h"
 #endif
 #ifdef _WIN32

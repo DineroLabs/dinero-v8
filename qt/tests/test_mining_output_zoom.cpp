@@ -1,12 +1,17 @@
 #include <QtTest/QtTest>
+#include <QApplication>
 #include <QPushButton>
 #include <QImage>
+#include <QLineEdit>
+#include <QMessageBox>
 #include <QSettings>
 #include <QTabBar>
 #include <QTabWidget>
+#include <QTableWidget>
 #include <QTcpServer>
 #include <QTemporaryDir>
 #include <QTextEdit>
+#include <QTimer>
 #include "mainwindow.h"
 #include "rpcclient.h"
 
@@ -55,6 +60,63 @@ private Q_SLOTS:
     }
     void init() { QSettings().remove("mining/outputFontPx"); }
 
+    void useWalletSelectsFirstTaprootAddressWithoutReceiveTab() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        window->currentWalletName_ = "Hotel";
+        window->walletUnlocked_ = true;
+        window->walletSwitchInFlight_ = false;
+        window->walletRescanning_ = false;
+        window->tblAddresses_->setRowCount(0);
+        window->updateWalletUIState();
+
+        window->edtMiningAddress_->setText("din1pmanual");
+        window->onSetMiningAddress();
+        QVERIFY(window->miningWalletAddressPending_);
+        QCOMPARE(window->edtMiningAddress_->text(), QString("din1pmanual"));
+
+        const QJsonArray addresses{
+            QJsonObject{{"address", "din1plater"}, {"account", 0}, {"change", 0}, {"index", 8}},
+            QJsonObject{{"address", "din1rquantum"}, {"account", 0}, {"change", 0}, {"index", 0}},
+            QJsonObject{{"address", "din1pimported"}, {"account", -1}, {"change", 0}, {"index", 0}},
+            QJsonObject{{"address", "din1pchange"}, {"account", 0}, {"change", 1}, {"index", 0}},
+            QJsonObject{{"address", "din1pfirst"}, {"account", 0}, {"change", 0}, {"index", 0}}
+        };
+        window->onRpcResult("mining.use_wallet_address", addresses);
+        QVERIFY(!window->miningWalletAddressPending_);
+        QCOMPARE(window->edtMiningAddress_->text(), QString("din1pfirst"));
+        QCOMPARE(window->tblAddresses_->rowCount(), 0);
+
+        // A paste made after the click wins over the delayed RPC reply.
+        window->onSetMiningAddress();
+        window->edtMiningAddress_->setText("din1pnewmanual");
+        window->onRpcResult("mining.use_wallet_address", addresses);
+        QCOMPARE(window->edtMiningAddress_->text(), QString("din1pnewmanual"));
+    }
+
+    void useWalletDoesNotFallBackToAnotherAddress() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        window->currentWalletName_ = "Hotel";
+        window->walletUnlocked_ = true;
+        window->walletSwitchInFlight_ = false;
+        window->walletRescanning_ = false;
+        window->edtMiningAddress_->setText("din1pmanual");
+        window->onSetMiningAddress();
+        QVERIFY(window->miningWalletAddressPending_);
+
+        QTimer::singleShot(0, [] {
+            for (QWidget* widget : QApplication::topLevelWidgets()) {
+                if (auto* box = qobject_cast<QMessageBox*>(widget)) box->accept();
+            }
+        });
+        window->onRpcResult("mining.use_wallet_address",
+            QJsonArray{QJsonObject{{"address", "din1plater"},
+                                   {"account", 0}, {"change", 0}, {"index", 1}}});
+        QVERIFY(!window->miningWalletAddressPending_);
+        QCOMPARE(window->edtMiningAddress_->text(), QString("din1pmanual"));
+    }
+
     void buttonsSitInTheTopRightCorner() {
         auto window = makeWindow();
         QVERIFY(window);
@@ -71,12 +133,36 @@ private Q_SLOTS:
         QVERIFY2(m.right() < p.left() && qAbs(m.top() - p.top()) <= 2, "- should sit just left of +");
     }
 
+    void controlsFollowOutputAcrossWideResize() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        auto* out = output(*window);
+        auto* plus = window->findChild<QPushButton*>("miningZoomIn");
+        auto* minus = window->findChild<QPushButton*>("miningZoomOut");
+        auto* red = window->findChild<QPushButton*>("miningHashColorRed");
+        QVERIFY(out && plus && minus && red);
+        const int originalWidth = out->width();
+        const auto atRightEdge = [&] {
+            const QRect area(out->mapTo(window.get(), QPoint(0, 0)), out->size());
+            const QRect button(plus->mapTo(window.get(), QPoint(0, 0)), plus->size());
+            return area.right() - button.right() >= 0 && area.right() - button.right() <= 30;
+        };
+        window->resize(3000, 1100);
+        QTRY_VERIFY(out->width() > originalWidth + 500);
+        QTRY_VERIFY(atRightEdge());
+        QVERIFY(red->geometry().right() < minus->geometry().left());
+        QVERIFY(minus->geometry().right() < plus->geometry().left());
+        window->resize(1440, 1000);
+        QTRY_VERIFY(atRightEdge());
+    }
+
     void hashColorsSwitchImmediatelyAndResetOnNewWindow() {
         auto window = makeWindow();
         QVERIFY(window);
         auto* out = output(*window);
         auto* zoom = window->findChild<QPushButton*>("miningZoomIn");
-        QVERIFY(out && zoom);
+        auto* minus = window->findChild<QPushButton*>("miningZoomOut");
+        QVERIFY(out && zoom && minus);
         QCOMPARE(out->grab().toImage().pixelColor(out->width() / 2, 10), QColor("#000000"));
         const struct { const char* name; quint32 rgb; } choices[] = {
             {"miningHashColorGreen", 0x00ff00},
@@ -89,15 +175,20 @@ private Q_SLOTS:
             auto* button = window->findChild<QPushButton*>(choice.name);
             QVERIFY(button);
             QVERIFY(button->isVisible());
-            QCOMPARE(button->size(), zoom->size());
-            QVERIFY(button->x() < out->width() / 2);
-            QVERIFY(button->geometry().bottom() < out->viewport()->geometry().top());
+            QCOMPARE(button->size(), QSize(12, 20));
+            QCOMPARE(button->iconSize(), QSize(12, 12));
+            QVERIFY(button->x() > out->width() / 2);
+            QVERIFY(button->geometry().right() < minus->geometry().left());
+            QCOMPARE(button->y(), zoom->y());
             const QColor center = button->grab().toImage().pixelColor(button->width() / 2,
                                                                        button->height() / 2);
             QCOMPARE(center.red(), int((choice.rgb >> 16) & 0xff));
             QCOMPARE(center.green(), int((choice.rgb >> 8) & 0xff));
             QCOMPARE(center.blue(), int(choice.rgb & 0xff));
-            if (previous) QVERIFY(previous->geometry().right() < button->geometry().left());
+            if (previous) {
+                QVERIFY(previous->geometry().right() < button->geometry().left());
+                QVERIFY(button->geometry().left() - previous->geometry().right() <= 2);
+            }
             previous = button;
         }
         QCOMPARE(window->miningHashColorRgb_, 0x00ff00u);

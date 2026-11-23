@@ -58,6 +58,7 @@
 #include "debugconsole.h"
 #include "portcheck.h"
 
+#include "swaplaunchpolicy.h"
 #include "minercontroller.h"
 #include <solo_miner/build_identity.h>
 
@@ -101,6 +102,9 @@ void appendDaemonNetworkArgs(QStringList& args) {
     if (p2pPortMappingAllowed()) {
         args << "--portmap=auto";
     }
+    // The Swap tab's "Enable swaps" switch.
+    args << SwapLaunchPolicy::daemonArgs(QSettings().value(SwapLaunchPolicy::enabledKey(), false).toBool(),
+                                        QSettings().value(SwapLaunchPolicy::bitcoinWalletKey(), false).toBool());
 }
 
 QStringList currentBootstrapAddnodes() {
@@ -117,8 +121,9 @@ QStringList currentBootstrapAddnodes() {
 // All remain armed on every start. The daemon treats them as inert on an
 // ordinary synced datadir, but an interrupted first sync needs the exact old
 // artifact even after the app bundle has been upgraded.
-constexpr char kBundledSnapshotPrimary[] = "dinero-assumeutxo-155650-v6-full.dat";
-constexpr char kBundledSnapshotPreviousPrimary[] = "dinero-assumeutxo-153578-v6-full.dat";
+constexpr char kBundledSnapshotPrimary[] = "dinero-assumeutxo-163965-v6-full.dat";
+constexpr char kBundledSnapshotPreviousPrimary[] = "dinero-assumeutxo-155650-v6-full.dat";
+constexpr char kBundledSnapshotPriorFullV6[] = "dinero-assumeutxo-153578-v6-full.dat";
 constexpr char kBundledSnapshotRecentFallback[] = "dinero-assumeutxo-153051-v6-full.dat";
 constexpr char kBundledSnapshotFallback[] = "dinero-assumeutxo-148375-v5.dat";
 constexpr char kBundledSnapshotLegacyFallback[] = "dinero-assumeutxo-99677-v4.dat";
@@ -151,6 +156,7 @@ void appendAssumeUtxoSnapshotArgs(QStringList& args, const QString& datadir) {
     const auto selected = dinero::qt::SelectBundledSnapshots({
         findBundledSnapshot(kBundledSnapshotPrimary).toStdString(),
         findBundledSnapshot(kBundledSnapshotPreviousPrimary).toStdString(),
+        findBundledSnapshot(kBundledSnapshotPriorFullV6).toStdString(),
         findBundledSnapshot(kBundledSnapshotRecentFallback).toStdString(),
         findBundledSnapshot(kBundledSnapshotFallback).toStdString(),
         findBundledSnapshot(kBundledSnapshotLegacyFallback).toStdString(),
@@ -1313,6 +1319,7 @@ int main(int argc, char** argv) {
 
   QApplication app(argc, argv);
   app.setApplicationName("Dinero");
+  app.setApplicationVersion(QStringLiteral(DINERO_RELEASE_TAG));
   app.setOrganizationName("Dinero");
 
   // Install suppressing message handler early to prevent console output

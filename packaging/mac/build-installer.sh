@@ -172,14 +172,16 @@ cp "$BUILD_DIR/seeder/dinero-seeder" "$STAGE_DIR/dinero-qt.app/Contents/Resource
 chmod +x "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-seeder"
 
 # Keep the older exact bases available after upgrading the app bundle.
-SNAPSHOT_DAT="${DINERO_SNAPSHOT_DAT:-$PROJECT_ROOT/packaging/mac/snapshot/dinero-assumeutxo-155650-v6-full.dat}"
-SNAPSHOT_PREVIOUS_PRIMARY_DAT="$(dirname "$SNAPSHOT_DAT")/dinero-assumeutxo-153578-v6-full.dat"
+SNAPSHOT_DAT="${DINERO_SNAPSHOT_DAT:-$PROJECT_ROOT/packaging/mac/snapshot/dinero-assumeutxo-163965-v6-full.dat}"
+SNAPSHOT_PREVIOUS_PRIMARY_DAT="$(dirname "$SNAPSHOT_DAT")/dinero-assumeutxo-155650-v6-full.dat"
+SNAPSHOT_PRIOR_FULL_V6_DAT="$(dirname "$SNAPSHOT_DAT")/dinero-assumeutxo-153578-v6-full.dat"
 SNAPSHOT_RECENT_FALLBACK_DAT="${DINERO_SNAPSHOT_RECENT_FALLBACK_DAT:-$PROJECT_ROOT/packaging/mac/snapshot/dinero-assumeutxo-153051-v6-full.dat}"
 SNAPSHOT_FALLBACK_DAT="${DINERO_SNAPSHOT_FALLBACK_DAT:-$PROJECT_ROOT/packaging/mac/snapshot/dinero-assumeutxo-148375-v5.dat}"
 SNAPSHOT_LEGACY_FALLBACK_DAT="${DINERO_SNAPSHOT_LEGACY_FALLBACK_DAT:-$PROJECT_ROOT/packaging/mac/snapshot/dinero-assumeutxo-99677-v4.dat}"
 SNAPSHOT_OLDEST_FALLBACK_DAT="${DINERO_SNAPSHOT_OLDEST_FALLBACK_DAT:-$PROJECT_ROOT/packaging/mac/snapshot/utxo-snapshot-65300.dat}"
 SNAPSHOT_MANIFEST="${DINERO_SNAPSHOT_MANIFEST:-${SNAPSHOT_DAT}.manifest.json}"
 SNAPSHOT_PREVIOUS_PRIMARY_MANIFEST="${SNAPSHOT_PREVIOUS_PRIMARY_DAT}.manifest.json"
+SNAPSHOT_PRIOR_FULL_V6_MANIFEST="${SNAPSHOT_PRIOR_FULL_V6_DAT}.manifest.json"
 SNAPSHOT_RECENT_FALLBACK_MANIFEST="${DINERO_SNAPSHOT_RECENT_FALLBACK_MANIFEST:-${SNAPSHOT_RECENT_FALLBACK_DAT}.manifest.json}"
 SNAPSHOT_FALLBACK_MANIFEST="${DINERO_SNAPSHOT_FALLBACK_MANIFEST:-${SNAPSHOT_FALLBACK_DAT}.manifest.json}"
 SNAPSHOT_LEGACY_FALLBACK_MANIFEST="${DINERO_SNAPSHOT_LEGACY_FALLBACK_MANIFEST:-${SNAPSHOT_LEGACY_FALLBACK_DAT}.manifest.json}"
@@ -223,6 +225,12 @@ elif [[ ! -f "$SNAPSHOT_DAT" ]]; then
     echo "ERROR: required primary AssumeUTXO snapshot missing at $SNAPSHOT_DAT" >&2
     echo "       Set DINERO_SNAPSHOT_DAT or use DINERO_SKIP_SNAPSHOTS=1 only for a developer package." >&2
     exit 1
+elif [[ ! -f "$SNAPSHOT_PREVIOUS_PRIMARY_DAT" ]]; then
+    echo "ERROR: required H155650 lifecycle fallback missing at $SNAPSHOT_PREVIOUS_PRIMARY_DAT" >&2
+    exit 1
+elif [[ ! -f "$SNAPSHOT_PRIOR_FULL_V6_DAT" ]]; then
+    echo "ERROR: required H153578 lifecycle fallback missing at $SNAPSHOT_PRIOR_FULL_V6_DAT" >&2
+    exit 1
 elif [[ ! -f "$SNAPSHOT_RECENT_FALLBACK_DAT" ]]; then
     echo "ERROR: required H153051 lifecycle fallback missing at $SNAPSHOT_RECENT_FALLBACK_DAT" >&2
     exit 1
@@ -238,7 +246,7 @@ elif [[ ! -f "$SNAPSHOT_OLDEST_FALLBACK_DAT" ]]; then
 else
     echo "Bundling AssumeUTXO snapshot: $(basename "$SNAPSHOT_DAT") ($(stat -f%z "$SNAPSHOT_DAT") bytes)"
     [[ -f "$SNAPSHOT_MANIFEST" ]] || { echo "ERROR: primary snapshot manifest missing at $SNAPSHOT_MANIFEST" >&2; exit 1; }
-    verify_snapshot_pair "$SNAPSHOT_DAT" "$SNAPSHOT_MANIFEST" "dinero-assumeutxo-155650-v6-full.dat"
+    verify_snapshot_pair "$SNAPSHOT_DAT" "$SNAPSHOT_MANIFEST" "dinero-assumeutxo-163965-v6-full.dat"
     FRESHNESS_ARGS=(--age-only)
     if [[ -n "${DINERO_SNAPSHOT_TIP_HEIGHT:-}" ]]; then
         FRESHNESS_ARGS=(--tip-height "$DINERO_SNAPSHOT_TIP_HEIGHT")
@@ -247,19 +255,27 @@ else
         --manifest "$SNAPSHOT_MANIFEST" "${FRESHNESS_ARGS[@]}"
     python3 "$PROJECT_ROOT/packaging/snapshot/check_desktop_primary.py" \
         --payload "$SNAPSHOT_DAT" --manifest "$SNAPSHOT_MANIFEST" \
-        --expected-name dinero-assumeutxo-155650-v6-full.dat \
+        --expected-name dinero-assumeutxo-163965-v6-full.dat \
         --publisher-manifest "${SNAPSHOT_DAT}.publisher.manifest.json" \
         --publisher-signature "${SNAPSHOT_DAT}.publisher.manifest.sig"
-    cp "$SNAPSHOT_DAT" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-155650-v6-full.dat"
-    cp "$SNAPSHOT_MANIFEST" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-155650-v6-full.dat.manifest.json"
+    cp "$SNAPSHOT_DAT" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-163965-v6-full.dat"
+    cp "$SNAPSHOT_MANIFEST" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-163965-v6-full.dat.manifest.json"
     python3 "$PROJECT_ROOT/packaging/snapshot/check_desktop_primary.py" \
         --recent-fallback --payload "$SNAPSHOT_PREVIOUS_PRIMARY_DAT" \
         --manifest "$SNAPSHOT_PREVIOUS_PRIMARY_MANIFEST" \
-        --expected-name dinero-assumeutxo-153578-v6-full.dat \
+        --expected-name dinero-assumeutxo-155650-v6-full.dat \
         --publisher-manifest "${SNAPSHOT_PREVIOUS_PRIMARY_DAT}.publisher.manifest.json" \
         --publisher-signature "${SNAPSHOT_PREVIOUS_PRIMARY_DAT}.publisher.manifest.sig"
-    cp "$SNAPSHOT_PREVIOUS_PRIMARY_DAT" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-153578-v6-full.dat"
-    cp "$SNAPSHOT_PREVIOUS_PRIMARY_MANIFEST" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-153578-v6-full.dat.manifest.json"
+    cp "$SNAPSHOT_PREVIOUS_PRIMARY_DAT" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-155650-v6-full.dat"
+    cp "$SNAPSHOT_PREVIOUS_PRIMARY_MANIFEST" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-155650-v6-full.dat.manifest.json"
+    python3 "$PROJECT_ROOT/packaging/snapshot/check_desktop_primary.py" \
+        --recent-fallback --payload "$SNAPSHOT_PRIOR_FULL_V6_DAT" \
+        --manifest "$SNAPSHOT_PRIOR_FULL_V6_MANIFEST" \
+        --expected-name dinero-assumeutxo-153578-v6-full.dat \
+        --publisher-manifest "${SNAPSHOT_PRIOR_FULL_V6_DAT}.publisher.manifest.json" \
+        --publisher-signature "${SNAPSHOT_PRIOR_FULL_V6_DAT}.publisher.manifest.sig"
+    cp "$SNAPSHOT_PRIOR_FULL_V6_DAT" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-153578-v6-full.dat"
+    cp "$SNAPSHOT_PRIOR_FULL_V6_MANIFEST" "$STAGE_DIR/dinero-qt.app/Contents/Resources/dinero-assumeutxo-153578-v6-full.dat.manifest.json"
     [[ -f "$SNAPSHOT_RECENT_FALLBACK_MANIFEST" ]] || { echo "ERROR: H153051 fallback manifest missing" >&2; exit 1; }
     python3 "$PROJECT_ROOT/packaging/snapshot/check_desktop_primary.py" \
         --recent-fallback --payload "$SNAPSHOT_RECENT_FALLBACK_DAT" \

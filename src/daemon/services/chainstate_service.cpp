@@ -83,6 +83,7 @@
 #include "daemon/services/p2p_service.h"  // Phase C.1 v2: For block broadcasting
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 #include "p2p/orchard_phone_history.h"
+#include "p2p/orchard_history_checkpoint.h"
 #include "p2p/wallet_funding_download.h"
 #include "p2p/wallet_input_proof.h"
 #include "wallet/authenticated_shield_inputs.h"
@@ -5743,11 +5744,14 @@ bool ChainstateService::Start() {
                 std::string perr;
                 if (ReadSnapshotHeaderPreview(snapshot_path, peek, perr) &&
                     peek.magic == consensus::SNAPSHOT_MAGIC) {
-                    // RULE 1: base peeked before any deferral.
-                    snapshot_bootstrap_state_.store(SnapshotBootstrapState::Pending);
+                    // RULE 1: base peeked before any deferral. Publish Pending
+                    // only after its path/base are written, so a thread that
+                    // observes Pending/Loading/Loaded also observes the base
+                    // (the wallet birth guard reads it from RPC threads).
                     snapshot_bootstrap_path_ = snapshot_path;
                     snapshot_bootstrap_base_hash_ = peek.block_hash;
                     snapshot_bootstrap_base_height_ = peek.block_height;
+                    snapshot_bootstrap_state_.store(SnapshotBootstrapState::Pending);
                     // v5 and v6 both authenticate their base with buried state
                     // commitments. Do not invoke the loader on a partial header
                     // batch: its correct refusal would permanently select full IBD.
@@ -8101,8 +8105,10 @@ SignResult ChainstateService::signAndStageWalletPayment(WalletManager& wallet,
                     // #939: a native send pays exactly one recipient; every
                     // other output must pay a script already sealed in both
                     // receipts (the watched domain). No caller can route
-                    // change to a script no replay has covered.
-                    if(intent.request||!intent.additional_recipients.empty())
+                    // change to a script no replay has covered. v8.2.5: a
+                    // bound request (e.g. swap funding) is still one exact
+                    // recipient under the same output check below.
+                    if(!intent.additional_recipients.empty())
                         throw std::runtime_error("Native v3 payment supports one recipient");
                     std::vector<uint8_t> recipient;
                     const auto witness=DecodeWitnessAddress(intent.address,HrpForActiveNetworkRef());
@@ -16834,6 +16840,68 @@ bool ChainstateService::HasPersistedActiveSnapshotBase(
            lifecycle.snapshot_base_height == base_height;
 }
 
+consensus::SnapshotImportResult ChainstateService::LoadSnapshotFromRpc(
+    const std::filesystem::path& snapshot_path) {
+    using State = SnapshotBootstrapState;
+    const auto refuse = [](std::string message) {
+        consensus::SnapshotImportResult result{};
+        result.error_message = std::move(message);
+        return result;
+    };
+
+    const auto state = snapshot_bootstrap_state_.load();
+    if (state == State::Loading)
+        return refuse("Configured snapshot bootstrap is already loading; retry after it finishes");
+    if (state != State::Pending)
+        return LoadSnapshot(snapshot_path);
+
+    // Manual loadtxoutset can win the race with the header-driven loader.
+    // It may load only the base whose preview published Pending; otherwise
+    // the wallet-birth guard would be released for an unrelated snapshot.
+    // Check the path before opening it: an RPC-provided FIFO/device could
+    // block the preview read before LoadSnapshot's transport gate runs.
+    std::error_code path_error;
+    const auto path_status = std::filesystem::symlink_status(snapshot_path, path_error);
+    if (path_error || !std::filesystem::is_regular_file(path_status))
+        return refuse("Manual snapshot must be a regular file");
+    consensus::SnapshotMetadata preview{};
+    std::string preview_error;
+    if (!ReadSnapshotHeaderPreview(snapshot_path, preview, preview_error))
+        return refuse("Manual snapshot header unavailable: " + preview_error);
+    if (preview.magic != consensus::SNAPSHOT_MAGIC ||
+        preview.block_height != snapshot_bootstrap_base_height_ ||
+        preview.block_hash != snapshot_bootstrap_base_hash_)
+        return refuse("Manual snapshot differs from the configured bootstrap base");
+
+    State expected = State::Pending;
+    if (!snapshot_bootstrap_state_.compare_exchange_strong(expected, State::Loading))
+        return refuse("Configured snapshot bootstrap changed during manual load; retry");
+
+    try {
+        auto result = LoadSnapshot(snapshot_path);
+        if (result.success && result.block_height == snapshot_bootstrap_base_height_ &&
+            result.block_hash == snapshot_bootstrap_base_hash_) {
+            snapshot_bootstrap_state_.store(State::Loaded);
+            return result;
+        }
+        // The loader can reject an incomplete or untrusted file after the
+        // claim. Match the automatic path's fail-closed fallback; a compact
+        // v6 node has no safe full-state recovery and enters safe mode.
+        const bool wrong_base = result.success;
+        if (wrong_base) {
+            result.success = false;
+            result.error_message = "Imported snapshot base differs from the configured bootstrap base";
+        }
+        snapshot_bootstrap_state_.store(State::Fallback);
+        if (orchard_compact_bootstrap_pending_.load() || wrong_base)
+            EnterSafeMode(result.error_message);
+        return result;
+    } catch (...) {
+        snapshot_bootstrap_state_.store(State::Fallback);
+        throw;
+    }
+}
+
 consensus::SnapshotImportResult ChainstateService::LoadSnapshot(
     const std::filesystem::path& snapshot_path, bool persisted_base_rehydrate) {
     using namespace consensus;
@@ -21167,11 +21235,29 @@ std::unique_ptr<OrchardBoundaryReplay> ChainstateService::PreparePhoneHistoryVer
     if(activation_mutex_.HeldByCurrentThread())return {};
     try{
         auto use=std::make_unique<SelectedReadUse>(weak_from_this().lock());
-        if(PhoneHistoryTarget()!=std::optional(target))return {};
         std::shared_ptr<const consensus::HeaderChainSelector> headers;
         {std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);headers=header_chain_selector_;}
-        auto replay=OrchardSnapshotStore::ReplayActivation(std::move(proof),std::move(headers),target.height,target.hash);
-        if(PhoneHistoryTarget()!=std::optional(target))return {};
+        if(!headers)return {};
+        // The target must still stand on the selected chain: the current
+        // target, or an ancestor of it with the same snapshot base and
+        // activation. During catch-up the tip moves faster than the
+        // download's cached target, so requiring the exact current tip here
+        // refused every start until catch-up ended (a first run waited ~20 min
+        // with its target available). The download retargets as the tip moves;
+        // a reorganisation that replaces the target still refuses.
+        const auto stands=[&]{
+            const auto current=PhoneHistoryTarget();
+            if(!current)return false;
+            return p2p::OrchardHistoryCheckpointStands(target,*current,
+                [&headers,&current](const uint256& tip,uint32_t height)->std::optional<uint256>{
+                    uint256 at;uint32_t found=0;
+                    if(!headers->GetAncestorHashByHash(tip,height,at,found)||found!=current->height)return std::nullopt;
+                    return at;
+                });
+        };
+        if(!stands())return {};
+        auto replay=OrchardSnapshotStore::ReplayActivation(std::move(proof),headers,target.height,target.hash);
+        if(!stands())return {};
         return replay;
     }catch(...){return {};}
 }

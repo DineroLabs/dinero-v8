@@ -6,6 +6,8 @@
 #include <QMessageBox>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QTabBar>
@@ -14,6 +16,8 @@
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QWheelEvent>
+#include <algorithm>
 #include "mainwindow.h"
 #include "connection_manager.h"
 #include "rpcclient.h"
@@ -114,6 +118,24 @@ private Q_SLOTS:
         QCOMPARE(named<QLabel>(*window, "walletTotalBalance")->text(), QString("636,799.99999731 DIN"));
         QCOMPARE(named<QLabel>(*window, "lblTransparentTaprootBalance")->text(), QString("593,899.99999731 DIN"));
         QCOMPARE(named<QLabel>(*window, "lblTransparentP2mrBalance")->text(), QString("42,900.00000000 DIN"));
+    }
+
+    void walletWheelScrollsBackAtNormalMouseWheelRate() {
+        auto window = makeWindow(1440, 600);
+        QVERIFY(window);
+        auto* area = qobject_cast<QScrollArea*>(window->findChild<QTabWidget*>()->currentWidget());
+        auto* balance = named<QLabel>(*window, "walletTotalBalance");
+        QVERIFY(area && balance);
+        auto* bar = area->verticalScrollBar();
+        QVERIFY(bar && bar->maximum() > 0);
+        bar->setValue(bar->maximum());
+        const int before = bar->value();
+        const QPoint at = balance->rect().center();
+        QWheelEvent wheel(at, balance->mapToGlobal(at), QPoint(), QPoint(0, 120),
+                          Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(balance, &wheel);
+        const int expected = QApplication::wheelScrollLines() * std::max(1, bar->singleStep());
+        QCOMPARE(before - bar->value(), expected);
     }
 
     void recoveryRefusalDoesNotReplaceKnownBalanceWithZero() {
@@ -666,6 +688,26 @@ private Q_SLOTS:
         // The user sees the unlock request, not a raw RPC failure.
         QVERIFY(window->lblErrorMessage_->text().contains("Unlock this wallet"));
         QVERIFY(!window->lblErrorMessage_->text().contains("code: -32603"));
+    }
+
+    // The Swap tab polls swap.list; a node with swaps off (the default) refuses
+    // every time. That refusal belongs to the tab, not to the window's error bar.
+    void swapTabRefusalsNeverReachTheErrorBar() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        auto* rpc = window->findChild<RpcClient*>();
+        QVERIFY(rpc);
+        window->lblErrorMessage_->clear();
+        window->lblErrorMessage_->setVisible(false);
+        Q_EMIT rpc->rpcError("swaptab.list", -32603,
+            "swaps are disabled: start dinerod with swap.enable=1 and swap.btc_rpc=HOST:PORT");
+        // (Checked at once: the window's own startup calls fail too in this
+        // test and may fill the bar afterwards.)
+        QVERIFY2(!window->lblErrorMessage_->text().contains("swap"), qPrintable(window->lblErrorMessage_->text()));
+        // Any other failure is still shown.
+        Q_EMIT rpc->rpcError("getpeerinfo", -32603, "boom");
+        QVERIFY2(window->lblErrorMessage_->text().contains("getpeerinfo failed - boom"),
+                 qPrintable(window->lblErrorMessage_->text()));
     }
 
     // Issue #939 interim: a wallet this v3 node cannot track yet must never

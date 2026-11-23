@@ -20,8 +20,15 @@ namespace dinero::swap {
 
 enum class SwapNetwork : uint8_t { Mainnet = 0, Testnet = 1, Regtest = 2 };
 
+// The chain Bob pays on. Bitcoin offers keep the v1 wire form byte for byte;
+// any other chain is a v2 offer ("dinswap2o") carrying the chain id, so the
+// offer id (and with it the accept) commits to the chain.
+enum class CounterChain : uint8_t { Bitcoin = 0, Zcash = 1 };
+
 inline constexpr uint8_t kOfferVersion = 1;
+inline constexpr uint8_t kOfferVersion2 = 2;
 inline constexpr char kOfferPrefix[] = "dinswap1o";
+inline constexpr char kOffer2Prefix[] = "dinswap2o";
 inline constexpr char kAcceptPrefix[] = "dinswap1a";
 
 // Design §6: Bob needs >= 24 h between the BTC and DIN refund deadlines, and
@@ -29,9 +36,16 @@ inline constexpr char kAcceptPrefix[] = "dinswap1a";
 inline constexpr uint32_t kMinDeadlineGapSeconds = 24 * 60 * 60;
 inline constexpr uint32_t kMinDinConfirmations = 30;
 inline constexpr uint32_t kMinBtcConfirmations = 1;
+// docs/design/din-zec-atomic-swaps.md: Alice waits 40 Zcash blocks (~50 min)
+// before revealing the secret.
+inline constexpr uint32_t kMinZecConfirmations = 40;
 
+// The btc_* fields are the counter-chain leg: for a Zcash offer the amount is
+// in zatoshi, the keys are Zcash transparent keys (also 33-byte compressed),
+// and t_btc / n_btc are T_zec / N_zec.
 struct SwapOffer {
     SwapNetwork network{SwapNetwork::Mainnet};
+    CounterChain chain{CounterChain::Bitcoin};
     uint64_t din_amount_una{};
     uint64_t btc_amount_sat{};
     Bytes32 payment_hash{};                    // SHA256(secret); Alice keeps the secret

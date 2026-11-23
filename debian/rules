@@ -67,6 +67,7 @@ override_dh_auto_configure:
 		-DCMAKE_INSTALL_PREFIX=/usr \
 		-DDINERO_PACKAGED_BUILD=ON \
 		-DDINERO_BUILD_ORCHARD_BACKEND=ON \
+		-DDINERO_SWAP_LIGHT_BTC=ON \
 		-DDINERO_ENABLE_PORTMAPPING=OFF \
 		-DDINERO_ROCKSDB_BUILD_JOBS=2 \
 		-DDINERO_PACKAGE_VERSION=$(DEB_VERSION_UPSTREAM) \
@@ -87,7 +88,8 @@ override_dh_auto_configure:
 
 # Build only the targets the .deb actually installs.
 #
-# Phase E.3: the packaged artifact ships dinerod + dinero-cli + dinero-swap-tower
+# Phase E.3: the packaged artifact ships dinerod + dinero-cli + the tower and
+# its public intake. The swap-tower CMake install component installs both.
 # (spec §1.1 row 1). Miner / bench / lightning binaries are not
 # part of the dinero-core .deb. Skipping them here cuts build time,
 # avoids pulling in OpenCL ICD loader + libudev for the GPU miner
@@ -96,7 +98,7 @@ override_dh_auto_configure:
 # linked successfully into the staging dir), and keeps the package
 # contract honest.
 override_dh_auto_build:
-	dh_auto_build -- dinerod dinero-cli dinero-swap-tower
+	dh_auto_build -- dinerod dinero-cli dinero-swap-tower dinero-swap-tower-intake
 
 # Skip ctest during package build. The full test suite requires a
 # clean datadir + dinerod startup which is fragile inside the

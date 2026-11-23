@@ -132,6 +132,126 @@ struct OrchardSnapshotStoreTestAccess {
         std::lock_guard<AnnotatedRecursiveMutex> lock(mutex);return OrchardSnapshotStore::RecoverBaseMarkers(mutex,db,token,headers);
     }
 };
+TEST(OrchardPhoneHistory, ReorgAboveVerifiedPrefixKeepsReplayAndReplacesRequest){
+    using namespace consensus;
+    using Access=OrchardSnapshotStoreTestAccess;
+    using Download=p2p::OrchardPhoneHistoryDownload;
+    CanonicalPoolFixture source(true);
+    MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    // InvalidateBlock uses the typed runtime reorg handoff. This fixture must
+    // prepare that handoff before the old tip can be invalidated.
+    source.f.service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
+    const auto first=SolveCatalogTemplate(source.Build());
+    ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();
+    for(const auto& block:source.f.blocks)ASSERT_TRUE(headers->AddHeader(block.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));
+    auto proof=std::make_shared<const OrchardSnapshotSection>(Access::CaptureActivation(source.f.db,*headers));
+
+    BlockAssembler assembler(&source.f.db);
+    WireOrchardAssembler(assembler,source.f);
+    const auto second=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));
+    ASSERT_TRUE(source.Submit(second->WireBytes()).connected);
+    const auto old_hash=second->Header().GetHash();
+    const auto old_catalog=source.f.db.getOrchardCatalogState(old_hash);
+    ASSERT_TRUE(old_catalog.ok());
+    ASSERT_TRUE(headers->AddHeader(second->Header()));
+
+    auto replacement_header=second->Header();
+    do {++replacement_header.nonce;} while(!CheckProofOfWork(replacement_header,false));
+    auto replacement_bytes=second->WireBytes();
+    const auto prefix=replacement_header.SerializeForHash();
+    std::copy(prefix.begin(),prefix.end(),replacement_bytes.begin());
+    const auto replacement_hash=replacement_header.GetHash();
+    ASSERT_NE(old_hash,replacement_hash);
+    // The source fixture only supplies both branches' authenticated catalogs
+    // to the independent history downloader below. Invalidating its old tip
+    // removes that candidate before admitting the equal-work replacement;
+    // a bare disconnect leaves the old valid tip eligible and can select it
+    // again instead of the replacement.
+    std::string invalidate_error;
+    ASSERT_TRUE(source.f.service->InvalidateBlock(old_hash,invalidate_error))<<invalidate_error;
+    ASSERT_NE(source.f.service->GetActiveTip(),nullptr);
+    ASSERT_EQ(source.f.service->GetActiveTip()->hash,first->Header().GetHash());
+    ASSERT_TRUE(source.Submit(replacement_bytes).connected);
+    const auto replacement_catalog=source.f.db.getOrchardCatalogState(replacement_hash);
+    ASSERT_TRUE(replacement_catalog.ok());
+
+    const auto base=first->Header().GetHash();
+    const Download::Target original{102,103,old_hash,storage::catalog::Hash(*old_catalog),base};
+    const Download::Target replacement{102,103,replacement_hash,storage::catalog::Hash(*replacement_catalog),base};
+    shielded_store_fixture::TempDir directory;
+    const auto& root=directory.path;
+    daemon::DatadirGuard guard;
+    std::string error;
+    ASSERT_TRUE(guard.Acquire(root,error))<<error;
+    auto cache=std::make_shared<p2p::OrchardHistoryCache>(guard);
+    const auto& first_bytes=first->WireBytes();
+    cache->Put('b',base,first_bytes.size(),OrchardBlockCandidate::MaxWireSize(),[&](const auto& sink){sink(first_bytes);});
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::deque<Download::Bytes> requests;
+    std::atomic<bool> reorg{false};
+    std::atomic<unsigned> verifiers{0};
+    const Download::Peer remote{"archive",91,ServiceFlags::NODE_NETWORK};
+    Download host(headers,root,[&]{return std::optional(reorg?replacement:original);},[&]{return proof;},
+        [&](auto p,const auto& t){++verifiers;return Access::ReplayActivation(std::move(p),headers,t.height,t.hash);},
+        [&]{return std::vector<Download::Peer>{remote};},
+        [&](const auto&,const auto& command,const auto& bytes){
+            std::lock_guard lock(mutex);
+            EXPECT_EQ(command,"getdata");
+            requests.push_back(bytes);
+            cv.notify_one();
+            return true;
+        },cache);
+    const auto expect_request=[&](const uint256& hash){
+        std::unique_lock lock(mutex);
+        if(!cv.wait_for(lock,std::chrono::seconds(5),[&]{return !requests.empty();}))return false;
+        Download::Bytes expected{1,2,0,0,0};
+        expected.insert(expected.end(),hash.begin(),hash.end());
+        const bool matches=requests.front()==expected;
+        requests.pop_front();
+        return matches;
+    };
+    ASSERT_TRUE(expect_request(old_hash))<<host.Observe().error;
+    ASSERT_EQ(host.Observe().verified_height,102u);
+    ASSERT_TRUE(headers->AddHeader(replacement_header));
+    headers->MarkFailedHeader(old_hash);
+    ASSERT_EQ(headers->GetBestHeaderValue()->hash,replacement_hash);
+    reorg=true;
+
+    ASSERT_TRUE(expect_request(replacement_hash))<<host.Observe().error
+        <<" (verifier attempts: "<<verifiers.load()<<")";
+    EXPECT_EQ(host.Observe().verified_height,102u);
+    EXPECT_EQ(verifiers.load(),1u);
+    EXPECT_FALSE(host.Enqueue(remote,second->WireBytes()));
+    ASSERT_TRUE(host.Enqueue(remote,replacement_bytes));
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(!host.Ready()&&std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    const auto complete=host.Ready();
+    ASSERT_TRUE(complete)<<host.Observe().error;
+    EXPECT_EQ(complete->target,replacement);
+    EXPECT_EQ(complete->Body(102),first_bytes);
+    EXPECT_EQ(complete->Body(103),replacement_bytes);
+    EXPECT_EQ(verifiers.load(),1u);
+
+    // Once height 103 is verified, switching branches at that height must
+    // discard the prior replay and validate the common block again.
+    headers->ReplaceFailedHeaderHashes({replacement_hash});
+    // The target source may cache its old answer briefly. A checkpoint for
+    // that answer must stop being offered as soon as its header is deselected.
+    EXPECT_FALSE(host.ReadyCheckpoint());
+    EXPECT_FALSE(host.ReadyCheckpointFor(replacement));
+    EXPECT_FALSE(host.Ready());
+    reorg=false;
+    ASSERT_TRUE(expect_request(old_hash))<<host.Observe().error;
+    EXPECT_EQ(host.Observe().verified_height,102u);
+    EXPECT_EQ(verifiers.load(),2u);
+}
+// The remaining fixtures exercise POSIX permissions or filesystem behavior.
+#ifndef _WIN32
 TEST(OrchardReopenFences, CommittedPoolFenceExportsTypedCandidatesForCanonicalReadmission){
     CanonicalPoolFixture fixture;const auto first=fixture.Build();ASSERT_TRUE(first);
     const auto survivor=CanonicalPoolSurvivor(fixture);ASSERT_TRUE(fixture.f.ingress->SubmitBody(survivor,TxOrigin::INTERNAL).accepted());
@@ -2379,6 +2499,157 @@ TEST(OrchardPhoneHistory, SequentialBodiesExtendWithoutSkippingAndReadyDataIsNot
     EXPECT_FALSE(host.Enqueue({"archive",71,0},second->WireBytes()));
     EXPECT_EQ(ChainDBTransactionReadTestPeer::HandoffRows(source.f.db),unchanged);
 }
+// Several body requests in flight (docs/design/orchard-history-pipelining.md):
+// the window fills, replies arriving out of order are appended strictly in
+// height order, a duplicate is refused, a pause (including an append that
+// finds the target not selected) keeps both requests in flight and buffered
+// bodies, a full buffer never blocks the next body to append, a
+// disconnected serving peer's whole window fails over to the next peer, and
+// the window bound holds (1 behaves as one request at a time).
+TEST(OrchardPhoneHistory, PipelinedWindowAppendsInOrderAndFailsOverAsAWhole){
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;using Download=p2p::OrchardPhoneHistoryDownload;
+    CanonicalPoolFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    source.f.service->setRuntimeBlockNotifications(std::make_shared<CanonicalPoolNotices>());
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();for(const auto& b:source.f.blocks)ASSERT_TRUE(headers->AddHeader(b.header));
+    ASSERT_TRUE(headers->AddHeader(first->Header()));
+    auto proof=std::make_shared<const OrchardSnapshotSection>(Access::CaptureActivation(source.f.db,*headers));
+    // History 102..107: six bodies.
+    std::vector<std::vector<uint8_t>> body{first->WireBytes()};std::vector<uint256> hash{first->Header().GetHash()};
+    BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+    for(int i=0;i<5;++i){
+        const auto next=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(next);
+        ASSERT_TRUE(source.Submit(next->WireBytes()).connected);ASSERT_TRUE(headers->AddHeader(next->Header()));
+        body.push_back(next->WireBytes());hash.push_back(next->Header().GetHash());
+    }
+    const auto catalog=source.f.db.getOrchardCatalogState(hash.back());ASSERT_TRUE(catalog.ok());
+    const Download::Target target{102,107,hash.back(),storage::catalog::Hash(*catalog),hash.front()};
+    const auto request_for=[&](size_t i){std::vector<uint8_t> r{1,2,0,0,0};r.insert(r.end(),hash[i].begin(),hash[i].end());return r;};
+
+    struct Wire {std::mutex mutex;std::condition_variable cv;std::vector<std::pair<std::string,std::vector<uint8_t>>> sent;};
+    const auto make=[&](Wire& wire,std::function<std::optional<Download::Target>()> source_target,
+                        std::function<std::vector<Download::Peer>()> peers,size_t window,
+                        size_t cap=Download::kReceivedBytesCap,std::function<bool(uint32_t)> unselected={}){
+        return std::make_unique<Download>(headers,source.f.path.parent_path(),std::move(source_target),[&]{return proof;},
+            [&](auto p,const auto& t){return Access::ReplayActivation(std::move(p),headers,t.height,t.hash);},std::move(peers),
+            [&wire](const auto& peer,const auto& command,const auto& bytes){
+                std::lock_guard lock(wire.mutex);EXPECT_EQ(command,"getdata");wire.sent.push_back({peer.address,bytes});wire.cv.notify_all();return true;},
+            std::shared_ptr<p2p::OrchardHistoryCache>{},window,cap,std::move(unselected));
+    };
+    const auto wait_sent=[](Wire& wire,size_t count){std::unique_lock lock(wire.mutex);
+        return wire.cv.wait_for(lock,std::chrono::seconds(5),[&]{return wire.sent.size()>=count;});};
+    const auto ready=[](Download& host){const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(std::chrono::steady_clock::now()<deadline){if(host.Ready())return true;std::this_thread::sleep_for(std::chrono::milliseconds(10));}return false;};
+    const Download::Peer a{"archive-a",71,ServiceFlags::NODE_NETWORK},b{"archive-b",72,ServiceFlags::NODE_NETWORK};
+
+    { // The window fills at once, and out-of-order replies append in order.
+        Wire wire;auto host=make(wire,[&]{return std::optional(target);},[&]{return std::vector<Download::Peer>{a};},8);
+        ASSERT_EQ(host->Window(),8u);
+        ASSERT_TRUE(wait_sent(wire,6))<<"all six bodies are requested without waiting for replies";
+        {std::lock_guard lock(wire.mutex);for(size_t i=0;i<6;++i){EXPECT_EQ(wire.sent[i].first,"archive-a");EXPECT_EQ(wire.sent[i].second,request_for(i));}}
+        for(const size_t i:{3u,1u,5u}){ASSERT_TRUE(host->Enqueue({"archive-a",71,0},body[i]));}
+        EXPECT_FALSE(host->Enqueue({"archive-a",71,0},body[3]))<<"a duplicate reply is refused";
+        EXPECT_FALSE(host->Enqueue({"archive-b",72,0},body[4]))<<"a body from a peer that was not asked is refused";
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        EXPECT_LT(host->Observe().verified_height,102u)<<"nothing is appended across the gap at 102";
+        for(const size_t i:{0u,4u,2u}){ASSERT_TRUE(host->Enqueue({"archive-a",71,0},body[i]));}
+        ASSERT_TRUE(ready(*host))<<host->Observe().error;
+        const auto complete=host->Ready();ASSERT_TRUE(complete);
+        for(size_t i=0;i<6;++i)EXPECT_EQ(complete->Body(uint32_t(102+i)),body[i]);
+        EXPECT_EQ(host->Observe().verified_height,107u);
+        std::lock_guard lock(wire.mutex);EXPECT_EQ(wire.sent.size(),6u)<<"no body was requested twice";
+    }
+    { // A pause keeps bodies already received AND requests still in flight:
+      // nothing is requested again, and a reply that arrives during the
+      // pause is accepted, not handed to the block path.
+        Wire wire;std::atomic<bool> available{true};
+        auto host=make(wire,[&]{return available?std::optional(target):std::nullopt;},[&]{return std::vector<Download::Peer>{a};},8);
+        ASSERT_TRUE(wait_sent(wire,6));
+        for(const size_t i:{1u,2u,3u}){ASSERT_TRUE(host->Enqueue({"archive-a",71,0},body[i]));}
+        available=false;std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        EXPECT_TRUE(host->Enqueue({"archive-a",71,0},body[4]))<<"a reply arriving during the pause still matches its request";
+        available=true;std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        {std::lock_guard lock(wire.mutex);EXPECT_EQ(wire.sent.size(),6u)<<"nothing in flight or buffered is requested again after a pause";}
+        for(const size_t i:{5u,0u}){ASSERT_TRUE(host->Enqueue({"archive-a",71,0},body[i]));}
+        ASSERT_TRUE(ready(*host))<<host->Observe().error;EXPECT_EQ(host->Observe().verified_height,107u);
+    }
+    { // An append that finds the target not selected at that instant (the
+      // tip moved between the loop's check and the append) pauses without
+      // losing anything: the body stays buffered and is retried, requests
+      // still in flight stay matched, and nothing is requested again.
+        Wire wire;std::atomic<bool> stuck{true};std::atomic<unsigned> empty{0};
+        auto host=make(wire,[&]{return std::optional(target);},[&]{return std::vector<Download::Peer>{a};},8,
+            Download::kReceivedBytesCap,[&](uint32_t){if(!stuck)return false;++empty;return true;});
+        ASSERT_TRUE(wait_sent(wire,6));
+        for(const size_t i:{0u,1u,2u,3u,4u}){ASSERT_TRUE(host->Enqueue({"archive-a",71,0},body[i]));}
+        const auto tried=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(empty<3&&std::chrono::steady_clock::now()<tried)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        ASSERT_GE(empty.load(),3u)<<"the append of 102 was retried, not abandoned";
+        EXPECT_LT(host->Observe().verified_height,102u);
+        {std::lock_guard lock(wire.mutex);EXPECT_EQ(wire.sent.size(),6u)<<"an empty append re-requests nothing";}
+        // A paused worker retries at the ActiveWait cadence (50 ms), it does
+        // not spin on the body it keeps buffered.
+        const auto before=empty.load();std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        EXPECT_LE(empty.load()-before,20u)<<"retries while paused are paced, not a busy loop";
+        stuck=false;
+        const auto drained=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(host->Observe().verified_height<106u&&std::chrono::steady_clock::now()<drained)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        EXPECT_EQ(host->Observe().verified_height,106u)<<"the buffered bodies were appended without being fetched again";
+        ASSERT_TRUE(host->Enqueue({"archive-a",71,0},body[5]))<<"the request still in flight stayed matched";
+        ASSERT_TRUE(ready(*host))<<host->Observe().error;EXPECT_EQ(host->Observe().verified_height,107u);
+        std::lock_guard lock(wire.mutex);EXPECT_EQ(wire.sent.size(),6u);
+    }
+    { // The buffer cap never blocks the next body to append. With room for two
+      // bodies, five later bodies arrive first and fill it; the next body
+      // (102) must still be held, and the dropped ones are fetched again.
+        // Exactly bodies 107 and 106: the buffer is then full, with no room for 102.
+        Wire wire;auto host=make(wire,[&]{return std::optional(target);},[&]{return std::vector<Download::Peer>{a};},8,body[5].size()+body[4].size());
+        ASSERT_TRUE(wait_sent(wire,6));
+        for(const size_t i:{5u,4u,3u,2u,1u}){ASSERT_TRUE(host->Enqueue({"archive-a",71,0},body[i]));}
+        ASSERT_TRUE(host->Enqueue({"archive-a",71,0},body[0]));
+        // Answer every further request (the bodies the cap dropped) as it is sent.
+        size_t answered=6;const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(10);
+        while(!host->Ready()&&std::chrono::steady_clock::now()<deadline){
+            std::vector<std::vector<uint8_t>> pending;
+            {std::lock_guard lock(wire.mutex);for(;answered<wire.sent.size();++answered)pending.push_back(wire.sent[answered].second);}
+            for(const auto& r:pending)for(size_t i=0;i<6;++i)if(r==request_for(i))host->Enqueue({"archive-a",71,0},body[i]);
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        ASSERT_TRUE(host->Ready())<<"a full buffer stalled the history at "<<host->Observe().verified_height<<" "<<host->Observe().error;
+        EXPECT_EQ(host->Observe().verified_height,107u);
+    }
+    { // The serving peer disconnects: its whole window moves to the next peer
+      // at once, and its late replies are refused.
+        Wire wire;std::atomic<bool> a_connected{true};
+        auto host=make(wire,[&]{return std::optional(target);},
+            [&]{return a_connected?std::vector<Download::Peer>{a,b}:std::vector<Download::Peer>{b};},8);
+        ASSERT_TRUE(wait_sent(wire,6));
+        {std::lock_guard lock(wire.mutex);for(size_t i=0;i<6;++i)EXPECT_EQ(wire.sent[i].first,"archive-a")<<"one serving peer, not round-robin";}
+        ASSERT_TRUE(host->Enqueue({"archive-a",71,0},body[0]));
+        a_connected=false;
+        ASSERT_TRUE(wait_sent(wire,11))<<"the five outstanding requests are re-sent to the next peer together";
+        {std::lock_guard lock(wire.mutex);for(size_t i=6;i<11;++i){EXPECT_EQ(wire.sent[i].first,"archive-b");EXPECT_EQ(wire.sent[i].second,request_for(i-5));}}
+        EXPECT_FALSE(host->Enqueue({"archive-a",71,0},body[1]))<<"a late reply from the failed peer is refused";
+        for(size_t i=1;i<6;++i)ASSERT_TRUE(host->Enqueue({"archive-b",72,0},body[i]));
+        ASSERT_TRUE(ready(*host))<<host->Observe().error;EXPECT_EQ(host->Observe().verified_height,107u);
+    }
+    for(const size_t window:{1u,3u}){ // The window bound holds; 1 is one request at a time.
+        Wire wire;auto host=make(wire,[&]{return std::optional(target);},[&]{return std::vector<Download::Peer>{a};},window);
+        ASSERT_EQ(host->Window(),window);
+        ASSERT_TRUE(wait_sent(wire,window));std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        {std::lock_guard lock(wire.mutex);EXPECT_EQ(wire.sent.size(),window)<<"never more than the window in flight";}
+        for(size_t i=0;i<6;++i){
+            ASSERT_TRUE(wait_sent(wire,i+1));
+            ASSERT_TRUE(host->Enqueue({"archive-a",71,0},body[i]))<<window<<" "<<i;
+        }
+        ASSERT_TRUE(ready(*host))<<host->Observe().error;
+        std::lock_guard lock(wire.mutex);EXPECT_EQ(wire.sent.size(),6u);
+    }
+    EXPECT_EQ(Download(headers,source.f.path.parent_path(),[]{return std::optional<Download::Target>{};},[&]{return proof;},
+        [](auto,const auto&){return std::unique_ptr<OrchardBoundaryReplay>{};},[]{return std::vector<Download::Peer>{};},
+        [](const auto&,const auto&,const auto&){return true;},{},99).Window(),Download::kMaxWindow)<<"the window is clamped";
+}
 // A block arrives between the end of verification and the wallet's use of it.
 // The verified history is a checkpoint: it stays usable while the selected
 // chain extends it, and is withdrawn when a reorganisation replaces it.
@@ -3454,6 +3725,111 @@ TEST(OrchardSnapshotRuntime, ActualServiceBootstrapExportAndRestartBothProfiles)
 // A key funded in the snapshot's base block must not inherit the later
 // birthday of a generated wallet that imports it. Exercise the full-v6
 // origin path, including its verified Orchard history checkpoint.
+TEST(OrchardPhoneHistory, VerifierStartsForATargetTheTipHasAlreadyPassed) {
+    using namespace consensus;
+    using Access=OrchardSnapshotStoreTestAccess;
+    struct ConfigurationScope {
+        std::string profile=GetConfig().sync_profile;
+        bool stateless=GetConfig().utreexo_stateless;
+        ~ConfigurationScope() {GetConfig().sync_profile=profile;GetConfig().utreexo_stateless=stateless;}
+    } configuration;
+    GetConfig().sync_profile.clear();GetConfig().utreexo_stateless=false;
+    OrchardCycleFixture source(true);
+    MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    std::array<uint8_t,32> secret{},internal{},output{};secret.back()=91;int parity=0;
+    ASSERT_TRUE(TaprootKeys::DeriveXOnlyPubkey(secret,internal,parity));
+    ASSERT_TRUE(TaprootKeys::ComputeTweakedPubkey(internal,output));
+    const auto funded_address=TaprootKeys::CreateTaprootAddress(output,"rdin");
+    ASSERT_FALSE(funded_address.empty());
+    BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+    const auto base=SolveCatalogTemplate(assembler.CreateOrchardBlock(funded_address));ASSERT_TRUE(base);
+    ASSERT_TRUE(source.Submit(base->WireBytes()).connected);
+    auto headers=std::make_shared<HeaderChainSelector>();
+    for(const auto& block:source.f.blocks)ASSERT_TRUE(headers->AddHeader(block.header));
+    ASSERT_TRUE(headers->AddHeader(base->Header()));
+    source.f.service->setHeaderChainSelector(headers);
+    shielded_store_fixture::TempDir exports;
+    const auto full_path=exports.path/"funded-base.v6";
+    ASSERT_TRUE(source.f.service->ExportSnapshot(full_path).success);
+    const auto proof=std::make_shared<const OrchardSnapshotSection>(Access::CaptureActivation(source.f.db,*headers));
+    const auto catalog=source.f.db.getOrchardCatalogState(base->Header().GetHash());ASSERT_TRUE(catalog.ok());
+    const auto next=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(next);
+    ASSERT_TRUE(source.Submit(next->WireBytes()).connected);
+    ASSERT_TRUE(headers->AddHeader(next->Header()));
+    const auto after=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(after);
+    ASSERT_TRUE(source.Submit(after->WireBytes()).connected);
+    ASSERT_TRUE(headers->AddHeader(after->Header()));
+
+    shielded_store_fixture::TempDir directory;const auto path=directory.path/"chainstate";
+    Access::CreateFresh(path);
+    auto db=std::make_shared<ChainDB>();ASSERT_EQ(db->init(path),Status::Ok);
+    DaemonContext context;context.config=std::make_shared<ConfigService>();
+    context.config->Set("datadir",directory.path.string());
+    context.config->Set("assumeutxo_compact_bootstrap","0");
+    context.logger=std::make_shared<LoggerService>("");
+    context.logger_interface=source.f.logger.get();
+    context.block_storage=std::make_shared<BlockStorage>();
+    ASSERT_EQ(context.block_storage->init(directory.path/"files"),Status::Ok);
+    auto service=std::make_shared<ChainstateService>();context.chainstate=service;
+    struct ContextScope {
+        DaemonContext* prior=DaemonContext::instance();
+        ~ContextScope(){BlockAcceptor::SetContext(prior);DaemonContext::setInstance(prior);}
+    } context_scope;
+    DaemonContext::setInstance(&context);service->setOwnedChainDB(db);
+    ASSERT_TRUE(service->Init(context));
+    service->setHeaderChainSelector(headers);
+    service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
+    ASSERT_TRUE(service->Start());
+    struct StopScope {
+        std::shared_ptr<ChainstateService> service;DaemonContext& context;
+        ~StopScope(){
+            if(auto peer=std::dynamic_pointer_cast<P2PService>(context.p2p))peer->Stop();
+            context.p2p.reset();
+            if(auto wallet=std::dynamic_pointer_cast<WalletService>(context.wallet))wallet->Stop();
+            context.wallet.reset();
+            if(context.validation_queue)context.validation_queue->stop();
+            context.validation_queue.reset();context.block_ingress=nullptr;
+            if(auto pool=std::dynamic_pointer_cast<MempoolService>(context.mempool))pool->Stop();
+            context.mempool.reset();service->Stop();context.chainstate.reset();
+        }
+    } stop{service,context};
+    const auto loaded=service->LoadSnapshot(full_path);ASSERT_TRUE(loaded.success)<<loaded.error_message;
+    auto pool=std::make_shared<MempoolService>();ASSERT_TRUE(pool->Init(context));context.mempool=pool;
+    auto queue=ValidationQueue::CreateCanonicalOnly();context.validation_queue=queue;
+    auto ingress=std::make_shared<BlockIngressService>();ASSERT_TRUE(ingress->Init(context));
+    ASSERT_TRUE(ingress->Start());context.block_ingress=ingress.get();queue->start();
+    const auto connected=ingress->SubmitHex(util::hex(next->WireBytes()),BlockOrigin::P2P);
+    ASSERT_TRUE(connected.connected)<<connected.reason;
+    EXPECT_EQ(service->GetActiveTip()->hash,next->Header().GetHash());
+
+    // During catch-up the tip moves every few seconds, faster than the
+    // download's 5 s target cache, so the target it starts the verifier for is
+    // usually one or more blocks behind the tip. That target's history is
+    // still valid: it is an ancestor on the selected chain. The verifier must
+    // start for it (the download then retargets as the tip moves) instead of
+    // refusing until a moment when no block has arrived.
+    service->RequestRetainedPhoneHistoryData();
+    const auto lagging=service->PhoneHistoryTarget();ASSERT_TRUE(lagging);
+    EXPECT_EQ(lagging->hash,next->Header().GetHash());
+    const auto moved=ingress->SubmitHex(util::hex(after->WireBytes()),BlockOrigin::P2P);
+    ASSERT_TRUE(moved.connected)<<moved.reason;
+    const auto current=service->PhoneHistoryTarget();ASSERT_TRUE(current);
+    ASSERT_EQ(current->hash,after->Header().GetHash());
+    ASSERT_EQ(current->height,lagging->height+1);
+    EXPECT_TRUE(service->PreparePhoneHistoryVerifier(proof,*current))<<"the current target";
+    EXPECT_TRUE(service->PreparePhoneHistoryVerifier(proof,*lagging))<<"a target the tip has already passed";
+    // Not on the selected chain (a reorganisation replaced it): refused.
+    auto replaced=*lagging;replaced.hash=uint256::FromHexUnsafe(std::string(63,'0')+"5");
+    EXPECT_FALSE(service->PreparePhoneHistoryVerifier(proof,replaced));
+    // Another snapshot base or activation: refused.
+    auto other_base=*lagging;other_base.base=uint256::FromHexUnsafe(std::string(63,'0')+"6");
+    EXPECT_FALSE(service->PreparePhoneHistoryVerifier(proof,other_base));
+    // Above the tip: refused.
+    auto ahead=*current;ahead.height=current->height+1;
+    EXPECT_FALSE(service->PreparePhoneHistoryVerifier(proof,ahead));
+}
+
 TEST(OrchardSnapshotRuntime, ImportedPrebirthKeyCannotUseFreshSnapshotOrigin) {
     using namespace consensus;
     using Access=OrchardSnapshotStoreTestAccess;
@@ -3612,5 +3988,6 @@ TEST(OrchardSnapshotRuntime, UnmarkedEmptyReadyStoreCannotSelfInitializeGenesis)
     size_t coins=0;ASSERT_EQ(db->forEachUTXO([&](const auto&,uint32_t,const auto&){++coins;return true;}),Status::Ok);EXPECT_EQ(coins,0u);
     service->Stop();context.chainstate.reset();
 }
+#endif // !_WIN32
 } // namespace dinero
 #endif

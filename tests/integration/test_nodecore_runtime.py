@@ -628,6 +628,12 @@ def snapshot(node):
     check("import preserves source roots and tip", state(node) == expected, state(node))
     check("legacy assumed-base read does not invent a root-only owner",
           node.rpc("blockchain.getutreexocommitment")["retains_full_state"] is True)
+    # Snapshot bootstrap may return before any default wallet can be created.
+    # Create an unrelated wallet once the base is loaded before asking for its
+    # UTXOs, so this tests ownership rather than the absence of a wallet.
+    unrelated = node.rpc("wallet.createhd", ["consumer", 12, "", ""])
+    check("consumer wallet is created after snapshot import",
+          unrelated.get("success") is True, unrelated)
     check("unrelated consumer wallet owns no fixture coins", len(node.rpc("wallet.listunspent", [0])) == 0)
 
     # The consumer has already returned from nodecore_start. Publish another
@@ -638,7 +644,7 @@ def snapshot(node):
     check("another complete generation is published", newer.is_file()
           and Path(str(newer) + ".manifest.json").is_file())
     check("later generation has different bytes", hashlib.sha256(newer.read_bytes()).hexdigest() != digest)
-    # Establish the recovered seed without replacing the consumer's default
+    # Establish the recovered seed without replacing the unrelated consumer
     # wallet or scanning. The unchanged import below must still read generation A.
     restored = node.rpc("wallet.restore", {
         "name": "snapshot-recovered", "mnemonic": mnemonic, "rescan": False})

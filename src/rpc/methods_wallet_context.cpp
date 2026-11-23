@@ -1,3 +1,4 @@
+#include "daemon/services/runtime_replay_retry.h"
 #include "rpc/wallet_request_dispatch.h"
 #include "daemon/mempool_wallet_view.h"
 #include "storage/chain_db_wallet_view.h"
@@ -4051,8 +4052,49 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
         return result;
     }
 
+    // v8.2.5: a completed full-archive v3 recovery (legacy class) or a
+    // native-complete v3 wallet pays through the same receipt-fenced owner as
+    // wallet.sendtoaddress: its coins are the certified inventory and its
+    // change goes to an already-covered address, never a derived one.
+    bool recovered_v3_send = false;
+    bool native_v3_send = false;
+#if DINERO_WALLET_RAW_ORCHARD
+    if (ctx.daemon->chainstate) {
+        auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        if (source && source->HasFullArchiveWalletIndexV3()) {
+            auto use = dinero::WalletService::AcquireWalletUse(wallet_service);
+            auto lease = use->Wallet().AcquireDatabaseLease();
+            recovered_v3_send = lease->TypedTransparentState() ==
+                dinero::WalletManager::LegacyTransparentState::Complete;
+            native_v3_send = recovered_v3_send &&
+                lease->NativeV3TransparentState() == dinero::WalletManager::NativeV3State::Complete;
+        }
+    }
+#endif
+    // True when the wallet cannot pay now (result carries the refusal).
+    const auto spend_refused = [&]() -> bool {
+        if (!recovered_v3_send) return RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result);
+        if (RefuseIfLegacyTransparentTipNotCurrent(ctx, wallet_service, result)) return true;
+        auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        if (!source || !source->RecoveredV3TransparentSendSourceReady()) {
+            result["error"] = "Recovered payment selected source unavailable";
+            result["error_code"] = "wallet_v3_send_source_unavailable";
+            return true;
+        }
+#if DINERO_WALLET_RAW_ORCHARD
+        if (native_v3_send && !wallet_service->get().isWalletLocked() &&
+            !rpc_context_native_v3_ordinary_inventory_ready(ctx, wallet_service->get().getCurrentWalletName())) {
+            result["error"] = dinero::WalletManager::kNativeWalletSendUnavailableOnV3;
+            result["error_code"] = "wallet_native_send_unavailable_on_v3";
+            result["retryable"] = false;
+            return true;
+        }
+#endif
+        return false;
+    };
+
     try {
-        if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
+        if (spend_refused()) return result;
         if(required_identity && (!required_service || required_service!=wallet_service || !requested))
             throw std::runtime_error("Bound payment wallet service or request format changed");
         // Retain the actual manager through all synchronous callbacks. This
@@ -4351,7 +4393,33 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
         // Build transaction using only our pre-filtered candidate UTXOs so that
         // the builder never selects stale/CT/immature inputs we have no key for.
         dinero::TransactionBuilder builder(chainstate_service->utxoIndex());
-        std::string change_address = wallet_service->get().getNewAddress("change", "taproot");
+        // A v3 wallet owns only scripts its sealed receipts proved: change goes
+        // to a pooled change address (native), else to an owned candidate
+        // address whose key this seed resolves (legacy class). Deriving a new
+        // script would invalidate the receipts and leave change unscanned.
+        std::string change_address;
+        if (recovered_v3_send) {
+            auto lease = wallet_use->Wallet().AcquireDatabaseLease();
+            if (lease->Session() != signing_identity.session || lease->WalletName() != signing_identity.name)
+                throw std::runtime_error("Recovered payment wallet selection changed");
+            auto pin = lease->CopyRecoverySeed(signing_identity.session);
+            if (native_v3_send) change_address = lease->NativeV3PooledChangeAddress(*pin);
+            for (const auto& coin : utxos) {
+                if (!change_address.empty()) break;
+                if (coin.address.empty() || coin.script_pubkey.empty()) continue;
+                auto recorded = wallet_use->Wallet().getScriptPubKeyForAddress(coin.address);
+                if (!recorded || *recorded != coin.script_pubkey) continue;
+                auto key = lease->ResolveSigningKey(coin.script_pubkey, *pin);
+                if (key && key->secret.size() == 32) change_address = coin.address;
+            }
+            if (change_address.empty()) {
+                result["error"] = "Recovered transparent wallet has no existing owned change address";
+                result["error_code"] = "wallet_v3_change_owner_unavailable";
+                return result;
+            }
+        } else {
+            change_address = wallet_service->get().getNewAddress("change", "taproot");
+        }
 
         // The builder's vsize estimator can undercount the final serialized size
         // on some wallet states. Start conservatively, then rebuild with a higher
@@ -4394,7 +4462,7 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
             if(intent.request && static_cast<uint64_t>(unsigned_tx.fee)>intent.request->maximum_fee_una) {
                 result["error"]="Payment exceeds explicit request fee limit";return result;
             }
-            if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
+            if (spend_refused()) return result;
             auto signed_result=intent.request
                 ? dinero::SignWalletRequestPreview(wallet_service->get(),signing_identity,unsigned_tx,intent)
                 : dinero::SignWalletTransaction(wallet_service->get(),signing_identity,unsigned_tx);
@@ -4428,7 +4496,7 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
             effective_fee_rate = std::max(effective_fee_rate * 2.0, effective_fee_rate + 1.0);
         }
 
-        if (RefuseIfLegacyTransparentSpendUnavailable(ctx, wallet_service, result)) return result;
+        if (spend_refused()) return result;
         auto retained = chainstate_service->signAndStageWalletPayment(wallet_use->Wallet(), signing_identity, unsigned_tx, intent);
         if (!retained.success) { result["error"] = "Payment retention failed: " + retained.error; return result; }
         build_result.transaction = std::move(retained.signed_tx.tx);
@@ -7994,6 +8062,18 @@ static void AddCreationReceiveAddresses(const ExecutionContext& ctx, din::Json& 
 #else
     result["orchard_error"] = "Orchard wallet backend unavailable";
 #endif
+    // Bitcoin, from the same recovery words (the built-in Bitcoin wallet's
+    // account), when this node runs its Bitcoin client: the new wallet can
+    // be paid bitcoin, and sell DIN for it, without a further step. Absent
+    // on a node that does not run it; never an error of wallet creation.
+    try {
+        if (auto* btc = g_rpcRegistry.lookup("btc.enable")) {
+            const auto enabled = (*btc)(ctx, din::Json(Json::objectValue));
+            if (enabled.isObject() && enabled.isMember("address") && enabled["address"].isString())
+                result["first_btc_address"] = enabled["address"];
+        }
+    } catch (const std::exception&) {
+    }
 }
 
 din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Json& params) {
@@ -8010,7 +8090,18 @@ din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Js
         return result;
     }
 
-    const uint32_t birth_height = ctx.daemon->chainstate ? ctx.daemon->chainstate->getBlockHeight() : 0;
+    uint32_t birth_height = ctx.daemon->chainstate ? ctx.daemon->chainstate->getBlockHeight() : 0;
+    // A first run bootstrapping from a snapshot must not seal a placeholder
+    // birth (0 before the load, or a height not yet advanced to the base).
+    // Refuse before creating anything; the caller retries once the node is at
+    // its snapshot base.
+    if (const auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        source && source->WalletBirthPrecedesSnapshot(birth_height)) {
+        result["error"] = "The node is still loading its starting snapshot; wallet was not created. Retry in a few minutes.";
+        result["error_code"] = "snapshot_bootstrap_pending";
+        result["retryable"] = true;
+        return result;
+    }
 #if DINERO_WALLET_RAW_ORCHARD
     // Creating a post-activation wallet promises a usable Orchard receiver.
     // A late snapshot can expose the selected tip before its independently
@@ -8018,7 +8109,13 @@ din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Js
     // instead of returning a partial wallet with a silently missing address.
     if (birth_height >= dinero::Params().orchard_activation_height) {
         const auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
-        const auto replay = source ? source->getRuntimeAccountReplay() :
+        // The read refuses when a block is delivered while it runs, which
+        // during a first run's catch-up is nearly every time. It is asked
+        // again for a few seconds before the user is told to come back
+        // (runtime_replay_retry.h): the same read, the same checks.
+        const auto replay = source ? dinero::ReadRuntimeReplayWithRetry(
+                [&] { return source->getRuntimeAccountReplay(); },
+                [&] { return source->PhoneReplayCaptureCounts().first > 0; }) :
             dinero::StatusOr<std::shared_ptr<const dinero::RuntimeAccountReplay>>(dinero::Status::Invalid);
         if (!replay.ok()) {
             result["error"] = "Orchard history is not ready; wallet was not created. Retry after history sync.";
@@ -8030,6 +8127,25 @@ din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Js
         }
     }
 #endif
+    // The history read above takes from a moment to a minute or more (its
+    // first build, then the bounded retry), and blocks keep arriving: the
+    // birth is the chain height when the wallet is created, not when the
+    // request came in. Nothing is held across that wait (no selected lock, no
+    // wallet lease, no creation owner). A height that moved is put through
+    // the snapshot guard again before anything is created.
+    if (ctx.daemon->chainstate) {
+        const uint32_t now_height = ctx.daemon->chainstate->getBlockHeight();
+        if (now_height != birth_height) {
+            birth_height = now_height;
+            if (const auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+                source && source->WalletBirthPrecedesSnapshot(birth_height)) {
+                result["error"] = "The node is still loading its starting snapshot; wallet was not created. Retry in a few minutes.";
+                result["error_code"] = "snapshot_bootstrap_pending";
+                result["retryable"] = true;
+                return result;
+            }
+        }
+    }
     auto creation_owner = wallet_service->AcquireCreationOwner();
     result = dinero::rpc::RpcCreateHDWallet(params, &wallet_service->get(), birth_height);
     if (!result.isMember("error")) {
@@ -8123,6 +8239,18 @@ din::Json rpc_context_wallet_restore(const ExecutionContext& ctx, const din::Jso
     bool rescan_requested = true;
     if (params.isObject() && params.isMember("rescan") && params["rescan"].isBool()) {
         rescan_requested = params["rescan"].asBool();
+    }
+
+    // Same first-run window as wallet.createhd: while the node is still loading
+    // its starting snapshot (or its height has not reached the base), refuse
+    // before any effect, for rescan=true and rescan=false alike, so a restore
+    // never changes the selected wallet against a placeholder chain height.
+    if (const auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        source && source->WalletBirthPrecedesSnapshot(source->getBlockHeight())) {
+        result["error"] = "The node is still loading its starting snapshot; wallet was not restored. Retry in a few minutes.";
+        result["error_code"] = "snapshot_bootstrap_pending";
+        result["retryable"] = true;
+        return result;
     }
 
     // A restore changes the selected wallet/seed before its legacy rescan.

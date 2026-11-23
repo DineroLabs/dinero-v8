@@ -46,10 +46,10 @@ class FullV6DockerCandidateTest(unittest.TestCase):
         self.assertEqual(tracked.returncode, 0,
                          "publisher key exists locally but is absent from the source checkout")
 
-    def test_entrypoint_passes_all_six_fallbacks_to_daemon(self):
+    def test_entrypoint_passes_all_seven_fallbacks_to_daemon(self):
         primary = self.root / "primary.dat"
         primary.touch()
-        fallbacks = [self.root / f"fallback-{i}.dat" for i in range(6)]
+        fallbacks = [self.root / f"fallback-{i}.dat" for i in range(7)]
         for path in fallbacks:
             path.touch()
         stub = self.root / "dinerod"
@@ -91,15 +91,16 @@ class FullV6DockerCandidateTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("fallback", result.stderr)
 
-    def test_recovery_manifest_checker_requires_all_six_exact_payloads(self):
-        names = ["dinero-assumeutxo-153578-v6-full.dat",
+    def test_recovery_manifest_checker_requires_all_seven_exact_payloads(self):
+        names = ["dinero-assumeutxo-155650-v6-full.dat",
+                 "dinero-assumeutxo-153578-v6-full.dat",
                  "dinero-assumeutxo-153051-v6-full.dat",
                  "dinero-assumeutxo-148375-v5.dat",
                  "dinero-assumeutxo-99677-v4.dat",
                  "dinero-assumeutxo-73035-v4.dat",
                  "utxo-snapshot-65300.dat"]
-        heights = [153578, 153051, 148375, 99677, 73035, 65300]
-        versions = [6, 6, 5, 4, 4, 4]
+        heights = [155650, 153578, 153051, 148375, 99677, 73035, 65300]
+        versions = [6, 6, 6, 5, 4, 4, 4]
         pins = []
         for name, height, version in zip(names, heights, versions):
             block_hash = f"{height:064x}"
@@ -132,13 +133,13 @@ class FullV6DockerCandidateTest(unittest.TestCase):
                 manifest["snapshot_profile"] = "full"
             (self.root / (name + ".manifest.json")).write_text(json.dumps(manifest))
         catalog = self.root / "catalog.json"
-        catalog.write_text(json.dumps({"fallbacks": [*pins[:4], pins[5]]}))
-        self.assertEqual(verify(self.root, catalog, pins[4]), names)
+        catalog.write_text(json.dumps({"fallbacks": [*pins[:5], pins[6]]}))
+        self.assertEqual(verify(self.root, catalog, pins[5]), names)
         # A missing old recovery base fails image preparation, even though the
         # new primary may be present.
         (self.root / names[0]).unlink()
         with self.assertRaises(FileNotFoundError):
-            verify(self.root, catalog, pins[4])
+            verify(self.root, catalog, pins[5])
 
     def test_live_image_uses_reviewed_full_v6_sources(self):
         self.assertEqual((ROOT / "Dockerfile").read_bytes(),
@@ -154,6 +155,16 @@ class FullV6DockerCandidateTest(unittest.TestCase):
         self.assertIn("- name: PR result is contract-only, not image-qualified", workflow)
         self.assertIn("- name: Build and load\n        if: github.event_name != 'pull_request'", workflow)
         self.assertIn("- name: Admit exact full-v6 catalog primary\n        if: github.event_name != 'pull_request'", workflow)
+
+    def test_release_revision_and_swap_runtime_are_present(self):
+        source = (ROOT / "Dockerfile").read_text()
+        self.assertIn('ARG PRIMARY_SNAPSHOT_RELEASE=v8.2.5', source)
+        self.assertIn('BASE="${PRIMARY}"', source)
+        self.assertIn('libcurl4t64 ca-certificates', source)
+        workflow = (ROOT / ".github/workflows/linux-release.yml").read_text()
+        self.assertIn('libcurl.so.4', workflow)
+        self.assertIn('build-release/dinerod build-release/dinero-swap-tower', workflow)
+        self.assertIn('-DDINERO_SWAP_LIGHT_BTC=ON', (ROOT / 'debian/rules').read_text())
 
     def test_h153051_candidate_and_release_sources_are_distinct(self):
         source = (ROOT / "Dockerfile").read_text()
@@ -213,14 +224,14 @@ class FullV6DockerCandidateTest(unittest.TestCase):
         base = os.environ | {
             'GITHUB_OUTPUT': str(output), 'GITHUB_EVENT_NAME': 'workflow_dispatch',
             'GITHUB_REF_NAME': 'codex/v823-desktop-full-v6-packaging',
-            'INPUT_VERSION': '8.2.4', 'INPUT_CANDIDATE_SOURCE': source_sha,
+            'INPUT_VERSION': '8.2.5', 'INPUT_CANDIDATE_SOURCE': source_sha,
             'INPUT_PUBLISH_LATEST': 'false', 'INPUT_DRY_RUN': 'true',
             'RELEASE_PRERELEASE': 'false', 'RELEASE_DRAFT': 'false',
             'INPUT_SNAPSHOT_PAYLOAD_URL': 'https://example.org/snapshot.dat',
             'INPUT_SNAPSHOT_MANIFEST_URL': 'https://example.org/manifest.json',
             'INPUT_SNAPSHOT_SIGNATURE_URL': 'https://example.org/manifest.sig',
-            'INPUT_BINARY_TARBALL_URL': 'https://example.org/dinero-linux-x86_64-8.2.4.tar.gz',
-            'INPUT_BINARY_SUMS_URL': 'https://example.org/SHA256SUMS-linux-x86_64-8.2.4',
+            'INPUT_BINARY_TARBALL_URL': 'https://example.org/dinero-linux-x86_64-8.2.5.tar.gz',
+            'INPUT_BINARY_SUMS_URL': 'https://example.org/SHA256SUMS-linux-x86_64-8.2.5',
             'INPUT_BINARY_TARBALL_SHA256': 'a' * 64,
             'INPUT_BINARY_SUMS_SHA256': 'b' * 64,
         }
@@ -243,23 +254,23 @@ class FullV6DockerCandidateTest(unittest.TestCase):
         ):
             with self.subTest(changes=changes):
                 self.assertNotEqual(run_case(**changes).returncode, 0)
-        release = run_case(GITHUB_EVENT_NAME='release', GITHUB_REF_NAME='v8.2.4',
+        release = run_case(GITHUB_EVENT_NAME='release', GITHUB_REF_NAME='v8.2.5',
                            INPUT_CANDIDATE_SOURCE='', INPUT_SNAPSHOT_PAYLOAD_URL='',
                            INPUT_SNAPSHOT_MANIFEST_URL='', INPUT_SNAPSHOT_SIGNATURE_URL='',
                            INPUT_BINARY_TARBALL_URL='', INPUT_BINARY_SUMS_URL='',
                            INPUT_BINARY_TARBALL_SHA256='', INPUT_BINARY_SUMS_SHA256='',
                            INPUT_VERSION='', INPUT_DRY_RUN='')
         self.assertEqual(release.returncode, 0, release.stderr)
-        revision = run_case(GITHUB_EVENT_NAME='release', GITHUB_REF_NAME='v8.2.4-r1',
+        revision = run_case(GITHUB_EVENT_NAME='release', GITHUB_REF_NAME='v8.2.5-r1',
                             INPUT_CANDIDATE_SOURCE='', INPUT_SNAPSHOT_PAYLOAD_URL='',
                             INPUT_SNAPSHOT_MANIFEST_URL='', INPUT_SNAPSHOT_SIGNATURE_URL='',
                             INPUT_BINARY_TARBALL_URL='', INPUT_BINARY_SUMS_URL='',
                             INPUT_BINARY_TARBALL_SHA256='', INPUT_BINARY_SUMS_SHA256='',
                             INPUT_VERSION='', INPUT_DRY_RUN='')
         self.assertEqual(revision.returncode, 0, revision.stderr)
-        self.assertIn('version=8.2.4\n', output.read_text())
+        self.assertIn('version=8.2.5\n', output.read_text())
         invalid_revision = run_case(GITHUB_EVENT_NAME='release',
-                                    GITHUB_REF_NAME='v8.2.4-r1-extra',
+                                    GITHUB_REF_NAME='v8.2.5-r1-extra',
                                     INPUT_CANDIDATE_SOURCE='', INPUT_VERSION='',
                                     INPUT_SNAPSHOT_PAYLOAD_URL='', INPUT_SNAPSHOT_MANIFEST_URL='',
                                     INPUT_SNAPSHOT_SIGNATURE_URL='', INPUT_BINARY_TARBALL_URL='',
@@ -280,9 +291,9 @@ class FullV6DockerCandidateTest(unittest.TestCase):
             'INPUT_DRY_RUN': 'false', 'INPUT_PUBLISH_LATEST': 'true',
             'PATH': str(self.root) + os.pathsep + os.environ['PATH'],
         }
-        accepted_latest = run_case(**manual_release, FAKE_LATEST_TAG='v8.2.4-r1')
+        accepted_latest = run_case(**manual_release, FAKE_LATEST_TAG='v8.2.5-r1')
         self.assertEqual(accepted_latest.returncode, 0, accepted_latest.stderr)
-        wrong_latest = run_case(**manual_release, FAKE_LATEST_TAG='v8.2.5')
+        wrong_latest = run_case(**manual_release, FAKE_LATEST_TAG='v8.2.6')
         self.assertNotEqual(wrong_latest.returncode, 0)
 
     def test_fresh_volume_smoke_restarts_same_volume_and_requires_armed_snapshot(self):
@@ -302,9 +313,9 @@ case "$1" in
   exec)
     case "$*" in
       *getsnapshotbootstrapstatus*)
-        echo '{"snapshot_bootstrap":{"assumeutxo_active":true,"fatal":false,"snapshot_base_height":155650,"snapshot_base_block":"0000001fd43981b118ab562cabbbdf2356527d8821d70e868fa12a021429340e"}}' ;;
-      *getblockchaininfo*) echo '{"blocks":155651}' ;;
-      *getblockhash*) echo '"0000001fd43981b118ab562cabbbdf2356527d8821d70e868fa12a021429340e"' ;;
+        echo '{"snapshot_bootstrap":{"assumeutxo_active":true,"fatal":false,"snapshot_base_height":163965,"snapshot_base_block":"00000016ce3a6fba20d958c45e92b2c0eff5de69bbea6e289af5a9d1cd8a9e5b"}}' ;;
+      *getblockchaininfo*) echo '{"blocks":163966}' ;;
+      *getblockhash*) echo '"00000016ce3a6fba20d958c45e92b2c0eff5de69bbea6e289af5a9d1cd8a9e5b"' ;;
       *) exit 1 ;;
     esac
     exit 0 ;;
@@ -328,7 +339,7 @@ exit 1
         self.assertIn('Docker restart daemon reached RPC readiness', result.stdout)
         starts = [line for line in calls.read_text().splitlines() if line.startswith('run -d ')]
         self.assertEqual(len(starts), 2)
-        for rpc in ('getsnapshotbootstrapstatus', 'getblockchaininfo', 'getblockhash 155650'):
+        for rpc in ('getsnapshotbootstrapstatus', 'getblockchaininfo', 'getblockhash 163965'):
             self.assertGreaterEqual(
                 sum(line.startswith('exec ') and rpc in line for line in calls.read_text().splitlines()),
                 2, f'{rpc} was not checked on both the fresh and restart passes')
@@ -376,13 +387,13 @@ exit 1
         for path in primary_sidecars:
             path.touch()
         primary_sidecars[-1].write_text('{"publisher_signature_verified": true}\n')
-        fallbacks = [self.root / f'fallback {i}-v6-full.dat' for i in range(2)]
-        fallbacks.extend(self.root / f'fallback {i}.dat' for i in range(2, 6))
+        fallbacks = [self.root / f'fallback {i}-v6-full.dat' for i in range(3)]
+        fallbacks.extend(self.root / f'fallback {i}.dat' for i in range(3, 7))
         for path in fallbacks:
             path.touch()
             Path(str(path) + '.manifest.json').touch()
         publisher_sidecars = []
-        for path in fallbacks[:2]:
+        for path in fallbacks[:3]:
             for suffix in ('.publisher.manifest.json', '.publisher.manifest.sig'):
                 sidecar = Path(str(path) + suffix)
                 sidecar.touch()
@@ -408,7 +419,7 @@ exit 1
         primary_sidecars[-1].write_text('{"publisher_signature_verified": false}\n')
         self.assertNotEqual(run_check().returncode, 0)
         primary_sidecars[-1].write_text('{"publisher_signature_verified": true}\n')
-        check_env['DINERO_SNAPSHOT_FALLBACKS'] = ';'.join(map(str, fallbacks[:4]))
+        check_env['DINERO_SNAPSHOT_FALLBACKS'] = ';'.join(map(str, fallbacks[:6]))
         self.assertNotEqual(run_check().returncode, 0)
 
 

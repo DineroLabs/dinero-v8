@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Dinero">
+  <!-- Canonical Dinero coin mark. Keep the paths simple so DIN stays readable at 18 px. -->
+  <circle cx="512" cy="512" r="475" fill="#d5dde2" stroke="#84919b" stroke-width="3"/>
+  <circle cx="512" cy="512" r="456" fill="#e9a727" stroke="#aa7418" stroke-width="3"/>
+  <g fill="#ffffff">
+    <path fill-rule="evenodd" d="M225 365h118c84 0 138 60 138 147s-54 147-138 147H225V365zm66 55v184h51c52 0 81-34 81-92s-29-92-81-92h-51z"/>
+    <path d="M504 365h53v294h-53z"/>
+    <path d="M580 659V365h56l103 180V365h56v294h-56L636 479v180z"/>
+  </g>
+</svg>

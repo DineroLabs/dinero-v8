@@ -114,3 +114,17 @@ endif()
 # Sanitizer wiring (single source of truth).
 set(DIN_ENABLE_ASAN ${ENABLE_SANITIZERS})
 include(Sanitizers)
+
+# A program that carries a static OpenSSL (the vendored libcrypto.a) and also
+# loads a shared library built against the system's OpenSSL must keep its own
+# copy to itself. On ELF it otherwise exports those symbols, the system's
+# libssl.so (reached through libcurl) binds to them instead of to the system's
+# libcrypto.so, and the first certificate check crashes on mismatched structures.
+# Seen on the public swap watchtower (Ubuntu 24.04): SIGSEGV in
+# ossl_x509v3_cache_extensions, called from libssl.so.3, on its first HTTPS
+# request. Call this for every executable that links libcurl.
+function(dinero_keep_static_openssl_private target)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(${target} PRIVATE "LINKER:--exclude-libs,ALL")
+  endif()
+endfunction()

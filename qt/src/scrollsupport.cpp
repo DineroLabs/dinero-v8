@@ -1,6 +1,7 @@
 #include "scrollsupport.h"
 
 #include <QAbstractScrollArea>
+#include <QApplication>
 #include <QEvent>
 #include <QLayout>
 #include <QPointer>
@@ -13,15 +14,18 @@
 
 namespace {
 
-int verticalWheelDelta(const QWheelEvent* wheel)
+int verticalWheelDelta(const QWheelEvent* wheel, const QScrollBar* bar)
 {
-    if (!wheel) {
+    if (!wheel || !bar) {
         return 0;
     }
-    if (!wheel->pixelDelta().isNull()) {
+    if (wheel->pixelDelta().y() != 0) {
         return wheel->pixelDelta().y();
     }
-    return wheel->angleDelta().y() / 8;
+    // A wheel notch is 120 angle units. Respect the user's configured number
+    // of lines and Qt's scrollbar step; dividing by eight moved only 15 px.
+    return wheel->angleDelta().y() * QApplication::wheelScrollLines()
+           * std::max(1, bar->singleStep()) / 120;
 }
 
 QAbstractScrollArea* owningScrollArea(QObject* watched)
@@ -69,13 +73,12 @@ protected:
         }
 
         auto* wheel = static_cast<QWheelEvent*>(event);
-        const int delta = verticalWheelDelta(wheel);
-        if (delta == 0) {
-            return QObject::eventFilter(watched, event);
-        }
-
         auto* targetBar = target_->verticalScrollBar();
         if (!targetBar || targetBar->maximum() <= targetBar->minimum()) {
+            return QObject::eventFilter(watched, event);
+        }
+        const int delta = verticalWheelDelta(wheel, targetBar);
+        if (delta == 0) {
             return QObject::eventFilter(watched, event);
         }
 

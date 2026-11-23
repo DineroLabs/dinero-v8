@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QFrame>
 #include <QMainWindow>
 
 #include "daemonstartuppolicy.h"
@@ -177,7 +178,7 @@ private Q_SLOTS:
   void onConnectionStatusMessage(QString message, QString level);
   void onBlockchainSyncUpdate(int blocks, int headers);
   void maybeAutoStartDaemon();
-  void onStartupWatchdogTimeout();  // #295: fail loud after 60s without RPC
+  void onStartupWatchdogTimeout();  // #295: explain startup delays after five minutes without RPC
 
 private:
   void setupUI();
@@ -548,6 +549,9 @@ private:
   QPushButton* btnStartMining_;  // v0.14.0.4: Single toggle button (Start ↔ Stop)
   QPushButton* btnStopMining_;   // Legacy - kept for compatibility, hidden in UI
   QPushButton* btnUseWalletAddr_;  // "Use Wallet" button for mining address
+  bool miningWalletAddressPending_ = false;
+  QString miningWalletAddressRequestWallet_;
+  QString miningWalletAddressPriorText_;
   QLabel* lblMiningStatus_ = nullptr;
   QLabel* lblMiningReadiness_ = nullptr;
   QLabel* lblHashrate_;
@@ -692,6 +696,8 @@ private:
   };
   QVector<MiningSessionFind> miningSessionFinds_;
   QPushButton* btnMiningSessionFinds_ = nullptr;
+  QWidget* miningSessionCountGroup_ = nullptr;
+  QLabel* lblMiningSessionCount_ = nullptr;
   QLabel* mottoTickerLabel_ = nullptr;
   void updateMiningStats();
   void updateMiningRuntimeLabel();
@@ -712,6 +718,7 @@ private:
 
   // Wallet lock/unlock (single toggle button with status in text)
   QPushButton* btnWalletLock_;      // Shows status + toggles Lock/Unlock
+  QFrame* recoveryReminder_ = nullptr;  // "your recovery words are not confirmed" (recoverywordspolicy.h)
   QPushButton* btnEncryptWallet_;
   class QComboBox* cmbWalletSelector_;
   QPushButton* btnLoadWallet_;

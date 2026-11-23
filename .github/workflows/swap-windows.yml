@@ -1,7 +1,7 @@
 # Swap code on Windows (MSVC): dinerod links it on every platform, and the
 # swap store must replace its files in place on every tick. Builds dinerod and
 # runs the swap store tests (repeated save / reopen) natively under MSVC; and
-# builds dinero-qt with the Swap tab and runs its offscreen test.
+# builds dinero-qt with the Swap tab and runs its offscreen UI tests.
 name: Swap Windows
 
 on:
@@ -13,12 +13,20 @@ on:
       - 'src/wallet/swap/**'
       - 'include/wallet/swap/**'
       - 'src/daemon/services/swap_service.cpp'
+      - 'src/daemon/swap_*'
+      - 'src/daemon/CMakeLists.txt'
       - 'tests/wallet/test_swap_encrypted_store.cpp'
       - 'qt/src/swap*'
       - 'cmake/SwapTower.cmake'
       - 'tools/dinero_swap_tower.cpp'
       - 'qt/src/chromestyle.h'
       - 'qt/tests/test_swap_tab.cpp'
+      - 'qt/src/mainwindow.cpp'
+      - 'qt/src/mainwindow.h'
+      - 'qt/src/inforow.*'
+      - 'qt/src/scoreboardlabel.h'
+      - 'qt/tests/test_mining_output_zoom.cpp'
+      - 'qt/tests/test_info_row.cpp'
 
 jobs:
   swap-windows:
@@ -70,9 +78,13 @@ jobs:
         run: |
           cmake -S . -B build-msvc-swap -G 'Visual Studio 17 2022' -A x64 `
             -DDINERO_WINDOWS_SERVER_BUILD=ON -DDINERO_BUILD_SEEDER=OFF -DDINERO_BUILD_MINER=OFF `
-            -DDINERO_ENABLE_QUIC=ON `
+            -DDINERO_ENABLE_QUIC=ON -DDINERO_SWAP_LIGHT_BTC=ON `
             "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # The releases build swaps without Bitcoin Core in; this job proves that compiles and links here.
+          if (-not (Select-String -Path 'build-msvc-swap\CMakeCache.txt' -Pattern '^DINERO_SWAP_LIGHT_BTC:BOOL=ON$' -Quiet)) {
+            throw 'swaps without Bitcoin Core are not enabled in this build'
+          }
 
       - name: Build dinerod and the swap store tests
         shell: powershell
@@ -157,17 +169,23 @@ jobs:
       - name: Build dinero-qt and Qt layout tests
         shell: powershell
         run: |
-          cmake --build build-msvc-qt --config Release --parallel 2 --target dinero-qt test_swap_tab test_overview_columns
+          cmake --build build-msvc-qt --config Release --parallel 2 --target dinero-qt test_swap_tab test_overview_columns test_mining_output_zoom test_info_row
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Run Swap tab and overview layout tests (offscreen)
+      - name: Run Swap tab, overview, and mining UI tests (offscreen)
         shell: powershell
         run: |
           $env:QT_QPA_PLATFORM = 'offscreen'
           $env:QT_QPA_FONTDIR = "$env:WINDIR\Fonts"
           $env:PATH = "$env:QT_ROOT_DIR\bin;$env:PATH"
-          ctest --test-dir build-msvc-qt -C Release -R '^(SwapTab|OverviewColumns)$' --output-on-failure | Tee-Object ctest.log
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not (Select-String -Path ctest.log -Pattern '100% tests passed, 0 tests failed out of 2')) {
-            throw 'SwapTab and OverviewColumns did not each run once'
+          ctest --test-dir build-msvc-qt -C Release -R '^(SwapTab|OverviewColumns|MiningOutputZoom|InfoRow)$' --output-on-failure | Tee-Object ctest.log
+          if ($LASTEXITCODE -ne 0) {
+            # Windows GUI binaries may not write QtTest failures to ctest's console.
+            # Capture the named assertion if this gate fails again.
+            & 'build-msvc-qt\bin\Release\test_overview_columns.exe' -o 'overview-columns.txt,txt'
+            if (Test-Path 'overview-columns.txt') { Get-Content 'overview-columns.txt' }
+            exit 1
+          }
+          if (-not (Select-String -Path ctest.log -Pattern '100% tests passed, 0 tests failed out of 4')) {
+            throw 'SwapTab, OverviewColumns, MiningOutputZoom, and InfoRow did not each run once'
           }

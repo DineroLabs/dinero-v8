@@ -236,6 +236,27 @@ jobs:
           }.items():
               assert sorted(re.findall(r'\[       OK \] '+suite+r'\.(\w+)',log))==sorted(cases),suite
           PYSNAPSHOT
+      - name: Verify selected Orchard history survives a shallow reorganization
+        run: |
+          ctest --test-dir build-orchard-root -R '^OrchardPhoneHistory$' --verbose --no-tests=error --output-log orchard-phone-history-execution.log
+          python3 - <<'PYPHONE'
+          import re
+          log=open('orchard-phone-history-execution.log').read()
+          expected=['ReorgAboveVerifiedPrefixKeepsReplayAndReplacesRequest',
+                    'RestartWithEveryBodyCachedRequestsNothing',
+                    'RefusedCacheFromAnotherRootFetchesFromPeers',
+                    'ReplacedCacheRootFailsClosedWithoutPeerRefetch',
+                    'ExtensionSeenAtCreationRecheckPreservesInitialization',
+                    'ExtensionSeenMidIterationPreservesVerifiedPrefix',
+                    'SequentialBodiesExtendWithoutSkippingAndReadyDataIsNotState',
+                    'ABlockAfterVerificationKeepsTheCheckpointAndAReorganisationWithdrawsIt',
+                    'CorruptFirstBodyNeverPublishesAndStopDiscardsFlight',
+                    'PipelinedWindowAppendsInOrderAndFailsOverAsAWhole',
+                    'VerifierStartsForATargetTheTipHasAlreadyPassed']
+          ran=re.findall(r'\[ RUN\s+\] OrchardPhoneHistory\.(\w+)',log)
+          passed=re.findall(r'\[       OK \] OrchardPhoneHistory\.(\w+)',log)
+          assert sorted(ran)==sorted(expected) and sorted(passed)==sorted(expected)
+          PYPHONE
       - name: Preflight compiled workflow case inventories
         run: |
           cmake --build build-orchard-root --target test_rpc_request_framing --parallel 2

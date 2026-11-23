@@ -2,6 +2,7 @@
 #include <QGroupBox>
 #include <QTabWidget>
 #include <QImage>
+#include <QPixmap>
 #include <QPainter>
 #include <QSettings>
 #include <QTemporaryDir>
@@ -72,6 +73,9 @@ private Q_SLOTS:
             rpc->setDatadir(dir.path());
             rpc->setEndpoint(QUrl(QString("http://127.0.0.1:%1/").arg(endpoint.serverPort())));
         }
+        QVERIFY(!QPixmap(":/ui-icons/sync-ready.png").isNull());
+        window.onBlockchainSyncUpdate(100, 100);
+        QVERIFY(window.lblSyncProgress_->text().contains(":/ui-icons/sync-ready.png"));
 
         auto box = [&](const QString& title) -> QGroupBox* {
             for (auto* g : window.findChildren<QGroupBox*>())
@@ -79,7 +83,7 @@ private Q_SLOTS:
             return nullptr;
         };
         QGroupBox* consensus = box("v7 Consensus Health");
-        QGroupBox* mempool = box("📦 Mempool");
+        QGroupBox* mempool = window.findChild<QGroupBox*>("overviewMempoolCard");
         QGroupBox* resources = box("Resources & mining");
         QGroupBox* info = box("Network Info");
         QGroupBox* blocks = box("Latest Blocks");
@@ -421,6 +425,106 @@ private Q_SLOTS:
         QSKIP("built without the Swap tab");
 #endif
     }
+    // The other coins a wallet can hold live on the Wallet page, as a section:
+    // most users hold only DIN, and the main menu has no room to spare.
+    // A wallet whose recovery words were never confirmed says so on the
+    // Wallet page, with the way to see them; the node's answers switch it.
+    void unconfirmedRecoveryWordsAreSaidOnTheWalletPage() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QTcpServer endpoint;
+        QVERIFY(endpoint.listen(QHostAddress::LocalHost));
+        qputenv("DINERO_RPC_URL", QString("http://127.0.0.1:%1/").arg(endpoint.serverPort()).toUtf8());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        auto* rpc = window.findChild<RpcClient*>();
+        auto* reminder = window.findChild<QFrame*>("walletRecoveryReminder");
+        auto* show = window.findChild<QPushButton*>("walletShowRecoveryWords");
+        QVERIFY(rpc && reminder && show);
+        QCOMPARE(show->text(), QString("Show my recovery words"));
+        QVERIFY2(reminder->isHidden(), "nothing is said before the node has answered");
+
+        window.currentWalletName_ = "w";
+        const QJsonObject unconfirmed{{"hd_enabled", true}, {"wallet_name", "w"}, {"mnemonic_backup_available", true},
+                                      {"backup_required", true}, {"backup_acknowledged", false}};
+        Q_EMIT rpc->rpcResult("wallet.getinfo", unconfirmed);
+        QVERIFY2(!reminder->isHidden(), "an unconfirmed wallet is reminded");
+        // A refusal while the wallet catches up says nothing about the backup: the reminder stays.
+        Q_EMIT rpc->rpcResult("wallet.getinfo", QJsonObject{{"error", "wallet balance is not current"}});
+        QVERIFY(!reminder->isHidden());
+        QJsonObject confirmed = unconfirmed;
+        confirmed["backup_required"] = false;
+        confirmed["backup_acknowledged"] = true;
+        Q_EMIT rpc->rpcResult("wallet.getinfo", confirmed);
+        QVERIFY2(reminder->isHidden(), "confirmed: the reminder goes");
+
+        // A wallet switch hides the previous warning at once. Neither a
+        // late reply from the old wallet nor a result received during the
+        // switch may attach that warning to the new selection.
+        Q_EMIT rpc->rpcResult("wallet.getinfo", unconfirmed);
+        QVERIFY(!reminder->isHidden());
+        window.walletSwitchInFlight_ = true;
+        window.pendingWalletOpenName_ = "buyer";
+        window.clearWalletScopedUiState();
+        QVERIFY(reminder->isHidden());
+        Q_EMIT rpc->rpcResult("wallet.getinfo", unconfirmed);
+        QVERIFY(reminder->isHidden());
+
+        window.checkRescanStatus();
+        QJsonObject buyer = unconfirmed;
+        buyer["wallet_name"] = "buyer";
+        Q_EMIT rpc->rpcResult("wallet.getinfo", buyer);
+        QCOMPARE(window.currentWalletName_, QString("buyer"));
+        QVERIFY(!window.walletSwitchInFlight_);
+        QVERIFY(!reminder->isHidden());
+        Q_EMIT rpc->rpcResult("wallet.getinfo", confirmed);
+        QVERIFY2(!reminder->isHidden(), "a late old-wallet reply cannot hide the new wallet's reminder");
+        buyer["backup_required"] = false;
+        buyer["backup_acknowledged"] = true;
+        Q_EMIT rpc->rpcResult("wallet.getinfo", buyer);
+        QVERIFY(reminder->isHidden());
+    }
+
+    void otherCoinsAreASectionOfTheWalletPageNotAMenuEntry() {
+#if defined(DIN_ENABLE_SWAP_UI) && DIN_ENABLE_SWAP_UI
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        MainWindow window(dinero::qt::DaemonBootstrapOwner::ApplicationMain);
+        QTabWidget* tabs = nullptr;
+        int wallet = -1;
+        for (auto* t : window.findChildren<QTabWidget*>())
+            for (int i = 0; i < t->count(); ++i) {
+                const QString name = t->tabToolTip(i).isEmpty() ? t->tabText(i) : t->tabToolTip(i);
+                QVERIFY2(name != "Portfolio" && t->tabText(i) != "Portfolio", "no Portfolio entry in the main menu");
+                if (name == "Wallet" || t->tabText(i) == "Wallet") { tabs = t; wallet = i; }
+            }
+        QVERIFY(tabs && wallet >= 0);
+        auto* section = tabs->widget(wallet)->findChild<QGroupBox*>("portfolioCoins");
+        QVERIFY2(section, "the Wallet page has no section for other coins");
+        QCOMPARE(section->title(), QString("Other coins in this wallet"));
+        // Exactly one such section in the whole window.
+        QCOMPARE(window.findChildren<QGroupBox*>("portfolioCoins").size(), 1);
+        // It lists the other coins, not DIN again (the page shows that balance above).
+        auto* coins = section->findChild<QTableWidget*>("coinsTable");
+        QVERIFY(coins);
+        for (int row = 0; row < coins->rowCount(); ++row) {
+            QVERIFY2(!coins->item(row, 0)->text().contains("Dinero"), "DIN is listed twice on the Wallet page");
+        }
+        QCOMPARE(coins->item(0, 0)->text(), QString("Bitcoin (BTC)"));
+        const QString snapshotDir = qEnvironmentVariable("OVERVIEW_SNAPSHOT_DIR");
+        if (!snapshotDir.isEmpty()) {
+            window.resize(1440, 1500);
+            window.show();
+            tabs->setCurrentIndex(wallet);
+            QVERIFY(QTest::qWaitForWindowExposed(&window));
+            QTest::qWait(300);
+            window.grab().save(snapshotDir + "/wallet-other-coins.png");
+        }
+#else
+        QSKIP("built without the Swap tab");
+#endif
+    }
     void miningIconIsAPickaxe() {
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
@@ -505,7 +609,7 @@ private Q_SLOTS:
         QVERIFY2(rows.contains("Height"), "Height row");
         QCOMPARE(rows["Height"]->valueText(), QString("121,208"));
         QVERIFY2(rows.contains("Next halving"), "Next halving row");
-        QCOMPARE(rows["Next halving"]->valueText(), QString("block 1,314,001 · ~4.5 years"));
+        QCOMPARE(rows["Next halving"]->valueText(), QString("Block 1,314,001 · ~4.5 Years"));
         // The Mempool card already shows mempool size; no duplicate row here.
         for (auto* r : info->findChildren<InfoRow*>())
             QVERIFY2(r->nameText() != "Mempool" || r->isHidden(), "duplicate Mempool row is visible");
