@@ -11,6 +11,7 @@
 #include <memory>
 #include <optional>
 
+class QShowEvent;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -38,6 +39,9 @@ public:
 Q_SIGNALS:
     // Every request this screen sends (for diagnostics and tests).
     void requestSent(const QString& method, const QJsonObject& params, const QString& tag);
+
+protected:
+    void showEvent(QShowEvent* event) override;
 
 private Q_SLOTS:
     void onConnectionContextChanged();
@@ -125,5 +129,6 @@ private:
     QLabel* operationsEmpty_;
     QLabel* status_;
     bool operationsErrorVisible_ = false;
+    bool paymentNeedsFollowing() const;
     QTimer* poll_;
 };

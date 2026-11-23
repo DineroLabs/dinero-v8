@@ -185,6 +185,30 @@ private Q_SLOTS:
         QVERIFY(!Find<QPushButton>(tab_,"orchardReview")->isEnabled());
         const auto before=sent_.size();QMetaObject::invokeMethod(tab_,"onPoll");QCOMPARE(sent_.size(),before);
     }
+    // The page read the wallet every three seconds on whichever tab was
+    // showing. Hidden, it reads nothing; shown again, it catches up at once;
+    // a payment on its way is followed all the same.
+    void hiddenPageReadsNothingUnlessAPaymentIsOnItsWay() {
+        ready();
+        const auto orchardReads=[&](int from){
+            int n=0;for(int i=from;i<sent_.size();++i)if(sent_[i].method.startsWith("wallet.orchard."))++n;return n;};
+        tab_->hide();
+        int mark=sent_.size();QMetaObject::invokeMethod(tab_,"onPoll");QMetaObject::invokeMethod(tab_,"onPoll");
+        QCOMPARE(sent_.size(),mark);
+
+        mark=sent_.size();tab_->show();
+        QVERIFY2(orchardReads(mark)>0,"shown again: one refresh without waiting for the tick");
+
+        // A queued payment: its proof is collected by the page's own "finish" call.
+        fillSend();confirmNextDialog();Find<QPushButton>(tab_,"orchardReview")->click();
+        reply(last("wallet.orchard.queuespend"),R"({"durable_state":"reserved","proof_queued":true})");
+        tab_->hide();
+        mark=sent_.size();QMetaObject::invokeMethod(tab_,"onPoll");
+        bool finishing=false;
+        for(int i=mark;i<sent_.size();++i)finishing=finishing||sent_[i].method=="wallet.orchard.finishspend";
+        QVERIFY2(finishing,"a hidden page still finishes a payment that is on its way");
+    }
+
     void structuredEnvelopeHistoryAndPreviousWalletRemainScoped() {
         ready();const auto old=last("wallet.orchard.listreceived");
         envelopeError(old,{{"error_code","history_incomplete"}});

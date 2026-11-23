@@ -4,6 +4,7 @@
 #include "paycollectpolicy.h"
 #include "rpcclient.h"
 
+#include <QShowEvent>
 #include <QApplication>
 #include <QClipboard>
 #include <QComboBox>
@@ -648,8 +649,30 @@ void OrchardWidget::advance() {
     }
 }
 
+// A payment between "queued" and "confirmed" is driven from here (the proof
+// is collected and the payment sent by the "finish" call), so it is followed
+// whether or not anyone is looking at the page.
+bool OrchardWidget::paymentNeedsFollowing() const {
+    if(!payment_)return false;
+    const auto s=payment_->state();
+    return s==OF::State::Queued||s==OF::State::Proving||s==OF::State::Submitted||s==OF::State::Signed;
+}
+
+// The page is shown again: bring it up to date at once instead of waiting
+// for the next tick.
+void OrchardWidget::showEvent(QShowEvent* event) {
+    QWidget::showEvent(event);
+    if(poll_&&poll_->isActive())onPoll();
+}
+
 void OrchardWidget::onPoll() {
     if(wallet_.isEmpty() || !OC::ValidBinding(walletBinding_))return;
+    // Nothing is read for a page nobody is looking at. Every tick sends three
+    // or four wallet.orchard.* reads, each of which holds the node's account
+    // replay while it works; every three seconds, on whichever tab, that was
+    // enough to collide with block delivery on a node that is mining
+    // (ChainstateService::getRuntimeAccountReplay).
+    if(!isVisible() && !paymentNeedsFollowing())return;
     const int catalogInterval=accountsSnapshot_?kAccountDiscoveryReadyMs:kAccountDiscoveryRetryMs;
     if(!accountDiscoveryElapsed_.isValid() || accountDiscoveryElapsed_.elapsed()>=catalogInterval)
         refreshAccounts();
