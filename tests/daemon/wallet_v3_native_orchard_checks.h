@@ -53,6 +53,22 @@ TEST(WalletV3NativeOrchard, FullAccountReplayReusesPrefixAndExtendsTail) {
     EXPECT_EQ(f.f.service->FullReplayCaptureCounts().second,cached.second+2);
 }
 
+namespace {
+// Runs delivery passes on the calling thread until Orchard account 0 is at the head.
+bool DeliverAllOrchardForReplayTest(OrchardCreationFixture& f,int max_passes) {
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+    const auto session=use->Wallet().AcquireDatabaseLease()->Session();
+    for(int i=0;i<max_passes;++i) {
+        const auto next=f.f.service->resumeRuntimeWalletRecoveryV3IfNeeded(
+            use->Wallet(),index->Index(),session,128*1024*1024,1);
+        if(!next.ok())return false;
+        if(*next)return true;
+    }
+    return false;
+}
+} // namespace
+
 // The retained full view is not rebuilt from the origin because another
 // reader happened to hold it when a block arrived. A rebuild takes minutes on
 // a long chain, and until it ends nothing is delivered and every balance read
@@ -81,6 +97,29 @@ TEST(WalletV3NativeOrchard, FullAccountReplayWaitsForAReaderInsteadOfRebuilding)
     }
     EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,built.first) << "no full capture for a reader that lets go";
     EXPECT_EQ(f.f.service->FullReplayCaptureCounts().second,built.second+1);
+
+    // The same for a reader that holds only the view's DATA (the hash lookup
+    // a restore keeps after it has dropped the view): ExtendTail refuses for
+    // it too, so it is waited for too.
+    {
+        const auto extensions=f.f.service->FullReplayCaptureCounts().second;
+        std::function<StatusOr<uint256>(uint32_t)> lookup;
+        {
+            const auto view=f.f.service->getRuntimeAccountReplay();
+            ASSERT_TRUE(view.ok());
+            lookup=(*view)->SelectedHashes((*view)->Head());
+        }
+        f.MineEmpty();
+        std::thread reader([held=std::move(lookup)]() mutable {
+            std::this_thread::sleep_for(std::chrono::milliseconds(60));
+            held=nullptr;
+        });
+        const auto extended=f.f.service->getRuntimeAccountReplay();
+        reader.join();
+        ASSERT_TRUE(extended.ok());
+        EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,built.first) << "no full capture for a holder of the data alone";
+        EXPECT_EQ(f.f.service->FullReplayCaptureCounts().second,extensions+1);
+    }
 
     // A holder that does not let go (here, the caller itself) is answered
     // all the same, by a full capture, after the bounded wait.
@@ -287,6 +326,79 @@ TEST(WalletV3NativeOrchard, WorkerRevisitsPartialReplayBeforeNormalRetry) {
     worker.Stop();
     EXPECT_EQ(report.wallet,RuntimeDeliveryWorker::WalletOutcome::AppliedPrefix);
     EXPECT_GT(report.wallet_recovery_attempts,1u);
+}
+
+// First enrolment (and every address-pool extension) took the coverage
+// projection, which holds the account replay, and kept it while the Orchard
+// delivery read the replay again. A block arriving between the two made that
+// second read rebuild the replay from the origin, because this thread itself
+// still held the view.
+TEST(WalletV3NativeOrchard, PendingPassReleasesTheReplayBeforeItsOrchardRead) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-orchard-pending-release-index");
+    std::string enrol_error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&enrol_error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << enrol_error;
+    ASSERT_FALSE(f.Call(0).isMember("error"));  // an Orchard account, so the pass has an Orchard read to make
+    ASSERT_TRUE(DeliverAllOrchardForReplayTest(f,32));
+    // Use receive addresses until the pool must be extended, and begin the
+    // extension: the wallet is durably Pending again, as on a node in use.
+    const auto request=f.RequestContext();
+    bool low=false;
+    for(int i=0;i<4*int(WalletManager::kNativeV3ReceivePool)&&!low;++i) {
+        ASSERT_FALSE(NativeIssue(request).isMember("error"));
+        low=WalletService::AcquireWalletUse(f.wallet)->Wallet().AcquireDatabaseLease()->NativeV3PoolNeedsExtension();
+    }
+    ASSERT_TRUE(low);
+    ASSERT_TRUE(NativeBeginExtension(f));
+    {const auto prime=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(prime.ok());}
+    const auto before=f.f.service->FullReplayCaptureCounts();
+    bool landed=false;
+    f.f.service->SetV3PendingReconcileHookForTest([&]{if(!landed){landed=true;(void)f.MineEmpty();}});
+    std::string error;
+    (void)f.wallet->RecoverActiveWalletFromCanonicalSource(&error);
+    f.f.service->SetV3PendingReconcileHookForTest({});
+    ASSERT_TRUE(landed) << "the pass did not go through the pending branch: " << error;
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,before.first)
+        << "the replay was rebuilt from the origin inside one delivery pass";
+}
+
+// The delivery worker comes back every retry interval. When another reader
+// (a wallet request) holds the replay while a block has arrived, the worker
+// waits for its next pass instead of rebuilding the replay from the origin:
+// on a mainnet wallet that rebuild was ten minutes without a balance.
+TEST(WalletV3NativeOrchard, WorkerWaitsForItsNextPassWhileAReaderHoldsTheReplay) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-orchard-worker-retry-index");
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ASSERT_FALSE(f.Call(0).isMember("error"));
+    ASSERT_TRUE(DeliverAllOrchardForReplayTest(f,32));
+    auto held=f.f.service->getRuntimeAccountReplay();
+    ASSERT_TRUE(held.ok());
+    const auto delivered_before=f.Account(0).account.Delivery().sequence;
+    const auto before=f.f.service->FullReplayCaptureCounts();
+    (void)f.MineEmpty();
+    RuntimeDeliveryWorker worker(f.f.service,f.wallet,
+        RuntimeDeliveryWorker::Limits{1,std::chrono::milliseconds(100)});
+    worker.Start();
+    // Several passes go by while the reader still holds the view.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,before.first)
+        << "the worker rebuilt the replay instead of waiting for its next pass";
+    // (This thread does not read the account meanwhile: that read takes the
+    // replay too, and with the view held it would be the one to rebuild it.)
+    EXPECT_GT(worker.Snapshot().wallet_recovery_attempts,3u) << "the worker kept coming back";
+    held=Status::Invalid;  // the reader lets go
+    const auto passes_at_release=worker.Snapshot().wallet_recovery_attempts;
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(15);
+    while(worker.Snapshot().wallet_recovery_attempts<passes_at_release+6&&std::chrono::steady_clock::now()<deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    worker.Stop();
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,before.first);
+    EXPECT_GT(f.f.service->FullReplayCaptureCounts().second,before.second) << "the tail was extended once the reader let go";
+    EXPECT_GT(f.Account(0).account.Delivery().sequence,delivered_before) << "delivered on a later pass";
 }
 
 TEST(WalletV3NativeOrchard, OrdinaryBacklogPreemptsOrchardReplay) {

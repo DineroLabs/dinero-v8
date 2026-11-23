@@ -1131,6 +1131,17 @@ public:
     uint64_t PhoneReplaySourceReads() const{return phone_replay_source_reads_.load();}
     // Full-archive replay uses the same immutable prefix/tail contract as the
     // phone reader. These counters expose full rebuilds versus tail extension.
+    // While one of these is alive on a thread, a read of the full account
+    // replay that finds the retained view held by another reader answers the
+    // retryable Status::Invalid instead of rebuilding the replay (bounded by
+    // kFullReplayWorkerRefusals). For callers that come back by themselves:
+    // the runtime delivery worker.
+    struct PreferReplayRetryScope {
+        PreferReplayRetryScope();~PreferReplayRetryScope();
+        PreferReplayRetryScope(const PreferReplayRetryScope&)=delete;
+        PreferReplayRetryScope& operator=(const PreferReplayRetryScope&)=delete;
+    };
+    void SetV3PendingReconcileHookForTest(std::function<void()> hook){test_after_v3_pending_reconcile_=std::move(hook);}
     std::pair<uint64_t,uint64_t> FullReplayCaptureCounts() const{
         return {full_replay_full_builds_.load(),full_replay_extensions_.load()};
     }
@@ -2240,6 +2251,14 @@ private:
     // How long a caller waits for another reader to let go of the retained
     // full view before a full capture is paid for.
     static constexpr std::chrono::milliseconds kFullReplayHeldWait{250};
+    // Delivery passes that may answer "not this pass" in a row while the
+    // retained view stays held, before one of them pays for a full capture.
+    static constexpr uint32_t kFullReplayWorkerRefusals=30;
+    mutable std::atomic<uint32_t> full_replay_worker_refusals_{0};
+    // Test only, empty in the daemon: runs in the v3 Pending branch between
+    // the transparent reconcile and the Orchard delivery read, so a test can
+    // land a block there.
+    std::function<void()> test_after_v3_pending_reconcile_;
     mutable std::atomic<uint64_t> full_replay_full_builds_{0},full_replay_extensions_{0};
     // Outbox head whose material needs the phone activation prefix while no
     // verified history is available. Until the head changes or history is

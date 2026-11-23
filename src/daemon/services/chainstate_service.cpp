@@ -7684,6 +7684,15 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 auto lease=wallet.AcquireDatabaseLease();
                 if(!lease->NativeP2MRTargetMissing().empty())return Status::Invalid;
             }
+            // The coverage projection holds the retained account replay. It
+            // is released at the end of this block, BEFORE the Orchard
+            // delivery below reads the replay again: held across that read, a
+            // block arriving in between made the read rebuild the whole
+            // replay from the origin (the view cannot be extended while this
+            // thread itself still holds it).
+            std::optional<RuntimeIndexProgress> applied_at;
+            std::optional<RuntimeOutboxCursor> observed_head;
+            {
             const auto coverage=getRuntimeWalletCoverageV3(wallet,session,metadata_index,material_limit_bytes);
             if(!coverage.ok())return coverage.status();
             const auto& source=**coverage;
@@ -7713,8 +7722,14 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 else RuntimeOrdinaryDelivery::ReconcileLegacyTransparentCoverageV3(
                     wallet,metadata_index,source,fenced);
             }
-            const RuntimeIndexProgress applied{source.Head(),source.Origin().OriginHash(),
-                source.TipHash(),source.Origin().OriginHeight(),source.TipHeight()};
+            applied_at.emplace(RuntimeIndexProgress{source.Head(),source.Origin().OriginHash(),
+                source.TipHash(),source.Origin().OriginHeight(),source.TipHeight()});
+            observed_head=source.Head();
+            }
+            const RuntimeIndexProgress& applied=*applied_at;
+            // Test seam, never set in the daemon. No selected or wallet lock
+            // is held here, and the projection above has been released.
+            if(test_after_v3_pending_reconcile_)test_after_v3_pending_reconcile_();
             wallet.PublishRecoveredBlockchainHeight(wallet.getBlockchainHeight(),applied.tip_height,session);
             if(native) {
                 const auto orchard=resumeRuntimeOrchardDeliveryV3(
@@ -7727,7 +7742,7 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 continue_restored_account0();
             }
             return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
-                RuntimeEnrolledWalletRecoveryResult{applied,{},source.Head(),std::nullopt});
+                RuntimeEnrolledWalletRecoveryResult{applied,{},*observed_head,std::nullopt});
         }
         if(state!=WalletManager::LegacyTransparentState::Complete)return Status::Invalid;
         const auto index_before=RuntimeIndexDelivery::ReadForWalletV3(wallet,metadata_index,session);
@@ -8244,6 +8259,10 @@ SignResult ChainstateService::signAndStageRuntimeWalletPayment(WalletManager& wa
     return refused;
 }
 
+namespace { thread_local uint32_t t_prefer_replay_retry=0; }
+ChainstateService::PreferReplayRetryScope::PreferReplayRetryScope(){++t_prefer_replay_retry;}
+ChainstateService::PreferReplayRetryScope::~PreferReplayRetryScope(){--t_prefer_replay_retry;}
+
 StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRuntimeAccountReplay() const {
     if(activation_mutex_.HeldByCurrentThread())return Status::Invalid;
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
@@ -8314,18 +8333,28 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             // does not let go in that time, including this thread's own
             // caller, gets today's behaviour: a new full capture.
             const auto held_since=std::chrono::steady_clock::now();
-            while(full_replay_.use_count()!=1&&
+            while(!RuntimeAccountReplay::SoleOwner(full_replay_)&&
                   std::chrono::steady_clock::now()-held_since<kFullReplayHeldWait)
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            // The delivery worker comes back every second anyway: for it a
+            // view that is still held means "not this pass", not a capture.
+            // After a bounded number of passes a holder that never lets go
+            // still ends in a capture, which the log line below names.
+            if(!RuntimeAccountReplay::SoleOwner(full_replay_)&&t_prefer_replay_retry>0&&
+               full_replay_worker_refusals_.fetch_add(1)<kFullReplayWorkerRefusals)
+                return Status::Invalid;
             std::shared_ptr<const RuntimeAccountReplay> extended;
             try{extended=RuntimeAccountReplay::ExtendTail(std::move(full_replay_),read);}
             catch(const consensus::OrchardStateLookupError&){if(full_replay_)throw;captured_head.reset();}
             catch(...){full_replay_.reset();captured_head.reset();
                 full_capture_reason="extending the retained view failed";}
-            if(extended){full_replay_=extended;++full_replay_extensions_;return extended;}
+            if(extended){full_replay_=extended;++full_replay_extensions_;full_replay_worker_refusals_.store(0);return extended;}
             // A concurrent reader still owns the old immutable view. A new
             // full capture keeps this call's semantics and becomes the cache.
-            if(full_replay_)full_capture_reason="the retained view stayed held by another reader";
+            if(full_replay_)full_capture_reason=t_prefer_replay_retry>0?
+                "the retained view stayed held by another reader for every delivery pass allowed":
+                "the retained view stayed held by another reader";
+            full_replay_worker_refusals_.store(0);
             captured_head.reset();
         }
         // Phone activation-prefix material has its own retained view and
