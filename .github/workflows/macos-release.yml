@@ -219,7 +219,9 @@ jobs:
           mkdir -p "$ROOT/bin"
           cp "$(find build -maxdepth 3 -type f -name dinerod -perm +111 | head -1)"    "$ROOT/bin/dinerod"
           cp "$(find build -maxdepth 3 -type f -name dinero-cli -perm +111 | head -1)" "$ROOT/bin/dinero-cli"
-          cmake --install build --component swap-tower --prefix "$PWD/$ROOT"
+          # Copy only the tower: the swap-tower install component also lists
+          # dinero-swap-tower-intake, which this job does not build (v8.2.5 tag run 45132255664).
+          cp "$(find build -maxdepth 3 -type f -name dinero-swap-tower -perm +111 | head -1)" "$ROOT/bin/dinero-swap-tower"
           python3 scripts/verify-swap-tower-binary.py "$ROOT/bin/dinero-swap-tower"
           python3 scripts/verify-orchard-package.py --daemon "$ROOT/bin/dinerod"
           TOWER_ARCH=$(lipo -archs "$ROOT/bin/dinero-swap-tower")
