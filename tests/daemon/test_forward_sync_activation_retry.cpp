@@ -2,6 +2,7 @@
 // A header-only gap shortens the activation target, but operational retry
 // bookkeeping must still refer to the original queued candidate.
 #include "daemon/services/chainstate_service.h"
+#include "daemon/services/logger_service.h"
 #include "daemon/config.h"
 #include "consensus/block_lifecycle.h"
 #include "consensus/candidate_ancestry.h"
@@ -106,6 +107,17 @@ struct ActivationRetryTestAccess {
     }
     static consensus::ConsensusUTXOSet& CsnSet(ChainstateService& svc) {
         return *svc.consensus_utxo_set_;
+    }
+    static void AttachLogger(ChainstateService& svc) {
+        svc.logger_ = std::make_shared<LoggerService>("");
+    }
+    static size_t TrackedMissing(ChainstateService& svc) {
+        std::lock_guard<std::mutex> lock(svc.header_announcement_mutex_);
+        return svc.stalled_missing_block_hashes_.size();
+    }
+    static bool TracksMissing(ChainstateService& svc, const uint256& hash) {
+        std::lock_guard<std::mutex> lock(svc.header_announcement_mutex_);
+        return svc.stalled_missing_block_hashes_.count(hash.GetHex()) != 0;
     }
     static bool Connect(ChainstateService& svc, CBlockIndex* candidate,
                         std::string& error, bool* consensus_invalid = nullptr) {
@@ -238,6 +250,78 @@ void RunCsnMarkerlessDispatchLiveness(const std::filesystem::path& root) {
         throw;
     }
     DaemonContext::setInstance(nullptr);
+    db.close();
+    g_candidates.clear();
+    g_orphan_pool.clear();
+    g_block_index.clear();
+    InvalidateAncestryCache();
+}
+
+// Android 2026-11-23: after a fast sync the header chain ran ~14,600 blocks
+// ahead of the active tip, and every activation pass walked that whole gap
+// (a body lookup per header) for each applied block, so sync crawled. A
+// forward continuation connects contiguously from the tip, so the import
+// must stop at the first unavailable body and track only that next block.
+// A competing branch keeps the full walk.
+void RunHeaderGapBound(const std::filesystem::path& root, bool competing) {
+    using namespace dinero;
+    using namespace dinero::consensus;
+    constexpr uint32_t kGap = 60;
+    ChainDB db;
+    Require(db.init(root / "chaindb") == Status::Ok, "gap-bound ChainDB opens");
+    auto files = std::make_shared<BlockStorage>();
+    Require(files->init(root) == Status::Ok, "gap-bound flatfiles open");
+    auto selector = std::make_shared<HeaderChainSelector>();
+    auto make_header = [](const uint256& parent, uint32_t height, uint32_t salt) {
+        BlockHeader header;
+        header.version = 1;
+        header.timestamp = 1000000 + height;
+        header.difficulty = 0x207fffff;
+        header.nonce = height + 1 + salt;
+        header.prev_block_hash = parent;
+        return header;
+    };
+    const BlockHeader genesis = make_header(uint256(), 0, 0);
+    const BlockHeader tip = make_header(genesis.GetHash(), 1, 0);
+    Require(selector->AddHeader(genesis) && selector->AddHeader(tip),
+            "gap-bound active headers admitted");
+    auto* genesis_index = AddBlockIndex(genesis, 0);
+    auto* tip_index = AddBlockIndex(tip, 1);
+    Require(genesis_index && tip_index, "gap-bound active index created");
+    genesis_index->status |= BLOCK_HAVE_DATA;
+    tip_index->status |= BLOCK_HAVE_DATA;
+    // Header-only continuation (or a competing branch from genesis) that the
+    // node knows but has no bodies for yet.
+    std::vector<uint256> branch;
+    uint256 parent = competing ? genesis.GetHash() : tip.GetHash();
+    const uint32_t first = competing ? 1 : 2;
+    for (uint32_t height = first; height < first + kGap; ++height) {
+        const BlockHeader header = make_header(parent, height, competing ? 7777 : 0);
+        Require(selector->AddHeader(header), "gap-bound branch header admitted");
+        parent = header.GetHash();
+        branch.push_back(parent);
+    }
+    const auto token = ChainWriteToken::CreateForTesting();
+    Require(db.setTip(token, tip_index->hash, 1, arith_uint256()) == Status::Ok,
+            "gap-bound database tip staged");
+    {
+        ChainstateService svc;
+        svc.setChainDB(&db);
+        svc.setBlockStorage(files);
+        svc.setHeaderChainSelector(selector);
+        ActivationRetryTestAccess::AttachLogger(svc);
+        ActivationRetryTestAccess::Prepare(svc, tip_index, db);
+        svc.ActivateBestChain();
+        Require(svc.GetActiveTip() == tip_index, "gap-bound pass keeps the active tip");
+        if (competing) {
+            Require(ActivationRetryTestAccess::TrackedMissing(svc) == branch.size(),
+                    "competing branch still tracks every missing body");
+        } else {
+            Require(ActivationRetryTestAccess::TrackedMissing(svc) == 1 &&
+                        ActivationRetryTestAccess::TracksMissing(svc, branch.front()),
+                    "forward continuation tracks only the next needed body");
+        }
+    }
     db.close();
     g_candidates.clear();
     g_orphan_pool.clear();
@@ -1498,6 +1582,13 @@ int main(int argc, char** argv) {
             std::cout << "ALL PASSED\n";
             return 0;
         }
+        if (argc == 2 && std::string(argv[1]) == "--header-gap-bound") {
+            RunHeaderGapBound(root / "header-gap-forward", false);
+            RunHeaderGapBound(root / "header-gap-competing", true);
+            std::filesystem::remove_all(root);
+            std::cout << "ALL PASSED\n";
+            return 0;
+        }
         if (argc == 2 && std::string(argv[1]) == "--markerless-dispatch") {
             RunCsnMarkerlessDispatchLiveness(root / "markerless-dispatch");
             std::filesystem::remove_all(root);
@@ -1505,6 +1596,8 @@ int main(int argc, char** argv) {
             return 0;
         }
 
+        RunHeaderGapBound(root / "header-gap-forward", false);
+        RunHeaderGapBound(root / "header-gap-competing", true);
         RunCase(root / "prefix-failure", true, true);
         RunCase(root / "first-body-gap", false, true);
         RunCase(root / "whole-path-failure", true, false);

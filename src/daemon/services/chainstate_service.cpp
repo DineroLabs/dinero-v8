@@ -13082,11 +13082,21 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                 std::vector<std::string> missing_block_bodies;
                 missing_block_bodies.reserve(branch_path.size());
 
+                // A forward continuation connects contiguously from the active
+                // tip (branch_path ascends from the fork), so nothing above the
+                // first unavailable body can become a candidate this pass. Stop
+                // there and track only that next body: scanning the rest costs a
+                // body lookup per header on every applied block, which stalled a
+                // fast-synced phone ~14,600 headers behind. The scheduler owns
+                // fetching in both modes. A competing branch keeps the full walk.
+                const bool stop_at_first_gap = !importing_competing_branch;
+
                 for (const auto& entry : branch_path) {
                     CBlockIndex* idx = FindBlockIndex(entry.hash);
                     if (!idx) {
                         idx = AddBlockIndex(entry.header, entry.height);
                         if (!idx) {
+                            if (stop_at_first_gap) break;
                             continue;
                         }
                     }
@@ -13096,6 +13106,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                     // If body isn't stored yet, request it and continue.
                     if (!HasStoredBlockBody(entry.hash)) {
                         missing_block_bodies.push_back(entry.hash.GetHex());
+                        if (stop_at_first_gap) break;
                         continue;
                     }
 
@@ -13104,6 +13115,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                     // read — the scheduler-drain thread clears concurrently.
                     if (unreadable_blocks_.contains(entry.hash)) {
                         missing_block_bodies.push_back(entry.hash.GetHex());
+                        if (stop_at_first_gap) break;
                         continue;
                     }
 
@@ -13167,6 +13179,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                                                std::to_string(entry.height) +
                                                " awaits ordered proof validation");
                             }
+                            if (stop_at_first_gap) break;
                             continue;
                         }
                     }
