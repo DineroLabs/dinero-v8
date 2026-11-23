@@ -17,9 +17,26 @@ PUBLISHER=${PHONE_V6_PUBLISHER:-$SCRIPT_DIR/dinero-snapshot-publish.sh}
 # A public root must never be supplied accidentally. Production promotion is
 # a separate operation after native iOS/Android receipts exist.
 case "$PUBROOT" in /var/www|/var/www/*) echo 'refusing public web root for phone qualification' >&2; exit 2;; esac
-if [ -f "$PUBROOT/phone-qualification-required.json" ]; then
-    echo 'Candidate prepared; native iOS and Android qualification still required.'
-    exit 0
+PUBLIC_ROOT=${PHONE_V6_PUBLIC_ROOT:-/var/www/dinero-snapshots/compact-v6}
+RECEIPT=$PUBROOT/phone-qualification-required.json
+if [ -f "$RECEIPT" ]; then
+    # A receipt whose exact manifest the public phone root already serves was
+    # promoted: archive it and prepare the next candidate. Any other receipt
+    # still waits for native iOS and Android qualification.
+    PROMOTED=$(python3 - "$RECEIPT" "$PUBLIC_ROOT/latest/manifest.json" <<'PYPROMOTED'
+import hashlib,json,pathlib,sys
+receipt=json.loads(pathlib.Path(sys.argv[1]).read_text())
+served=pathlib.Path(sys.argv[2])
+if served.is_file() and hashlib.sha256(served.read_bytes()).hexdigest()==receipt.get('manifest_sha256'):
+    print(receipt['snapshot']['height'])
+PYPROMOTED
+    ) || { echo 'unreadable phone qualification receipt' >&2; exit 1; }
+    if [ -z "$PROMOTED" ]; then
+        echo 'Candidate prepared; native iOS and Android qualification still required.'
+        exit 0
+    fi
+    mv -n "$RECEIPT" "$PUBROOT/phone-qualification-required.h$PROMOTED-promoted-$(date -u +%Y%m%dT%H%M%SZ).json"
+    echo "Archived promoted H$PROMOTED qualification receipt; preparing the next candidate."
 fi
 TIP=$("$CLI" "-datadir=$DATADIR" getblockcount)
 [[ "$TIP" =~ ^[0-9]+$ ]] || { echo 'invalid selected tip' >&2; exit 1; }
@@ -27,8 +44,12 @@ if [ "$TIP" -lt 150000 ]; then
     echo "WAIT_ACTIVATION: selected tip $TIP; compact v6 needs a base at or above 150000"
     exit 0
 fi
+# Receipt only a generation this run installed. A run that exports or waits
+# for burial leaves an earlier latest in place, which must not be re-offered.
+BEFORE=$(readlink "$PUBROOT/latest" 2>/dev/null || true)
 bash "$PUBLISHER"
-if [ ! -f "$PUBROOT/latest/manifest.json" ]; then
+AFTER=$(readlink "$PUBROOT/latest" 2>/dev/null || true)
+if [ ! -f "$PUBROOT/latest/manifest.json" ] || [ "$AFTER" = "$BEFORE" ]; then
     echo 'WAIT_BURIAL_OR_PUBLISHER_LOCK: private candidate not ready'
     exit 0
 fi
