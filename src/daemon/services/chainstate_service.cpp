@@ -7605,13 +7605,13 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
     if(advanced_partial)*advanced_partial=false;
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     if(activation_mutex_.HeldByCurrentThread() || !material_limit_bytes ||
-       material_limit_bytes>128*1024*1024)return Status::Invalid;
+       material_limit_bytes>128*1024*1024)return (V3RecoveryDiagnostic("recovery","Invalid at chainstate_service.cpp:7608"),Status::Invalid);
     try {
         {
             std::lock_guard<std::mutex> lock(wallet_index_use_mutex_);
             if(!wallet_index_uses_by_thread_.count(std::this_thread::get_id()) ||
                utxo_index_.get()!=&metadata_index || !metadata_index.IsFullArchiveV3MetadataOnly())
-                return Status::Invalid;
+                return (V3RecoveryDiagnostic("recovery","Invalid at chainstate_service.cpp:7614"),Status::Invalid);
         }
         uint64_t session=0;
         // `state` is the enrollment state of whichever typed class owns this
@@ -7622,9 +7622,9 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
             auto lease=wallet.AcquireDatabaseLease();
             if(!wallet.SoleDatabaseLeaseHeld() || !wallet.hasActiveWallet() || !lease->Database() ||
                wallet.getUTXOIndex()!=nullptr || !sqlite3_get_autocommit(lease->Database()))
-                return Status::Invalid;
+                return (V3RecoveryDiagnostic("recovery","Invalid at chainstate_service.cpp:7625"),Status::Invalid);
             session=lease->Session();
-            if(expected_session && session!=expected_session)return Status::Invalid;
+            if(expected_session && session!=expected_session)return (V3RecoveryDiagnostic("recovery","Invalid at chainstate_service.cpp:7627"),Status::Invalid);
             state=lease->TypedTransparentState();
             native=lease->NativeV3TransparentState()!=WalletManager::NativeV3State::Absent ||
                 (state==WalletManager::LegacyTransparentState::Absent && lease->HasOrchardOwnerState());
@@ -7639,7 +7639,7 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
         // preflight. An absent/pending v3 wallet cannot reconcile coverage
         // without its encrypted seed, so refuse before any origin replay.
         if(state!=WalletManager::LegacyTransparentState::Complete &&
-           wallet.isWalletLocked())return Status::Invalid;
+           wallet.isWalletLocked())return (V3RecoveryDiagnostic("recovery","Invalid at chainstate_service.cpp:7642"),Status::Invalid);
         // A v3 record can only be enrolled against a full archival selected
         // source. A compact or imported source must keep its existing refusal.
         {
@@ -7650,7 +7650,7 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                metadata_index.GetMetadata("wallet_snapshot_recovery_base_height") ||
                !chain_db_ || chain_db_->getPreBaseCoinSetBase().status()!=Status::NotFound ||
                !active_tip_ || active_tip_->height<Params().orchard_activation_height ||
-               !UtreexoRpcSnapshotUnderLock().ok())return Status::Invalid;
+               !UtreexoRpcSnapshotUnderLock().ok())return (V3RecoveryDiagnostic("recovery","Invalid at chainstate_service.cpp:7653"),Status::Invalid);
             storage::RequireFullOrchardStorage(*chain_db_);
         }
         // #939 phase 2: a native-complete wallet whose receive (or change)
@@ -7661,7 +7661,7 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
         if(state==WalletManager::LegacyTransparentState::Complete && native && !wallet.isWalletLocked()) {
             auto lease=wallet.AcquireDatabaseLease();
             if(!wallet.SoleDatabaseLeaseHeld() || lease->Session()!=session ||
-               wallet.getUTXOIndex()!=nullptr)return Status::Invalid;
+               wallet.getUTXOIndex()!=nullptr)return (V3RecoveryDiagnostic("recovery","Invalid at chainstate_service.cpp:7664"),Status::Invalid);
             // A refused extension rolled back whole: the wallet is still
             // Complete over its sealed domain, so keep delivering to it and
             // retry on a later pass.
@@ -7676,7 +7676,7 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
         if(state==WalletManager::LegacyTransparentState::Absent) {
             auto lease=wallet.AcquireDatabaseLease();
             if(!wallet.SoleDatabaseLeaseHeld() || lease->Session()!=session ||
-               wallet.getUTXOIndex()!=nullptr)return Status::Invalid;
+               wallet.getUTXOIndex()!=nullptr)return (V3RecoveryDiagnostic("recovery","Invalid at chainstate_service.cpp:7679"),Status::Invalid);
             // An Orchard-owner wallet takes its own class (#939); writing the
             // legacy marker would lock its Orchard side out permanently.
             if(native)(void)lease->BeginNativeTransparentMigrationV3(metadata_index,session);
@@ -7691,13 +7691,13 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 try { FillNativeP2MRTargetsV3(wallet,session); }
                 catch(const std::exception& e) {
                     std::cerr << "[ChainstateService] Native v3 P2MR pool fill deferred: " << e.what() << "\n";
-                    return Status::Invalid;
+                    return (V3RecoveryDiagnostic("recovery","Invalid at chainstate_service.cpp:7694"),Status::Invalid);
                 }
                 auto lease=wallet.AcquireDatabaseLease();
-                if(!lease->NativeP2MRTargetMissing().empty())return Status::Invalid;
+                if(!lease->NativeP2MRTargetMissing().empty())return (V3RecoveryDiagnostic("recovery","Invalid at chainstate_service.cpp:7697"),Status::Invalid);
             }
             const auto coverage=getRuntimeWalletCoverageV3(wallet,session,metadata_index,material_limit_bytes);
-            if(!coverage.ok())return coverage.status();
+            if(!coverage.ok())return (V3RecoveryDiagnostic("recovery",std::string("coverage refused with status ")+StatusToString(coverage.status())+" at chainstate_service.cpp:7700"),coverage.status());
             const auto& source=**coverage;
             // The expensive source replay above owns no selected or wallet
             // lock. Each durable wallet/index commit below holds selected
@@ -7731,7 +7731,7 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
             if(native) {
                 const auto orchard=resumeRuntimeOrchardDeliveryV3(
                     wallet,metadata_index,session,orchard_events_per_pass);
-                if(!orchard.ok())return orchard.status();
+                if(!orchard.ok())return (V3RecoveryDiagnostic("recovery",std::string("orchard refused with status ")+StatusToString(orchard.status())+" at chainstate_service.cpp:7734"),orchard.status());
                 if(!*orchard){
                     if(advanced_partial)*advanced_partial=true;
                     return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
@@ -7741,7 +7741,7 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
             return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
                 RuntimeEnrolledWalletRecoveryResult{applied,{},source.Head(),std::nullopt});
         }
-        if(state!=WalletManager::LegacyTransparentState::Complete)return Status::Invalid;
+        if(state!=WalletManager::LegacyTransparentState::Complete)return (V3RecoveryDiagnostic("recovery","Invalid at chainstate_service.cpp:7744"),Status::Invalid);
         const auto index_before=RuntimeIndexDelivery::ReadForWalletV3(wallet,metadata_index,session);
         const auto ordinary_before=RuntimeOrdinaryDelivery::ReadForWallet(wallet,session);
         if(!index_before || !ordinary_before ||
@@ -7754,15 +7754,15 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                (index_before->cursor!=ordinary_before->cursor ||
                 index_before->tip_hash!=ordinary_before->tip_hash ||
                 index_before->tip_height!=ordinary_before->tip_height)))
-            return Status::Invalid;
+            return (V3RecoveryDiagnostic("recovery","Invalid at chainstate_service.cpp:7757"),Status::Invalid);
         // The two stores can differ by one event after an interrupted
         // index-first commit. Replaying that event is idempotent for the
         // index; the ordinary store then catches up under selected ownership.
         const auto page=getRuntimeDeliveryPage(ordinary_before->cursor,32,16*1024*1024);
-        if(!page.ok())return page.status();
+        if(!page.ok())return (V3RecoveryDiagnostic("recovery",std::string("page refused with status ")+StatusToString(page.status())+" at chainstate_service.cpp:7762"),page.status());
         if(!(*page)->head.sequence || (*page)->head.sequence<ordinary_before->cursor.sequence ||
            ((*page)->events.empty() && index_before->cursor!=ordinary_before->cursor))
-            return Status::Invalid;
+            return (V3RecoveryDiagnostic("recovery","Invalid at chainstate_service.cpp:7765"),Status::Invalid);
         auto applied=*ordinary_before;
         RuntimeOutboxCursor before=ordinary_before->cursor;
         for(const auto& event:(*page)->events) {
@@ -7789,7 +7789,7 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
         if((*page)->events.empty()) {
             if(!(*page)->after_tip || (*page)->after_tip->first!=applied.tip_hash ||
                (*page)->after_tip->second!=applied.tip_height || (*page)->head!=applied.cursor)
-                return Status::Invalid;
+                return (V3RecoveryDiagnostic("recovery","Invalid at chainstate_service.cpp:7792"),Status::Invalid);
         }
         wallet.PublishRecoveredBlockchainHeight(wallet.getBlockchainHeight(),applied.tip_height,session);
         // A worker pass carries at most 32 ordinary events. Finish every
@@ -7803,7 +7803,7 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
         if(native) {
             const auto orchard=resumeRuntimeOrchardDeliveryV3(
                 wallet,metadata_index,session,orchard_events_per_pass);
-            if(!orchard.ok())return orchard.status();
+            if(!orchard.ok())return (V3RecoveryDiagnostic("recovery",std::string("orchard refused with status ")+StatusToString(orchard.status())+" at chainstate_service.cpp:7806"),orchard.status());
             if(!*orchard){
                 if(advanced_partial)*advanced_partial=true;
                 return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
@@ -8465,11 +8465,11 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     // The empty-prefix origin is only for a wallet whose sealed fresh birth
     // proves it had no keys below activation; it never acquires history.
-    if(fresh_empty_prefix && (public_history || retained_history))return Status::Invalid;
+    if(fresh_empty_prefix && (public_history || retained_history))return (V3RecoveryDiagnostic("origin","Invalid at chainstate_service.cpp:8468"),Status::Invalid);
     // A snapshot-base origin is the empty-prefix origin rooted at an
     // authenticated full-v6 snapshot base instead of activation; the caller
     // proved a sealed fresh birth at or above that base.
-    if(snapshot_base_origin && !fresh_empty_prefix)return Status::Invalid;
+    if(snapshot_base_origin && !fresh_empty_prefix)return (V3RecoveryDiagnostic("origin","Invalid at chainstate_service.cpp:8472"),Status::Invalid);
     try {
         auto result=RuntimeOrdinaryDelivery::CaptureOriginDomain(wallet,session,index,existing_identity_only,
             material_limit_bytes);
@@ -8478,8 +8478,8 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
         {
             std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
             const auto page=getRuntimeDeliveryPageAtPrefix(captured_head,{},1,16*1024*1024);
-            if(!page.ok())return page.status();
-            if(safe_mode_active_ || (*page)->events.size()!=1)return Status::Invalid;
+            if(!page.ok())return (V3RecoveryDiagnostic("origin",std::string("page refused with status ")+StatusToString(page.status())+" at chainstate_service.cpp:8481"),page.status());
+            if(safe_mode_active_ || (*page)->events.size()!=1)return (V3RecoveryDiagnostic("origin","Invalid at chainstate_service.cpp:8482"),Status::Invalid);
             const auto& first=(*page)->events.front();
             if(snapshot_base_origin) {
                 // Re-prove the base under the selected lock: still the
@@ -8491,19 +8491,19 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
                    first.cursor.sequence!=1 || first.direction!=RuntimeBlockDirection::Connect ||
                    first.context.height!=uint64_t(snapshot_base_origin->first)+1 ||
                    first.context.parent_hash!=snapshot_base_origin->second)
-                    return Status::Invalid;
+                    return (V3RecoveryDiagnostic("origin","Invalid at chainstate_service.cpp:8494"),Status::Invalid);
                 result->SetFirstSnapshotBaseEvent(first,snapshot_base_origin->first,snapshot_base_origin->second);
             } else {
                 if(first.cursor.sequence!=1 || first.direction!=RuntimeBlockDirection::Connect ||
                    first.context.height!=first.context.activation_height || !first.context.height)
-                    return Status::Invalid;
+                    return (V3RecoveryDiagnostic("origin","Invalid at chainstate_service.cpp:8499"),Status::Invalid);
                 result->SetFirstEvent(first);
             }
             head=(*page)->head;
             auto expected=first.context.parent_hash;
             // Operational ancestry cap, not a resident-memory certificate.
             // Retains hashes only; full bodies are read/validated one at a time.
-            if(first.context.height>1000000)return Status::Invalid;
+            if(first.context.height>1000000)return (V3RecoveryDiagnostic("origin","Invalid at chainstate_service.cpp:8506"),Status::Invalid);
             for(uint32_t remaining=first.context.height;remaining;--remaining) {
                 RuntimeReplayCancellationScope::ThrowIfCancelled();
                 const auto header=chain_db_->getHeader(expected);
@@ -8555,7 +8555,7 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
                 const auto body=read_body(height);
                 if(!body){if(++missing==1)break;continue;}
                 const auto size=body->Serialize().size();
-                if(size>256*1024*1024-material)return Status::Invalid;material+=size;
+                if(size>256*1024*1024-material)return (V3RecoveryDiagnostic("origin","Invalid at chainstate_service.cpp:8558"),Status::Invalid);material+=size;
             }
             if(missing){body_data_pending=true;return Status::NotFound;}
         }
@@ -8572,26 +8572,26 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
             const auto owned=read_body(height);if(!owned){body_data_pending=true;return Status::NotFound;}
             std::string error;
             if(height==0 ? !replay.SeedGenesis(*owned,error) :
-                !replay.ConnectAndAdvance(*owned,height,ancestry[height],error))return Status::Invalid;
+                !replay.ConnectAndAdvance(*owned,height,ancestry[height],error))return (V3RecoveryDiagnostic("origin","Invalid at chainstate_service.cpp:8575"),Status::Invalid);
             result->AppendValidated(*owned,height);
         }
         {
             std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
             const auto page=getRuntimeDeliveryPageAtPrefix(captured_head,{},1,16*1024*1024);
-            if(!page.ok())return page.status();
+            if(!page.ok())return (V3RecoveryDiagnostic("origin",std::string("page refused with status ")+StatusToString(page.status())+" at chainstate_service.cpp:8581"),page.status());
             if(safe_mode_active_ || (*page)->head!=head || (*page)->events.size()!=1 ||
-               (*page)->events.front().cursor!=result->FirstCursor())return Status::Invalid;
+               (*page)->events.front().cursor!=result->FirstCursor())return (V3RecoveryDiagnostic("origin","Invalid at chainstate_service.cpp:8583"),Status::Invalid);
             if(public_history||retained_history){
                 if(!index||!existing_identity_only||!compact_startup_||!compact_startup_->imported_parent||
                    compact_startup_->imported_parent->first!=result->OriginHash()||
-                   compact_startup_->imported_parent->second!=replay.Height())return Status::Invalid;
+                   compact_startup_->imported_parent->second!=replay.Height())return (V3RecoveryDiagnostic("origin","Invalid at chainstate_service.cpp:8587"),Status::Invalid);
                 const auto& cohort=compact_startup_->imported_metadata;
                 const auto legacy=consensus::shielded::ComputeShieldedRoot(*replay.ShieldedTree(),
                     *replay.ShieldedNullifiers(),*replay.ShieldedAnchors());
                 if(!legacy||cohort.at(assumeutxo::kExpectedCommitmentKey)!=replay.RecordsDigestHex()||
                    cohort.at(assumeutxo::kExpectedUtreexoRootKey)!=replay.UtreexoRootHex()||
                    cohort.at(assumeutxo::kExpectedShieldedRootKey)!=legacy->GetHex()||
-                   index->ReadAssumedStartupMetadata()!=cohort)return Status::Invalid;
+                   index->ReadAssumedStartupMetadata()!=cohort)return (V3RecoveryDiagnostic("origin","Invalid at chainstate_service.cpp:8594"),Status::Invalid);
                 result->SetImportedCohort(cohort);
             }
         }
@@ -8614,20 +8614,20 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
         WalletManager& wallet,uint64_t session,UTXOIndex& metadata_index,size_t material_limit_bytes) const {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     if(activation_mutex_.HeldByCurrentThread() || !material_limit_bytes ||
-       material_limit_bytes>128*1024*1024)return Status::Invalid;
+       material_limit_bytes>128*1024*1024)return (V3RecoveryDiagnostic("coverage","Invalid at chainstate_service.cpp:8617"),Status::Invalid);
     try {
         {
             std::lock_guard<std::mutex> lock(wallet_index_use_mutex_);
             if(!wallet_index_uses_by_thread_.count(std::this_thread::get_id()) ||
                utxo_index_.get()!=&metadata_index || !metadata_index.IsFullArchiveV3MetadataOnly())
-                return Status::Invalid;
+                return (V3RecoveryDiagnostic("coverage","Invalid at chainstate_service.cpp:8623"),Status::Invalid);
         }
         bool fresh_empty_prefix=false;
         {
             const auto lease=wallet.AcquireDatabaseLease();
             if(!wallet.SoleDatabaseLeaseHeld() || !wallet.hasActiveWallet() || !lease->Database() ||
                lease->Session()!=session || wallet.getUTXOIndex()!=nullptr ||
-               !sqlite3_get_autocommit(lease->Database()))return Status::Invalid;
+               !sqlite3_get_autocommit(lease->Database()))return (V3RecoveryDiagnostic("coverage","Invalid at chainstate_service.cpp:8630"),Status::Invalid);
             // A present-but-unverifiable record fails closed (throws below).
             const auto birth=lease->SealedFreshOrdinaryBirthHeight(session);
             fresh_empty_prefix=birth && *birth>=Params().orchard_activation_height;
@@ -8644,21 +8644,21 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
                !chain_db_ || chain_db_->getPreBaseCoinSetBase().status()!=Status::NotFound ||
                !active_tip_ || active_tip_->height<Params().orchard_activation_height ||
                !const_cast<ChainstateService*>(this)->UtreexoRpcSnapshotUnderLock().ok())
-                return Status::Invalid;
+                return (V3RecoveryDiagnostic("coverage","Invalid at chainstate_service.cpp:8647"),Status::Invalid);
             storage::RequireFullOrchardStorage(*chain_db_);
         }
         // Capture one authenticated outbox prefix first. Its events remain a
         // valid recovery source across later tip extensions; a reorg through
         // the prefix fails the checked prefix reader below.
         const auto replay=getRuntimeAccountReplay();
-        if(!replay.ok())return replay.status();
+        if(!replay.ok())return (V3RecoveryDiagnostic("coverage",std::string("replay refused with status ")+StatusToString(replay.status())+" at chainstate_service.cpp:8654"),replay.status());
         if(!(*replay)->Head().sequence ||
            (*replay)->Event(1)->context.height!=Params().orchard_activation_height)
-            return Status::Invalid;
+            return (V3RecoveryDiagnostic("coverage","Invalid at chainstate_service.cpp:8657"),Status::Invalid);
         bool body_data_pending=false;
         const auto origin=captureRuntimeWalletOrigin(wallet,session,nullptr,true,false,
             body_data_pending,false,material_limit_bytes,(*replay)->Head(),fresh_empty_prefix);
-        if(!origin.ok())return origin.status();
+        if(!origin.ok())return (V3RecoveryDiagnostic("coverage",std::string("origin refused with status ")+StatusToString(origin.status())+" at chainstate_service.cpp:8661"),origin.status());
         if(body_data_pending)return Status::NotFound;
         const auto result=RuntimeWalletCoverageProjection::Build(*origin,*replay,{},material_limit_bytes);
         RuntimeOrdinaryDelivery::CheckOriginDomain(wallet,result->Origin(),nullptr);
@@ -8667,20 +8667,20 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
             if(safe_mode_active_ || !metadata_index.IsFullArchiveV3MetadataOnly() ||
                GetConfig().utreexo_stateless || compact_startup_ || assumeutxo_active_ ||
                orchard_snapshot_startup_ || GetSnapshotWalletRecoveryBaseHeight()!=0)
-                return Status::Invalid;
+                return (V3RecoveryDiagnostic("coverage","Invalid at chainstate_service.cpp:8670"),Status::Invalid);
             const auto page=getRuntimeDeliveryPageAtPrefix(result->Head(),result->Head(),1,16*1024*1024);
-            if(!page.ok())return page.status();
+            if(!page.ok())return (V3RecoveryDiagnostic("coverage",std::string("page refused with status ")+StatusToString(page.status())+" at chainstate_service.cpp:8672"),page.status());
             if((*page)->head!=result->Head() || (*page)->next!=result->Head() ||
                !(*page)->events.empty() || !(*page)->after_tip ||
                (*page)->after_tip->first!=result->TipHash() ||
-               (*page)->after_tip->second!=result->TipHeight())return Status::Invalid;
+               (*page)->after_tip->second!=result->TipHeight())return (V3RecoveryDiagnostic("coverage","Invalid at chainstate_service.cpp:8676"),Status::Invalid);
             // Retained outbox records can describe a branch later disconnected
             // from the selected chain. An extension preserves this prefix;
             // a reorg through it must refuse before any wallet commit.
             auto* ancestor=active_tip_;
             while(ancestor && ancestor->height>result->TipHeight())ancestor=ancestor->pprev;
             if(!ancestor || ancestor->height!=result->TipHeight() ||
-               ancestor->hash!=result->TipHash())return Status::Invalid;
+               ancestor->hash!=result->TipHash())return (V3RecoveryDiagnostic("coverage","Invalid at chainstate_service.cpp:8683"),Status::Invalid);
         }
         return result;
     } catch(const RuntimeWalletCoverageMaterialLimit&) { return Status::ResourceLimit; }
