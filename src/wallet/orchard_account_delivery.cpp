@@ -1371,13 +1371,16 @@ struct ObservedCatalog {
     uint256 origin;
     std::shared_ptr<const void> captured;   // an Owner::CapturedCatalog
     std::shared_ptr<const OrchardAccountDelivery::CatalogEnrolled> restored;
+    // Moves on every forget (wallet locked, closed, switched). An observation
+    // that captured before a forget must not store after it.
+    uint64_t generation=0;
     std::atomic<uint64_t> restores{0};
 };
 ObservedCatalog& Observed(){static ObservedCatalog value;return value;}
 }
 void OrchardAccountDelivery::ForgetObservedCatalog(){
     auto& kept=Observed();std::lock_guard<std::mutex> lock(kept.mutex);
-    kept.wallet=nullptr;kept.session=0;kept.captured.reset();kept.restored.reset();
+    ++kept.generation;kept.wallet=nullptr;kept.session=0;kept.captured.reset();kept.restored.reset();
 }
 uint64_t OrchardAccountDelivery::ObservedCatalogRestores(){return Observed().restores.load();}
 std::shared_ptr<const OrchardAccountDelivery::CatalogEnrolled> OrchardAccountDelivery::ObserveCatalogForReplay(
@@ -1392,11 +1395,13 @@ std::shared_ptr<const OrchardAccountDelivery::CatalogEnrolled> OrchardAccountDel
         auto captured=Owner::CaptureCatalog(w,session,profile);tx.Commit();
         return std::shared_ptr<const Owner::CapturedCatalog>(std::move(captured));
     };
+    auto& kept=Observed();
+    uint64_t generation;
+    {std::lock_guard<std::mutex> lock(kept.mutex);generation=kept.generation;}
     std::shared_ptr<const Owner::CapturedCatalog> fresh;
     // A wallet that cannot be captured (locked, closed, replaced) keeps
     // nothing of an earlier observation in memory either.
     try{fresh=capture();}catch(...){ForgetObservedCatalog();throw;}
-    auto& kept=Observed();
     {
         std::lock_guard<std::mutex> lock(kept.mutex);
         if(kept.wallet!=&w||kept.session!=session){
@@ -1426,6 +1431,10 @@ std::shared_ptr<const OrchardAccountDelivery::CatalogEnrolled> OrchardAccountDel
         fresh->Recheck(*again);
     }
     std::lock_guard<std::mutex> lock(kept.mutex);
+    // Forgotten since this observation began (the wallet was locked while it
+    // restored): this caller still gets what it read while unlocked, but
+    // nothing decrypted is left behind for anyone after the lock.
+    if(kept.generation!=generation)return restored;
     kept.wallet=&w;kept.session=session;kept.origin=origin;kept.captured=fresh;kept.restored=restored;
     return restored;
 }

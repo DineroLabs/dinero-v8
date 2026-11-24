@@ -59,6 +59,38 @@ TEST(OrchardDetachedCatalog, FundedNonconsecutiveAccountsPreserveExactSnapshots)
 // and the node's delivery of new blocks waited behind them for every sample
 // of a 30 s profile. A read now restores only when the wallet's bytes have
 // changed, and never with the wallet held.
+// A wallet lock clears the remembered observation. A read that captured the
+// wallet before the lock and finishes restoring after it must not put the
+// decrypted catalog back. The lock is simulated at the last moment before the
+// store: on the commit of the read's own recheck.
+TEST(OrchardDetachedCatalog, AnObservationThatOutlivesAForgetLeavesNothingRemembered){
+    using Delivery=wallet::OrchardAccountDelivery;
+    OrchardCatalogRecoveryFixture f;
+    ASSERT_FALSE(f.Call(3).isMember("error"));f.Adopt();
+    const auto [body,bundle]=f.Shield(f.AccountKeys(3));(void)f.Mine(body);
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(),Recovery::AppliedPrefix);
+    Delivery::ForgetObservedCatalog();
+    auto view=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(view.ok());
+    uint64_t session;sqlite3* db;
+    {auto use=WalletService::AcquireWalletUse(f.wallet);auto lease=use->Wallet().AcquireDatabaseLease();session=lease->Session();db=lease->Database();}
+    auto use=WalletService::AcquireWalletUse(f.wallet);auto& wallet=use->Wallet();
+    const auto restores=Delivery::ObservedCatalogRestores();
+    static int commits;commits=0;
+    sqlite3_commit_hook(db,[](void*)->int{if(++commits==2)wallet::OrchardAccountDelivery::ForgetObservedCatalog();return 0;},nullptr);
+    const auto raced=Delivery::ObserveCatalogForReplay(wallet,session,**view);
+    sqlite3_commit_hook(db,nullptr,nullptr);
+    ASSERT_EQ(commits,2);                      // capture, then the recheck where the forget landed
+    ASSERT_TRUE(raced);                        // the reader itself is still answered
+    EXPECT_EQ(Delivery::ObservedCatalogRestores(),restores+1);
+    // Nothing was remembered: the next read restores for itself...
+    const auto next=Delivery::ObserveCatalogForReplay(wallet,session,**view);
+    EXPECT_NE(next.get(),raced.get());
+    EXPECT_EQ(Delivery::ObservedCatalogRestores(),restores+2);
+    // ...and that one, undisturbed, is remembered as before.
+    EXPECT_EQ(Delivery::ObserveCatalogForReplay(wallet,session,**view).get(),next.get());
+    EXPECT_EQ(Delivery::ObservedCatalogRestores(),restores+2);
+    Delivery::ForgetObservedCatalog();
+}
 TEST(OrchardDetachedCatalog, ObservedCatalogIsRestoredOncePerWalletStateAndNotUnderTheLease){
     using Delivery=wallet::OrchardAccountDelivery;
     OrchardCatalogRecoveryFixture f;
