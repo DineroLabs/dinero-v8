@@ -88,3 +88,67 @@ dinero-main), #975 (phone prepare re-arm, on codex/compact-v6-phone-publication)
    `NODECORE_ERROR_INIT_FAILED (-3)` ("Start stateless node" did nothing) until
    the process was killed. Fix: release the DatadirGuard and databases on every
    failed-start path; test a forced Init failure followed by a successful start.
+
+## Release blockers and known items added 2026-11-23 (swap/core session)
+
+### BLOCKER: the Qt Wallet page does not show Orchard funds
+The Wallet page's "Shielded / private → Private:" line (`lblShieldedBalance_`,
+`qt/src/mainwindow.cpp`) is fed by `wallet.shieldedbalance`, which is the old,
+retired shielded pool. Orchard funds appear only on the Orchard tab and are
+not part of the Wallet page total. The owner made his first Orchard deposit
+(25 DIN, wallet Hotel, block 165,213) and the Wallet page shows "Private:
+0.00000000". Shielding must not look like money disappearing: show the
+Orchard balance there, include it in the total, and keep any retired-pool
+amount on its own named line. Not started.
+
+### Phone reorganisations (branch `claude/v826-phone-reorg`, 3b9ac9593 + a2c595541)
+Android, mainnet 165,229: a 4-block reorganisation wedged the phone ("Drain
+has failed 50 consecutive ticks") and then refused every start ("Retained
+Orchard header unavailable"). Both fixed and exercised on a copy of the
+phone's datadir with a Mac `dinerod` in the phone profile. Not run on an
+Android build.
+
+The wallet replay after such a reorganisation is **argued from source, not
+observed on a device**: a kept phone replay lives only in memory, so the copy
+could not reproduce it. The argument: no hand-out without a standing
+checkpoint; every hand-out passes `adopt` (replay end and checkpoint on one
+header chain, replay head equal to the node's outbox head); extension reads
+the node's own outbox including its Disconnect events
+(`ExtendTailMatchesFullBuild`); the verified checkpoint is dropped as soon as
+its header is deselected (`ReorgAboveVerifiedPrefixKeepsReplayAndReplacesRequest`).
+
+### Known, low priority: readers that cannot read a block holding an Orchard transaction
+`ChainstateService::getBlockByHash` fails for such a block. Fixed for the
+explorer (`claude/v826-orchard-block-lookups`). Still using it:
+- Utreexo/CSN serving and proof paths in `daemon_app.cpp` (MSG_UTREEXO_BLOCK
+  serving, proof request and gossip providers, the StatelessNode block
+  provider). Not a sync blocker: `SelectBlockRequestInventory` makes a
+  stateless node request plain MSG_BLOCK at every Orchard-active height.
+- the old shielded output feed and witness RPCs, `ReadWalletRpcBlock` users,
+  the DPI header anchor: not audited yet.
+- `getblockfilters` now lists such heights in `unavailable_heights` but builds
+  no filter for them; what that filter contains is undecided.
+
+### Windows desktop findings (owner's laptop AHLAPTOP, v8.2.5, 2026-11-23)
+- **A fresh wallet on a full node never catches up on a slow CPU (evidence, cause unconfirmed).**
+  Wallet Juliett was created that morning on v8.2.5 and mined to. At the tip,
+  with local mining off, `sync_meta.last_scanned_height` stays 0 and
+  `wallet.snapshot` lists no funded address, while `getaddressbalance` shows
+  1,100 DIN at its first address (`ismine` true) and `dinerod` keeps about 1.15
+  cores busy. Expected cause: the fresh wallet's cursor advances only through
+  the runtime account replay (full-archive path), and v8.2.5 discards a full
+  build whenever a block arrives while a reader holds it; the blocks come from
+  the network, so local mining is irrelevant. 6f06765cc, dd5521b00 and
+  684ad9b43 on this branch are the fix. Confirmation still owed: pause the
+  owner's Mac miner long enough for one full build on that laptop and watch
+  the cursor leave 0.
+- **Startup took 42 minutes to open RPC** (one busy thread, 3,152 CPU-seconds)
+  on a 57 GB full datadir; the same step takes 4-5 minutes on the owner's Mac.
+  Not investigated.
+- **No daemon log on Windows:** `%APPDATA%\Dinero\embedded-daemon.log` is 0 KB,
+  so nothing can say what the node is doing during that start.
+- **`wallet.getsyncstate` ignores its wallet-name argument** and reports the
+  active wallet (`rpc_context_wallet_getsyncstate` discards `params`).
+- **Orchard tab shows "Unknown"** when the node refuses a balance read while
+  the wallet catches up (seen on the Mac, wallet Hotel). Show the last known
+  balance with its block height instead.

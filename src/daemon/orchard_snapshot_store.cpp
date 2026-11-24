@@ -1540,6 +1540,16 @@ void OrchardSnapshotStore::SeedRetainedHeaders(const ChainDB& db,consensus::Head
         return std::tie(a.height,a.hash)<std::tie(b.height,b.hash);
     });
     const auto selected_tip=db.getTip();
+    // Not connected: above the selected tip, or a competitor of the selected
+    // block at its height (the other side of a reorganisation that has not
+    // been carried out yet). A height the selected index cannot answer for is
+    // never treated as unconnected.
+    const auto unconnected=[&](int64_t height,const uint256& hash) {
+        if(!selected_tip.ok()||height<=0)return false;
+        if(height>selected_tip->height)return true;
+        const auto chosen=db.getBlockHashByHeight(int(height));
+        return chosen.ok()&&*chosen!=hash;
+    };
     for(const auto& row:ordered) {
         const auto stored=db.getHeader(row.hash);
         if (!stored.ok()) {
@@ -1554,13 +1564,15 @@ void OrchardSnapshotStore::SeedRetainedHeaders(const ChainDB& db,consensus::Head
                 !(row.status_flags & (BLOCK_HAVE_DATA|BLOCK_HAVE_UNDO)) &&
                 !row.has_locator;
             if (pruned_failed_header_only) continue;
-            // Ordinary P2P download can persist a future body/metadata before
-            // connect writes its raw ChainDB header. HeaderStore already owns
+            // Ordinary P2P download can persist a body/metadata before connect
+            // writes its raw ChainDB header: a future block, or a competitor of
+            // a selected block when the chain is about to reorganise (it then
+            // sits at or below the tip's height). HeaderStore already owns
             // that header. Revalidate it with this selector, matching every
             // identity/work field, without accepting the queued body or moving
             // selected state. Missing selected/executed/undo rows still refuse.
             const bool queued_header = stored.status()==Status::NotFound && pending_headers &&
-                selected_tip.ok() && row.height>selected_tip->height &&
+                unconnected(row.height,row.hash) &&
                 (row.status_flags&BLOCK_VALID_HEADER) &&
                 !(row.status_flags&(BLOCK_VALID_TREE|BLOCK_VALID_TRANSACTIONS|BLOCK_VALID_SCRIPTS)) &&
                 !(row.status_flags&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD|BLOCK_HAVE_UNDO));
@@ -1578,7 +1590,7 @@ void OrchardSnapshotStore::SeedRetainedHeaders(const ChainDB& db,consensus::Head
                 // Never use it to rescue missing selected/executed ancestry.
                 std::vector<consensus::HeaderIndexEntry> closure;
                 for(auto entry=pending;!headers.ContainsHeader(entry.hash);) {
-                    Require(entry.height>uint64_t(selected_tip->height)&&
+                    Require(unconnected(int64_t(entry.height),entry.hash)&&
                         entry.hash==entry.header.GetHash()&&entry.prev_hash==entry.header.prev_block_hash);
                     const auto claim=db.getHeaderMetadata(entry.hash);
                     if(claim.ok()) {

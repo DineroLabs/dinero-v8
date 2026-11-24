@@ -47,6 +47,14 @@ std::optional<InventoryType> SelectBlockRequestInventory(const uint256& hash,
     } catch (...) { return std::nullopt; }
 }
 
+const char* BlockRequestInventoryName(InventoryType type) {
+    switch (type) {
+        case InventoryType::MSG_BLOCK: return "MSG_BLOCK";
+        case InventoryType::MSG_UTREEXO_BLOCK: return "MSG_UTREEXO_BLOCK";
+        default: return "another inventory type";
+    }
+}
+
 NetworkBlockClassification ClassifyNetworkBlock(std::span<const uint8_t> bytes) {
     try {
         if (!consensus::OrchardProfileConfigurationValid(Params())) return {};
@@ -167,6 +175,14 @@ OrchardNetworkDisposition SubmitDownloadedCompactOrchardBlock(
             return OrchardNetworkDisposition::Refused;
         return SubmitDownloadedOrchardBlock(source,ingress,parallel,bytes,hash,height);
     } catch (...) { return OrchardNetworkDisposition::Refused; }
+}
+consensus::ConnectBlockResult DrainResultForOrchardDisposition(OrchardNetworkDisposition disposition) {
+    switch (disposition) {
+        case OrchardNetworkDisposition::Connected: return consensus::ConnectBlockResult::CONNECTED;
+        case OrchardNetworkDisposition::Stored: return consensus::ConnectBlockResult::ACCEPTED_NOT_ACTIVE;
+        case OrchardNetworkDisposition::Refused: break;
+    }
+    return consensus::ConnectBlockResult::TEMPORARY_FAIL;
 }
 bool AcceptDownloadedOrchardBlock(
     const std::shared_ptr<ChainstateService>& source,
