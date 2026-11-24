@@ -71,6 +71,10 @@ class OrchardTabTest : public QObject {
     }
     // Requests to the wallet (reads and payments). Looking a transaction up
     // on the chain for the details panel is not one of them.
+    // wallet.orchard.* requests sent since `from`.
+    int walletReads(qsizetype from) const {
+        int n=0;for(qsizetype i=from;i<sent_.size();++i)if(sent_[i].method.startsWith("wallet.orchard."))++n;return n;
+    }
     qsizetype walletRequests() const {
         qsizetype n=0;for(const auto& r:sent_)if(r.method!="gettransaction")++n;return n;
     }
@@ -375,9 +379,66 @@ private Q_SLOTS:
         QCOMPARE(last("wallet.orchard.finishspend").params,finish.params);
     }
     void periodicReadsDoNotPileUpWhenRepliesArePending() {
-        ready();const auto before=sent_.size();QMetaObject::invokeMethod(tab_,"onPoll");
+        ready();const auto before=sent_.size();
+        tab_->setTipHeight(21);  // a block arrived: read
         const auto first=sent_.size();QVERIFY(first>before);
-        QMetaObject::invokeMethod(tab_,"onPoll");QCOMPARE(sent_.size(),first);
+        tab_->setTipHeight(22);  // another, with the replies still pending
+        QCOMPARE(walletReads(first),0);
+    }
+    // Measured on a v8.2.5 desktop (2026-11-24): the page read the wallet four
+    // times every three seconds, each read held the wallet's database lease on
+    // the node, and the node's own delivery of new blocks waited behind them,
+    // so the Orchard account fell further behind the chain while the page was
+    // open. An account's data changes with a block: that is when it is read.
+    void theWalletIsReadWhenABlockArrivesNotOnEveryTick() {
+        ready();
+        rawReply(last("wallet.orchard.getbalance"),balanceFixture());
+        rawReply(last("wallet.orchard.listreceived"),ReceivedPage(0,0,0));
+        rawReply(last("orchard.getactivationstatus"),activationFixture());
+        tab_->setTipHeight(20);
+        // Bring every reply in, so nothing is pending and nothing is refused.
+        reply(last("wallet.orchard.listoperations"),
+              R"({"account":0,"account_revision":5,"account_sequence":3,"captured_source_sequence":3,"account_digest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","captured_source_digest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","operations":[]})");
+        rawReply(last("wallet.orchard.getbalance"),balanceFixture());
+        rawReply(last("orchard.getactivationstatus"),activationFixture());
+
+        // Twenty ticks of the page timer (a minute of the old polling) with no
+        // new block: not one read.
+        int mark=sent_.size();
+        for(int i=0;i<20;++i)QMetaObject::invokeMethod(tab_,"onPoll");
+        QCOMPARE(walletReads(mark),0);
+
+        // A block: the account is read once.
+        mark=sent_.size();tab_->setTipHeight(21);
+        QStringList methods;for(int i=mark;i<sent_.size();++i)methods<<sent_[i].method;
+        QVERIFY2(methods.contains("wallet.orchard.getbalance") && methods.contains("wallet.orchard.listoperations"),qPrintable(methods.join(",")));
+        QCOMPARE(methods.count("wallet.orchard.getbalance"),1);
+        // The same height reported again changes nothing.
+        mark=sent_.size();tab_->setTipHeight(21);QMetaObject::invokeMethod(tab_,"onPoll");
+        QCOMPARE(walletReads(mark),0);
+    }
+    // A payment that was submitted is confirmed by a block. It is not asked
+    // about on every tick while it waits.
+    void aSubmittedPaymentIsFollowedByBlocksNotByTicks() {
+        ready();fillSend();confirmNextDialog();Find<QPushButton>(tab_,"orchardReview")->click();
+        reply(last("wallet.orchard.queuespend"),R"({"durable_state":"signed"})");
+        reply(last("wallet.orchard.finishspend"),R"({"durable_state":"signed","txid":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","admitted":true})");
+        QCOMPARE(*tab_->paymentState(),OrchardFlow::State::Submitted);
+        tab_->setTipHeight(30);
+        // The operations list answers (the payment is in it, unconfirmed), so no read is pending.
+        const auto id=last("wallet.orchard.queuespend").params.value("request_id").toString();
+        auto listed=storedSnapshot("wallet.orchard.finishspend");auto rows=listed["operations"].toArray();
+        auto row=rows[0].toObject();row["operation_id"]=id;rows[0]=row;listed["operations"]=rows;
+        rawReply(last("wallet.orchard.listoperations"),listed);
+        QCOMPARE(*tab_->paymentState(),OrchardFlow::State::Submitted);
+        int mark=sent_.size();
+        for(int i=0;i<10;++i)QMetaObject::invokeMethod(tab_,"onPoll");
+        QCOMPARE(walletReads(mark),0);
+        // The next block is what brings the next read (the balance's reply is in; the others are still pending).
+        auto balance=balanceFixture();balance["account_revision"]=6;balance["account_sequence"]=4;balance["captured_source_sequence"]=4;
+        rawReply(last("wallet.orchard.getbalance"),balance);
+        mark=sent_.size();tab_->setTipHeight(31);
+        QVERIFY(walletReads(mark)>0);
     }
     void accountDiscoveryIsNotRepeatedOnEveryPollOrUnchangedUnlock() {
         ready();rawReply(last("wallet.orchard.listaccounts"),accountsFixture());

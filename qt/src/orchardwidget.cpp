@@ -31,7 +31,15 @@ namespace {
 constexpr int kFormStretch = 3, kCardStretch = 2, kGutter = 12;
 constexpr int kPollMs = 3000;
 constexpr int kAccountDiscoveryReadyMs = 60000;
-constexpr int kHiddenBalanceMs = 15000;  // balance reads for the Wallet page while this page is hidden
+// The page ticks every kPollMs, but it only reads the account when a block
+// has arrived since the last read. Every wallet.orchard.* read takes the
+// wallet's database lease on the node, and a page that read four times every
+// three seconds kept the node's own delivery of new blocks waiting for it
+// (measured on a v8.2.5 desktop: the account fell further behind the chain
+// the longer the page polled). Without news of a block the data is read again
+// only as a slow heartbeat, or sooner when the last read was refused.
+constexpr int kHeartbeatMs = 60000;
+constexpr int kRefusedRetryMs = 15000;
 constexpr int kAccountDiscoveryRetryMs = 15000;
 const QString kDash = QString::fromUtf8("—");
 const QString kUnknown = QStringLiteral("Unknown");
@@ -435,6 +443,7 @@ void OrchardWidget::onAccountChanged(int index) {
     accountStatus_->setText(QString("Account %1 — checking saved payments").arg(account_));
     showPayment();refreshOperations();refreshBalance();refreshHistory();
     activationInFlight_=true;send("activation",OC::kActivationStatus,{});updateForm();
+    markRead();
 }
 void OrchardWidget::refreshOperations() {
     if(operationsInFlight_ || !accountKnown() || !OC::ValidBinding(walletBinding_))return;
@@ -674,38 +683,41 @@ bool OrchardWidget::paymentNeedsFollowing() const {
 // for the next tick.
 void OrchardWidget::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
+    sinceRead_.invalidate();
     if(poll_&&poll_->isActive())onPoll();
 }
 
 void OrchardWidget::onPoll() {
     if(wallet_.isEmpty() || !OC::ValidBinding(walletBinding_))return;
-    // Nothing is read for a page nobody is looking at. Every tick sends three
-    // or four wallet.orchard.* reads, each of which holds the node's account
-    // replay while it works; every three seconds, on whichever tab, that was
-    // enough to collide with block delivery on a node that is mining
-    // (ChainstateService::getRuntimeAccountReplay).
-    if(!isVisible() && !paymentNeedsFollowing()) {
+    // Nothing is read for a page nobody is looking at, and a page that is
+    // looked at reads when there is something new to read (see kHeartbeatMs).
+    const bool following=paymentNeedsFollowing();
+    if(!isVisible() && !following) {
         // The Wallet page shows this balance: read it for that page, and only
-        // it, at a slow pace (one read every 15 s instead of four every 3 s).
-        if(!balanceWanted_ || (hiddenBalanceElapsed_.isValid() && hiddenBalanceElapsed_.elapsed()<kHiddenBalanceMs))return;
-        hiddenBalanceElapsed_.start();
+        // it, when a block has arrived.
+        if(!balanceWanted_ || !readsDue())return;
+        markRead();
         if(!accountsSnapshot_)refreshAccounts();
         refreshBalance();
         return;
     }
+    // Account discovery keeps its own pace until the catalog is known.
     const int catalogInterval=accountsSnapshot_?kAccountDiscoveryReadyMs:kAccountDiscoveryRetryMs;
     if(!accountDiscoveryElapsed_.isValid() || accountDiscoveryElapsed_.elapsed()>=catalogInterval)
         refreshAccounts();
-    refreshOperations();refreshBalance();refreshHistory();
-    if(!activationInFlight_){activationInFlight_=true;send("activation",OC::kActivationStatus,{});}
+    if(readsDue()) {
+        markRead();
+        refreshOperations();refreshBalance();refreshHistory();
+        if(!activationInFlight_){activationInFlight_=true;send("activation",OC::kActivationStatus,{});}
+    } else if(!following)return;
     if (!payment_ || callInFlight_ || !accountKnown() || !unlocked_ || !activationObserved_ || payment_->requiresExplicitRetry()) return;
     const auto s = payment_->state();
     if (s == OF::State::Queued || s == OF::State::Proving) {
         callInFlight_ = true;
         send("finish", payment_->finishMethod(), payment_->finishParams());
-    } else if (s == OF::State::Submitted) {
-        refreshOperations();
     }
+    // A submitted payment is confirmed by a block: the read on the next tip
+    // (above) sees it. It is not asked about every tick.
 }
 
 void OrchardWidget::onRetry() {
@@ -970,7 +982,21 @@ void OrchardWidget::forgetBalance() {
 void OrchardWidget::setBalanceWanted(bool wanted) {
     if(balanceWanted_==wanted)return;
     balanceWanted_=wanted;
-    if(wanted){hiddenBalanceElapsed_.invalidate();if(poll_&&poll_->isActive())onPoll();}
+    if(wanted){sinceRead_.invalidate();if(poll_&&poll_->isActive())onPoll();}
+}
+void OrchardWidget::setTipHeight(quint64 height) {
+    if(height==tipHeight_)return;
+    tipHeight_=height;
+    if(poll_&&poll_->isActive())onPoll();
+}
+bool OrchardWidget::readsDue() const {
+    if(!sinceRead_.isValid() || tipHeight_!=readAtTip_)return true;
+    // A refused or incomplete read is asked again without waiting for a block.
+    const bool incomplete=accountKnown() && (!operationsSnapshot_ || !lastBalance_ || !lastBalance_->current);
+    return sinceRead_.elapsed()>=(incomplete?kRefusedRetryMs:kHeartbeatMs);
+}
+void OrchardWidget::markRead() {
+    sinceRead_.start();readAtTip_=tipHeight_;
 }
 
 const OC::Operation* OrchardWidget::selectedOperation() const {

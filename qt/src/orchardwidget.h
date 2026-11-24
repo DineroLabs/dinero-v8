@@ -38,6 +38,9 @@ public:
     // The Wallet page shows this account's balance too. While it wants it,
     // the balance is read (slowly) even though this page is hidden.
     void setBalanceWanted(bool wanted);
+    // The node's chain height, from the main window. An account's data can
+    // only change when a block arrives, so that is when it is read again.
+    void setTipHeight(quint64 height);
     std::optional<OrchardDisplay::KnownBalance> knownBalance() const { return lastBalance_; }
 
     // For tests: what the current payment is doing.
@@ -150,7 +153,10 @@ private:
     QTimer* poll_;
     std::optional<OrchardDisplay::KnownBalance> lastBalance_;
     bool balanceWanted_ = false;
-    QElapsedTimer hiddenBalanceElapsed_;
+    quint64 tipHeight_ = 0, readAtTip_ = 0;
+    QElapsedTimer sinceRead_;   // since the account's data was last asked for
+    bool readsDue() const;
+    void markRead();
     QLabel* operationDetail_ = nullptr;
     QString detailTxid_;                    // the transaction whose chain details were asked for
     QHash<QString, QJsonObject> txDetails_; // txid -> blockchain.gettransaction answer

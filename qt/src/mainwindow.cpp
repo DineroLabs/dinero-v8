@@ -7428,6 +7428,10 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       auto obj = result.toObject();
       updateStatus(obj);
       cachedHeight_ = obj["blocks"].toInt();
+#if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
+      // Orchard data changes with a block: the Orchard page reads on this.
+      if (orchardWidget_) orchardWidget_->setTipHeight(static_cast<quint64>(std::max(0, cachedHeight_)));
+#endif
       cachedHeaders_ = obj["headers"].toInt();
       evaluateUpgradeBanner();
       requestMiningRewards();
