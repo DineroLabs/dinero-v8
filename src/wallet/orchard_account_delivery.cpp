@@ -7,7 +7,9 @@
 #include "wallet/runtime_account_replay.h"
 #include "wallet/orchard_operation_archive.h"
 #include <algorithm>
+#include <atomic>
 #include <map>
+#include <mutex>
 #include <set>
 #include "wallet/wallet_manager.h"
 #include "wallet/wallet_transaction_signer.h"
@@ -1267,6 +1269,74 @@ OrchardAccountDelivery::CatalogEnrolled OrchardAccountDelivery::ReadCatalogWithR
         captured->Recheck(*fresh);tx.Commit();
     }
     return result;
+}
+namespace {
+// One remembered observation: the wallet's captured bytes and the catalog
+// restored from them. Guarded by `mutex`, which is never held while restoring.
+struct ObservedCatalog {
+    std::mutex mutex;
+    const WalletManager* wallet=nullptr;
+    uint64_t session=0;
+    uint256 origin;
+    std::shared_ptr<const void> captured;   // an Owner::CapturedCatalog
+    std::shared_ptr<const OrchardAccountDelivery::CatalogEnrolled> restored;
+    std::atomic<uint64_t> restores{0};
+};
+ObservedCatalog& Observed(){static ObservedCatalog value;return value;}
+}
+void OrchardAccountDelivery::ForgetObservedCatalog(){
+    auto& kept=Observed();std::lock_guard<std::mutex> lock(kept.mutex);
+    kept.wallet=nullptr;kept.session=0;kept.captured.reset();kept.restored.reset();
+}
+uint64_t OrchardAccountDelivery::ObservedCatalogRestores(){return Observed().restores.load();}
+std::shared_ptr<const OrchardAccountDelivery::CatalogEnrolled> OrchardAccountDelivery::ObserveCatalogForReplay(
+        WalletManager& w,uint64_t session,const RuntimeAccountReplay& view){
+    const auto context=view.Profile();
+    const Profile profile{context.domain,context.activation_height,0};
+    const auto points=[&view](RuntimeOutboxCursor cursor){return view.Point(cursor);};
+    const auto origin=points({}).checkpoint.block_hash;
+    const auto capture=[&]{
+        auto lease=w.AcquireDatabaseLease();Check(lease->Session()==session&&lease->Database());
+        RequireShieldFullSync(lease->Database());Transaction tx(lease->Database());
+        auto captured=Owner::CaptureCatalog(w,session,profile);tx.Commit();
+        return std::shared_ptr<const Owner::CapturedCatalog>(std::move(captured));
+    };
+    std::shared_ptr<const Owner::CapturedCatalog> fresh;
+    // A wallet that cannot be captured (locked, closed, replaced) keeps
+    // nothing of an earlier observation in memory either.
+    try{fresh=capture();}catch(...){ForgetObservedCatalog();throw;}
+    auto& kept=Observed();
+    {
+        std::lock_guard<std::mutex> lock(kept.mutex);
+        if(kept.wallet!=&w||kept.session!=session){
+            // Another wallet or session: nothing remembered for it is offered.
+            kept.wallet=nullptr;kept.session=0;kept.captured.reset();kept.restored.reset();
+        }else if(kept.captured&&kept.restored&&kept.origin==origin){
+            bool same=false;
+            try{
+                std::static_pointer_cast<const Owner::CapturedCatalog>(kept.captured)->Recheck(*fresh);
+                // The same bytes restore to the same catalog on any view that
+                // still holds each account's delivery point at its checkpoint.
+                same=true;
+                for(const auto& enrolled:kept.restored->accounts){
+                    const auto receipt=enrolled.state.account.Delivery();
+                    same=same&&points({receipt.sequence,receipt.digest}).checkpoint==enrolled.state.account.Scan().Checkpoint();
+                }
+            }catch(const std::exception&){same=false;}
+            if(same)return kept.restored;
+        }
+    }
+    // Restore with no wallet owner and without the memo lock, then confirm the
+    // wallet still holds exactly what was restored (as ReadCatalogForReplay).
+    auto restored=std::make_shared<const CatalogEnrolled>(fresh->Restore(points));
+    ++kept.restores;
+    {
+        const auto again=capture();
+        fresh->Recheck(*again);
+    }
+    std::lock_guard<std::mutex> lock(kept.mutex);
+    kept.wallet=&w;kept.session=session;kept.origin=origin;kept.captured=fresh;kept.restored=restored;
+    return restored;
 }
 OrchardAccountDelivery::CatalogEnrolled OrchardAccountDelivery::ReadCatalogForReplayInTransaction(
         WalletManager& w,uint64_t session,const RuntimeAccountReplay& view){

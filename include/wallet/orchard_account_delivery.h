@@ -340,6 +340,19 @@ public:
     // This as-of observation is not authority to commit later wallet effects.
     static CatalogEnrolled ReadCatalogForReplay(
         WalletManager&,uint64_t session,const RuntimeAccountReplay&);
+    // The same as-of observation for callers that only report it (the
+    // wallet.orchard.* read RPCs). Restoring a catalog is the expensive part
+    // of a read, and its result depends only on the wallet's captured bytes:
+    // while those are unchanged, the catalog restored for them is returned
+    // again. Capture and comparison run under the wallet lease; restoration
+    // never does, so a reader cannot keep delivery waiting for it. The result
+    // is immutable and shared; it is not authority for any wallet effect.
+    static std::shared_ptr<const CatalogEnrolled> ObserveCatalogForReplay(
+        WalletManager&,uint64_t session,const RuntimeAccountReplay&);
+    // Drops the remembered observation (wallet closed or locked; tests).
+    static void ForgetObservedCatalog();
+    // How many observations restored a catalog instead of reusing one.
+    static uint64_t ObservedCatalogRestores();
     // Same complete catalog/current/reached/retained validation inside the
     // caller's active wallet lease and SQLite transaction. Read-only: never
     // starts, commits or rolls back that transaction, including on refusal.
