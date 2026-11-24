@@ -238,6 +238,35 @@ TEST(OrchardSelectedTipAudit, APassIsReusedOnlyWhileNothingItReadsHasChanged) {
     ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
     EXPECT_EQ(service.SelectedTipAuditCounts().first,first.first+4);
 }
+// Mainnet, 2026-11-24: on a node holding a chainstate_recovery.marker, the
+// undo-metadata audit reported block 165,213 (the first shield) as "block
+// body unreadable: Serialization", because it read every block as a
+// historical block. With one such block inside the last 1024, the marker
+// could never be cleared. The block is read as what it is and audited.
+TEST(OrchardTransactionRpc, UndoMetadataAuditReadsABlockWithAnOrchardTransaction) {
+    CanonicalPoolFixture f;const auto block=f.Build();ASSERT_TRUE(block);ASSERT_TRUE(f.Submit(block->WireBytes()).accepted());
+    const auto tip=f.f.db.getTip();ASSERT_TRUE(tip.ok());
+    ASSERT_TRUE(block->Transactions()[1].IsOrchard());
+    // The tip only: the fixture keeps no earlier bodies on disk.
+    const auto report=f.f.service->AuditUndoMetadataForRestamp(1,false,true);
+    EXPECT_EQ(report.scanned,1u);EXPECT_EQ(report.failed,0u);EXPECT_EQ(report.restampable,0u);
+    ASSERT_EQ(report.entries.size(),1u);
+    const auto& entry=report.entries.front();
+    EXPECT_EQ(entry.height,uint32_t(tip->height));EXPECT_EQ(entry.hash,block->Header().GetHash());
+    EXPECT_EQ(entry.reason,"ok");
+    EXPECT_TRUE(entry.block_readable);EXPECT_TRUE(entry.has_undo_flag);
+    EXPECT_TRUE(entry.undo_readable);EXPECT_TRUE(entry.undo_decodable);
+
+    // Real damage to that block's undo locator is still reported.
+    const auto metadata=f.f.db.getHeaderMetadata(block->Header().GetHash());ASSERT_TRUE(metadata.ok());
+    auto damaged=*metadata;damaged.undo_size=0;
+    ASSERT_EQ(f.f.db.putHeaderMetadata(f.f.token,block->Header().GetHash(),damaged),Status::Ok);
+    const auto broken=f.f.service->AuditUndoMetadataForRestamp(1,false,true);
+    EXPECT_EQ(broken.failed,1u);ASSERT_EQ(broken.entries.size(),1u);
+    EXPECT_EQ(broken.entries.front().reason,"typed block has no undo locator");
+    ASSERT_EQ(f.f.db.putHeaderMetadata(f.f.token,block->Header().GetHash(),*metadata),Status::Ok);
+    EXPECT_EQ(f.f.service->AuditUndoMetadataForRestamp(1,false,true).failed,0u);
+}
 TEST(OrchardTransactionRpc, IndexIdentityOrdinalAndUnavailableOwnersRefuse) {
     CanonicalPoolFixture f;const auto block=f.Build();ASSERT_TRUE(block);ASSERT_TRUE(f.Submit(block->WireBytes()).accepted());
     const auto id=block->Transactions()[1].GetTxid().AsUint256();const auto hash=block->Header().GetHash();

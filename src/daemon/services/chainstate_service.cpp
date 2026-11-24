@@ -9387,6 +9387,39 @@ ChainstateService::AuditUndoMetadataForRestamp(uint32_t max_blocks_back,
 
         auto block_result = ReadStoredBlock(entry.hash);
         entry.block_readable = block_result.status() == Status::Ok;
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        if (!entry.block_readable && consensus::OrchardActiveForHeight(Params(), current_height)) {
+            // A block that holds an Orchard transaction is not a historical
+            // block: the reader above answers "Serialization" for it, and this
+            // audit used to report the block as damaged. (Mainnet 165,213, the
+            // first shield: a recovery marker could then never be cleared.)
+            // Read it as what it is and check the same material: the typed
+            // body, the undo locator, the flatfile undo and the committed undo.
+            const auto typed = ReadRuntimeBlockUnderLock(*chain_db_, block_storage_.get(), entry.hash, current_height);
+            entry.block_readable = typed.ok() && typed->IsOrchardProfile();
+            if (!entry.block_readable) {
+                entry.reason = "typed block body unreadable";
+            } else if (!entry.has_undo_flag || metadata.undo_size == 0) {
+                entry.reason = "typed block has no undo locator";
+            } else {
+                const auto disk_undo = block_storage_->readUndo({metadata.undo_file, metadata.undo_pos, metadata.undo_size});
+                entry.undo_readable = disk_undo.ok();
+                const auto committed = chain_db_->getUndo(entry.hash);
+                entry.undo_decodable = disk_undo.ok() && committed.ok() && committed->Serialize() == *disk_undo;
+                entry.reason = !entry.undo_readable ? "typed block undo unreadable"
+                             : !entry.undo_decodable ? "typed block flatfile and committed undo disagree" : "ok";
+            }
+            if (entry.reason == "ok") {
+                if (include_ok) report.entries.push_back(std::move(entry));
+            } else {
+                report.entries.push_back(std::move(entry));
+                report.failed++;
+            }
+            current_height--;
+            report.scanned++;
+            continue;
+        }
+#endif
         if (!entry.block_readable) {
             entry.reason = "block body unreadable: " +
                            std::string(StatusToString(block_result.status()));
