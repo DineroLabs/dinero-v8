@@ -8340,9 +8340,19 @@ SignResult ChainstateService::signAndStageRuntimeWalletPayment(WalletManager& wa
     return refused;
 }
 
-namespace { thread_local uint32_t t_prefer_replay_retry=0; }
-ChainstateService::PreferReplayRetryScope::PreferReplayRetryScope(){++t_prefer_replay_retry;}
-ChainstateService::PreferReplayRetryScope::~PreferReplayRetryScope(){--t_prefer_replay_retry;}
+namespace {
+thread_local uint32_t t_prefer_replay_retry=0;
+thread_local uint32_t t_reader_replay_retry=0;
+// Who is asking for the replay on this thread, for the log line of a full
+// rebuild. Most call sites do not say; the two that come back by themselves do.
+thread_local const char* t_replay_caller=nullptr;
+}
+ChainstateService::PreferReplayRetryScope::PreferReplayRetryScope():previous_caller_(t_replay_caller){
+    ++t_prefer_replay_retry;t_replay_caller="delivery worker";}
+ChainstateService::PreferReplayRetryScope::~PreferReplayRetryScope(){--t_prefer_replay_retry;t_replay_caller=previous_caller_;}
+ChainstateService::ReaderReplayRetryScope::ReaderReplayRetryScope():previous_caller_(t_replay_caller){
+    ++t_reader_replay_retry;t_replay_caller="wallet.orchard read";}
+ChainstateService::ReaderReplayRetryScope::~ReaderReplayRetryScope(){--t_reader_replay_retry;t_replay_caller=previous_caller_;}
 
 StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRuntimeAccountReplay() const {
     if(activation_mutex_.HeldByCurrentThread())return Status::Invalid;
@@ -8432,18 +8442,27 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             if(!RuntimeAccountReplay::SoleOwner(full_replay_)&&t_prefer_replay_retry>0&&
                full_replay_worker_refusals_.fetch_add(1)<kFullReplayWorkerRefusals)
                 return Status::Invalid;
+            // A wallet read is asked again too (ReaderReplayRetryScope), on
+            // its own allowance: it is told "not now" rather than rebuilding
+            // the replay under this lock while delivery waits behind it.
+            if(!RuntimeAccountReplay::SoleOwner(full_replay_)&&t_prefer_replay_retry==0&&t_reader_replay_retry>0&&
+               full_replay_reader_refusals_.fetch_add(1)<kFullReplayReaderRefusals)
+                return Status::Invalid;
             std::shared_ptr<const RuntimeAccountReplay> extended;
             try{extended=RuntimeAccountReplay::ExtendTail(std::move(full_replay_),read);}
             catch(const consensus::OrchardStateLookupError&){if(full_replay_)throw;captured_head.reset();}
             catch(...){full_replay_.reset();captured_head.reset();
                 full_capture_reason="extending the retained view failed";}
-            if(extended){full_replay_=extended;++full_replay_extensions_;full_replay_worker_refusals_.store(0);return extended;}
+            if(extended){full_replay_=extended;++full_replay_extensions_;
+                full_replay_worker_refusals_.store(0);full_replay_reader_refusals_.store(0);return extended;}
             // A concurrent reader still owns the old immutable view. A new
             // full capture keeps this call's semantics and becomes the cache.
             if(full_replay_)full_capture_reason=t_prefer_replay_retry>0?
                 "the retained view stayed held by another reader for every delivery pass allowed":
+                t_reader_replay_retry>0?
+                "the retained view stayed held by another reader for every wallet read allowed":
                 "the retained view stayed held by another reader";
-            full_replay_worker_refusals_.store(0);
+            full_replay_worker_refusals_.store(0);full_replay_reader_refusals_.store(0);
             captured_head.reset();
         }
         // Phone activation-prefix material has its own retained view and
@@ -8621,7 +8640,8 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             full_replay_=replay;++full_replay_full_builds_;
             const auto took=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now()-full_capture_started).count();
             std::cerr<<"[RuntimeReplay] "<<replay_stamp()<<" full account replay built (full build "<<full_replay_full_builds_.load()
-                     <<", "<<took<<" s, reason: "<<full_capture_reason<<")"<<std::endl;
+                     <<", "<<took<<" s, reason: "<<full_capture_reason
+                     <<", caller: "<<(t_replay_caller?t_replay_caller:"not named")<<")"<<std::endl;
         }
         return replay;
     } catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}

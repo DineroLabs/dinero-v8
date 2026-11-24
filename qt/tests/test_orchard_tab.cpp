@@ -499,6 +499,59 @@ private Q_SLOTS:
         QVERIFY(Find<QLabel>(tab_,"orchardIntro")->text().contains("storage upgrade was refused"));
         QVERIFY(Find<QLabel>(tab_,"orchardIntro")->text().contains("Free space"));
     }
+    // Mainnet pilot, 2026-11-24: the node now answers "ask again" to a read
+    // that arrives while it delivers a block (instead of making the read wait
+    // 14-23 s). That happens after most blocks, so it must not take the page
+    // back to "Waiting for verified Orchard history", pause sending, or clear
+    // the history: everything shown stays and the read is repeated shortly.
+    void askAgainRefusalKeepsTheAccountOperationsAndBalanceOnScreen() {
+        ready();
+        auto x=balanceFixture();x["account_revision"]=6;x["confirmed_una"]=qint64(2500000000);x["unreserved_confirmed_una"]=qint64(2500000000);
+        rawReply(last("wallet.orchard.getbalance"),x);
+        auto* status=Find<QLabel>(tab_,"orchardAccountStatus");
+        auto* selector=Find<QComboBox>(tab_,"orchardAccountSelector");
+        auto* balance=Find<QLabel>(tab_,"orchardBalance");
+        const QString statusBefore=status->text();const int accountsBefore=selector->count();
+        QVERIFY(accountsBefore>0);QVERIFY(tab_->knownBalance().has_value());
+        const QJsonObject busy{{"error","Authenticated Orchard replay source unavailable"}};
+        rawReply(last("wallet.orchard.listaccounts"),busy);
+        rawReply(last("wallet.orchard.listoperations"),busy);
+        QCOMPARE(status->text(),statusBefore);
+        QVERIFY(!status->text().contains("Waiting for verified Orchard history"));
+        QCOMPARE(selector->count(),accountsBefore);
+        // One refusal after a block is ordinary: the balance stays "confirmed".
+        QCOMPARE(balance->text(),QString("25.00000000 DIN confirmed"));
+        QMetaObject::invokeMethod(tab_,"onPoll");
+        rawReply(last("wallet.orchard.getbalance"),busy);
+        QCOMPARE(balance->text(),QString("25.00000000 DIN confirmed"));
+        // ...and an answer after it leaves no trace of the refusal.
+        QMetaObject::invokeMethod(tab_,"onPoll");
+        rawReply(last("wallet.orchard.getbalance"),x);
+        QCOMPARE(balance->text(),QString("25.00000000 DIN confirmed"));
+        // Refusals that go on past the grace period are said: the figure is
+        // kept, with the block it belongs to.
+        tab_->setRefusalGraceMs(40);
+        QMetaObject::invokeMethod(tab_,"onPoll");
+        rawReply(last("wallet.orchard.getbalance"),busy);
+        QCOMPARE(balance->text(),QString("25.00000000 DIN confirmed"));
+        QTest::qWait(80);
+        QMetaObject::invokeMethod(tab_,"onPoll");
+        rawReply(last("wallet.orchard.getbalance"),busy);
+        QCOMPARE(balance->text(),QString::fromUtf8("25.00000000 DIN at block 20 — updating"));
+        // The next answer starts a new grace period.
+        QMetaObject::invokeMethod(tab_,"onPoll");
+        rawReply(last("wallet.orchard.getbalance"),x);
+        QCOMPARE(balance->text(),QString("25.00000000 DIN confirmed"));
+        QMetaObject::invokeMethod(tab_,"onPoll");
+        rawReply(last("wallet.orchard.getbalance"),busy);
+        QCOMPARE(balance->text(),QString("25.00000000 DIN confirmed"));
+        QVERIFY(!Find<QLabel>(tab_,"orchardStatus")->text().contains("unavailable",Qt::CaseInsensitive));
+        // Policy: only this refusal is "ask again"; other errors are not.
+        QVERIFY(OrchardDisplay::askAgainRefusal("Authenticated Orchard replay source unavailable"));
+        QVERIFY(!OrchardDisplay::askAgainRefusal("Wallet is locked"));
+        // (A page that never had the accounts still says it is waiting:
+        // missingSnapshotHistoryKeepsSetupDiscoverableUntilVerified.)
+    }
     void wrongAccountAndStaleBalancesChangeNothing() {
         ready();const auto call=last("wallet.orchard.getbalance");auto x=balanceFixture();x["account"]=1;rawReply(call,x);
         QCOMPARE(Find<QLabel>(tab_,"orchardBalance")->text(),QString("Unknown"));
@@ -522,7 +575,8 @@ private Q_SLOTS:
         QCOMPARE(changed.last().at(0).toBool(),true);QCOMPARE(changed.last().at(1).toULongLong(),quint64(2500000000));
         QCOMPARE(changed.last().at(2).toBool(),true);QCOMPARE(changed.last().at(3).toULongLong(),quint64(20));
 
-        // The node refuses the next read (it is delivering a block).
+        // The node keeps refusing reads past the grace period.
+        tab_->setRefusalGraceMs(0);
         QMetaObject::invokeMethod(tab_,"onPoll");
         rawReply(last("wallet.orchard.getbalance"),QJsonObject{{"error","Orchard replay source unavailable"}});
         QCOMPARE(label->text(),QString::fromUtf8("25.00000000 DIN at block 20 — updating"));

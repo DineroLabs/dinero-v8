@@ -374,6 +374,15 @@ din::Json OrchardAccountRead(const ExecutionContext& ctx,const din::Json& params
         using Observation=std::pair<std::shared_ptr<const dinero::RuntimeAccountReplay>,
             std::shared_ptr<const dinero::wallet::OrchardAccountDelivery::CatalogEnrolled>>;
         const auto observation=[&]() -> Observation {
+            // A read is asked again by whoever asked it (the wallet page every
+            // few seconds, a script when it likes). When a block has arrived
+            // and delivery still holds the retained account replay, this read
+            // is refused, to be asked again, instead of rebuilding the whole
+            // replay from the origin itself. That rebuild took 14-23 s on a
+            // mainnet wallet, held the replay lock throughout, and so stalled
+            // the very delivery it was waiting for (measured 2026-11-24, about
+            // every 2-3 minutes with one page polling).
+            const dinero::ChainstateService::ReaderReplayRetryScope ask_again;
             for(unsigned attempt=0;;++attempt){
                 if(source->IsInSafeMode())throw std::runtime_error("Orchard wallet source unavailable in safe mode");
                 const auto captured=source->getRuntimeAccountReplayForWallet(wallet_use->Wallet(),session);

@@ -39,7 +39,12 @@ constexpr int kAccountDiscoveryReadyMs = 60000;
 // the longer the page polled). Without news of a block the data is read again
 // only as a slow heartbeat, or sooner when the last read was refused.
 constexpr int kHeartbeatMs = 60000;
-constexpr int kRefusedRetryMs = 15000;
+// A refusal costs the node about a quarter of a second and usually clears
+// within one block's delivery: ask again soon.
+constexpr int kRefusedRetryMs = 2500;
+// One refusal after a block is ordinary and changes nothing on screen. Only
+// when no answer has come for this long is the balance shown as old.
+constexpr int kRefusedShownMs = 10000;
 constexpr int kAccountDiscoveryRetryMs = 15000;
 const QString kDash = QString::fromUtf8("—");
 const QString kUnknown = QStringLiteral("Unknown");
@@ -101,7 +106,7 @@ std::optional<quint64> ParseFee(const QString& text) {
 }
 }  // namespace
 
-OrchardWidget::OrchardWidget(RpcClient* rpc, QWidget* parent) : QWidget(parent), rpc_(rpc) {
+OrchardWidget::OrchardWidget(RpcClient* rpc, QWidget* parent) : QWidget(parent), rpc_(rpc), refusalGraceMs_(kRefusedShownMs) {
     setupUi();
     // A null client is a passive view: requests are observable, no I/O occurs.
     if (rpc_) {
@@ -846,6 +851,11 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
         bool stale=false;
         if(catalog && accountSelected_)for(const auto& a:catalog->accounts)
             if(a.account==account_ && (a.revision<revision_ || a.revision<balanceRevision_))stale=true;
+        if(!catalog && accountsSnapshot_ && OrchardDisplay::askAgainRefusal(OC::InBandError(result).value_or(QString()))) {
+            // Busy for a moment, not lost: the accounts, operations and
+            // history already shown stay. Only the balance is marked as old.
+            noteAskAgain();return;
+        }
         if(!catalog || stale) {
             accountsSnapshot_.reset();operationsSnapshot_.reset();balanceNoLongerCurrent();
             clearHistory("History unavailable — account discovery failed");
@@ -915,6 +925,9 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
         advance();
     } else if (shortName == "ops") {
         const auto r = OC::ParseOperations(result);
+        if (!r && operationsSnapshot_ && OrchardDisplay::askAgainRefusal(OC::InBandError(result).value_or(QString()))) {
+            noteAskAgain();return;  // busy for a moment: keep the operations shown
+        }
         if (!r || r->account!=account_) {
             operationsSnapshot_.reset();
             const QString e = OC::InBandError(result).value_or("Unexpected reply");
@@ -955,7 +968,11 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
         // nothing about this balance: it changes nothing.
         if(b && (b->account!=account_ || b->accountRevision<revision_ || b->accountRevision<balanceRevision_))return;
         if(b)balanceRevision_=b->accountRevision;
+        if(!b && lastBalance_ && OrchardDisplay::askAgainRefusal(OC::InBandError(result).value_or(QString()))) {
+            noteAskAgain();return;
+        }
         if(b) {
+            refusedSince_.invalidate();
             lastBalance_=OrchardDisplay::KnownBalance{b->confirmed,b->height,b->caughtUp,true};
             showBalance();
             balance_->setToolTip(QString("At the wallet checkpoint: %1 DIN reserved; %2 DIN unreserved. This is not a spendability guarantee.")
@@ -972,12 +989,19 @@ void OrchardWidget::showBalance() {
     Q_EMIT balanceChanged(lastBalance_.has_value(),lastBalance_?lastBalance_->confirmedUna:0,
         lastBalance_&&lastBalance_->current,lastBalance_?lastBalance_->height:0);
 }
+// The node said "ask again" (it is delivering a block). The read is repeated
+// soon; what is shown changes only if that goes on past the grace period.
+void OrchardWidget::noteAskAgain() {
+    readRefused_=true;
+    if(!refusedSince_.isValid())refusedSince_.start();
+    if(refusedSince_.elapsed()>=refusalGraceMs_)balanceNoLongerCurrent();
+}
 void OrchardWidget::balanceNoLongerCurrent() {
     if(lastBalance_)lastBalance_->current=false;
     showBalance();
 }
 void OrchardWidget::forgetBalance() {
-    lastBalance_.reset();showBalance();
+    lastBalance_.reset();refusedSince_.invalidate();showBalance();
 }
 void OrchardWidget::setBalanceWanted(bool wanted) {
     if(balanceWanted_==wanted)return;
@@ -992,11 +1016,11 @@ void OrchardWidget::setTipHeight(quint64 height) {
 bool OrchardWidget::readsDue() const {
     if(!sinceRead_.isValid() || tipHeight_!=readAtTip_)return true;
     // A refused or incomplete read is asked again without waiting for a block.
-    const bool incomplete=accountKnown() && (!operationsSnapshot_ || !lastBalance_ || !lastBalance_->current);
+    const bool incomplete=accountKnown() && (readRefused_ || !operationsSnapshot_ || !lastBalance_ || !lastBalance_->current);
     return sinceRead_.elapsed()>=(incomplete?kRefusedRetryMs:kHeartbeatMs);
 }
 void OrchardWidget::markRead() {
-    sinceRead_.start();readAtTip_=tipHeight_;
+    sinceRead_.start();readAtTip_=tipHeight_;readRefused_=false;
 }
 
 const OC::Operation* OrchardWidget::selectedOperation() const {

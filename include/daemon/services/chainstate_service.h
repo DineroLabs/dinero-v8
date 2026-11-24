@@ -1161,7 +1161,25 @@ public:
         PreferReplayRetryScope();~PreferReplayRetryScope();
         PreferReplayRetryScope(const PreferReplayRetryScope&)=delete;
         PreferReplayRetryScope& operator=(const PreferReplayRetryScope&)=delete;
+    private:
+        const char* previous_caller_;
     };
+    // The same for a wallet read that is asked again by whoever asked it (the
+    // wallet.orchard.* reads: a page polls them). It has its own allowance
+    // (kFullReplayReaderRefusals), so a polling page cannot use up the
+    // delivery worker's passes and push the worker into a rebuild.
+    struct ReaderReplayRetryScope {
+        ReaderReplayRetryScope();~ReaderReplayRetryScope();
+        ReaderReplayRetryScope(const ReaderReplayRetryScope&)=delete;
+        ReaderReplayRetryScope& operator=(const ReaderReplayRetryScope&)=delete;
+    private:
+        const char* previous_caller_;
+    };
+    // Consecutive "not now" answers given while the retained view was held:
+    // {to the delivery worker, to wallet reads}. Both return to zero when the
+    // view is extended or rebuilt (diagnostics/tests).
+    std::pair<uint32_t,uint32_t> FullReplayHeldRefusals() const{
+        return {full_replay_worker_refusals_.load(),full_replay_reader_refusals_.load()};}
     void SetV3PendingReconcileHookForTest(std::function<void()> hook){test_after_v3_pending_reconcile_=std::move(hook);}
     std::pair<uint64_t,uint64_t> FullReplayCaptureCounts() const{
         return {full_replay_full_builds_.load(),full_replay_extensions_.load()};
@@ -2310,6 +2328,10 @@ private:
     // retained view stays held, before one of them pays for a full capture.
     static constexpr uint32_t kFullReplayWorkerRefusals=30;
     mutable std::atomic<uint32_t> full_replay_worker_refusals_{0};
+    // Wallet reads that may be told "ask again" in a row for the same reason.
+    // A page asks every few seconds, so this is about a minute.
+    static constexpr uint32_t kFullReplayReaderRefusals=20;
+    mutable std::atomic<uint32_t> full_replay_reader_refusals_{0};
     // Consecutive "kept, retry" answers for a held phone replay (retained_replay_policy.h).
     mutable std::atomic<uint32_t> phone_replay_held_refusals_{0};
     // Observational counters, for the log only: reads that waited for a

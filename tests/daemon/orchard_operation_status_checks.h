@@ -290,6 +290,39 @@ void ExpectOrchardAmounts(const din::Json& result,uint64_t confirmed,uint64_t re
     EXPECT_FALSE(result.isMember("spendable"));EXPECT_FALSE(result.isMember("pending_incoming_una"));
 }
 }
+// Mainnet pilot, 2026-11-24: with delivery holding the retained account
+// replay for the seconds one event takes, a balance read that arrived after a
+// new block waited 250 ms and then rebuilt the whole replay itself (14-23 s,
+// with the replay lock held, so delivery stalled behind it). A read is asked
+// again anyway: it is refused while the replay is held, and answered by a
+// tail extension once it is free. No full rebuild either time.
+TEST(OrchardBalance, AReadDoesNotRebuildTheReplayThatDeliveryIsHolding) {
+    OrchardBalanceFixture f;
+    ExpectOrchardAmounts(f.Balance(),500000,0);
+    auto held=f.f.service->getRuntimeAccountReplay();   // delivery, mid-event
+    ASSERT_TRUE(held.ok());
+    const auto before=f.f.service->FullReplayCaptureCounts();
+    (void)f.MineEmpty();
+    const auto refused=f.Balance();
+    ASSERT_TRUE(refused.isMember("error"))<<refused.toStyledString();
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,before.first)<<"the read rebuilt the replay from the origin";
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().second,before.second);
+    // Reads have their own allowance: a polling page does not use up the
+    // delivery worker's passes (which would end in the worker rebuilding).
+    ASSERT_TRUE(f.Balance().isMember("error"));
+    EXPECT_EQ(f.f.service->FullReplayHeldRefusals(),(std::pair<uint32_t,uint32_t>{0,2}));
+    {
+        const ChainstateService::PreferReplayRetryScope worker_pass;
+        EXPECT_FALSE(f.f.service->getRuntimeAccountReplay().ok());
+    }
+    EXPECT_EQ(f.f.service->FullReplayHeldRefusals(),(std::pair<uint32_t,uint32_t>{1,2}));
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts(),before);
+    held=Status::Invalid;                                // delivery lets go
+    ExpectOrchardAmounts(f.Balance(),500000,0);
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,before.first);
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().second,before.second+1);
+    EXPECT_EQ(f.f.service->FullReplayHeldRefusals(),(std::pair<uint32_t,uint32_t>{0,0}));
+}
 TEST(OrchardBalance, ReservationSignedAndReopenPreserveAmountsAndBytes) {
     OrchardBalanceFixture f;const auto initial_bytes=f.Snapshot();const auto initial=f.Balance();
     ExpectOrchardAmounts(initial,500000,0);EXPECT_TRUE(initial["account_caught_up_to_captured_source"].asBool());

@@ -42,6 +42,9 @@ public:
     // only change when a block arrives, so that is when it is read again.
     void setTipHeight(quint64 height);
     std::optional<OrchardDisplay::KnownBalance> knownBalance() const { return lastBalance_; }
+    // How long "ask again" refusals may go on before the balance is shown as
+    // old (default kRefusedShownMs). For tests.
+    void setRefusalGraceMs(int ms) { refusalGraceMs_ = ms; }
 
     // For tests: what the current payment is doing.
     std::optional<OrchardFlow::State> paymentState() const;
@@ -155,6 +158,10 @@ private:
     bool balanceWanted_ = false;
     quint64 tipHeight_ = 0, readAtTip_ = 0;
     QElapsedTimer sinceRead_;   // since the account's data was last asked for
+    bool readRefused_ = false;  // the node said "ask again" to the last read
+    QElapsedTimer refusedSince_; // the first refusal since the last answer
+    int refusalGraceMs_;
+    void noteAskAgain();
     bool readsDue() const;
     void markRead();
     QLabel* operationDetail_ = nullptr;

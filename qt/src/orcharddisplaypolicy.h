@@ -41,6 +41,13 @@ inline QString balanceTip(const std::optional<KnownBalance>& b) {
     return {};
 }
 
+// The node refuses a wallet read for a moment while it delivers a new block
+// to the wallet, and expects to be asked again. That is not a failure of the
+// account: what the page already shows stays, and the read is repeated soon.
+inline bool askAgainRefusal(const QString& error) {
+    return error.contains("replay source unavailable", Qt::CaseInsensitive);
+}
+
 // The Wallet page's "Shielded / private" column.
 struct WalletPrivate {
     QString orchardText;     // the "Orchard:" value
