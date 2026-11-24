@@ -128,3 +128,27 @@ explorer (`claude/v826-orchard-block-lookups`). Still using it:
   the DPI header anchor: not audited yet.
 - `getblockfilters` now lists such heights in `unavailable_heights` but builds
   no filter for them; what that filter contains is undecided.
+
+### Windows desktop findings (owner's laptop AHLAPTOP, v8.2.5, 2026-11-23)
+- **A fresh wallet on a full node never catches up on a slow CPU (evidence, cause unconfirmed).**
+  Wallet Juliett was created that morning on v8.2.5 and mined to. At the tip,
+  with local mining off, `sync_meta.last_scanned_height` stays 0 and
+  `wallet.snapshot` lists no funded address, while `getaddressbalance` shows
+  1,100 DIN at its first address (`ismine` true) and `dinerod` keeps about 1.15
+  cores busy. Expected cause: the fresh wallet's cursor advances only through
+  the runtime account replay (full-archive path), and v8.2.5 discards a full
+  build whenever a block arrives while a reader holds it; the blocks come from
+  the network, so local mining is irrelevant. 6f06765cc, dd5521b00 and
+  684ad9b43 on this branch are the fix. Confirmation still owed: pause the
+  owner's Mac miner long enough for one full build on that laptop and watch
+  the cursor leave 0.
+- **Startup took 42 minutes to open RPC** (one busy thread, 3,152 CPU-seconds)
+  on a 57 GB full datadir; the same step takes 4-5 minutes on the owner's Mac.
+  Not investigated.
+- **No daemon log on Windows:** `%APPDATA%\Dinero\embedded-daemon.log` is 0 KB,
+  so nothing can say what the node is doing during that start.
+- **`wallet.getsyncstate` ignores its wallet-name argument** and reports the
+  active wallet (`rpc_context_wallet_getsyncstate` discards `params`).
+- **Orchard tab shows "Unknown"** when the node refuses a balance read while
+  the wallet catches up (seen on the Mac, wallet Hotel). Show the last known
+  balance with its block height instead.
