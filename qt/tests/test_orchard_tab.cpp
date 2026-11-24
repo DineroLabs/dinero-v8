@@ -526,6 +526,7 @@ private Q_SLOTS:
         QVERIFY(text.contains("Block: 18 ("+QString(64,'e')+")"));
         QVERIFY(text.contains("Public coins spent: 100.00155000 DIN (1 coin)"));
         QVERIFY(text.contains("Public coins created: 75.00145000 DIN (1 coin, your change)"));
+        QVERIFY2(detail->minimumHeight()>=detail->fontMetrics().lineSpacing()*int(text.count('\n')+1),"every detail line has room");
         // A settled transaction is not asked for again when the list refreshes.
         const int mark=sent_.size();
         QMetaObject::invokeMethod(tab_,"onPoll");rawReply(last("wallet.orchard.listoperations"),snapshot);
@@ -739,6 +740,25 @@ private Q_SLOTS:
         reply(last("wallet.orchard.finishspend"), R"({"error":"Proof pending","error_code":"proof_not_ready","proof_state":"running","reservation_retained":true})");
         QApplication::processEvents();
         QVERIFY(tab_->grab().save(dir + "/orchard-proving.png"));
+
+        // A confirmed shield, selected: its details and the kept balance.
+        tab_->setWalletScope("alice");bind("alice");tab_->setWalletUnlocked(true);
+        auto balance=balanceFixture();balance["confirmed_una"]=qint64(2500000000);balance["unreserved_confirmed_una"]=qint64(2500000000);
+        rawReply(last("wallet.orchard.getbalance"),balance);
+        auto snapshot=storedSnapshot("wallet.orchard.finishshield");
+        auto rows=snapshot["operations"].toArray();auto row=rows[0].toObject();
+        row["chain_observation"]=QJsonObject{{"height",18},{"outcome","confirmed"},{"block_hash",QString(64,'e')},{"transaction_id",QString(64,'f')}};
+        rows[0]=row;snapshot["operations"]=rows;
+        rawReply(last("wallet.orchard.listoperations"),snapshot);
+        Find<QTableWidget>(tab_,"orchardOperationsTable")->selectRow(0);
+        rawReply(last("gettransaction"),QJsonObject{{"txid",QString(64,'f')},{"status","confirmed"},{"blockheight",18},{"blockhash",QString(64,'e')},
+            {"confirmations",280},{"orchard_value_direction","into_orchard"},{"orchard_value_din","25.00000000"},{"fee_din","0.00010000"},
+            {"total_input_value_din","100.00155000"},{"input_count",1},{"total_output_value_din","75.00145000"},{"output_count",1},{"size",9360}});
+        QMetaObject::invokeMethod(tab_,"onPoll");
+        rawReply(last("wallet.orchard.getbalance"),QJsonObject{{"error","Orchard replay source unavailable"}});
+        tab_->resize(1440, 1250);
+        QApplication::processEvents();
+        QVERIFY(tab_->grab().save(dir + "/orchard-operation-detail.png"));
     }
 
     void noPrivateCovenantsAndNoInventedActivation() {

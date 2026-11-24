@@ -986,11 +986,16 @@ void OrchardWidget::showOperationDetail() {
     const auto* op=selectedOperation();
     if(!op) {
         operationDetail_->setText("Select an operation above to see its details.");
+        operationDetail_->setMinimumHeight(0);
         return;
     }
     std::optional<QJsonObject> tx;
     if(txDetails_.contains(op->txid))tx=txDetails_.value(op->txid);
-    operationDetail_->setText(OrchardDisplay::operationDetail(*op,tx,txProblems_.value(op->txid)).join("\n"));
+    const auto lines=OrchardDisplay::operationDetail(*op,tx,txProblems_.value(op->txid));
+    operationDetail_->setText(lines.join("\n"));
+    // Every line stays readable: the panel is never squeezed below its text
+    // (the page scrolls instead).
+    operationDetail_->setMinimumHeight(operationDetail_->fontMetrics().lineSpacing()*int(lines.size())+24);
     // A confirmed transaction's details do not change; an unconfirmed one is
     // asked for again when its row is selected or its state changes.
     const bool settled=tx && tx->value("status").toString()=="confirmed" && op->outcome=="confirmed";
