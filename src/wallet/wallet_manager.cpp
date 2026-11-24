@@ -1,3 +1,4 @@
+#include "daemon/services/v3_recovery_diagnostic.h"
 #include "wallet/orchard_account_catalog.h"
 #include "wallet/selected_history.h"
 #include "wallet/unsigned_tx_builder.h"
@@ -4238,7 +4239,7 @@ WalletManager::DatabaseLease::SealedFreshBirthHeight(uint64_t expected_session) 
 std::optional<uint32_t>
 WalletManager::DatabaseLease::SealedFreshOrdinaryBirthHeight(uint64_t expected_session) const {
     const auto birth=SealedFreshBirthHeight(expected_session);
-    if(!birth)return std::nullopt;
+    if(!birth)return (V3RecoveryDiagnostic("fresh birth","not proven at wallet_manager.cpp:4241"),std::nullopt);
     if(!sqlite3_get_autocommit(db_))
         throw std::runtime_error("Fresh ordinary inventory requires its own transaction");
     IssuedAddressTransaction transaction(db_);
@@ -4256,7 +4257,7 @@ WalletManager::DatabaseLease::SealedFreshOrdinaryBirthHeight(uint64_t expected_s
     // independently supplied keys or descriptors, including watch-only ones.
     for(const char* table:{"imported_keys","taproot_keys","imported_descriptors",
                            "imported_descriptor_addresses","covenant_descriptors"})
-        if(has_rows(table))return std::nullopt;
+        if(has_rows(table))return (V3RecoveryDiagnostic("fresh birth","not proven at wallet_manager.cpp:4259"),std::nullopt);
 
     // Authenticate every HD path against the unlocked seed, including the
     // address and watch-script companions. Then reject address rows without
@@ -4266,7 +4267,7 @@ WalletManager::DatabaseLease::SealedFreshOrdinaryBirthHeight(uint64_t expected_s
         IssuedStatement extra(db_,"SELECT 1 FROM addresses a LEFT JOIN address_derivation_paths p "
             "ON p.address=a.address WHERE p.address IS NULL LIMIT 1");
         const int rc=sqlite3_step(extra.value.get());
-        if(rc==SQLITE_ROW)return std::nullopt;
+        if(rc==SQLITE_ROW)return (V3RecoveryDiagnostic("fresh birth","not proven at wallet_manager.cpp:4269"),std::nullopt);
         IssuanceCheck(db_,rc,SQLITE_DONE);
     }
     std::map<std::vector<uint8_t>,std::string> proved_scripts;
@@ -4313,31 +4314,31 @@ WalletManager::DatabaseLease::SealedFreshOrdinaryBirthHeight(uint64_t expected_s
                 throw std::runtime_error("Fresh ordinary PQ master unavailable");
             const auto parse_path=[](std::string_view path)->std::optional<std::array<uint32_t,3>> {
                 constexpr std::string_view prefix="m/88'/1448'/";
-                if(!path.starts_with(prefix))return std::nullopt;
+                if(!path.starts_with(prefix))return (V3RecoveryDiagnostic("fresh birth","not proven at wallet_manager.cpp:4316"),std::nullopt);
                 path.remove_prefix(prefix.size());
                 std::array<uint32_t,3> parts{};
                 for(size_t i=0;i<parts.size();++i) {
-                    if(path.empty() || path.front()<'0' || path.front()>'9')return std::nullopt;
+                    if(path.empty() || path.front()<'0' || path.front()>'9')return (V3RecoveryDiagnostic("fresh birth","not proven at wallet_manager.cpp:4320"),std::nullopt);
                     uint64_t value=0;size_t digits=0;
                     while(digits<path.size() && path[digits]>='0' && path[digits]<='9') {
                         value=value*10+uint32_t(path[digits++]-'0');
-                        if(value>0x7fffffff)return std::nullopt;
+                        if(value>0x7fffffff)return (V3RecoveryDiagnostic("fresh birth","not proven at wallet_manager.cpp:4324"),std::nullopt);
                     }
-                    if(digits>1 && path.front()=='0')return std::nullopt;
+                    if(digits>1 && path.front()=='0')return (V3RecoveryDiagnostic("fresh birth","not proven at wallet_manager.cpp:4326"),std::nullopt);
                     parts[i]=uint32_t(value);path.remove_prefix(digits);
                     const std::string_view separator=i==0?"'/":i==1?"/":"";
-                    if(!path.starts_with(separator))return std::nullopt;
+                    if(!path.starts_with(separator))return (V3RecoveryDiagnostic("fresh birth","not proven at wallet_manager.cpp:4329"),std::nullopt);
                     path.remove_prefix(separator.size());
                 }
-                if(!path.empty() || parts[1]>1)return std::nullopt;
+                if(!path.empty() || parts[1]>1)return (V3RecoveryDiagnostic("fresh birth","not proven at wallet_manager.cpp:4332"),std::nullopt);
                 return parts;
             };
             for(const auto& record:rows) {
                 const auto& row=record.metadata;
                 const auto parts=parse_path(row.derivation_path);
-                if(!parts || row.wallet_id!=owner_.current_wallet_id_)return std::nullopt;
+                if(!parts || row.wallet_id!=owner_.current_wallet_id_)return (V3RecoveryDiagnostic("fresh birth","not proven at wallet_manager.cpp:4338"),std::nullopt);
                 auto material=owner_.DeriveV7Bip32Material((*parts)[0],(*parts)[1],(*parts)[2]);
-                if(!material)return std::nullopt;
+                if(!material)return (V3RecoveryDiagnostic("fresh birth","not proven at wallet_manager.cpp:4340"),std::nullopt);
                 struct ClearMaterial {WalletManager::V7Bip32Material& value;
                     ~ClearMaterial(){OPENSSL_cleanse(value.private_key.data(),value.private_key.size());
                         OPENSSL_cleanse(value.chain_code.data(),value.chain_code.size());}} clear_material{*material};
@@ -4349,7 +4350,7 @@ WalletManager::DatabaseLease::SealedFreshOrdinaryBirthHeight(uint64_t expected_s
                 if(wallet::OpenSeedSecure(encrypted.ciphertext,encrypted.nonce,encrypted.tag,*initial,&plaintext)!=wallet::AeadOpenResult::Ok)
                     throw std::runtime_error("Fresh ordinary PQ seed authentication failed");
                 if(CRYPTO_memcmp(plaintext.bytes().data(),expected.value.data(),32)!=0)
-                    return std::nullopt;
+                    return (V3RecoveryDiagnostic("fresh birth","not proven at wallet_manager.cpp:4352"),std::nullopt);
                 wallet::SecureKeypair pair(consensus::pq::ml_dsa_65::KeygenFromSeed(plaintext.bytes()));
                 const auto root=wallet::pq::ComputeSingleLeafMerkleRoot(consensus::pq::SCHEME_ID_ML_DSA_65,pair.pubkey());
                 const auto decoded=wallet::DecodeP2MRAddress(row.address);
@@ -4375,7 +4376,7 @@ WalletManager::DatabaseLease::SealedFreshOrdinaryBirthHeight(uint64_t expected_s
             const std::vector<uint8_t> key(script,script+script_len);
             const auto proved=proved_scripts.find(key);
             if(proved==proved_scripts.end() || proved->second!=std::string(path,path_len))
-                return std::nullopt;
+                return (V3RecoveryDiagnostic("fresh birth","not proven at wallet_manager.cpp:4378"),std::nullopt);
         }
         IssuanceCheck(db_,rc,SQLITE_DONE);
     }

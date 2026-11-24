@@ -1,3 +1,4 @@
+#include "daemon/services/v3_recovery_diagnostic.h"
 #include "daemon/runtime_delivery_worker.h"
 #include "daemon/runtime_replay_cancellation.h"
 #include "daemon/runtime_reorg_readmission.h"
@@ -177,7 +178,11 @@ void RuntimeDeliveryWorker::RecoverWallet(Report& report,
                 limits_.legacy_material_limit_bytes,1,&advanced_partial) :
             source_->resumeRuntimeWalletRecoveryIfNeeded(use->Wallet(),index->Index(),session,
                 limits_.legacy_material_limit_bytes);
-        if (!recovered.ok()){refuse_resource_limit(recovered.status());return;}
+        if (!recovered.ok()){
+            V3RecoveryDiagnostic(full_archive_v3?"worker (full archive v3)":"worker",
+                std::string("pass refused with status ")+StatusToString(recovered.status())+
+                (use->Wallet().isWalletLocked()?", wallet locked":", wallet unlocked"));
+            refuse_resource_limit(recovered.status());return;}
         if (!*recovered) {
             report.wallet=advanced_partial?WalletOutcome::AdvancedPending:WalletOutcome::NoLog;
             return;
@@ -185,7 +190,8 @@ void RuntimeDeliveryWorker::RecoverWallet(Report& report,
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
         report.wallet=WalletOutcome::AppliedPrefix;report.wallet_head=(*recovered)->observed_head;
 #endif
-    } catch (...) { /* Durable store prefixes remain retryable; never enroll here. */ }
+    } catch (const std::exception& e) { V3RecoveryDiagnostic("worker",std::string("pass threw: ")+e.what()); }
+      catch (...) { V3RecoveryDiagnostic("worker","pass threw an unknown exception"); /* Durable store prefixes remain retryable; never enroll here. */ }
 }
 void RuntimeDeliveryWorker::RestoreRetiredLegacyPendingNotes() const {
     if (!wallet_) return;

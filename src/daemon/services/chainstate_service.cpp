@@ -22,6 +22,7 @@
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/csn_replay_data.h"
 #include "daemon/services/chainstate_service.h"
+#include "daemon/services/v3_recovery_diagnostic.h"
 #include "daemon/runtime_replay_cancellation.h"
 #include "consensus/candidate_ancestry.h"
 #include "daemon/runtime_reorg_readmission.h"
@@ -7811,8 +7812,10 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
         return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
             RuntimeEnrolledWalletRecoveryResult{applied,{},(*page)->head,std::nullopt});
     } catch(const RuntimeWalletCoverageMaterialLimit&) { return Status::ResourceLimit; }
-      catch(const consensus::OrchardStateLookupError& e) { return e.SourceStatus(); }
-      catch(...) { return Status::Internal; }
+      catch(const consensus::OrchardStateLookupError& e) {
+          V3RecoveryDiagnostic("recovery",std::string("state lookup refused: ")+e.what());return e.SourceStatus(); }
+      catch(const std::exception& e) { V3RecoveryDiagnostic("recovery",std::string("refused: ")+e.what());return Status::Internal; }
+      catch(...) { V3RecoveryDiagnostic("recovery","refused: unknown exception");return Status::Internal; }
 #else
     (void)wallet;(void)metadata_index;(void)expected_session;(void)material_limit_bytes;
     (void)orchard_events_per_pass;(void)advanced_partial;
@@ -8628,6 +8631,9 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
             // A present-but-unverifiable record fails closed (throws below).
             const auto birth=lease->SealedFreshOrdinaryBirthHeight(session);
             fresh_empty_prefix=birth && *birth>=Params().orchard_activation_height;
+            V3RecoveryDiagnostic("coverage",std::string("sealed fresh birth ")+
+                (birth?std::to_string(*birth):std::string("not proven"))+
+                (fresh_empty_prefix?", empty prefix (no origin replay)":", full origin replay from genesis"));
         }
         {
             std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
@@ -8678,8 +8684,10 @@ StatusOr<std::shared_ptr<const RuntimeWalletCoverageProjection>> ChainstateServi
         }
         return result;
     } catch(const RuntimeWalletCoverageMaterialLimit&) { return Status::ResourceLimit; }
-      catch(const consensus::OrchardStateLookupError& e) { return e.SourceStatus(); }
-      catch(...) { return Status::Internal; }
+      catch(const consensus::OrchardStateLookupError& e) {
+          V3RecoveryDiagnostic("coverage",std::string("state lookup refused: ")+e.what());return e.SourceStatus(); }
+      catch(const std::exception& e) { V3RecoveryDiagnostic("coverage",std::string("refused: ")+e.what());return Status::Internal; }
+      catch(...) { V3RecoveryDiagnostic("coverage","refused: unknown exception");return Status::Internal; }
 #else
     (void)wallet;(void)session;(void)metadata_index;(void)material_limit_bytes;
     return Status::Internal;
