@@ -1,5 +1,6 @@
 #include "recoverywordspolicy.h"
 #include "walletwizard.h"
+#include "walletcreaterefusal.h"
 #include "rpcclient.h"
 #include "connection_manager.h"
 #include "walletnameutils.h"
@@ -898,20 +899,13 @@ void CreateSeedPage::onGenerateSeed() {
           wizard()->setProperty("walletRollbackCandidateName", QString());
         QString rollbackError;
         rollbackProvisionedWallet(wizard(), &rollbackError);
-        const QString errorCode = payload.value("error_code").toString();
-        const bool snapshotPending = errorCode == "snapshot_bootstrap_pending";
-        const bool historyPending = snapshotPending || errorCode == "orchard_history_pending";
-        lblSeed_->setText(historyPending
-            ? (snapshotPending
-                ? "Your node is still loading its starting snapshot. No wallet was created. Retry in a few minutes."
-                : "Orchard history is still downloading and verifying. No wallet was created. Retry after sync progresses.")
-            : "❌ Error generating seed: " + errorText +
-                (rollbackError.isEmpty() ? QString() : "\n\nRollback warning:\n" + rollbackError));
-        lblSeed_->setStyleSheet(historyPending
+        const auto refusal = WalletCreateRefusal::shown(payload.value("error_code").toString(), errorText, rollbackError);
+        lblSeed_->setText(refusal.text);
+        lblSeed_->setStyleSheet(refusal.calm
             ? "QLabel { color: #f59f00; background: #2b2b2b; padding: 20px; }"
             : "QLabel { color: #ff6b6b; background: #ffe3e3; padding: 20px; }");
         btnReveal_->setEnabled(false);
-        btnRetry_->setVisible(historyPending);
+        btnRetry_->setVisible(refusal.retry);
         qWarning() << "CreateSeedPage: wallet.createhd returned application error:"
                    << QJsonDocument(payload).toJson(QJsonDocument::Compact);
         return;

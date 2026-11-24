@@ -26,6 +26,7 @@
 #include "rpcclient.h"
 #if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
 #include "orchardwidget.h"
+#include "walletcreaterefusal.h"
 #endif
 
 // The Wallet tab must never start or clean up daemon processes.
@@ -95,6 +96,29 @@ class WalletLayoutTest : public QObject {
     }
 
 private Q_SLOTS:
+    // A node that can never credit a new wallet says so in its own words;
+    // the wizard shows that sentence as it is, calmly, and offers no Retry
+    // (waiting does not help). Mainnet 2026-11-24: 1,100 DIN mined to a
+    // wallet a Windows node had created and could never show.
+    void creationRefusalWordingFollowsTheNodesReason() {
+        const QString why = "This node cannot show money in a new wallet: its data was started from an older snapshot. "
+                            "No wallet was created.";
+        const auto never = WalletCreateRefusal::shown("native_wallet_unservable", why, QString());
+        QCOMPARE(never.text, why);
+        QVERIFY(!never.retry);
+        QVERIFY(never.calm);
+        QVERIFY(!never.text.contains("Error generating seed"));
+        const auto later = WalletCreateRefusal::shown("snapshot_bootstrap_pending", "x", QString());
+        QVERIFY(later.retry && later.calm);
+        QVERIFY(later.text.contains("No wallet was created"));
+        const auto orchard = WalletCreateRefusal::shown("orchard_history_pending", "x", QString());
+        QVERIFY(orchard.retry && orchard.calm);
+        const auto broke = WalletCreateRefusal::shown("", "disk full", "could not reopen");
+        QVERIFY(!broke.retry && !broke.calm);
+        QVERIFY(broke.text.contains("disk full") && broke.text.contains("could not reopen"));
+        // A refusal code with no sentence must not leave an empty box.
+        QVERIFY(!WalletCreateRefusal::shown("native_wallet_unservable", " ", QString()).text.trimmed().isEmpty());
+    }
     void initTestCase() {
         QVERIFY(dir_.isValid());
         QVERIFY(endpoint_.listen(QHostAddress::LocalHost));

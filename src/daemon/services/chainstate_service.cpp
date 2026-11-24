@@ -3431,6 +3431,33 @@ bool ChainstateService::FullArchiveV2LegacySourceClass(const UTXOIndex& index) {
         index.GetMetadata("wallet_snapshot_recovery_base_height") ||
         chain_db_->getPreBaseCoinSetBase().status()!=Status::NotFound);
 }
+bool ChainstateService::NativeWalletServable(std::string* why) {
+    if(why)why->clear();
+    if(Params().orchard_activation_height==UINT32_MAX)return true;
+    try {
+        auto self=weak_from_this().lock();
+        if(!self)return true;
+        auto use=AcquireWalletIndexUse(self);
+        auto& index=use->Index();
+        if(index.IsFullArchiveV3MetadataOnly())return true;          // synced from the first block
+        std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+        if(!chain_db_ || GetConfig().utreexo_stateless || compact_startup_)return true;  // their own gates
+        if(orchard_snapshot_startup_)return true;                    // authenticated Orchard snapshot base
+        // A legacy index on a stateful node. Without snapshot markers it is a
+        // plain full archive (slow origin replay, but served, and upgradable).
+        const bool older_snapshot=assumeutxo_active_ || GetSnapshotWalletRecoveryBaseHeight()!=0 ||
+            index.GetMetadata("wallet_snapshot_recovery_base_height") ||
+            chain_db_->getPreBaseCoinSetBase().status()!=Status::NotFound;
+        if(!older_snapshot)return true;
+        if(why)*why="This node cannot show money in a new wallet: its data was started from an older snapshot, "
+            "and wallets created now need a node synced from the first block or started from a current snapshot. "
+            "No wallet was created. Create it in the Dinero phone app, or on a computer whose Dinero data was "
+            "synced from the beginning, and use the same recovery words anywhere later.";
+        return false;
+    } catch(const WalletIndexUnavailable&) {
+        return true;  // not this gate's refusal; the index's own owners report it
+    }
+}
 bool ChainstateService::RecoveredV3TransparentSendSourceReady() {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     try {

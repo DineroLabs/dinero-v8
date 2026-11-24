@@ -208,6 +208,17 @@ public:
     // An incomplete legacy wallet on this class needs the offline v3 upgrade
     // (WalletManager::MarkFullArchiveV2LegacySource); never auto-migrated.
     bool FullArchiveV2LegacySourceClass(const UTXOIndex& index);
+    // Can a wallet created on this node now ever be credited by it? A wallet
+    // created by 8.2 is a native wallet: it is served through the v3 wallet
+    // index (a node synced from the first block), through an authenticated
+    // Orchard (v6) snapshot base, or by compact/stateless storage. A stateful
+    // node whose legacy (v2) wallet index still carries an older snapshot's
+    // markers is none of these: the v3 upgrade refuses it for good, and a
+    // native wallet created there replays the chain on every delivery pass
+    // and is never credited (mainnet, a Windows desktop started from a
+    // 52,287 snapshot: 1,100 DIN mined to a wallet that showed zero).
+    // False only for that class; `why` then holds what to tell the user.
+    bool NativeWalletServable(std::string* why);
     // Source-side capability hint for a current recovered transparent wallet.
     // Signing rechecks every condition and both wallet receipts under the
     // selected lock; this alone never authorizes a payment.
