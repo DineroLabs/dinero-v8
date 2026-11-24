@@ -244,19 +244,26 @@ bool WalletService::Start() {
 
         // Check for existing wallets
         auto wallets = wallet_mgr_->listWallets();
-        if (wallets.empty() && full_archive_v3) {
+        std::string never_credited;
+        const auto implicit_wallet = !wallets.empty() ? ImplicitDefaultWallet::Create
+            : DecideImplicitDefaultWallet(full_archive_v3,
+                  chainstate_ && chainstate_->WalletBirthPrecedesSnapshot(actual_blockchain_height),
+                  !chainstate_ || full_archive_v3 || chainstate_->NativeWalletServable(&never_credited));
+        if (wallets.empty() && implicit_wallet == ImplicitDefaultWallet::NoneOnV3Index) {
             // #939: no implicit default wallet on a v3 node; the user creates
             // one explicitly (wallet.createhd), which the native route enrolls.
             logger_interface_->info("[WalletService] No wallets found; on a wallet index v3 node "
                                     "create one with wallet.createhd");
-        } else if (wallets.empty() && chainstate_ &&
-                   chainstate_->WalletBirthPrecedesSnapshot(actual_blockchain_height)) {
+        } else if (wallets.empty() && implicit_wallet == ImplicitDefaultWallet::NoneWhileSnapshotLoads) {
             // A first run from a snapshot: the height here is a placeholder
             // below the snapshot base, and a wallet sealed with it would never
             // recover its coins. Create no implicit wallet; the user creates one
             // with wallet.createhd once the node is at its snapshot base.
             logger_interface_->info("[WalletService] No wallets found; the node is still loading its starting "
                                     "snapshot. Create a wallet with wallet.createhd once it has loaded");
+        } else if (wallets.empty() && implicit_wallet == ImplicitDefaultWallet::NoneNeverCredited) {
+            logger_interface_->warning("[WalletService] No wallets found and no default wallet was created. " +
+                                       never_credited);
         } else if (wallets.empty()) {
             logger_interface_->info("[WalletService] No wallets found - creating default HD wallet");
             try {

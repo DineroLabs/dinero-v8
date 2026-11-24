@@ -199,6 +199,74 @@ TEST(OrchardTransactionRpc, ExplorerLookupFindsEveryTransactionOfABlockWithAnOrc
     const auto absent=ExplorerTransactionRpc(f.context,std::string(63,'0')+"7");
     EXPECT_EQ(absent["error"].asString(),"Transaction not found in blockchain");EXPECT_EQ(absent["status"].asString(),"not_found");
 }
+// Measured on the v8.2.6 Mac pilot (2026-11-24): the selected-tip audit, which
+// stages and abandons a full disconnect of the tip on the live forest, ran
+// five times for every accepted block (about 4 s each, under the selected
+// lock) and once per mining template. A pass is now reused while nothing the
+// audit reads has changed, and only then.
+TEST(OrchardSelectedTipAudit, APassIsReusedOnlyWhileNothingItReadsHasChanged) {
+    CanonicalPoolFixture f;const auto block=f.Build();ASSERT_TRUE(block);
+    auto& service=*f.f.service;std::string why;
+    ASSERT_TRUE(f.Submit(block->WireBytes()).accepted());
+    ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    const auto first=service.SelectedTipAuditCounts();
+    // The same tip, no write, the same coin state: five more callers, no audit.
+    for(int i=0;i<5;++i)ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    auto counts=service.SelectedTipAuditCounts();
+    EXPECT_EQ(counts.first,first.first);EXPECT_EQ(counts.second,first.second+5);
+
+    // Any write to the store, even one the audit does not read, ends the reuse.
+    const auto id=block->Transactions()[1].GetTxid().AsUint256();const auto hash=block->Header().GetHash();
+    ASSERT_EQ(f.f.db.putTxIndex(f.f.token,id,hash,1),Status::Ok);
+    ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    counts=service.SelectedTipAuditCounts();
+    EXPECT_EQ(counts.first,first.first+1);
+    ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    EXPECT_EQ(service.SelectedTipAuditCounts().first,first.first+1);
+
+    // Damage is still found: the tip's durable locator no longer matches.
+    const auto metadata=f.f.db.getHeaderMetadata(hash);ASSERT_TRUE(metadata.ok());
+    auto damaged=*metadata;++damaged.undo_size;
+    ASSERT_EQ(f.f.db.putHeaderMetadata(f.f.token,hash,damaged),Status::Ok);
+    EXPECT_FALSE(service.IsCanonicalStateAligned(&why));
+    EXPECT_FALSE(service.IsCanonicalStateAligned(&why));  // a failure is never remembered as anything
+    const auto failed=service.SelectedTipAuditCounts();
+    EXPECT_EQ(failed.first,first.first+3);
+    ASSERT_EQ(f.f.db.putHeaderMetadata(f.f.token,hash,*metadata),Status::Ok);
+    ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    EXPECT_EQ(service.SelectedTipAuditCounts().first,first.first+4);
+    ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    EXPECT_EQ(service.SelectedTipAuditCounts().first,first.first+4);
+}
+// Mainnet, 2026-11-24: on a node holding a chainstate_recovery.marker, the
+// undo-metadata audit reported block 165,213 (the first shield) as "block
+// body unreadable: Serialization", because it read every block as a
+// historical block. With one such block inside the last 1024, the marker
+// could never be cleared. The block is read as what it is and audited.
+TEST(OrchardTransactionRpc, UndoMetadataAuditReadsABlockWithAnOrchardTransaction) {
+    CanonicalPoolFixture f;const auto block=f.Build();ASSERT_TRUE(block);ASSERT_TRUE(f.Submit(block->WireBytes()).accepted());
+    const auto tip=f.f.db.getTip();ASSERT_TRUE(tip.ok());
+    ASSERT_TRUE(block->Transactions()[1].IsOrchard());
+    // The tip only: the fixture keeps no earlier bodies on disk.
+    const auto report=f.f.service->AuditUndoMetadataForRestamp(1,false,true);
+    EXPECT_EQ(report.scanned,1u);EXPECT_EQ(report.failed,0u);EXPECT_EQ(report.restampable,0u);
+    ASSERT_EQ(report.entries.size(),1u);
+    const auto& entry=report.entries.front();
+    EXPECT_EQ(entry.height,uint32_t(tip->height));EXPECT_EQ(entry.hash,block->Header().GetHash());
+    EXPECT_EQ(entry.reason,"ok");
+    EXPECT_TRUE(entry.block_readable);EXPECT_TRUE(entry.has_undo_flag);
+    EXPECT_TRUE(entry.undo_readable);EXPECT_TRUE(entry.undo_decodable);
+
+    // Real damage to that block's undo locator is still reported.
+    const auto metadata=f.f.db.getHeaderMetadata(block->Header().GetHash());ASSERT_TRUE(metadata.ok());
+    auto damaged=*metadata;damaged.undo_size=0;
+    ASSERT_EQ(f.f.db.putHeaderMetadata(f.f.token,block->Header().GetHash(),damaged),Status::Ok);
+    const auto broken=f.f.service->AuditUndoMetadataForRestamp(1,false,true);
+    EXPECT_EQ(broken.failed,1u);ASSERT_EQ(broken.entries.size(),1u);
+    EXPECT_EQ(broken.entries.front().reason,"typed block has no undo locator");
+    ASSERT_EQ(f.f.db.putHeaderMetadata(f.f.token,block->Header().GetHash(),*metadata),Status::Ok);
+    EXPECT_EQ(f.f.service->AuditUndoMetadataForRestamp(1,false,true).failed,0u);
+}
 TEST(OrchardTransactionRpc, IndexIdentityOrdinalAndUnavailableOwnersRefuse) {
     CanonicalPoolFixture f;const auto block=f.Build();ASSERT_TRUE(block);ASSERT_TRUE(f.Submit(block->WireBytes()).accepted());
     const auto id=block->Transactions()[1].GetTxid().AsUint256();const auto hash=block->Header().GetHash();

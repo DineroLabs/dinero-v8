@@ -8102,6 +8102,17 @@ din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Js
         result["retryable"] = true;
         return result;
     }
+    // Refuse before creating anything on a node that could never credit the
+    // wallet (see ChainstateService::NativeWalletServable).
+    if (const auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate)) {
+        std::string unservable;
+        if (!source->NativeWalletServable(&unservable)) {
+            result["error"] = unservable;
+            result["error_code"] = "native_wallet_unservable";
+            result["retryable"] = false;
+            return result;
+        }
+    }
 #if DINERO_WALLET_RAW_ORCHARD
     // Creating a post-activation wallet promises a usable Orchard receiver.
     // A late snapshot can expose the selected tip before its independently

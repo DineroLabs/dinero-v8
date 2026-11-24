@@ -2513,10 +2513,32 @@ bool ChainstateService::AuditHistoricalCompactTipUnderLock(const CBlockIndex& ti
 #endif
 }
 
+std::optional<ChainstateService::SelectedTipAuditPass> ChainstateService::CurrentSelectedTipAuditKeyUnderLock() const {
+    // Full storage only: the compact owner's state has no fingerprint here.
+    if(!active_tip_ || !chain_db_ || !consensus_utxo_set_ || compact_startup_ || safe_mode_active_ ||
+       GetConfig().utreexo_stateless)return {};
+    const auto fence=chain_db_->startupWriteFence();
+    if(!fence)return {};
+    SelectedTipAuditPass key;
+    const auto& tip=*active_tip_;
+    key.tip=active_tip_;key.hash=tip.hash;key.height=tip.height;
+    key.status=tip.status;key.file_number=tip.file_number;key.data_pos=tip.data_pos;key.data_size=tip.data_size;
+    key.undo_file=tip.undo_file;key.undo_pos=tip.undo_pos;key.undo_size=tip.undo_size;
+    key.store_fence=*fence;
+    key.utxo_best=consensus_utxo_set_->GetBestBlock();key.utxo_height=consensus_utxo_set_->GetHeight();
+    {
+        const auto forest_lock=consensus_utxo_set_->LockForestShared();
+        const auto& forest=consensus_utxo_set_->GetForest();
+        key.forest_leaves=forest.getNumLeaves();key.forest_roots=forest.getIndexedRoots();
+    }
+    return key;
+}
+
 bool ChainstateService::AuditSelectedOrchardTipUnderLock(std::string* reason) const {
     AssertActivationLockHeld("Orchard selected-tip alignment");
     const auto fail_orchard = [&](const char* message) {
         if (reason) *reason = message;
+        selected_tip_audit_pass_.reset();
         return false;
     };
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
@@ -2536,6 +2558,15 @@ bool ChainstateService::AuditSelectedOrchardTipUnderLock(std::string* reason) co
             (compact ? (!compact_startup_->owner || consensus_utxo_set_ || !GetConfig().utreexo_stateless || !header_chain_selector_)
                      : (!consensus_utxo_set_ || GetConfig().utreexo_stateless)))
             return fail_orchard("selected storage owner is unavailable");
+        // Nothing the audit reads has changed since it last passed: the same
+        // verdict, without staging the tip's disconnect again.
+        const auto audit_key=compact?std::optional<SelectedTipAuditPass>{}:CurrentSelectedTipAuditKeyUnderLock();
+        if(audit_key && selected_tip_audit_pass_ && *audit_key==*selected_tip_audit_pass_) {
+            ++selected_tip_audits_reused_;
+            return true;
+        }
+        selected_tip_audit_pass_.reset();
+        ++selected_tip_audits_run_;
         try {
             if(!compact)storage::RequireFullOrchardStorage(*chain_db_);
             const auto& tip = *active_tip_;
@@ -2596,6 +2627,12 @@ bool ChainstateService::AuditSelectedOrchardTipUnderLock(std::string* reason) co
                 const auto forest_lock = consensus_utxo_set_->LockForestShared();
                 consensus::AuditOrchardChainstateTipUnderLock(*chain_db_, token, *body->Context(),
                     *parent, consensus_utxo_set_->GetForest(), witness, true);
+            }
+            // Remember the pass only if the audit itself changed nothing it
+            // depends on (it must not; a difference means it is not reusable).
+            if(audit_key) {
+                const auto after=CurrentSelectedTipAuditKeyUnderLock();
+                if(after && *after==*audit_key)selected_tip_audit_pass_=*audit_key;
             }
             return true;
         } catch (const std::exception& error) {
@@ -3393,6 +3430,38 @@ bool ChainstateService::FullArchiveV2LegacySourceClass(const UTXOIndex& index) {
         orchard_snapshot_startup_ || GetSnapshotWalletRecoveryBaseHeight()!=0 ||
         index.GetMetadata("wallet_snapshot_recovery_base_height") ||
         chain_db_->getPreBaseCoinSetBase().status()!=Status::NotFound);
+}
+bool ChainstateService::NativeWalletServable(std::string* why) {
+    if(why)why->clear();
+    if(Params().orchard_activation_height==UINT32_MAX)return true;
+    try {
+        auto self=weak_from_this().lock();
+        if(!self)return true;
+        auto use=AcquireWalletIndexUse(self);
+        auto& index=use->Index();
+        if(index.IsFullArchiveV3MetadataOnly())return true;          // synced from the first block
+        std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+        if(!chain_db_ || GetConfig().utreexo_stateless || compact_startup_)return true;  // their own gates
+        if(orchard_snapshot_startup_)return true;                    // authenticated Orchard snapshot base
+        // A legacy index on a stateful node. Without snapshot markers it is a
+        // plain full archive (slow origin replay, but served, and upgradable).
+        const bool older_snapshot=assumeutxo_active_ || GetSnapshotWalletRecoveryBaseHeight()!=0 ||
+            index.GetMetadata("wallet_snapshot_recovery_base_height") ||
+            // The snapshot lifecycle's base stays in the wallet index after full
+            // validation and backfill (a real 52,287 desktop: fully_validated,
+            // base 52287, no recovery base). Independent of the pre-base coin
+            // set below, so losing either one alone does not lift the refusal.
+            index.GetMetadata(assumeutxo::kLcBaseHeightKey) ||
+            chain_db_->getPreBaseCoinSetBase().status()!=Status::NotFound;
+        if(!older_snapshot)return true;
+        if(why)*why="This node cannot show money in a new wallet: its data was started from an older snapshot, "
+            "and wallets created now need a node synced from the first block or started from a current snapshot. "
+            "No wallet was created. Create it in the Dinero phone app, or on a computer whose Dinero data was "
+            "synced from the beginning, and use the same recovery words anywhere later.";
+        return false;
+    } catch(const WalletIndexUnavailable&) {
+        return true;  // not this gate's refusal; the index's own owners report it
+    }
 }
 bool ChainstateService::RecoveredV3TransparentSendSourceReady() {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
@@ -9350,6 +9419,39 @@ ChainstateService::AuditUndoMetadataForRestamp(uint32_t max_blocks_back,
 
         auto block_result = ReadStoredBlock(entry.hash);
         entry.block_readable = block_result.status() == Status::Ok;
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        if (!entry.block_readable && consensus::OrchardActiveForHeight(Params(), current_height)) {
+            // A block that holds an Orchard transaction is not a historical
+            // block: the reader above answers "Serialization" for it, and this
+            // audit used to report the block as damaged. (Mainnet 165,213, the
+            // first shield: a recovery marker could then never be cleared.)
+            // Read it as what it is and check the same material: the typed
+            // body, the undo locator, the flatfile undo and the committed undo.
+            const auto typed = ReadRuntimeBlockUnderLock(*chain_db_, block_storage_.get(), entry.hash, current_height);
+            entry.block_readable = typed.ok() && typed->IsOrchardProfile();
+            if (!entry.block_readable) {
+                entry.reason = "typed block body unreadable";
+            } else if (!entry.has_undo_flag || metadata.undo_size == 0) {
+                entry.reason = "typed block has no undo locator";
+            } else {
+                const auto disk_undo = block_storage_->readUndo({metadata.undo_file, metadata.undo_pos, metadata.undo_size});
+                entry.undo_readable = disk_undo.ok();
+                const auto committed = chain_db_->getUndo(entry.hash);
+                entry.undo_decodable = disk_undo.ok() && committed.ok() && committed->Serialize() == *disk_undo;
+                entry.reason = !entry.undo_readable ? "typed block undo unreadable"
+                             : !entry.undo_decodable ? "typed block flatfile and committed undo disagree" : "ok";
+            }
+            if (entry.reason == "ok") {
+                if (include_ok) report.entries.push_back(std::move(entry));
+            } else {
+                report.entries.push_back(std::move(entry));
+                report.failed++;
+            }
+            current_height--;
+            report.scanned++;
+            continue;
+        }
+#endif
         if (!entry.block_readable) {
             entry.reason = "block body unreadable: " +
                            std::string(StatusToString(block_result.status()));

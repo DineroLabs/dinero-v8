@@ -3295,6 +3295,32 @@ TEST(OrchardSnapshotRuntime, StoredCompetitorAtOrBelowTheTipHeightDoesNotRefuseS
     ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,metadata),Status::Ok);
     EXPECT_NO_THROW(seed());
 }
+// One accepted block on an Orchard tip: the old tip is audited before the
+// commit and the new tip after it. It was five full audits per block.
+TEST(OrchardSelectedTipAudit, AcceptingABlockAuditsEachTipOnce) {
+    CanonicalPoolFixture source(true);
+    MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    source.f.service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);
+    ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto& service=*source.f.service;std::string why;
+    ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    uint64_t full=0,reused=0;const int blocks=3;
+    for(int i=0;i<blocks;++i) {
+        BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+        const auto next=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(next);
+        const auto before=service.SelectedTipAuditCounts();
+        const auto submitted=source.Submit(next->WireBytes());
+        ASSERT_TRUE(submitted.connected)<<"block "<<i<<": "<<submitted.reason;
+        const auto after=service.SelectedTipAuditCounts();
+        full+=after.first-before.first;reused+=after.second-before.second;
+        ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    }
+    std::cerr<<"[tip audit] "<<blocks<<" accepted blocks: "<<full<<" full audits, "<<reused<<" reused"<<std::endl;
+    EXPECT_LE(full,uint64_t(2*blocks));   // at most the old tip and the new tip
+    EXPECT_GE(reused,uint64_t(blocks));   // the repeats are answered from the pass
+}
 TEST(OrchardSnapshotRuntime, QueuedDownloadedHeaderIsRevalidatedWithoutSelectedPublication) {
     using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
     OrchardCycleFixture source(true);MutableParams().orchard_catalog_commitment_activation_height=102;
