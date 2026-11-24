@@ -23,6 +23,7 @@
 #include "miningsessionstatus.h"
 #include "peerheightsemantics.h"
 #include "responsiveuipolicy.h"
+#include "transactiontypedisplay.h"
 #include "walletbackuplock.h"
 #include "rpcclient.h"
 #include "rpcconnectionpolicy.h"
@@ -12682,6 +12683,11 @@ void MainWindow::updateTransactionTable(const QJsonArray& transactions) {
       amountStr = QString("+%1").arg(qAbs(amount), 0, 'f', 8);
       amountColor = QColor("#339af0"); // Blue for mining
       uiTypeKey = "mined";
+    } else if (const QString privacyMove = dinero::qt::privacyMoveTypeLabel(type);
+               !privacyMove.isEmpty()) {
+      typeIcon = privacyMove;
+      amountStr = amountHidden && !displayAmount.isEmpty() ? displayAmount : QString::number(amount, 'f', 8);
+      amountColor = QColor("#b197fc"); // Violet for moves into/out of the private pool
     } else {
       typeIcon = "❓ " + type;
       amountStr = amountHidden && !displayAmount.isEmpty() ? displayAmount : QString::number(amount, 'f', 8);

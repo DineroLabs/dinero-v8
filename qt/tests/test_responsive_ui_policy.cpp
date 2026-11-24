@@ -1,4 +1,5 @@
 #include "responsiveuipolicy.h"
+#include "transactiontypedisplay.h"
 
 #include <QJsonObject>
 #include <QtTest/QtTest>
@@ -29,6 +30,16 @@ private Q_SLOTS:
     QCOMPARE(page.page_index, 0);
     QCOMPARE(page.page_count, 1);
     QVERIFY(page.rows.isEmpty());
+  }
+
+  void privacyMovesHaveTheirOwnHistoryLabel() {
+    // A shield showed as the grey unknown-type "\u2753 shield" placeholder.
+    QCOMPARE(dinero::qt::privacyMoveTypeLabel("shield"),
+             QString::fromUtf8("\xF0\x9F\x9B\xA1\xEF\xB8\x8F Shield"));
+    QCOMPARE(dinero::qt::privacyMoveTypeLabel("unshield"),
+             QString::fromUtf8("\xF0\x9F\x94\x93 Unshield"));
+    for (const char* other : {"mined", "sent", "received", "contract", "unknown", ""})
+      QVERIFY(dinero::qt::privacyMoveTypeLabel(other).isEmpty());
   }
 
   void hiddenUtxoPanelDoesNotPollWithoutExplicitRequest() {
