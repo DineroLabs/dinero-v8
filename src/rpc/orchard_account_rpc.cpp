@@ -372,48 +372,30 @@ din::Json OrchardAccountRead(const ExecutionContext& ctx,const din::Json& params
         // ownership and authenticates/restores/rechecks the entire catalog.
         // Session, identity, SQL, decryption and restoration failures propagate.
         using Observation=std::pair<std::shared_ptr<const dinero::RuntimeAccountReplay>,
-            dinero::wallet::OrchardAccountDelivery::CatalogEnrolled>;
+            std::shared_ptr<const dinero::wallet::OrchardAccountDelivery::CatalogEnrolled>>;
         const auto observation=[&]() -> Observation {
             for(unsigned attempt=0;;++attempt){
                 if(source->IsInSafeMode())throw std::runtime_error("Orchard wallet source unavailable in safe mode");
                 const auto captured=source->getRuntimeAccountReplayForWallet(wallet_use->Wallet(),session);
                 if(!captured.ok())throw std::runtime_error("Authenticated Orchard replay source unavailable");
                 try {
-                    if(listing) {
-                        // Account discovery can overlap a long v3 delivery.
-                        // Restore the full authenticated catalog inside one
-                        // read transaction so a newer committed revision
-                        // cannot invalidate the result mid-read. The selected
-                        // source was captured before wallet ownership.
-                        auto lease=wallet_use->Wallet().AcquireDatabaseLease();
-                        if(lease->Session()!=session || !lease->Database() ||
-                           !sqlite3_get_autocommit(lease->Database()))
-                            throw std::runtime_error("Orchard catalog read owner unavailable");
-                        auto* db=lease->Database();
-                        if(sqlite3_exec(db,"BEGIN",nullptr,nullptr,nullptr)!=SQLITE_OK)
-                            throw std::runtime_error("Orchard catalog read transaction unavailable");
-                        try {
-                            auto catalog=dinero::wallet::OrchardAccountDelivery::ReadCatalogForReplayInTransaction(
-                                wallet_use->Wallet(),session,**captured);
-                            if(sqlite3_exec(db,"COMMIT",nullptr,nullptr,nullptr)!=SQLITE_OK)
-                                throw std::runtime_error("Orchard catalog read commit failed");
-                            return {*captured,std::move(catalog)};
-                        } catch(...) {
-                            if(!sqlite3_get_autocommit(db))
-                                (void)sqlite3_exec(db,"ROLLBACK",nullptr,nullptr,nullptr);
-                            throw;
-                        }
-                    }
-                    auto catalog=dinero::wallet::OrchardAccountDelivery::ReadCatalogForReplay(
-                        wallet_use->Wallet(),session,**captured);
-                    return {*captured,std::move(catalog)};
+                    // Every read, account discovery included, observes the
+                    // catalog without holding the wallet while it is restored,
+                    // and reuses the catalog restored for unchanged wallet
+                    // bytes. Account discovery used to restore the whole
+                    // catalog inside one wallet transaction; on a desktop that
+                    // kept block delivery waiting for the page that polled it
+                    // (measured 2026-11-24: the worker blocked on the wallet
+                    // lease for every sample of a 30 s profile).
+                    return {*captured,dinero::wallet::OrchardAccountDelivery::ObserveCatalogForReplay(
+                        wallet_use->Wallet(),session,**captured)};
                 }catch(const dinero::wallet::OrchardAccountDelivery::CatalogChanged&){
                     if(attempt==3)throw;
                 }
             }
         }();
         const auto& view=observation.first;
-        const auto& inventory=observation.second;
+        const auto& inventory=*observation.second;
         if(listing) {
             din::Json accounts=din::arr();
             for(const auto& entry:inventory.accounts) {
