@@ -106,7 +106,11 @@ struct RuntimeAccountReplay::Data {
     };
     RuntimeOutboxCursor head;uint32_t activation=0;orchard::SigningDomain domain;
     uint256 origin;uint32_t prefix_height=0;
-    wallet::detail::RuntimeReplaySpool spool;
+    // Lookups (Point/State/Authorizations through the index) run thousands of
+    // times per wallet read. Keep their three statements prepared rather than
+    // re-parsing SQL on every Get: on the owner's Mac sqlite3Prepare was about
+    // a third of every lookup. Bounded: three statements, under 64 KiB.
+    wallet::detail::RuntimeReplaySpool spool{{},true};
     wallet::detail::RuntimeReplayStateRetention states;
     wallet::detail::RuntimeReplayAuthorizationRetention authorizations;
     wallet::detail::RuntimeReplayDiskMembership membership{spool};
@@ -445,6 +449,7 @@ std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::ExtendTail(
     return BuildTail(std::move(data),old.sequence+1);
 }
 RuntimeOutboxCursor RuntimeAccountReplay::Head() const{return data_->head;}
+uint64_t RuntimeAccountReplay::SpoolStatementsPrepared() const{return data_->spool.StatementsPrepared();}
 RuntimeAccountReplay::ProfileFacts RuntimeAccountReplay::Profile()const{return {data_->domain,data_->activation};}
 RuntimeAccountReplay::EventHandle RuntimeAccountReplay::Event(uint64_t sequence) const{
     return data_->ReadEvent(sequence);

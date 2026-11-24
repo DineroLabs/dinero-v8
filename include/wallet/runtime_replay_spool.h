@@ -114,13 +114,13 @@ public:
         std::lock_guard guard(mutex_);Check(!frozen_&&!sqlite3_get_autocommit(db_.get()));
         Check(!key.empty()&&key.size()<=MaximumKeyBytes&&value.size()<=MaximumRecordBytes);
         const auto tag=Tag(key,value);
-        Query stmt(db_.get(),insert_statement_,"INSERT INTO records(k,v,tag) VALUES(?1,?2,?3)",cache_statements_);
+        Query stmt(db_.get(),insert_statement_,"INSERT INTO records(k,v,tag) VALUES(?1,?2,?3)",cache_statements_,statements_prepared_);
         stmt.Blob(1,key);stmt.Blob(2,value);stmt.Blob(3,tag);Check(sqlite3_step(stmt.get())==SQLITE_DONE);
         Check(sqlite3_changes(db_.get())==1);
     }
     std::optional<Bytes> Get(std::span<const uint8_t> key) const {
         std::lock_guard guard(mutex_);Check(!key.empty()&&key.size()<=MaximumKeyBytes);
-        Query stmt(db_.get(),read_statement_,"SELECT v,tag FROM records WHERE k=?1",cache_statements_);stmt.Blob(1,key);
+        Query stmt(db_.get(),read_statement_,"SELECT v,tag FROM records WHERE k=?1",cache_statements_,statements_prepared_);stmt.Blob(1,key);
         const int rc=sqlite3_step(stmt.get());if(rc==SQLITE_DONE)return std::nullopt;
         Check(rc==SQLITE_ROW);auto result=Value(stmt.get(),0,key);
         Check(sqlite3_step(stmt.get())==SQLITE_DONE);return result;
@@ -129,7 +129,7 @@ public:
     // the method and no caller callback executes under this private mutex.
     std::optional<std::pair<Bytes,Bytes>> Next(uint8_t space,std::span<const uint8_t> after) const {
         std::lock_guard guard(mutex_);Check(space<255&&!after.empty()&&after[0]==space&&after.size()<=MaximumKeyBytes);
-        Query stmt(db_.get(),next_statement_,"SELECT k,v,tag FROM records WHERE k>?1 AND k<?2 ORDER BY k LIMIT 1",cache_statements_);
+        Query stmt(db_.get(),next_statement_,"SELECT k,v,tag FROM records WHERE k>?1 AND k<?2 ORDER BY k LIMIT 1",cache_statements_,statements_prepared_);
         stmt.Blob(1,after);const Bytes upper{uint8_t(space+1)};stmt.Blob(2,upper);
         const int rc=sqlite3_step(stmt.get());if(rc==SQLITE_DONE)return std::nullopt;
         Check(rc==SQLITE_ROW&&sqlite3_column_type(stmt.get(),0)==SQLITE_BLOB);
@@ -146,7 +146,7 @@ public:
         Check((frozen_||!sqlite3_get_autocommit(db_.get()))&&space<255&&!after.empty()&&
               after[0]==space&&after.size()<=MaximumKeyBytes);
         Query stmt(db_.get(),next_statement_,
-            "SELECT k,v,tag FROM records WHERE k>?1 AND k<?2 ORDER BY k LIMIT 256",false);
+            "SELECT k,v,tag FROM records WHERE k>?1 AND k<?2 ORDER BY k LIMIT 256",false,statements_prepared_);
         stmt.Blob(1,after);const Bytes upper{uint8_t(space+1)};stmt.Blob(2,upper);
         std::vector<std::pair<Bytes,Bytes>> rows;rows.reserve(256);size_t bytes=0;
         for(;;) {
@@ -171,6 +171,9 @@ public:
         std::lock_guard guard(mutex_);Check(frozen_&&sqlite3_get_autocommit(db_.get()));
         Exec("PRAGMA query_only=OFF");frozen_=false;
     }
+    // SQL statements this spool has prepared so far. A cached spool prepares
+    // each of its three statements once; an uncached one prepares per call.
+    uint64_t StatementsPrepared() const {std::lock_guard guard(mutex_);return statements_prepared_;}
     struct Usage {int pager_bytes=0,schema_bytes=0,statement_bytes=0;};
     Usage UsageNow() const {
         std::lock_guard guard(mutex_);Usage result;int high=0;
@@ -262,9 +265,9 @@ private:
     // while the spool mutex is still held; no cursor or borrowed blob escapes.
     class Query {
     public:
-        Query(sqlite3* db,std::unique_ptr<Statement>& cache,const char* sql,bool cached) {
-            if(cached){if(!cache)cache=std::make_unique<Statement>(db,sql);statement_=cache.get();}
-            else {owned_=std::make_unique<Statement>(db,sql);statement_=owned_.get();}
+        Query(sqlite3* db,std::unique_ptr<Statement>& cache,const char* sql,bool cached,uint64_t& prepared) {
+            if(cached){if(!cache){cache=std::make_unique<Statement>(db,sql);++prepared;}statement_=cache.get();}
+            else {owned_=std::make_unique<Statement>(db,sql);statement_=owned_.get();++prepared;}
         }
         ~Query(){statement_->Reset();}
         sqlite3_stmt* get()const{return statement_->get();}
@@ -273,6 +276,7 @@ private:
         std::unique_ptr<Statement> owned_;Statement* statement_=nullptr;
     };
     mutable std::unique_ptr<Statement> insert_statement_,read_statement_,next_statement_;
+    mutable uint64_t statements_prepared_=0;
     void Exec(const char* sql){Check(sqlite3_exec(db_.get(),sql,nullptr,nullptr,nullptr)==SQLITE_OK);}
 };
 } // namespace dinero::wallet::detail

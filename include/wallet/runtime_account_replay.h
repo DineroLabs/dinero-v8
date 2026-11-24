@@ -78,6 +78,8 @@ public:
     static bool SoleOwner(const std::shared_ptr<const RuntimeAccountReplay>& view) {
         return view&&view.use_count()==1&&view->data_.use_count()==1;
     }
+    // SQL statements the replay's private store has prepared so far.
+    uint64_t SpoolStatementsPrepared() const;
 private:
     friend struct RuntimeAccountReplayTestAccess;
     static std::shared_ptr<const RuntimeAccountReplay> Capture(const Source&);
