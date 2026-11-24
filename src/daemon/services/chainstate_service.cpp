@@ -2513,10 +2513,32 @@ bool ChainstateService::AuditHistoricalCompactTipUnderLock(const CBlockIndex& ti
 #endif
 }
 
+std::optional<ChainstateService::SelectedTipAuditPass> ChainstateService::CurrentSelectedTipAuditKeyUnderLock() const {
+    // Full storage only: the compact owner's state has no fingerprint here.
+    if(!active_tip_ || !chain_db_ || !consensus_utxo_set_ || compact_startup_ || safe_mode_active_ ||
+       GetConfig().utreexo_stateless)return {};
+    const auto fence=chain_db_->startupWriteFence();
+    if(!fence)return {};
+    SelectedTipAuditPass key;
+    const auto& tip=*active_tip_;
+    key.tip=active_tip_;key.hash=tip.hash;key.height=tip.height;
+    key.status=tip.status;key.file_number=tip.file_number;key.data_pos=tip.data_pos;key.data_size=tip.data_size;
+    key.undo_file=tip.undo_file;key.undo_pos=tip.undo_pos;key.undo_size=tip.undo_size;
+    key.store_fence=*fence;
+    key.utxo_best=consensus_utxo_set_->GetBestBlock();key.utxo_height=consensus_utxo_set_->GetHeight();
+    {
+        const auto forest_lock=consensus_utxo_set_->LockForestShared();
+        const auto& forest=consensus_utxo_set_->GetForest();
+        key.forest_leaves=forest.getNumLeaves();key.forest_roots=forest.getIndexedRoots();
+    }
+    return key;
+}
+
 bool ChainstateService::AuditSelectedOrchardTipUnderLock(std::string* reason) const {
     AssertActivationLockHeld("Orchard selected-tip alignment");
     const auto fail_orchard = [&](const char* message) {
         if (reason) *reason = message;
+        selected_tip_audit_pass_.reset();
         return false;
     };
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
@@ -2536,6 +2558,15 @@ bool ChainstateService::AuditSelectedOrchardTipUnderLock(std::string* reason) co
             (compact ? (!compact_startup_->owner || consensus_utxo_set_ || !GetConfig().utreexo_stateless || !header_chain_selector_)
                      : (!consensus_utxo_set_ || GetConfig().utreexo_stateless)))
             return fail_orchard("selected storage owner is unavailable");
+        // Nothing the audit reads has changed since it last passed: the same
+        // verdict, without staging the tip's disconnect again.
+        const auto audit_key=compact?std::optional<SelectedTipAuditPass>{}:CurrentSelectedTipAuditKeyUnderLock();
+        if(audit_key && selected_tip_audit_pass_ && *audit_key==*selected_tip_audit_pass_) {
+            ++selected_tip_audits_reused_;
+            return true;
+        }
+        selected_tip_audit_pass_.reset();
+        ++selected_tip_audits_run_;
         try {
             if(!compact)storage::RequireFullOrchardStorage(*chain_db_);
             const auto& tip = *active_tip_;
@@ -2596,6 +2627,12 @@ bool ChainstateService::AuditSelectedOrchardTipUnderLock(std::string* reason) co
                 const auto forest_lock = consensus_utxo_set_->LockForestShared();
                 consensus::AuditOrchardChainstateTipUnderLock(*chain_db_, token, *body->Context(),
                     *parent, consensus_utxo_set_->GetForest(), witness, true);
+            }
+            // Remember the pass only if the audit itself changed nothing it
+            // depends on (it must not; a difference means it is not reusable).
+            if(audit_key) {
+                const auto after=CurrentSelectedTipAuditKeyUnderLock();
+                if(after && *after==*audit_key)selected_tip_audit_pass_=*audit_key;
             }
             return true;
         } catch (const std::exception& error) {

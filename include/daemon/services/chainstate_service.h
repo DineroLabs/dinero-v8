@@ -1734,6 +1734,40 @@ private:
         const std::optional<RuntimeOutboxCursor>& captured_head,
         const RuntimeOutboxCursor& after,size_t maximum_events,size_t maximum_bytes) const;
     bool AuditSelectedOrchardTipUnderLock(std::string* reason) const;
+    // The audit above costs seconds (it stages and abandons a full disconnect
+    // of the tip on the live forest) and ran five times for every accepted
+    // block, under the selected lock. Its verdict depends only on the selected
+    // tip, the durable store and the restored coin state. A PASS is therefore
+    // remembered with everything that can change it, and the audit is skipped
+    // only while all of it is unchanged: the same tip entry and its index
+    // fields, the store's open generation and RocksDB write sequence (every
+    // write to any column advances it), the UTXO set's best block and height,
+    // the forest's leaf count and every root slot, and safe mode off. Any
+    // difference, any doubt (fence unavailable), a failed audit, compact
+    // storage and the snapshot-base audit all run the real audit. Nothing is
+    // remembered across a restart. Guarded by activation_mutex_.
+    struct SelectedTipAuditPass {
+        const CBlockIndex* tip=nullptr;
+        uint256 hash;
+        uint32_t height=0;
+        uint32_t status=0,file_number=0,data_pos=0,data_size=0,undo_file=0,undo_pos=0,undo_size=0;
+        std::pair<uint64_t,uint64_t> store_fence{0,0};
+        uint256 utxo_best;
+        uint32_t utxo_height=0;
+        uint64_t forest_leaves=0;
+        std::vector<std::optional<consensus::UtreexoHash>> forest_roots;
+        bool operator==(const SelectedTipAuditPass&) const=default;
+    };
+    std::optional<SelectedTipAuditPass> CurrentSelectedTipAuditKeyUnderLock() const;
+    mutable std::optional<SelectedTipAuditPass> selected_tip_audit_pass_;
+    mutable std::atomic<uint64_t> selected_tip_audits_run_{0};
+    mutable std::atomic<uint64_t> selected_tip_audits_reused_{0};
+public:
+    // How many selected-tip audits ran in full, and how many reused a pass.
+    std::pair<uint64_t,uint64_t> SelectedTipAuditCounts() const {
+        return {selected_tip_audits_run_.load(),selected_tip_audits_reused_.load()};
+    }
+private:
     // Recheck a reconstructed activation parent without publishing it.
     bool AuditCompactBoundaryUnderLock(const CBlockIndex&,std::string* reason) const;
     bool AuditHistoricalCompactTipUnderLock(const CBlockIndex&,std::string* reason) const;

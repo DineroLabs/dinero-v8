@@ -199,6 +199,45 @@ TEST(OrchardTransactionRpc, ExplorerLookupFindsEveryTransactionOfABlockWithAnOrc
     const auto absent=ExplorerTransactionRpc(f.context,std::string(63,'0')+"7");
     EXPECT_EQ(absent["error"].asString(),"Transaction not found in blockchain");EXPECT_EQ(absent["status"].asString(),"not_found");
 }
+// Measured on the v8.2.6 Mac pilot (2026-11-24): the selected-tip audit, which
+// stages and abandons a full disconnect of the tip on the live forest, ran
+// five times for every accepted block (about 4 s each, under the selected
+// lock) and once per mining template. A pass is now reused while nothing the
+// audit reads has changed, and only then.
+TEST(OrchardSelectedTipAudit, APassIsReusedOnlyWhileNothingItReadsHasChanged) {
+    CanonicalPoolFixture f;const auto block=f.Build();ASSERT_TRUE(block);
+    auto& service=*f.f.service;std::string why;
+    ASSERT_TRUE(f.Submit(block->WireBytes()).accepted());
+    ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    const auto first=service.SelectedTipAuditCounts();
+    // The same tip, no write, the same coin state: five more callers, no audit.
+    for(int i=0;i<5;++i)ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    auto counts=service.SelectedTipAuditCounts();
+    EXPECT_EQ(counts.first,first.first);EXPECT_EQ(counts.second,first.second+5);
+
+    // Any write to the store, even one the audit does not read, ends the reuse.
+    const auto id=block->Transactions()[1].GetTxid().AsUint256();const auto hash=block->Header().GetHash();
+    ASSERT_EQ(f.f.db.putTxIndex(f.f.token,id,hash,1),Status::Ok);
+    ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    counts=service.SelectedTipAuditCounts();
+    EXPECT_EQ(counts.first,first.first+1);
+    ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    EXPECT_EQ(service.SelectedTipAuditCounts().first,first.first+1);
+
+    // Damage is still found: the tip's durable locator no longer matches.
+    const auto metadata=f.f.db.getHeaderMetadata(hash);ASSERT_TRUE(metadata.ok());
+    auto damaged=*metadata;++damaged.undo_size;
+    ASSERT_EQ(f.f.db.putHeaderMetadata(f.f.token,hash,damaged),Status::Ok);
+    EXPECT_FALSE(service.IsCanonicalStateAligned(&why));
+    EXPECT_FALSE(service.IsCanonicalStateAligned(&why));  // a failure is never remembered as anything
+    const auto failed=service.SelectedTipAuditCounts();
+    EXPECT_EQ(failed.first,first.first+3);
+    ASSERT_EQ(f.f.db.putHeaderMetadata(f.f.token,hash,*metadata),Status::Ok);
+    ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    EXPECT_EQ(service.SelectedTipAuditCounts().first,first.first+4);
+    ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    EXPECT_EQ(service.SelectedTipAuditCounts().first,first.first+4);
+}
 TEST(OrchardTransactionRpc, IndexIdentityOrdinalAndUnavailableOwnersRefuse) {
     CanonicalPoolFixture f;const auto block=f.Build();ASSERT_TRUE(block);ASSERT_TRUE(f.Submit(block->WireBytes()).accepted());
     const auto id=block->Transactions()[1].GetTxid().AsUint256();const auto hash=block->Header().GetHash();
