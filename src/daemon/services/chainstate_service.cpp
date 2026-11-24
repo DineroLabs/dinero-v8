@@ -3447,6 +3447,11 @@ bool ChainstateService::NativeWalletServable(std::string* why) {
         // plain full archive (slow origin replay, but served, and upgradable).
         const bool older_snapshot=assumeutxo_active_ || GetSnapshotWalletRecoveryBaseHeight()!=0 ||
             index.GetMetadata("wallet_snapshot_recovery_base_height") ||
+            // The snapshot lifecycle's base stays in the wallet index after full
+            // validation and backfill (a real 52,287 desktop: fully_validated,
+            // base 52287, no recovery base). Independent of the pre-base coin
+            // set below, so losing either one alone does not lift the refusal.
+            index.GetMetadata(assumeutxo::kLcBaseHeightKey) ||
             chain_db_->getPreBaseCoinSetBase().status()!=Status::NotFound;
         if(!older_snapshot)return true;
         if(why)*why="This node cannot show money in a new wallet: its data was started from an older snapshot, "

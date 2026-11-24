@@ -905,6 +905,34 @@ TEST(WalletV3NativeInterim, OlderSnapshotNodeRefusesToCreateAWalletItCouldNeverC
     EXPECT_FALSE(created.isMember("error"))<<created.toStyledString();
     EXPECT_TRUE(created.isMember("mnemonic"));
 }
+// What a real 52,287-snapshot desktop's wallet index holds once it is fully
+// validated and backfilled (read from a copy, 2026-11-24): the lifecycle base,
+// no wallet recovery base. That alone refuses, with no pre-base coin set in
+// the chain database, so the refusal does not hang on a single marker.
+TEST(WalletV3NativeInterim, TheSnapshotLifecycleBaseAloneRefusesWalletCreation) {
+    CanonicalRecoveryFixture f(false,false);
+    (void)f.MineToWallet();
+    ExecutionContext request;
+    request.daemon=&f.context;
+    registerV7PqWalletMethods();
+    std::string why;
+    // Servable before the marker: so no pre-base coin set and no other marker is present.
+    ASSERT_TRUE(f.f.service->NativeWalletServable(&why))<<why;
+    {
+        auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+        index->Index().ApplyAtomically([&]{
+            if(!index->Index().SetMetadata("assumeutxo_lifecycle_state","fully_validated")||
+               !index->Index().SetMetadata("assumeutxo_lc_base_height","52287"))
+                throw std::runtime_error("fixture lifecycle base");
+        });
+    }
+    EXPECT_FALSE(f.f.service->NativeWalletServable(&why));
+    din::Json create(Json::arrayValue);create.append("lifecycle-base");
+    const auto refused=rpc_context_wallet_createhd(request,create);
+    EXPECT_EQ(refused["error_code"].asString(),"native_wallet_unservable")<<refused.toStyledString();
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    EXPECT_FALSE(use->Wallet().exists("lifecycle-base"));
+}
 // The same node with no wallet at all must not be handed an implicit
 // "default" wallet at start: nothing would ever tell the user it cannot be
 // credited. WalletService::Start acts only on this decision.
