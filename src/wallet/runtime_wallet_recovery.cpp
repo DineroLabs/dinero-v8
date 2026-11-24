@@ -356,6 +356,11 @@ std::optional<RuntimeOrchardCatalogRecoveryResult> RuntimeWalletRecovery::Resume
         // After this event's plan fully committed, under the same selected
         // fence, bound retained history (v8.2.4). Never inside the plan.
         bind([&](const auto& fence){(void)Account::BoundRetainedHistory(wallet,session,view);fence();});
+        // Carry the committed catalog into the next event instead of restoring
+        // the wallet's whole inventory again (~12 s per event on mainnet).
+        // Remembered only if the stored bytes are exactly this catalog.
+        try{Account::RememberCatalogRecovery(wallet,session,view,current);}
+        catch(const std::exception&){Account::ForgetCatalogRecovery();}
         ++advanced;
     }
     // Each applied event is a real, independently fenced durable account

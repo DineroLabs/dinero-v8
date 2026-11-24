@@ -353,6 +353,23 @@ public:
     static void ForgetObservedCatalog();
     // How many observations restored a catalog instead of reusing one.
     static uint64_t ObservedCatalogRestores();
+    // Delivery carries its catalog from one event to the next. Every catalog
+    // recovery plan restores the wallet's captured bytes; that restore (the
+    // whole current+retained inventory, ~12 s per event on a mainnet wallet)
+    // is skipped when the fresh capture Rechecks equal to the bytes the last
+    // restore or delivery commit produced and every account's delivery point
+    // still resolves to its checkpoint in the caller's view. After a delivery
+    // pass, RememberCatalogRecovery records the committed catalog against a
+    // fresh capture, and publishes it to readers (ObserveCatalogForReplay).
+    // Any other byte change (a send, shield, restore, foreign write) misses
+    // and restores exactly as before. Cleared on lock and session change.
+    static void RememberCatalogRecovery(WalletManager&,uint64_t session,
+        const RuntimeAccountReplay&,const CatalogEnrolled&);
+    static void ForgetCatalogRecovery();
+    // Recovery plans that restored a catalog instead of reusing one.
+    static uint64_t CatalogRecoveryRestores();
+    // Tests: on every reuse, also restore and require an identical catalog.
+    static void VerifyCatalogRecoveryReuseForTest(bool);
     // Same complete catalog/current/reached/retained validation inside the
     // caller's active wallet lease and SQLite transaction. Read-only: never
     // starts, commits or rolls back that transaction, including on refusal.

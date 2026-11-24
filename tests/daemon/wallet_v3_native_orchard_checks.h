@@ -505,6 +505,13 @@ int RetainedRows(OrchardCreationFixture& f,uint32_t account) {
 }
 constexpr int kWindow=int(wallet::OrchardAccountDelivery::kRetainedWindow);
 constexpr int kSlack=int(wallet::OrchardAccountDelivery::kRetainedSlack); // 1-2 accounts
+// While alive, every reuse of a remembered catalog is also restored and must
+// be identical (catalog revision, each account's revision, encoded state and
+// archive revisions); a difference throws out of the delivery pass.
+struct VerifyCatalogReuse {
+    VerifyCatalogReuse(){wallet::OrchardAccountDelivery::VerifyCatalogRecoveryReuseForTest(true);}
+    ~VerifyCatalogReuse(){wallet::OrchardAccountDelivery::VerifyCatalogRecoveryReuseForTest(false);}
+};
 } // namespace
 
 // Active retained history stays within the 256-parent window plus slack (the
@@ -513,6 +520,7 @@ constexpr int kSlack=int(wallet::OrchardAccountDelivery::kRetainedSlack); // 1-2
 // inside the window, and refuses a rewind deeper than the window.
 TEST(WalletV3NativeOrchard, ActiveRetainedHistoryIsBoundedAndStillRewinds) {
     OrchardCreationFixture f;
+    VerifyCatalogReuse verify_reuse;
     NativeV3IndexScope v3(f,"v3-native-orchard-bounded-retention-index");
     std::string error;
     ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
@@ -670,4 +678,54 @@ TEST(WalletV3NativeOrchard, RetainedHistoryBoundIsPerAccountWithinWalletBudget) 
         EXPECT_LE(RetainedRows(f,account),kWindow+kSlack) << account;
         EXPECT_EQ(f.Account(account).account.Delivery().sequence,NativeOrchardHead(f)) << account;
     }
+}
+
+// Delivery carries the catalog it committed into the next event. Restoring the
+// wallet's whole current+retained inventory for every event cost ~12 s twice
+// per block on a mainnet wallet (owner's Mac, v8.2.6 pilot, 2026-11-24), so the
+// Orchard account fell behind a ~20 s block interval. Every reuse here is also
+// restored and compared (VerifyCatalogReuse).
+TEST(WalletV3NativeOrchard, DeliveryReusesItsCommittedCatalogInsteadOfRestoringEachEvent) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-orchard-carry-index");
+    VerifyCatalogReuse verify_reuse;
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ASSERT_FALSE(f.Call(0).isMember("error"));
+    for(int i=0;i<6;++i)(void)f.MineEmpty();
+    ASSERT_TRUE(DeliverAllOrchard(f,64));
+    using Delivery=wallet::OrchardAccountDelivery;
+    const auto builds=f.f.service->FullReplayCaptureCounts().first;
+    const auto restores=Delivery::CatalogRecoveryRestores();
+    constexpr int kEvents=20;
+    for(int i=0;i<kEvents;++i){(void)f.MineEmpty();ASSERT_TRUE(DeliverAllOrchard(f,16)) << "event " << i;}
+    EXPECT_EQ(f.Account(0).account.Delivery().sequence,NativeOrchardHead(f));
+    EXPECT_LE(Delivery::CatalogRecoveryRestores()-restores,2u) << "delivery restored its catalog per event";
+    // The remembered catalog holds no replay data: the retained view still
+    // extends instead of being rebuilt from the origin.
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,builds);
+    // Readers of the same bytes reuse what delivery committed.
+    {
+        const auto observed=Delivery::ObservedCatalogRestores();
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        const auto session=use->Wallet().AcquireDatabaseLease()->Session();
+        const auto view=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(view.ok());
+        (void)Delivery::ObserveCatalogForReplay(use->Wallet(),session,**view);
+        EXPECT_EQ(Delivery::ObservedCatalogRestores(),observed) << "reader restored what delivery had committed";
+    }
+    // A write delivery did not make is never reused over: the next event restores.
+    ASSERT_FALSE(f.Issue(0).isMember("error"));
+    auto before=Delivery::CatalogRecoveryRestores();
+    (void)f.MineEmpty();ASSERT_TRUE(DeliverAllOrchard(f,16));
+    EXPECT_GE(Delivery::CatalogRecoveryRestores()-before,1u) << "reused across a foreign write";
+    // Locking forgets the decrypted catalog; after unlock the next event restores.
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        use->Wallet().lockWallet();use->Wallet().unlockWallet("canonical-fixture-pass",0);
+    }
+    before=Delivery::CatalogRecoveryRestores();
+    (void)f.MineEmpty();ASSERT_TRUE(DeliverAllOrchard(f,16));
+    EXPECT_GE(Delivery::CatalogRecoveryRestores()-before,1u) << "catalog survived a wallet lock";
+    EXPECT_EQ(f.Account(0).account.Delivery().sequence,NativeOrchardHead(f));
 }

@@ -897,6 +897,35 @@ void OrchardAccountDelivery::RecheckCatalogCaptureInTransaction(WalletManager& w
     auto fresh=Owner::CaptureCatalog(w,session,prepared.data_->profile);
     prepared.data_->captured->Recheck(*fresh);
 }
+namespace {
+// The catalog delivery last restored or committed, keyed by the exact wallet
+// bytes it describes (an Owner::CapturedCatalog). Guarded by `mutex`, which is
+// never held while restoring or while owning the wallet.
+struct CatalogRecoveryMemo {
+    std::mutex mutex;
+    const WalletManager* wallet=nullptr;
+    uint64_t session=0;
+    uint256 origin;
+    std::shared_ptr<const void> captured;
+    std::shared_ptr<const OrchardAccountDelivery::CatalogEnrolled> restored;
+    std::atomic<uint64_t> restores{0};
+    std::atomic<bool> verify{false};
+};
+CatalogRecoveryMemo& RecoveryMemo(){static CatalogRecoveryMemo value;return value;}
+bool SameWalletStateBytes(const orchard::WalletStateBytes& a,const orchard::WalletStateBytes& b){
+    const auto x=a.Bytes(),y=b.Bytes();return x.size()==y.size()&&std::equal(x.begin(),x.end(),y.begin());
+}
+bool SameCatalog(const OrchardAccountDelivery::CatalogEnrolled& a,const OrchardAccountDelivery::CatalogEnrolled& b){
+    if(a.catalog.revision!=b.catalog.revision||a.catalog.generated!=b.catalog.generated||
+       a.accounts.size()!=b.accounts.size())return false;
+    for(size_t i=0;i<a.accounts.size();++i){
+        const auto& x=a.accounts[i];const auto& y=b.accounts[i];
+        if(x.number!=y.number||x.state.revision!=y.state.revision||x.archive_revisions!=y.archive_revisions||
+           !SameWalletStateBytes(x.state.account.Encode(),y.state.account.Encode()))return false;
+    }
+    return true;
+}
+}
 struct OrchardCatalogRecoveryPlan::Data {
     struct Step { bool retaining; orchard::LoadedWalletState next; };
     struct Account { OrchardAccountDelivery::Applied result; std::vector<Step> steps; };
@@ -942,7 +971,46 @@ std::unique_ptr<OrchardCatalogRecoveryPlan> OrchardAccountDelivery::PrepareCatal
         RequireShieldFullSync(lease->Database());Transaction tx(lease->Database());
         data->expected=Owner::CaptureCatalog(w,session,profile);tx.Commit();
     }
-    data->before=data->expected->Restore(points);
+    // Reuse the catalog restored or committed for exactly these bytes, if any.
+    const auto origin=points({}).checkpoint.block_hash;
+    auto& memo=RecoveryMemo();
+    std::shared_ptr<const CatalogEnrolled> reused;
+    {
+        std::lock_guard<std::mutex> lock(memo.mutex);
+        if(memo.wallet==&w&&memo.session==session&&memo.origin==origin&&memo.captured&&memo.restored){
+            try{
+                std::static_pointer_cast<const Owner::CapturedCatalog>(memo.captured)->Recheck(*data->expected);
+                bool same=true;
+                for(const auto& enrolled:memo.restored->accounts){
+                    const auto receipt=enrolled.state.account.Delivery();
+                    same=same&&points({receipt.sequence,receipt.digest}).checkpoint==enrolled.state.account.Scan().Checkpoint();
+                }
+                if(same)reused=memo.restored;
+            }catch(const std::exception&){}
+        }
+    }
+    if(reused){
+        data->before=*reused;
+        if(memo.verify.load()&&!SameCatalog(data->expected->Restore(points),data->before))
+            throw std::logic_error("Orchard catalog reuse differs from its restore");
+    }else{
+        data->before=data->expected->Restore(points);
+        ++memo.restores;
+        // Remember it against a second capture of the same bytes: the plan's
+        // own capture is consumed (and advanced) by its commit.
+        std::shared_ptr<const Owner::CapturedCatalog> again;
+        try{
+            auto lease=w.AcquireDatabaseLease();Check(lease->Session()==session&&lease->Database());
+            RequireShieldFullSync(lease->Database());Transaction tx(lease->Database());
+            again=Owner::CaptureCatalog(w,session,profile);tx.Commit();
+            data->expected->Recheck(*again);
+        }catch(const std::exception&){again.reset();}
+        std::lock_guard<std::mutex> lock(memo.mutex);
+        if(again){
+            memo.wallet=&w;memo.session=session;memo.origin=origin;memo.captured=again;
+            memo.restored=std::make_shared<const CatalogEnrolled>(data->before);
+        }
+    }
     auto plan=std::unique_ptr<OrchardCatalogRecoveryPlan>(new OrchardCatalogRecoveryPlan(std::move(data)));
     CompleteCatalogRecoveryWithPoints(*plan,action,sequence,points);
     return plan;
@@ -1337,6 +1405,50 @@ std::shared_ptr<const OrchardAccountDelivery::CatalogEnrolled> OrchardAccountDel
     std::lock_guard<std::mutex> lock(kept.mutex);
     kept.wallet=&w;kept.session=session;kept.origin=origin;kept.captured=fresh;kept.restored=restored;
     return restored;
+}
+void OrchardAccountDelivery::RememberCatalogRecovery(WalletManager& w,uint64_t session,
+        const RuntimeAccountReplay& view,const CatalogEnrolled& state){
+    const auto context=view.Profile();
+    const Profile profile{context.domain,context.activation_height,0};
+    const auto origin=view.Point({}).checkpoint.block_hash;
+    std::shared_ptr<const Owner::CapturedCatalog> fresh;
+    {
+        auto lease=w.AcquireDatabaseLease();Check(lease->Session()==session&&lease->Database());
+        RequireShieldFullSync(lease->Database());Transaction tx(lease->Database());
+        fresh=Owner::CaptureCatalog(w,session,profile);tx.Commit();
+    }
+    // The committed catalog must be exactly what these bytes store: the same
+    // accounts, each at the stored revision with byte-identical current state.
+    // Anything else (a write between the commit and this capture) is not
+    // remembered, and the next plan restores as before.
+    bool exact=fresh->bytes.size()==state.accounts.size()&&fresh->ownership.accounts.size()==state.accounts.size();
+    for(size_t i=0;exact&&i<state.accounts.size();++i){
+        const auto& stored=fresh->bytes[i]->current;const auto& enrolled=state.accounts[i];
+        exact=fresh->ownership.accounts[i].entry.account==enrolled.number&&stored.revision==enrolled.state.revision&&
+            SameWalletStateBytes(stored.state,enrolled.state.account.Encode());
+    }
+    if(!exact){ForgetCatalogRecovery();return;}
+    const auto remembered=std::make_shared<const CatalogEnrolled>(state);
+    {
+        auto& memo=RecoveryMemo();std::lock_guard<std::mutex> lock(memo.mutex);
+        memo.wallet=&w;memo.session=session;memo.origin=origin;memo.captured=fresh;memo.restored=remembered;
+    }
+    // Readers of the same bytes get it too, instead of restoring it themselves.
+    auto& kept=Observed();std::lock_guard<std::mutex> lock(kept.mutex);
+    kept.wallet=&w;kept.session=session;kept.origin=origin;kept.captured=fresh;kept.restored=remembered;
+}
+void OrchardAccountDelivery::ForgetCatalogRecovery(){
+    auto& memo=RecoveryMemo();std::lock_guard<std::mutex> lock(memo.mutex);
+    memo.wallet=nullptr;memo.session=0;memo.captured.reset();memo.restored.reset();
+}
+uint64_t OrchardAccountDelivery::CatalogRecoveryRestores(){return RecoveryMemo().restores.load();}
+void OrchardAccountDelivery::VerifyCatalogRecoveryReuseForTest(bool on){RecoveryMemo().verify.store(on);}
+namespace {
+// Decrypted catalogs (viewing keys, notes) must not outlive the unlock or the
+// wallet session that produced them.
+[[maybe_unused]] const bool kForgetCatalogsOnLock=(WalletManager::SetDecryptedViewsClearedHook([]() noexcept {
+    try{OrchardAccountDelivery::ForgetCatalogRecovery();OrchardAccountDelivery::ForgetObservedCatalog();}catch(...){}
+}),true);
 }
 OrchardAccountDelivery::CatalogEnrolled OrchardAccountDelivery::ReadCatalogForReplayInTransaction(
         WalletManager& w,uint64_t session,const RuntimeAccountReplay& view){
