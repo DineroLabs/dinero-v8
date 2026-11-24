@@ -89,6 +89,19 @@ public:
         const std::thread::id thread_=std::this_thread::get_id();
         WalletManager* wallet_=nullptr;
     };
+    // What Start() does when the datadir holds no wallet at all. It makes an
+    // implicit "default" wallet only on a node that can credit one: the
+    // implicit wallet has no screen on which to explain a refusal, so on a
+    // node that never could (ChainstateService::NativeWalletServable) none is
+    // made and the user creates a wallet deliberately, where they are told.
+    enum class ImplicitDefaultWallet { Create, NoneOnV3Index, NoneWhileSnapshotLoads, NoneNeverCredited };
+    static constexpr ImplicitDefaultWallet DecideImplicitDefaultWallet(bool full_archive_v3,
+        bool birth_precedes_snapshot, bool native_wallet_servable) {
+        if (full_archive_v3) return ImplicitDefaultWallet::NoneOnV3Index;
+        if (birth_precedes_snapshot) return ImplicitDefaultWallet::NoneWhileSnapshotLoads;
+        if (!native_wallet_servable) return ImplicitDefaultWallet::NoneNeverCredited;
+        return ImplicitDefaultWallet::Create;
+    }
     [[nodiscard]] static std::unique_ptr<WalletUse> AcquireWalletUse(
         std::shared_ptr<WalletService> service);
     [[nodiscard]] static std::unique_ptr<ReopenServiceFence> FenceForReopen(

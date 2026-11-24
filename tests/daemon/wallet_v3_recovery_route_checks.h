@@ -905,6 +905,18 @@ TEST(WalletV3NativeInterim, OlderSnapshotNodeRefusesToCreateAWalletItCouldNeverC
     EXPECT_FALSE(created.isMember("error"))<<created.toStyledString();
     EXPECT_TRUE(created.isMember("mnemonic"));
 }
+// The same node with no wallet at all must not be handed an implicit
+// "default" wallet at start: nothing would ever tell the user it cannot be
+// credited. WalletService::Start acts only on this decision.
+TEST(WalletV3NativeInterim, NoImplicitDefaultWalletOnANodeThatCouldNeverCreditIt) {
+    using W=WalletService::ImplicitDefaultWallet;
+    EXPECT_EQ(WalletService::DecideImplicitDefaultWallet(false,false,false),W::NoneNeverCredited);
+    EXPECT_EQ(WalletService::DecideImplicitDefaultWallet(false,false,true),W::Create);      // plain archive: as before
+    EXPECT_EQ(WalletService::DecideImplicitDefaultWallet(true,false,true),W::NoneOnV3Index);
+    EXPECT_EQ(WalletService::DecideImplicitDefaultWallet(false,true,true),W::NoneWhileSnapshotLoads);
+    // A snapshot still loading says "wait", not "never": it may become servable.
+    EXPECT_EQ(WalletService::DecideImplicitDefaultWallet(false,true,false),W::NoneWhileSnapshotLoads);
+}
 // A node synced from the first block (v3 index) is where a new wallet belongs.
 TEST(WalletV3NativeInterim, V3CreatesGeneratedWalletsWithThreeAddresses) {
     CanonicalRecoveryFixture f(false,false);
