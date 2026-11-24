@@ -6,6 +6,7 @@
 #include <string>
 
 namespace dinero {
+namespace consensus { enum class ConnectBlockResult : int; }
 struct BlockAcceptResult;
 class ChainstateService;
 class BlockIngressService;
@@ -41,6 +42,12 @@ OrchardNetworkDisposition SubmitDownloadedOrchardBlock(
     const std::shared_ptr<BlockIngressService>& ingress,
     const std::shared_ptr<BlockDownloadScheduler>& parallel,
     const std::vector<uint8_t>& bytes, const uint256& hash, uint32_t height);
+// What the ordered drain is told about a submitted block, for full and for
+// compact (phone) storage alike. Stored means the chainstate has indexed the
+// body on a branch that is not selected yet: the drain must go on to that
+// branch's next block, or a reorganisation whose first block does not
+// outweigh the current tip on its own can never be completed.
+consensus::ConnectBlockResult DrainResultForOrchardDisposition(OrchardNetworkDisposition disposition);
 // Compact drain wrapper: checks the real started compact storage owner before
 // entering the existing canonical queue. Stored is still not acknowledgment.
 OrchardNetworkDisposition SubmitDownloadedCompactOrchardBlock(

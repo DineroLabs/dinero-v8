@@ -176,6 +176,14 @@ OrchardNetworkDisposition SubmitDownloadedCompactOrchardBlock(
         return SubmitDownloadedOrchardBlock(source,ingress,parallel,bytes,hash,height);
     } catch (...) { return OrchardNetworkDisposition::Refused; }
 }
+consensus::ConnectBlockResult DrainResultForOrchardDisposition(OrchardNetworkDisposition disposition) {
+    switch (disposition) {
+        case OrchardNetworkDisposition::Connected: return consensus::ConnectBlockResult::CONNECTED;
+        case OrchardNetworkDisposition::Stored: return consensus::ConnectBlockResult::ACCEPTED_NOT_ACTIVE;
+        case OrchardNetworkDisposition::Refused: break;
+    }
+    return consensus::ConnectBlockResult::TEMPORARY_FAIL;
+}
 bool AcceptDownloadedOrchardBlock(
     const std::shared_ptr<ChainstateService>& source,
     const std::shared_ptr<BlockIngressService>& ingress,

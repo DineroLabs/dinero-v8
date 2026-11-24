@@ -7128,8 +7128,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                         using Result = dinero::consensus::ConnectBlockResult;
                         auto ingress=typed_ingress_owner.lock();
                         const auto received=SubmitDownloadedOrchardBlock(chainstate_for_drain,ingress,parallel,bytes,hash,height);
-                        if (received==OrchardNetworkDisposition::Stored) return Result::ACCEPTED_NOT_ACTIVE;
-                        if (received!=OrchardNetworkDisposition::Connected) return Result::TEMPORARY_FAIL;
+                        const auto drained=DrainResultForOrchardDisposition(received);
+                        if (drained!=Result::CONNECTED) return drained;
                         if (prune_for_drain) {
                             try { prune_for_drain->triggerPruneIfNeeded(); } catch (...) {}
                         }
@@ -7146,9 +7146,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                             using Result = dinero::consensus::ConnectBlockResult;
                             const auto received=SubmitDownloadedCompactOrchardBlock(
                                 chainstate_for_drain,typed_ingress_owner.lock(),parallel,bytes,hash,height);
-                            // Stored may mean the queue has not started yet.
-                            // Keep it retryable; never mark it side-accepted.
-                            if (received!=OrchardNetworkDisposition::Connected) return Result::TEMPORARY_FAIL;
+                            const auto drained=DrainResultForOrchardDisposition(received);
+                            if (drained!=Result::CONNECTED) return drained;
                             if (prune_for_drain) {
                                 try { prune_for_drain->triggerPruneIfNeeded(); } catch (...) {}
                             }

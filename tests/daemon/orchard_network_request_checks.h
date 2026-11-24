@@ -17,6 +17,19 @@ TEST(OrchardNetworkRequest, LegacyAndBackfillFormatsRemainDistinct) {
     EXPECT_FALSE(SelectBlockRequestInventory(uint256{},false));
     EXPECT_FALSE(SelectBlockRequestInventory(uint256{},true,true));
 }
+// Android, mainnet 165,229 (2026-11-23): a phone that had connected four
+// blocks of a losing branch could never switch. Its drain was told
+// TEMPORARY_FAIL for the winning branch's first block, which the chainstate
+// had stored and indexed but which did not outweigh the tip alone, so it
+// offered that one block again on every tick ("Drain has failed 50
+// consecutive ticks") and never reached the blocks that would have made the
+// branch win. Stored is "accepted, not active" for phone storage too.
+TEST(OrchardNetworkRequest, StoredBranchBlockLetsTheDrainMoveOnInEveryStorageMode) {
+    using consensus::ConnectBlockResult;
+    EXPECT_EQ(DrainResultForOrchardDisposition(OrchardNetworkDisposition::Stored),ConnectBlockResult::ACCEPTED_NOT_ACTIVE);
+    EXPECT_EQ(DrainResultForOrchardDisposition(OrchardNetworkDisposition::Connected),ConnectBlockResult::CONNECTED);
+    EXPECT_EQ(DrainResultForOrchardDisposition(OrchardNetworkDisposition::Refused),ConnectBlockResult::TEMPORARY_FAIL);
+}
 // The "[Phase N] Sent getdata(...)" log named the request from the node's
 // mode alone, so a stateless node logged MSG_UTREEXO_BLOCK for the plain
 // block requests it sends at Orchard-active heights. The log now prints the
