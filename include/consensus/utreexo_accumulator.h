@@ -781,6 +781,11 @@ public:
     void rebuildRoots();
 
 private:
+    // removeLastNLeaves(): rebuildRoots() for a forest truncated from
+    // `leaves_before` leaves whose roots were `roots_before`. Trees unchanged
+    // by the truncation keep their root; the rest are hashed.
+    void rebuildRootsAfterTruncation(uint64_t leaves_before,
+                                     const std::vector<std::optional<UtreexoHash>>& roots_before);
     struct State {
         // Current forest roots (ordered by tree height, ascending)
         // ARCHITECTURE NOTE: We use std::optional<UtreexoHash> to explicitly
