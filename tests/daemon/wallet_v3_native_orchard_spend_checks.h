@@ -143,8 +143,15 @@ TEST(WalletV3NativeOrchardSpend, NativeWalletRoundTripsUnshieldAndShieldOnV3) {
     // wallet holds exactly such a shield): delivery rewinds through it, and
     // every reuse of a remembered catalog is also restored and compared
     // (VerifyCatalogReuse above).
+    // An idle pass first, so the reorg meets an armed idle skip: the moved
+    // head must bring the complete pass (and its reconcile) back.
+    const auto skipped=RuntimeWalletRecovery::IdleCatalogPassesSkipped();
+    deliver();
+    EXPECT_EQ(RuntimeWalletRecovery::IdleCatalogPassesSkipped(),skipped+1) << "idle pass was not skipped";
     ASSERT_TRUE(ShieldedStateStartupTestAccess::DisconnectBoundary(*f.f.service,f.f.service->GetActiveTip()));
     deliver();
+    EXPECT_EQ(RuntimeWalletRecovery::IdleCatalogPassesSkipped(),skipped+1) << "reorg pass was skipped";
+    EXPECT_EQ(f.Account().account.Scan().BalanceUna(),390000u) << "un-confirmed shield still counted";
     EXPECT_EQ(f.Account().account.Delivery().sequence,NativeOrchardHead(f));
     auto use=WalletService::AcquireWalletUse(f.wallet);
     EXPECT_EQ(use->Wallet().AcquireDatabaseLease()->NativeV3TransparentState(),

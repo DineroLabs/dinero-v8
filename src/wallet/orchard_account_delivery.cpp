@@ -537,7 +537,9 @@ struct OrchardAccountDelivery::Owner {
             return result;
         }
     };
+    static inline std::atomic<uint64_t> captures{0};
     static std::unique_ptr<CapturedCatalog> CaptureCatalog(WalletManager& wallet,uint64_t session,const Profile& profile){
+        captures.fetch_add(1,std::memory_order_relaxed);
         const ValidatedViewingKeyScope viewing_once; // one proof per key per capture
         auto lease=wallet.AcquireDatabaseLease();
         Check(lease->Session()==session&&lease->Database()&&!sqlite3_get_autocommit(lease->Database()));
@@ -1482,6 +1484,10 @@ void OrchardAccountDelivery::ForgetCatalogRecovery(){
     ++memo.generation;memo.wallet=nullptr;memo.session=0;memo.captured.reset();memo.restored.reset();
 }
 uint64_t OrchardAccountDelivery::CatalogRecoveryRestores(){return RecoveryMemo().restores.load();}
+uint64_t OrchardAccountDelivery::CatalogRecoveryGeneration(){
+    auto& memo=RecoveryMemo();std::lock_guard<std::mutex> lock(memo.mutex);return memo.generation;
+}
+uint64_t OrchardAccountDelivery::CatalogCaptures() noexcept{return Owner::captures.load();}
 void OrchardAccountDelivery::VerifyCatalogRecoveryReuseForTest(bool on){RecoveryMemo().verify.store(on);}
 namespace {
 // Decrypted catalogs (viewing keys, notes) must not outlive the unlock or the

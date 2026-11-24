@@ -368,6 +368,10 @@ public:
     static void ForgetCatalogRecovery();
     // Recovery plans that restored a catalog instead of reusing one.
     static uint64_t CatalogRecoveryRestores();
+    // Moves on every ForgetCatalogRecovery (lock, auto-lock, session change).
+    static uint64_t CatalogRecoveryGeneration();
+    // Complete catalog captures taken by any path, since start.
+    static uint64_t CatalogCaptures() noexcept;
     // Tests: on every reuse, also restore and require an identical catalog.
     static void VerifyCatalogRecoveryReuseForTest(bool);
     // Same complete catalog/current/reached/retained validation inside the

@@ -2,6 +2,8 @@
 #include <chrono>
 #include <thread>
 #include "wallet/orchard_ownership_inventory.h"
+#include "daemon/services/chainstate_recovery_source.h"
+#include "wallet/runtime_wallet_recovery.h"
 #include <cstdio>
 #include <cstdlib>
 // #939 phase 3: Orchard delivery for native wallets on a full-archive v3 node.
@@ -769,4 +771,86 @@ TEST(WalletV3NativeOrchard, DeliveryRemembersOnlyTheCatalogItsBytesRestoreTo) {
     Delivery::ForgetCatalogRecovery();
     Delivery::RememberCatalogRecovery(use->Wallet(),session,**view,catalog);
     EXPECT_EQ(prepare_restores(),1u) << "catalog with a foreign revision was remembered";
+}
+
+// The delivery worker returns about once a second. With every account at the
+// head and nothing written since, a pass re-proved the same catalog: about six
+// complete captures (~1 s each on the owner's mainnet wallet, pilot 2b,
+// 2026-11-24), so the worker was busy ~80% of the time with no block to apply
+// and held the retained replay that wallet reads then had to refuse. An idle
+// pass now captures nothing. Any wallet write, by this connection or another,
+// a lock, or the forced periodic pass brings the complete pass back.
+TEST(WalletV3NativeOrchard, IdleDeliveryPassAtTheHeadCapturesNothing) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-orchard-idle-skip-index");
+    VerifyCatalogReuse verify_reuse;
+    struct Interval{~Interval(){RuntimeWalletRecovery::SetIdleCatalogFullPassIntervalForTest(std::chrono::minutes(1));}} interval;
+    RuntimeWalletRecovery::SetIdleCatalogFullPassIntervalForTest(std::chrono::minutes(10));
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ASSERT_FALSE(f.Call(0).isMember("error"));
+    for(int i=0;i<3;++i)(void)f.MineEmpty();
+    ASSERT_TRUE(DeliverAllOrchard(f,32)); // its last pass completed at the head
+    using Delivery=wallet::OrchardAccountDelivery;
+    const auto idle_passes=[&](int n){
+        const auto captures=Delivery::CatalogCaptures();const auto skipped=RuntimeWalletRecovery::IdleCatalogPassesSkipped();
+        for(int i=0;i<n;++i)if(!DeliverAllOrchard(f,1))return std::pair<uint64_t,uint64_t>{~0ull,~0ull};
+        return std::pair{Delivery::CatalogCaptures()-captures,RuntimeWalletRecovery::IdleCatalogPassesSkipped()-skipped};
+    };
+    // Idle: no capture at all, and every pass still reports the head.
+    EXPECT_EQ(idle_passes(5),(std::pair<uint64_t,uint64_t>{0,5})) << "idle pass captured the catalog";
+    EXPECT_EQ(f.Account(0).account.Delivery().sequence,NativeOrchardHead(f));
+
+    // A write by the wallet's own connection: the next pass is complete again.
+    ASSERT_FALSE(f.Issue(0).isMember("error"));
+    {const auto [captures,skipped]=idle_passes(1);EXPECT_GT(captures,0u) << "own-connection write was skipped over";EXPECT_EQ(skipped,0u);}
+    EXPECT_EQ(idle_passes(2),(std::pair<uint64_t,uint64_t>{0,2}));
+
+    // A commit by another connection to the same file moves only data_version.
+    {
+        std::string path;
+        {auto use=WalletService::AcquireWalletUse(f.wallet);auto lease=use->Wallet().AcquireDatabaseLease();
+         path=sqlite3_db_filename(lease->Database(),"main");}
+        sqlite3* other=nullptr;ASSERT_EQ(sqlite3_open(path.c_str(),&other),SQLITE_OK);
+        const int rc=sqlite3_exec(other,"CREATE TABLE IF NOT EXISTS idle_probe(x INTEGER);INSERT INTO idle_probe VALUES(1)",
+            nullptr,nullptr,nullptr);
+        sqlite3_close(other);ASSERT_EQ(rc,SQLITE_OK);
+    }
+    {const auto [captures,skipped]=idle_passes(1);EXPECT_GT(captures,0u) << "another connection's write was skipped over";EXPECT_EQ(skipped,0u);}
+
+    // Locking forgets: after unlock the next pass is complete.
+    {auto use=WalletService::AcquireWalletUse(f.wallet);
+     use->Wallet().lockWallet();use->Wallet().unlockWallet("canonical-fixture-pass",0);}
+    {const auto [captures,skipped]=idle_passes(1);EXPECT_GT(captures,0u) << "skip survived a wallet lock";EXPECT_EQ(skipped,0u);}
+
+    // The forced periodic pass runs complete, and finds nothing the key missed.
+    RuntimeWalletRecovery::SetIdleCatalogFullPassIntervalForTest(std::chrono::milliseconds(0));
+    const auto misses=RuntimeWalletRecovery::IdleCatalogSkipMisses();
+    {const auto [captures,skipped]=idle_passes(2);EXPECT_GT(captures,0u);EXPECT_EQ(skipped,0u);}
+    EXPECT_EQ(RuntimeWalletRecovery::IdleCatalogSkipMisses(),misses);
+    // A new block is never skipped, even when nothing was written to the wallet
+    // before the Orchard pass (driven directly, without transparent delivery).
+    RuntimeWalletRecovery::SetIdleCatalogFullPassIntervalForTest(std::chrono::minutes(10));
+    EXPECT_EQ(idle_passes(1),(std::pair<uint64_t,uint64_t>{0,1})) << "skip not armed";
+    (void)f.MineEmpty();
+    {
+        const auto view=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(view.ok());
+        ASSERT_GT((*view)->Head().sequence,f.Account(0).account.Delivery().sequence);
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        const auto session=use->Wallet().AcquireDatabaseLease()->Session();
+        const ChainstateRuntimeRecoverySource source(*f.f.service);
+        const auto skipped=RuntimeWalletRecovery::IdleCatalogPassesSkipped();
+        const auto result=RuntimeWalletRecovery::AdvancePreparedOrchardCatalogStores(**view,source,use->Wallet(),session,
+            [](const RuntimeWalletRecovery::OrchardWrite& write){write([]{});},16);
+        EXPECT_EQ(RuntimeWalletRecovery::IdleCatalogPassesSkipped(),skipped) << "a moved head was skipped";
+        ASSERT_TRUE(result.has_value());
+        EXPECT_EQ(result->applied,(*view)->Head());
+        EXPECT_EQ(f.Account(0).account.Delivery().sequence,(*view)->Head().sequence);
+    }
+    (void)f.MineEmpty();
+    {const auto skipped=RuntimeWalletRecovery::IdleCatalogPassesSkipped();
+     ASSERT_TRUE(DeliverAllOrchard(f,16));
+     EXPECT_EQ(RuntimeWalletRecovery::IdleCatalogPassesSkipped(),skipped) << "a new block was skipped";}
+    EXPECT_EQ(f.Account(0).account.Delivery().sequence,NativeOrchardHead(f));
 }
