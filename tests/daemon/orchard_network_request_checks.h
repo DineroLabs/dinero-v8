@@ -17,6 +17,23 @@ TEST(OrchardNetworkRequest, LegacyAndBackfillFormatsRemainDistinct) {
     EXPECT_FALSE(SelectBlockRequestInventory(uint256{},false));
     EXPECT_FALSE(SelectBlockRequestInventory(uint256{},true,true));
 }
+// The "[Phase N] Sent getdata(...)" log named the request from the node's
+// mode alone, so a stateless node logged MSG_UTREEXO_BLOCK for the plain
+// block requests it sends at Orchard-active heights. The log now prints the
+// name of the type that was selected and sent.
+TEST(OrchardNetworkRequest, LoggedRequestNameIsTheTypeThatWasSent) {
+    EXPECT_STREQ(BlockRequestInventoryName(InventoryType::MSG_BLOCK),"MSG_BLOCK");
+    EXPECT_STREQ(BlockRequestInventoryName(InventoryType::MSG_UTREEXO_BLOCK),"MSG_UTREEXO_BLOCK");
+    struct Restore {ChainParams params=Params();DaemonContext* context=DaemonContext::instance();
+        ~Restore(){MutableParams()=params;DaemonContext::setInstance(context);}} restore;
+    MutableParams().name="regtest";MutableParams().orchard_activation_height=UINT32_MAX;
+    MutableParams().orchard_branch_id=0;DaemonContext::setInstance(nullptr);
+    // A stateless node's store-only backfill request is a plain block request.
+    const auto backfill=SelectBlockRequestInventory(uint256{},true,true);ASSERT_TRUE(backfill);
+    EXPECT_STREQ(BlockRequestInventoryName(*backfill),"MSG_BLOCK");
+    const auto tip=SelectBlockRequestInventory(uint256{},true);ASSERT_TRUE(tip);
+    EXPECT_STREQ(BlockRequestInventoryName(*tip),"MSG_UTREEXO_BLOCK");
+}
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
 TEST(OrchardNetworkRequest, ExactBoundaryAndActiveHeadersChooseTypedBytes) {
     CompactNetworkFixture f(false);auto& storage=*f.selected.node.storage;

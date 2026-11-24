@@ -18,6 +18,9 @@ enum class InventoryType : uint32_t;
 std::optional<InventoryType> SelectBlockRequestInventory(const uint256& hash,
     bool stateless, bool store_only_backfill=false,
     std::optional<uint32_t> expected_height=std::nullopt);
+// The name of a block request as logs print it: the inventory type that was
+// actually sent, which for a stateless node depends on the block's height.
+const char* BlockRequestInventoryName(InventoryType type);
 enum class NetworkBlockFamily { Unavailable, Historical, Orchard };
 struct NetworkBlockClassification {
     NetworkBlockFamily family{NetworkBlockFamily::Unavailable};

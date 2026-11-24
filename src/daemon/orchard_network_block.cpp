@@ -47,6 +47,14 @@ std::optional<InventoryType> SelectBlockRequestInventory(const uint256& hash,
     } catch (...) { return std::nullopt; }
 }
 
+const char* BlockRequestInventoryName(InventoryType type) {
+    switch (type) {
+        case InventoryType::MSG_BLOCK: return "MSG_BLOCK";
+        case InventoryType::MSG_UTREEXO_BLOCK: return "MSG_UTREEXO_BLOCK";
+        default: return "another inventory type";
+    }
+}
+
 NetworkBlockClassification ClassifyNetworkBlock(std::span<const uint8_t> bytes) {
     try {
         if (!consensus::OrchardProfileConfigurationValid(Params())) return {};

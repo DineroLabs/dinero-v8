@@ -7081,7 +7081,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                     send_one_rotating(eligible_peers);
                 }
                 g_logger.info("[Phase N] Sent getdata(" +
-                             std::string((csn_mode && !for_backfill) ? "MSG_UTREEXO_BLOCK" : "MSG_BLOCK") +
+                             std::string(BlockRequestInventoryName(*request_type)) +
                              ") for block " + block_hash.GetHex() +
                              " to " + std::to_string(sent) + "/" +
                              std::to_string(eligible) + " eligible peers");
