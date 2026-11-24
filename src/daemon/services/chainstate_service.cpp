@@ -1,3 +1,4 @@
+#include "daemon/services/retained_replay_policy.h"
 #include "storage/validated_tip_transition.h"
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 #include "daemon/services/chainstate_recovery_source.h"  // R1 adapter (Task 6.3)
@@ -8333,9 +8334,17 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             // does not let go in that time, including this thread's own
             // caller, gets today's behaviour: a new full capture.
             const auto held_since=std::chrono::steady_clock::now();
+            bool full_waited=false;
             while(!RuntimeAccountReplay::SoleOwner(full_replay_)&&
-                  std::chrono::steady_clock::now()-held_since<kFullReplayHeldWait)
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                  std::chrono::steady_clock::now()-held_since<kFullReplayHeldWait){
+                full_waited=true;std::this_thread::sleep_for(std::chrono::milliseconds(5));}
+            if(full_waited){
+                const auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-held_since).count();
+                const auto n=++full_replay_reader_waits_;
+                if(n<=20||n%100==0)
+                    std::cerr<<"[RuntimeReplay] "<<replay_stamp()<<" waited "<<ms<<" ms for a reader of the retained full account replay ("
+                             <<(RuntimeAccountReplay::SoleOwner(full_replay_)?"it let go":"still held")<<"; wait "<<n<<")"<<std::endl;
+            }
             // The delivery worker comes back every second anyway: for it a
             // view that is still held means "not this pass", not a capture.
             // After a bounded number of passes a holder that never lets go
@@ -8378,8 +8387,10 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             static std::mutex said_mutex;static std::string said;
             const std::string line=std::string("wallet replay waits: ")+why+(detail.empty()?"":" ("+detail+")");
             std::lock_guard<std::mutex> lock(said_mutex);
-            static uint64_t refusals=0;++refusals;
-            if(said!=line){said=line;std::cerr<<"[OrchardHistory] "<<stamp()<<" "<<line<<" [refusal "<<refusals<<"]"<<std::endl;}
+            static uint64_t refusals=0;static uint64_t repeats=0;++refusals;
+            if(said!=line){said=line;repeats=0;std::cerr<<"[OrchardHistory] "<<stamp()<<" "<<line<<" [refusal "<<refusals<<"]"<<std::endl;}
+            else if(RepeatedRefusalIsLogged(++repeats))
+                std::cerr<<"[OrchardHistory] "<<stamp()<<" "<<line<<" [the same refusal "<<repeats<<" more times; refusal "<<refusals<<"]"<<std::endl;
             return Status::Invalid;
         };
         // The history was verified up to a checkpoint (`target`). It is
@@ -8415,7 +8426,9 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
                 return refuse("a block was delivered while the replay was read","replay head "+std::to_string(head.sequence));
             {static std::atomic<uint64_t> adopted{0};
              if(++adopted==1||adopted%500==0)std::cerr<<"[OrchardHistory] "<<stamp()<<" wallet replay adopted (checkpoint "<<target.height
-                 <<", replay to "<<point.height<<", times "<<adopted.load()<<")"<<std::endl;}
+                 <<", replay to "<<point.height<<", times "<<adopted.load()<<"; waited for a reader "<<phone_replay_reader_waits_.load()
+                 <<" times, kept a held replay "<<phone_replay_kept_.load()<<" times, full builds "<<phone_replay_full_builds_.load()
+                 <<", extensions "<<phone_replay_extensions_.load()<<")"<<std::endl;}
             return replay;
         };
         const auto phone=[&]()->std::optional<std::tuple<std::shared_ptr<ChainstateService>,p2p::OrchardPhoneHistoryTarget,
@@ -8439,6 +8452,23 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             const auto& [source,target,download,history]=*ready;
             const auto base=*phone_replay_base_;
             if(base.second==target.base&&base.first>=target.activation&&base.first<=target.height){
+                // Readers hold the view briefly; wait for one before deciding
+                // that it cannot be extended (as for the full view above).
+                const auto phone_held_since=std::chrono::steady_clock::now();
+                bool phone_waited=false;
+                while(!RuntimeAccountReplay::SoleOwner(phone_replay_)&&
+                      std::chrono::steady_clock::now()-phone_held_since<kFullReplayHeldWait){
+                    phone_waited=true;std::this_thread::sleep_for(std::chrono::milliseconds(5));}
+                if(phone_waited){
+                    // Said each time it happens: it is the only trace that a
+                    // reader held the view when this read arrived.
+                    const auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now()-phone_held_since).count();
+                    const auto n=++phone_replay_reader_waits_;
+                    if(n<=20||n%100==0)
+                        std::cerr<<"[OrchardHistory] "<<stamp()<<" wallet replay: waited "<<ms<<" ms for a reader of the retained replay ("
+                                 <<(RuntimeAccountReplay::SoleOwner(phone_replay_)?"it let go":"still held")<<"; wait "<<n<<")"<<std::endl;
+                }
                 std::shared_ptr<const RuntimeAccountReplay> extended;
                 try{extended=RuntimeAccountReplay::ExtendTail(std::move(phone_replay_),read);}
                 // Before ExtendTail takes the view only the first read can throw:
@@ -8447,15 +8477,30 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
                 catch(const consensus::OrchardStateLookupError&){if(phone_replay_)throw;phone_replay_base_.reset();}
                 catch(...){phone_replay_.reset();phone_replay_base_.reset();}
                 if(extended){
-                    phone_replay_=extended;++phone_replay_extensions_;
+                    phone_replay_=extended;++phone_replay_extensions_;phone_replay_held_refusals_.store(0);
                     return adopt(extended,source,target,download);
                 }
-                // Another holder is still reading the retained view: reuse it while
-                // current; otherwise rebuild below and retain the new view instead.
+                // Another holder is still reading the retained view, so it
+                // cannot be extended now. It is handed out while it is still
+                // at the head; behind the head it is KEPT and the caller
+                // retries (retained_replay_policy.h). It used to be dropped
+                // here and built again from the checkpoint, on every block
+                // that arrived while a reader held it.
                 if(phone_replay_){
                     auto current=adopt(phone_replay_,source,target,download);
-                    if(current.ok())return current;
-                    phone_replay_.reset();phone_replay_base_.reset();
+                    switch(WhenRetainedReplayIsHeld(current.ok(),phone_replay_held_refusals_.load())){
+                    case RetainedReplayAction::ReturnCurrent:
+                        phone_replay_held_refusals_.store(0);return current;
+                    case RetainedReplayAction::KeepAndRetry:
+                        ++phone_replay_held_refusals_;++phone_replay_kept_;
+                        return refuse("the retained replay is held by another reader and a block has arrived (kept, not rebuilt)");
+                    case RetainedReplayAction::DropAndRebuild:
+                        std::cerr<<"[OrchardHistory] "<<stamp()<<" wallet replay: the retained replay stayed held for "
+                                 <<phone_replay_held_refusals_.load()<<" attempts; rebuilding from the checkpoint"<<std::endl;
+                        phone_replay_held_refusals_.store(0);
+                        phone_replay_.reset();phone_replay_base_.reset();
+                        break;
+                    }
                 }
             }else{phone_replay_.reset();phone_replay_base_.reset();}
             captured_head.reset();
