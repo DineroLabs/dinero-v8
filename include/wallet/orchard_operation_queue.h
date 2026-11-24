@@ -65,6 +65,10 @@ public:
   [[nodiscard]] orchard::WalletStateBytes Encode() const;
   [[nodiscard]] static OrchardOperationQueue
   Restore(const orchard::WalletStateBytes &, orchard::SigningDomain);
+  // Number of Orchard proof verifications Restore has actually run in this
+  // process (cache misses). Tests use it to prove a repeated Restore of the
+  // same entry does not verify its proof again.
+  [[nodiscard]] static uint64_t ProofVerificationsRun() noexcept;
 
 private:
   friend class OrchardAccountState;

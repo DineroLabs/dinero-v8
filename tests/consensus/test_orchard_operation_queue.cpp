@@ -94,9 +94,19 @@ int main(int argc, char **argv) {
     auto wrong = queue.Reserve(id, other.Intent(context));
     QueueReject([&] { (void)wrong.SetReady(id, auth); });
     const auto encoded = ready.Encode();
+    const auto verified_before = OrchardOperationQueue::ProofVerificationsRun();
     auto restored = OrchardOperationQueue::Restore(encoded, f.domain);
     Require(restored.Entries().at(id).transaction ==
             ready.Entries().at(id).transaction);
+    // The first Restore checks the proof once. Restoring the same bytes again
+    // (every wallet.orchard.* read does, twice) must not check it again: on
+    // the owner's Mac those repeats held the wallet lease and starved block
+    // delivery behind a 60 s block interval.
+    Require(OrchardOperationQueue::ProofVerificationsRun() == verified_before + 1);
+    for (int i = 0; i < 3; ++i)
+      Require(OrchardOperationQueue::Restore(encoded, f.domain).Entries().at(id).transaction ==
+              ready.Entries().at(id).transaction);
+    Require(OrchardOperationQueue::ProofVerificationsRun() == verified_before + 1);
     auto wrongDomain = f.domain;
     wrongDomain.network_code = 1;
     QueueReject(
