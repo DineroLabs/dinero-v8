@@ -554,11 +554,6 @@ private Q_SLOTS:
         w=walletPrivate(false,std::nullopt,0.0,false);QCOMPARE(w.orchardText,QString::fromUtf8("—"));
         QCOMPARE(walletPrivate(true,KnownBalance{123456789012345ULL,1,true,true},0,false).orchardText,QString("1,234,567.89012345 DIN"));
         // History page.
-        QCOMPARE(historyType("shield").key,QString("shield"));QVERIFY(historyType("shield").label.contains("Shield"));
-        QVERIFY(historyType("shield").known);QVERIFY(!historyType("shield").label.contains(QString::fromUtf8("❓")));
-        QCOMPARE(historyType("Unshield").key,QString("unshield"));
-        QCOMPARE(historyType("generate").key,QString("mined"));QCOMPARE(historyType("send").key,QString("sent"));
-        QVERIFY(!historyType("mystery").known);
         QCOMPARE(historyFooter(200,200,"All"),QString("Showing the newest 200 transactions. Older ones exist: use Show older."));
         QCOMPARE(historyFooter(1,200,"Shield"),QString("Showing all 1 shield transactions."));
     }

@@ -76,23 +76,6 @@ inline WalletPrivate walletPrivate(bool orchardOffered, const std::optional<Know
     return v;
 }
 
-// The History page: how one row's type is shown.
-struct HistoryType {
-    QString label;      // with its icon
-    QString key;        // what the View filter compares: sent, received, mined, shield, unshield, or the raw type
-    QString color;
-    bool known = true;
-};
-inline HistoryType historyType(QString type) {
-    type = type.toLower();
-    if (type == "sent" || type == "send") return {QString::fromUtf8("📤 Send"), "sent", "#ff6b6b"};
-    if (type == "received" || type == "receive") return {QString::fromUtf8("📥 Receive"), "received", "#51cf66"};
-    if (type == "mined" || type == "generate" || type == "immature" || type == "mining" || type == "coinbase")
-        return {QString::fromUtf8("⛏️ Mined"), "mined", "#339af0"};
-    if (type == "shield") return {QString::fromUtf8("🛡️ Shield (into Orchard)"), "shield", "#b197fc"};
-    if (type == "unshield") return {QString::fromUtf8("🔓 Unshield (out of Orchard)"), "unshield", "#b197fc"};
-    return {QString::fromUtf8("❓ ") + type, type, "#868e96", false};
-}
 // The page asks for the newest `count` rows. What it says under the table.
 inline QString historyFooter(int shown, int asked, const QString& filterLabel) {
     const QString what = filterLabel.compare("All", Qt::CaseInsensitive) == 0 ? QString("transactions")
