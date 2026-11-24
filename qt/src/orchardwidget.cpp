@@ -4,6 +4,7 @@
 #include "paycollectpolicy.h"
 #include "rpcclient.h"
 
+#include <QJsonArray>
 #include <QShowEvent>
 #include <QApplication>
 #include <QClipboard>
@@ -30,6 +31,7 @@ namespace {
 constexpr int kFormStretch = 3, kCardStretch = 2, kGutter = 12;
 constexpr int kPollMs = 3000;
 constexpr int kAccountDiscoveryReadyMs = 60000;
+constexpr int kHiddenBalanceMs = 15000;  // balance reads for the Wallet page while this page is hidden
 constexpr int kAccountDiscoveryRetryMs = 15000;
 const QString kDash = QString::fromUtf8("—");
 const QString kUnknown = QStringLiteral("Unknown");
@@ -256,6 +258,14 @@ void OrchardWidget::setupUi() {
     ol->addWidget(resume_);
     connect(resume_,&QPushButton::clicked,this,&OrchardWidget::onResumeSelected);
     connect(operations_,&QTableWidget::itemSelectionChanged,this,&OrchardWidget::updateForm);
+    operationDetail_=new QLabel("Select an operation above to see its details.",ops);
+    operationDetail_->setObjectName("orchardOperationDetail");
+    operationDetail_->setWordWrap(true);
+    operationDetail_->setTextInteractionFlags(Qt::TextSelectableByMouse|Qt::TextSelectableByKeyboard);
+    operationDetail_->setStyleSheet("QLabel { background: #181b20; color: #d6dde6; padding: 10px; border-radius: 6px; font-family: monospace; }");
+    operationDetail_->setVisible(false);
+    ol->addWidget(operationDetail_);
+    connect(operations_,&QTableWidget::itemSelectionChanged,this,&OrchardWidget::showOperationDetail);
     root->addWidget(ops);
 
     auto* received=new QGroupBox("Received notes",this);
@@ -309,7 +319,7 @@ void OrchardWidget::setWalletScope(const QString& walletName) {
     operationsInFlight_=balanceInFlight_=activationInFlight_=false;
     poll_->stop();
     accountStatus_->setText(wallet_.isEmpty() ? "No wallet loaded" : "Checking…");
-    balance_->setText(kUnknown);
+    forgetBalance();
     receiveAddress_->clear();
     receiveAddress_->setVisible(false);
     copyAddress_->setVisible(false);
@@ -395,9 +405,11 @@ bool OrchardWidget::canChooseAccount() const {
 void OrchardWidget::clearAccountView() {
     clearHistory("History unknown");
     revision_=balanceRevision_=0;operationsSnapshot_.reset();
-    operationsInFlight_=balanceInFlight_=false;balance_->setText(kUnknown);
+    operationsInFlight_=balanceInFlight_=false;forgetBalance();
     receiveAddress_->clear();receiveAddress_->setVisible(false);copyAddress_->setVisible(false);
     operations_->setRowCount(0);operations_->setVisible(false);operationsEmpty_->setVisible(true);
+    detailTxid_.clear();txDetails_.clear();txProblems_.clear();
+    if(operationDetail_){operationDetail_->setVisible(false);operationDetail_->setText({});}
 }
 void OrchardWidget::refreshAccounts() {
     if(accountsInFlight_ || creatingAccount_ || wallet_.isEmpty() || !OC::ValidBinding(walletBinding_))return;
@@ -672,7 +684,15 @@ void OrchardWidget::onPoll() {
     // replay while it works; every three seconds, on whichever tab, that was
     // enough to collide with block delivery on a node that is mining
     // (ChainstateService::getRuntimeAccountReplay).
-    if(!isVisible() && !paymentNeedsFollowing())return;
+    if(!isVisible() && !paymentNeedsFollowing()) {
+        // The Wallet page shows this balance: read it for that page, and only
+        // it, at a slow pace (one read every 15 s instead of four every 3 s).
+        if(!balanceWanted_ || (hiddenBalanceElapsed_.isValid() && hiddenBalanceElapsed_.elapsed()<kHiddenBalanceMs))return;
+        hiddenBalanceElapsed_.start();
+        if(!accountsSnapshot_)refreshAccounts();
+        refreshBalance();
+        return;
+    }
     const int catalogInterval=accountsSnapshot_?kAccountDiscoveryReadyMs:kAccountDiscoveryRetryMs;
     if(!accountDiscoveryElapsed_.isValid() || accountDiscoveryElapsed_.elapsed()>=catalogInterval)
         refreshAccounts();
@@ -725,6 +745,7 @@ void OrchardWidget::onRpcResult(const QString& method, const QJsonValue& result)
     if((tag->method=="queue" || tag->method=="finish") &&
         (!payment_ || tag->requestId!=payment_->requestId()))return;
     if(tag->method=="history" && (!historyInFlight_ || tag->requestId!=historyRequestTag_))return;
+    if(tag->method=="txdetail" && tag->requestId!=detailTxid_)return;
     handle(tag->method, result);
 }
 
@@ -738,6 +759,7 @@ void OrchardWidget::onRpcErrorDetailed(const QString& method, int, const QString
     if((tag->method=="queue" || tag->method=="finish") &&
         (!payment_ || tag->requestId!=payment_->requestId()))return;
     if(tag->method=="history" && (!historyInFlight_ || tag->requestId!=historyRequestTag_))return;
+    if(tag->method=="txdetail" && tag->requestId!=detailTxid_)return;
     QJsonObject failure{{"error", message}};
     const auto detail = data.toObject().value("orchard").toObject();
     auto token = [](const QJsonValue& value, int limit) {
@@ -762,12 +784,27 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
     if(shortName=="activation")activationInFlight_=false;
     const auto object=result.toObject();
     if (object.value("error_code").toString().startsWith("wallet_binding_")) {
-        walletBinding_.clear();accountsSnapshot_.reset();callInFlight_=false;poll_->stop();balance_->setText(kUnknown);
+        walletBinding_.clear();accountsSnapshot_.reset();callInFlight_=false;poll_->stop();forgetBalance();
         clearHistory("History unavailable — wallet binding changed");
         showStatus("Wallet selection changed; reopen this wallet before retrying.",true);
         updateForm();return;
     }
 
+    if(shortName=="txdetail") {
+        const QString txid=detailTxid_;detailTxid_.clear();
+        if(txid.isEmpty())return;
+        const QString problem=object.value("error").toString();
+        if(problem.isEmpty() && object.value("txid").toString()==txid) {
+            txDetails_.insert(txid,object);txProblems_.remove(txid);
+        } else {
+            // An older node cannot read a block that holds an Orchard transaction
+            // and answers "not found" for it; say that instead of nothing.
+            txProblems_.insert(txid,problem.contains("not found",Qt::CaseInsensitive)
+                ? QString("this node could not find the transaction (nodes before v8.2.6 cannot look up Orchard transactions)")
+                : problem.isEmpty() ? QString("the node's answer was not understood") : "not available: "+problem);
+        }
+        showOperationDetail();return;
+    }
     if(shortName=="history") {
         historyInFlight_=false;historyRequestTag_.clear();
         auto page=OC::ParseReceived(result);
@@ -798,7 +835,7 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
         if(catalog && accountSelected_)for(const auto& a:catalog->accounts)
             if(a.account==account_ && (a.revision<revision_ || a.revision<balanceRevision_))stale=true;
         if(!catalog || stale) {
-            accountsSnapshot_.reset();operationsSnapshot_.reset();balance_->setText(kUnknown);
+            accountsSnapshot_.reset();operationsSnapshot_.reset();balanceNoLongerCurrent();
             clearHistory("History unavailable — account discovery failed");
             const auto error=OC::InBandError(result).value_or(QString());
             accountStatus_->setText(error.contains("replay source unavailable",Qt::CaseInsensitive)
@@ -850,7 +887,7 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
         if (!r || (creating ? r->account!=0 : !accountKnown() || r->account!=account_) || r->revision<revision_ || r->revision<balanceRevision_ ||
             !OF::LooksLikeOrchardAddress(r->address,chain_))
             return showStatus(FriendlyError(OC::InBandError(result).value_or("Unexpected account reply")), true);
-        if(r->revision>balanceRevision_){balance_->setText(kUnknown);balance_->setToolTip("Waiting for the current account balance.");}
+        if(r->revision>balanceRevision_)balanceNoLongerCurrent();
         if(creating){account_=r->account;accountSelected_=true;accountsSnapshot_.reset();refreshAccounts();}
         revision_ = r->revision;
         accountStatus_->setText(r->requiresSync ? QString("Set up — synchronizing") : QString("Address issued"));
@@ -876,7 +913,7 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
         }
         if(r->accountRevision<revision_)return;
         if(operationsErrorVisible_)showStatus({},false);
-        if(r->accountRevision>balanceRevision_){balance_->setText(kUnknown);balance_->setToolTip("Waiting for the current account balance.");}
+        if(r->accountRevision>balanceRevision_)balanceNoLongerCurrent();
         revision_ = r->accountRevision;
         operationsSnapshot_=*r;
         accountStatus_->setText(r->syncing() ? QString("Ready — synchronizing") : QString("Ready"));
@@ -893,20 +930,75 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
         }
         operations_->setVisible(!r->operations.isEmpty());
         operationsEmpty_->setVisible(r->operations.isEmpty());
+        operationDetail_->setVisible(!r->operations.isEmpty());
+        showOperationDetail();
         if (payment_) {
             payment_->onOperations(*r);
             advance();
         }
         updateForm();
     } else if (shortName == "balance") {
-        auto b = OC::ParseBalance(result);
-        if(b && (b->account!=account_ || b->accountRevision<revision_ || b->accountRevision<balanceRevision_))b.reset();
+        const auto b = OC::ParseBalance(result);
+        // A reply for another account, or older than what is already known, says
+        // nothing about this balance: it changes nothing.
+        if(b && (b->account!=account_ || b->accountRevision<revision_ || b->accountRevision<balanceRevision_))return;
         if(b)balanceRevision_=b->accountRevision;
-        balance_->setText(b ? OF::FormatDin(b->confirmed) + " DIN confirmed" +
-            (b->caughtUp ? QString() : QString(" — synchronizing")) : kUnknown);
-        balance_->setToolTip(b ? QString("At the wallet checkpoint: %1 DIN reserved; %2 DIN unreserved. This is not a spendability guarantee.")
-            .arg(OF::FormatDin(b->reserved),OF::FormatDin(b->unreserved)) : "The node did not report a complete balance.");
+        if(b) {
+            lastBalance_=OrchardDisplay::KnownBalance{b->confirmed,b->height,b->caughtUp,true};
+            showBalance();
+            balance_->setToolTip(QString("At the wallet checkpoint: %1 DIN reserved; %2 DIN unreserved. This is not a spendability guarantee.")
+                .arg(OF::FormatDin(b->reserved),OF::FormatDin(b->unreserved)));
+        } else balanceNoLongerCurrent();  // refused or incomplete: keep what was read, say it is old
     }
+}
+
+// The balance is shown from the last figure the node reported. A refused or
+// late read marks it as old; it never turns it back into "Unknown".
+void OrchardWidget::showBalance() {
+    balance_->setText(OrchardDisplay::balanceText(lastBalance_));
+    balance_->setToolTip(OrchardDisplay::balanceTip(lastBalance_));
+    Q_EMIT balanceChanged(lastBalance_.has_value(),lastBalance_?lastBalance_->confirmedUna:0,
+        lastBalance_&&lastBalance_->current,lastBalance_?lastBalance_->height:0);
+}
+void OrchardWidget::balanceNoLongerCurrent() {
+    if(lastBalance_)lastBalance_->current=false;
+    showBalance();
+}
+void OrchardWidget::forgetBalance() {
+    lastBalance_.reset();showBalance();
+}
+void OrchardWidget::setBalanceWanted(bool wanted) {
+    if(balanceWanted_==wanted)return;
+    balanceWanted_=wanted;
+    if(wanted){hiddenBalanceElapsed_.invalidate();if(poll_&&poll_->isActive())onPoll();}
+}
+
+const OC::Operation* OrchardWidget::selectedOperation() const {
+    if(!operationsSnapshot_)return nullptr;
+    const int row=operations_->currentRow();
+    if(row<0 || row>=operationsSnapshot_->operations.size() || !operations_->selectionModel() ||
+       !operations_->selectionModel()->isRowSelected(row,QModelIndex()))return nullptr;
+    return &operationsSnapshot_->operations[row];
+}
+// Everything known about the selected operation: what this node saved for it
+// and, once it has a transaction, what the chain says about that transaction.
+void OrchardWidget::showOperationDetail() {
+    const auto* op=selectedOperation();
+    if(!op) {
+        operationDetail_->setText("Select an operation above to see its details.");
+        return;
+    }
+    std::optional<QJsonObject> tx;
+    if(txDetails_.contains(op->txid))tx=txDetails_.value(op->txid);
+    operationDetail_->setText(OrchardDisplay::operationDetail(*op,tx,txProblems_.value(op->txid)).join("\n"));
+    // A confirmed transaction's details do not change; an unconfirmed one is
+    // asked for again when its row is selected or its state changes.
+    const bool settled=tx && tx->value("status").toString()=="confirmed" && op->outcome=="confirmed";
+    if(op->txid.isEmpty() || settled || detailTxid_==op->txid || wallet_.isEmpty())return;
+    detailTxid_=op->txid;
+    const QString tag=OF::ReplyTag::Make("txdetail",wallet_,generation_,op->txid);
+    Q_EMIT requestSent("gettransaction",QJsonObject{{"txid",op->txid}},tag);
+    if(rpc_)rpc_->callAs("gettransaction",QJsonArray{op->txid},tag);
 }
 
 void OrchardWidget::showStatus(const QString& text, bool error, bool operationsError) {
