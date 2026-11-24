@@ -69,6 +69,15 @@ class OrchardTabTest : public QObject {
         QVERIFY(!RpcReplyTestAccess::Deliver(*rpc,s.tag,QJsonDocument(wire).toJson()));
         QCOMPARE(deliveries,1);QCOMPARE(results.size(),0);
     }
+    // Requests to the wallet (reads and payments). Looking a transaction up
+    // on the chain for the details panel is not one of them.
+    // wallet.orchard.* requests sent since `from`.
+    int walletReads(qsizetype from) const {
+        int n=0;for(qsizetype i=from;i<sent_.size();++i)if(sent_[i].method.startsWith("wallet.orchard."))++n;return n;
+    }
+    qsizetype walletRequests() const {
+        qsizetype n=0;for(const auto& r:sent_)if(r.method!="gettransaction")++n;return n;
+    }
     void rawReply(const Sent& s,const QJsonValue& value) {
         QVERIFY(QMetaObject::invokeMethod(tab_,"onRpcResult",Qt::DirectConnection,Q_ARG(QString,s.tag),Q_ARG(QJsonValue,value)));
     }
@@ -370,9 +379,66 @@ private Q_SLOTS:
         QCOMPARE(last("wallet.orchard.finishspend").params,finish.params);
     }
     void periodicReadsDoNotPileUpWhenRepliesArePending() {
-        ready();const auto before=sent_.size();QMetaObject::invokeMethod(tab_,"onPoll");
+        ready();const auto before=sent_.size();
+        tab_->setTipHeight(21);  // a block arrived: read
         const auto first=sent_.size();QVERIFY(first>before);
-        QMetaObject::invokeMethod(tab_,"onPoll");QCOMPARE(sent_.size(),first);
+        tab_->setTipHeight(22);  // another, with the replies still pending
+        QCOMPARE(walletReads(first),0);
+    }
+    // Measured on a v8.2.5 desktop (2026-11-24): the page read the wallet four
+    // times every three seconds, each read held the wallet's database lease on
+    // the node, and the node's own delivery of new blocks waited behind them,
+    // so the Orchard account fell further behind the chain while the page was
+    // open. An account's data changes with a block: that is when it is read.
+    void theWalletIsReadWhenABlockArrivesNotOnEveryTick() {
+        ready();
+        rawReply(last("wallet.orchard.getbalance"),balanceFixture());
+        rawReply(last("wallet.orchard.listreceived"),ReceivedPage(0,0,0));
+        rawReply(last("orchard.getactivationstatus"),activationFixture());
+        tab_->setTipHeight(20);
+        // Bring every reply in, so nothing is pending and nothing is refused.
+        reply(last("wallet.orchard.listoperations"),
+              R"({"account":0,"account_revision":5,"account_sequence":3,"captured_source_sequence":3,"account_digest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","captured_source_digest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","operations":[]})");
+        rawReply(last("wallet.orchard.getbalance"),balanceFixture());
+        rawReply(last("orchard.getactivationstatus"),activationFixture());
+
+        // Twenty ticks of the page timer (a minute of the old polling) with no
+        // new block: not one read.
+        int mark=sent_.size();
+        for(int i=0;i<20;++i)QMetaObject::invokeMethod(tab_,"onPoll");
+        QCOMPARE(walletReads(mark),0);
+
+        // A block: the account is read once.
+        mark=sent_.size();tab_->setTipHeight(21);
+        QStringList methods;for(int i=mark;i<sent_.size();++i)methods<<sent_[i].method;
+        QVERIFY2(methods.contains("wallet.orchard.getbalance") && methods.contains("wallet.orchard.listoperations"),qPrintable(methods.join(",")));
+        QCOMPARE(methods.count("wallet.orchard.getbalance"),1);
+        // The same height reported again changes nothing.
+        mark=sent_.size();tab_->setTipHeight(21);QMetaObject::invokeMethod(tab_,"onPoll");
+        QCOMPARE(walletReads(mark),0);
+    }
+    // A payment that was submitted is confirmed by a block. It is not asked
+    // about on every tick while it waits.
+    void aSubmittedPaymentIsFollowedByBlocksNotByTicks() {
+        ready();fillSend();confirmNextDialog();Find<QPushButton>(tab_,"orchardReview")->click();
+        reply(last("wallet.orchard.queuespend"),R"({"durable_state":"signed"})");
+        reply(last("wallet.orchard.finishspend"),R"({"durable_state":"signed","txid":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","admitted":true})");
+        QCOMPARE(*tab_->paymentState(),OrchardFlow::State::Submitted);
+        tab_->setTipHeight(30);
+        // The operations list answers (the payment is in it, unconfirmed), so no read is pending.
+        const auto id=last("wallet.orchard.queuespend").params.value("request_id").toString();
+        auto listed=storedSnapshot("wallet.orchard.finishspend");auto rows=listed["operations"].toArray();
+        auto row=rows[0].toObject();row["operation_id"]=id;rows[0]=row;listed["operations"]=rows;
+        rawReply(last("wallet.orchard.listoperations"),listed);
+        QCOMPARE(*tab_->paymentState(),OrchardFlow::State::Submitted);
+        int mark=sent_.size();
+        for(int i=0;i<10;++i)QMetaObject::invokeMethod(tab_,"onPoll");
+        QCOMPARE(walletReads(mark),0);
+        // The next block is what brings the next read (the balance's reply is in; the others are still pending).
+        auto balance=balanceFixture();balance["account_revision"]=6;balance["account_sequence"]=4;balance["captured_source_sequence"]=4;
+        rawReply(last("wallet.orchard.getbalance"),balance);
+        mark=sent_.size();tab_->setTipHeight(31);
+        QVERIFY(walletReads(mark)>0);
     }
     void accountDiscoveryIsNotRepeatedOnEveryPollOrUnchangedUnlock() {
         ready();rawReply(last("wallet.orchard.listaccounts"),accountsFixture());
@@ -433,12 +499,125 @@ private Q_SLOTS:
         QVERIFY(Find<QLabel>(tab_,"orchardIntro")->text().contains("storage upgrade was refused"));
         QVERIFY(Find<QLabel>(tab_,"orchardIntro")->text().contains("Free space"));
     }
-    void wrongAccountAndStaleBalancesStayUnknown() {
+    void wrongAccountAndStaleBalancesChangeNothing() {
         ready();const auto call=last("wallet.orchard.getbalance");auto x=balanceFixture();x["account"]=1;rawReply(call,x);
         QCOMPARE(Find<QLabel>(tab_,"orchardBalance")->text(),QString("Unknown"));
         x=balanceFixture();x["account_revision"]=4;rawReply(call,x);QCOMPARE(Find<QLabel>(tab_,"orchardBalance")->text(),QString("Unknown"));
         x=balanceFixture();x["account_revision"]=6;rawReply(call,x);QCOMPARE(Find<QLabel>(tab_,"orchardBalance")->text(),QString("0.00000000 DIN confirmed"));
-        rawReply(call,balanceFixture());QCOMPARE(Find<QLabel>(tab_,"orchardBalance")->text(),QString("Unknown"));
+        // An older reply arriving late neither replaces nor degrades the newer figure.
+        rawReply(call,balanceFixture());QCOMPARE(Find<QLabel>(tab_,"orchardBalance")->text(),QString("0.00000000 DIN confirmed"));
+    }
+    // Owner, 2026-11-23: after a shield the page showed "25 DIN", then
+    // "Unknown" while the wallet caught up with new blocks (a miner's wallet
+    // is behind for a moment after every block). A balance that was read is
+    // kept and shown with its block; only a balance never read is Unknown.
+    void refusedReadKeepsTheLastBalanceWithItsBlock() {
+        ready();
+        QSignalSpy changed(tab_,&OrchardWidget::balanceChanged);
+        auto x=balanceFixture();x["confirmed_una"]=qint64(2500000000);x["unreserved_confirmed_una"]=qint64(2500000000);
+        rawReply(last("wallet.orchard.getbalance"),x);
+        auto* label=Find<QLabel>(tab_,"orchardBalance");
+        QCOMPARE(label->text(),QString("25.00000000 DIN confirmed"));
+        QVERIFY(!changed.isEmpty());
+        QCOMPARE(changed.last().at(0).toBool(),true);QCOMPARE(changed.last().at(1).toULongLong(),quint64(2500000000));
+        QCOMPARE(changed.last().at(2).toBool(),true);QCOMPARE(changed.last().at(3).toULongLong(),quint64(20));
+
+        // The node refuses the next read (it is delivering a block).
+        QMetaObject::invokeMethod(tab_,"onPoll");
+        rawReply(last("wallet.orchard.getbalance"),QJsonObject{{"error","Orchard replay source unavailable"}});
+        QCOMPARE(label->text(),QString::fromUtf8("25.00000000 DIN at block 20 — updating"));
+        QVERIFY(label->toolTip().contains("block 20"));
+        QCOMPARE(changed.last().at(0).toBool(),true);QCOMPARE(changed.last().at(2).toBool(),false);
+
+        // It answers again, one block later.
+        QMetaObject::invokeMethod(tab_,"onPoll");
+        x["checkpoint_height"]=21;rawReply(last("wallet.orchard.getbalance"),x);
+        QCOMPARE(label->text(),QString("25.00000000 DIN confirmed"));
+
+        // Another wallet: the previous wallet's money is never shown for it.
+        tab_->setWalletScope("bob");
+        QCOMPARE(label->text(),QString("Unknown"));
+        QCOMPARE(changed.last().at(0).toBool(),false);
+    }
+    // The Wallet page shows the Orchard balance. While it is on screen the
+    // balance is read for it although the Orchard page is hidden: that one
+    // read, slowly, and nothing else.
+    void walletPageGetsTheBalanceWhileThisPageIsHidden() {
+        ready();rawReply(last("wallet.orchard.getbalance"),balanceFixture());tab_->hide();
+        int mark=sent_.size();QMetaObject::invokeMethod(tab_,"onPoll");
+        QCOMPARE(sent_.size(),mark);
+        tab_->setBalanceWanted(true);
+        QStringList methods;for(int i=mark;i<sent_.size();++i)methods<<sent_[i].method;
+        QCOMPARE(methods,QStringList{"wallet.orchard.getbalance"});
+        rawReply(last("wallet.orchard.getbalance"),balanceFixture());
+        mark=sent_.size();QMetaObject::invokeMethod(tab_,"onPoll");QMetaObject::invokeMethod(tab_,"onPoll");
+        QCOMPARE(sent_.size(),mark);  // not again within the slow interval
+        tab_->setBalanceWanted(false);
+        mark=sent_.size();QMetaObject::invokeMethod(tab_,"onPoll");QCOMPARE(sent_.size(),mark);
+    }
+    // Owner, 2026-11-23: "when I press Your operations I should be able to
+    // see details". Selecting a row shows what the node saved and asks the
+    // chain for the transaction.
+    void selectingAnOperationShowsItsDetails() {
+        ready();
+        auto snapshot=storedSnapshot("wallet.orchard.finishshield");
+        auto rows=snapshot["operations"].toArray();auto row=rows[0].toObject();
+        row["chain_observation"]=QJsonObject{{"height",18},{"outcome","confirmed"},{"block_hash",QString(64,'e')},{"transaction_id",QString(64,'f')}};
+        rows[0]=row;snapshot["operations"]=rows;
+        rawReply(last("wallet.orchard.listoperations"),snapshot);
+        auto* table=Find<QTableWidget>(tab_,"orchardOperationsTable");auto* detail=Find<QLabel>(tab_,"orchardOperationDetail");
+        QCOMPARE(table->rowCount(),1);
+        QVERIFY(detail->text().contains("Select an operation"));
+        table->selectRow(0);
+        QVERIFY2(detail->text().contains("Kind: Shield"),qPrintable(detail->text()));
+        QVERIFY(detail->text().contains("State: Confirmed in block 18"));
+        QVERIFY(detail->text().contains("Operation: "+QString(64,'b')));
+        QVERIFY(detail->text().contains("Transaction: "+QString(64,'f')));
+        QVERIFY(detail->text().contains("reading"));
+        const auto asked=last("gettransaction");
+        QCOMPARE(asked.params.value("txid").toString(),QString(64,'f'));
+
+        rawReply(asked,QJsonObject{{"txid",QString(64,'f')},{"status","confirmed"},{"blockheight",18},{"blockhash",QString(64,'e')},
+            {"confirmations",3},{"orchard_value_direction","into_orchard"},{"orchard_value_din","25.00000000"},{"fee_din","0.00010000"},
+            {"total_input_value_din","100.00155000"},{"input_count",1},{"total_output_value_din","75.00145000"},{"output_count",1},{"size",9360}});
+        const QString text=detail->text();
+        QVERIFY2(text.contains("Moved into Orchard: 25.00000000 DIN"),qPrintable(text));
+        QVERIFY(text.contains("Network fee: 0.00010000 DIN"));
+        QVERIFY(text.contains("Confirmations: 3"));
+        QVERIFY(text.contains("Block: 18 ("+QString(64,'e')+")"));
+        QVERIFY(text.contains("Public coins spent: 100.00155000 DIN (1 coin)"));
+        QVERIFY(text.contains("Public coins created: 75.00145000 DIN (1 coin, your change)"));
+        QVERIFY2(detail->minimumHeight()>=detail->fontMetrics().lineSpacing()*int(text.count('\n')+1),"every detail line has room");
+        // A settled transaction is not asked for again when the list refreshes.
+        const int mark=sent_.size();
+        QMetaObject::invokeMethod(tab_,"onPoll");rawReply(last("wallet.orchard.listoperations"),snapshot);
+        for(int i=mark;i<sent_.size();++i)QVERIFY(sent_[i].method!="gettransaction");
+        QVERIFY(detail->text().contains("Moved into Orchard"));
+    }
+    void operationDetailsSayWhenTheNodeCannotLookTheTransactionUp() {
+        ready();rawReply(last("wallet.orchard.listoperations"),storedSnapshot("wallet.orchard.finishspend"));
+        Find<QTableWidget>(tab_,"orchardOperationsTable")->selectRow(0);
+        auto* detail=Find<QLabel>(tab_,"orchardOperationDetail");
+        QVERIFY(detail->text().contains("Kind: Payment from Orchard"));
+        QVERIFY(detail->text().contains("State: Signed and sent, not confirmed yet"));
+        rawReply(last("gettransaction"),QJsonObject{{"txid",QString(64,'f')},{"error","Transaction not found in blockchain"},{"status","not_found"}});
+        QVERIFY2(detail->text().contains("could not find the transaction"),qPrintable(detail->text()));
+    }
+    void displayWordingAcrossPages() {
+        using namespace OrchardDisplay;
+        // Wallet page.
+        auto w=walletPrivate(true,std::nullopt,0.0,false);
+        QCOMPARE(w.orchardText,QString::fromUtf8("Reading…"));QVERIFY(!w.orchardKnown);QCOMPARE(w.countedDin,0.0);QVERIFY(!w.showRetired);
+        w=walletPrivate(true,KnownBalance{2500000000ULL,165213,true,true},0.0,false);
+        QCOMPARE(w.orchardText,QString("25.00000000 DIN"));QCOMPARE(w.countedDin,25.0);QVERIFY(w.orchardKnown);
+        w=walletPrivate(true,KnownBalance{2500000000ULL,165213,true,false},3.5,true);
+        QCOMPARE(w.orchardText,QString("25.00000000 DIN (block 165213)"));QCOMPARE(w.countedDin,25.0);
+        QVERIFY(w.showRetired);QCOMPARE(w.retiredText,QString("3.50000000 DIN (retired, locked)"));
+        w=walletPrivate(false,std::nullopt,0.0,false);QCOMPARE(w.orchardText,QString::fromUtf8("—"));
+        QCOMPARE(walletPrivate(true,KnownBalance{123456789012345ULL,1,true,true},0,false).orchardText,QString("1,234,567.89012345 DIN"));
+        // History page.
+        QCOMPARE(historyFooter(200,200,"All"),QString("Showing the newest 200 transactions. Older ones exist: use Show older."));
+        QCOMPARE(historyFooter(1,200,"Shield"),QString("Showing all 1 shield transactions."));
     }
     void wrongAccountAddressDoesNotReplaceReceiveAddress() {
         ready();QMetaObject::invokeMethod(tab_,"onNewAddress");const auto call=last("wallet.orchard.getnewaddress");
@@ -472,13 +651,13 @@ private Q_SLOTS:
         for(const auto& method:QStringList{"wallet.orchard.finishshield","wallet.orchard.finishspend"}) {
             ready();fillSend();tab_->setWalletScope("alice");bind("alice");tab_->setWalletUnlocked(true);
             QVERIFY(!Find<QPushButton>(tab_,"orchardReview")->isEnabled());
-            const auto read=last("wallet.orchard.listoperations");const auto count=sent_.size();
-            rawReply(read,storedSnapshot(method));QCOMPARE(sent_.size(),count); // discovery itself never submits
+            const auto read=last("wallet.orchard.listoperations");const auto count=walletRequests();
+            rawReply(read,storedSnapshot(method));QCOMPARE(walletRequests(),count); // discovery itself never submits
             QVERIFY(!Find<QPushButton>(tab_,"orchardReview")->isEnabled());
             Find<QTableWidget>(tab_,"orchardOperationsTable")->selectRow(0);
             auto* resume=Find<QPushButton>(tab_,"orchardResume");QVERIFY(resume->isEnabled());
             confirmNextDialog();resume->click();const auto finish=last(method);
-            QCOMPARE(sent_.size(),count+1);QCOMPARE(finish.params.size(),3);
+            QCOMPARE(walletRequests(),count+1);QCOMPARE(finish.params.size(),3);
             QCOMPARE(finish.params.value("account").toInteger(),qint64(0));QCOMPARE(finish.params.value("request_id").toString(),QString(64,'b'));
             QCOMPARE(finish.params.value("wallet_binding").toString(),QString(64,'a'));
             QVERIFY(!finish.params.contains("payments"));QVERIFY(!finish.params.contains("outputs"));QVERIFY(!finish.params.contains("fee_una"));
@@ -486,12 +665,12 @@ private Q_SLOTS:
         }
     }
     void legacyAndMalformedDiscoveryCannotEnableAnotherPayment() {
-        ready();fillSend();const auto read=last("wallet.orchard.listoperations");const auto count=sent_.size();
+        ready();fillSend();const auto read=last("wallet.orchard.listoperations");const auto count=walletRequests();
         rawReply(read,storedSnapshot());Find<QTableWidget>(tab_,"orchardOperationsTable")->selectRow(0);
         QVERIFY(!Find<QPushButton>(tab_,"orchardReview")->isEnabled());QVERIFY(!Find<QPushButton>(tab_,"orchardResume")->isEnabled());
         rawReply(read,storedSnapshot("sendtoaddress"));
         QVERIFY(!Find<QPushButton>(tab_,"orchardReview")->isEnabled());QVERIFY(!Find<QPushButton>(tab_,"orchardResume")->isEnabled());
-        QMetaObject::invokeMethod(tab_,"onResumeSelected",Qt::DirectConnection);QCOMPARE(sent_.size(),count);
+        QMetaObject::invokeMethod(tab_,"onResumeSelected",Qt::DirectConnection);QCOMPARE(walletRequests(),count);
     }
     void previousWalletDiscoveryCannotOfferResume() {
         ready();const auto old=last("wallet.orchard.listoperations");tab_->setWalletScope("bob");bind("bob");tab_->setWalletUnlocked(true);
@@ -622,6 +801,25 @@ private Q_SLOTS:
         reply(last("wallet.orchard.finishspend"), R"({"error":"Proof pending","error_code":"proof_not_ready","proof_state":"running","reservation_retained":true})");
         QApplication::processEvents();
         QVERIFY(tab_->grab().save(dir + "/orchard-proving.png"));
+
+        // A confirmed shield, selected: its details and the kept balance.
+        tab_->setWalletScope("alice");bind("alice");tab_->setWalletUnlocked(true);
+        auto balance=balanceFixture();balance["confirmed_una"]=qint64(2500000000);balance["unreserved_confirmed_una"]=qint64(2500000000);
+        rawReply(last("wallet.orchard.getbalance"),balance);
+        auto snapshot=storedSnapshot("wallet.orchard.finishshield");
+        auto rows=snapshot["operations"].toArray();auto row=rows[0].toObject();
+        row["chain_observation"]=QJsonObject{{"height",18},{"outcome","confirmed"},{"block_hash",QString(64,'e')},{"transaction_id",QString(64,'f')}};
+        rows[0]=row;snapshot["operations"]=rows;
+        rawReply(last("wallet.orchard.listoperations"),snapshot);
+        Find<QTableWidget>(tab_,"orchardOperationsTable")->selectRow(0);
+        rawReply(last("gettransaction"),QJsonObject{{"txid",QString(64,'f')},{"status","confirmed"},{"blockheight",18},{"blockhash",QString(64,'e')},
+            {"confirmations",280},{"orchard_value_direction","into_orchard"},{"orchard_value_din","25.00000000"},{"fee_din","0.00010000"},
+            {"total_input_value_din","100.00155000"},{"input_count",1},{"total_output_value_din","75.00145000"},{"output_count",1},{"size",9360}});
+        QMetaObject::invokeMethod(tab_,"onPoll");
+        rawReply(last("wallet.orchard.getbalance"),QJsonObject{{"error","Orchard replay source unavailable"}});
+        tab_->resize(1440, 1250);
+        QApplication::processEvents();
+        QVERIFY(tab_->grab().save(dir + "/orchard-operation-detail.png"));
     }
 
     void noPrivateCovenantsAndNoInventedActivation() {

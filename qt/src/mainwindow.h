@@ -1,5 +1,7 @@
 #pragma once
 
+#include "orcharddisplaypolicy.h"
+#include <optional>
 #include <QFrame>
 #include <QMainWindow>
 
@@ -78,6 +80,7 @@ public:
   dinero::DebugConsole* getDebugConsole() const { return debugConsole_; }
 
 private Q_SLOTS:
+  void onOrchardBalanceChanged(bool known, quint64 confirmedUna, bool current, quint64 height);
   void onRpcResult(const QString& method, const QJsonValue& result);
   void onRpcError(const QString& method, int code, const QString& message);
   void refresh();
@@ -637,6 +640,15 @@ private:
   // re-fetch on its 6s tip-poll timer and display stale balance/notes.
   class ShieldedWidget* shieldedWidget_ = nullptr;
   class OrchardWidget* orchardWidget_ = nullptr;  // only with DIN_ENABLE_ORCHARD_UI
+  // Wallet page, "Shielded / private": the Orchard balance (fed by the
+  // Orchard page) and, only when it holds something, the retired pool.
+  QLabel* lblOrchardBalance_ = nullptr;
+  QLabel* lblRetiredPoolCaption_ = nullptr;
+  std::optional<OrchardDisplay::KnownBalance> cachedOrchard_;
+  // Transaction History: how many of the newest rows are asked for.
+  int historyCount_ = 200;
+  QPushButton* btnShowOlderTxs_ = nullptr;
+  QLabel* lblTransactionFooter_ = nullptr;
 
   // NOTE: Lightning Network moved to separate lightning-main branch (L2)
   // dinero::LightningWidget* lightningWidget_;  // REMOVED for L1 purity

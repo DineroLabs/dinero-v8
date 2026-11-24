@@ -640,6 +640,7 @@ set(GUI_SOURCES
   src/overviewconnectivitycard.cpp
   src/overviewconnectivitycard.h
   src/responsiveuipolicy.h
+  src/transactiontypedisplay.h
   src/peerssection.cpp
   src/peerssection.h
   src/mynodedashboard.cpp
@@ -1690,6 +1691,7 @@ if(BUILD_TESTING)
   add_executable(test_responsive_ui_policy
     tests/test_responsive_ui_policy.cpp
     src/responsiveuipolicy.h
+    src/transactiontypedisplay.h
   )
 
   target_link_libraries(test_responsive_ui_policy PRIVATE
