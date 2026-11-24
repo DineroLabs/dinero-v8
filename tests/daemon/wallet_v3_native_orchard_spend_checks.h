@@ -13,6 +13,7 @@ namespace dinero {
 TEST(WalletV3NativeOrchardSpend, NativeWalletSpendsDeliveredNoteOnV3) {
     OrchardCreationFixture f;
     NativeV3IndexScope v3(f,"v3-native-orchard-spend-index");
+    VerifyCatalogReuse verify_reuse;
     std::string error;
     ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
         WalletService::CanonicalRecovery::AppliedPrefix) << error;
@@ -74,6 +75,7 @@ TEST(WalletV3NativeOrchardSpend, NativeWalletSpendsDeliveredNoteOnV3) {
 TEST(WalletV3NativeOrchardSpend, NativeWalletRoundTripsUnshieldAndShieldOnV3) {
     OrchardCreationFixture f;
     NativeV3IndexScope v3(f,"v3-native-shield-index");
+    VerifyCatalogReuse verify_reuse;
     std::string error;
     const auto deliver=[&]{
         ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
@@ -137,6 +139,13 @@ TEST(WalletV3NativeOrchardSpend, NativeWalletRoundTripsUnshieldAndShieldOnV3) {
     const auto after=rpc_context_wallet_getbalance(ctx,din::obj());
     ASSERT_FALSE(after.isMember("error")) << after.toStyledString();
     EXPECT_NEAR(after["spendable"].asDouble()*1e8,70000.0,0.5) << after.toStyledString();
+    // A reorg un-confirms the wallet's own confirmed shield (the owner's Hotel
+    // wallet holds exactly such a shield): delivery rewinds through it, and
+    // every reuse of a remembered catalog is also restored and compared
+    // (VerifyCatalogReuse above).
+    ASSERT_TRUE(ShieldedStateStartupTestAccess::DisconnectBoundary(*f.f.service,f.f.service->GetActiveTip()));
+    deliver();
+    EXPECT_EQ(f.Account().account.Delivery().sequence,NativeOrchardHead(f));
     auto use=WalletService::AcquireWalletUse(f.wallet);
     EXPECT_EQ(use->Wallet().AcquireDatabaseLease()->NativeV3TransparentState(),
         WalletManager::NativeV3State::Complete);

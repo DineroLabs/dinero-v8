@@ -36,6 +36,9 @@ TEST(OrchardDetachedRecovery, PreparedTransitionRestoresWithoutOwnersAndCommitDo
         };
         return point;
     };
+    // This test is about the restore itself (no owners held while it runs):
+    // drop the catalog the recovery above remembered, so the plan restores.
+    wallet::OrchardAccountDelivery::ForgetCatalogRecovery();
     auto plan=wallet::OrchardDetachedRecoveryTestAccess::Prepare(wallet,session,**view,(*view)->Head().sequence,provider);
     ASSERT_TRUE(plan);EXPECT_GT(points,0u);EXPECT_GT(origins,0u);EXPECT_EQ(f.Snapshot(),before);
     const auto restored_points=points,restored_origins=origins;

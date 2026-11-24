@@ -11,6 +11,13 @@
 namespace dinero {
 
 namespace {
+// While alive, every reuse of a remembered catalog is also restored and must
+// be identical (catalog revision, each account's revision, encoded state and
+// archive revisions); a difference throws out of the delivery pass.
+struct VerifyCatalogReuse {
+    VerifyCatalogReuse(){wallet::OrchardAccountDelivery::VerifyCatalogRecoveryReuseForTest(true);}
+    ~VerifyCatalogReuse(){wallet::OrchardAccountDelivery::VerifyCatalogRecoveryReuseForTest(false);}
+};
 uint64_t NativeOrchardHead(CanonicalRecoveryFixture& f) {
     const auto view=f.f.service->getRuntimeAccountReplay();
     OrchardAdmissionFixture::Require(view.ok());
@@ -154,6 +161,7 @@ TEST(WalletV3NativeOrchard, FullAccountReplayWaitsForAReaderInsteadOfRebuilding)
 TEST(WalletV3NativeOrchard, NativeWalletReceivesOrchardNoteThroughV3Delivery) {
     OrchardCreationFixture f;   // native create() wallet, tip at activation
     NativeV3IndexScope v3(f,"v3-native-orchard-index");
+    VerifyCatalogReuse verify_reuse;
     std::string error;
     ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
         WalletService::CanonicalRecovery::AppliedPrefix) << error;
@@ -505,13 +513,6 @@ int RetainedRows(OrchardCreationFixture& f,uint32_t account) {
 }
 constexpr int kWindow=int(wallet::OrchardAccountDelivery::kRetainedWindow);
 constexpr int kSlack=int(wallet::OrchardAccountDelivery::kRetainedSlack); // 1-2 accounts
-// While alive, every reuse of a remembered catalog is also restored and must
-// be identical (catalog revision, each account's revision, encoded state and
-// archive revisions); a difference throws out of the delivery pass.
-struct VerifyCatalogReuse {
-    VerifyCatalogReuse(){wallet::OrchardAccountDelivery::VerifyCatalogRecoveryReuseForTest(true);}
-    ~VerifyCatalogReuse(){wallet::OrchardAccountDelivery::VerifyCatalogRecoveryReuseForTest(false);}
-};
 } // namespace
 
 // Active retained history stays within the 256-parent window plus slack (the
@@ -728,4 +729,44 @@ TEST(WalletV3NativeOrchard, DeliveryReusesItsCommittedCatalogInsteadOfRestoringE
     (void)f.MineEmpty();ASSERT_TRUE(DeliverAllOrchard(f,16));
     EXPECT_GE(Delivery::CatalogRecoveryRestores()-before,1u) << "catalog survived a wallet lock";
     EXPECT_EQ(f.Account(0).account.Delivery().sequence,NativeOrchardHead(f));
+}
+
+// Delivery remembers its committed catalog only if it is exactly what a
+// restore of the stored bytes returns, archive records and catalog included:
+// on a remembered hit the delivery loop's own equal() checks compare the
+// catalog with itself, so this is the guard that keeps a stale one out.
+TEST(WalletV3NativeOrchard, DeliveryRemembersOnlyTheCatalogItsBytesRestoreTo) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-orchard-remember-guard-index");
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ASSERT_FALSE(f.Call(0).isMember("error"));
+    for(int i=0;i<3;++i)(void)f.MineEmpty();
+    ASSERT_TRUE(DeliverAllOrchard(f,32));
+    using Delivery=wallet::OrchardAccountDelivery;
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    const auto session=use->Wallet().AcquireDatabaseLease()->Session();
+    const auto view=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(view.ok());
+    const auto real=Delivery::ReadCatalogForReplay(use->Wallet(),session,**view);
+    ASSERT_FALSE(real.accounts.empty());
+    const auto prepare_restores=[&]{
+        const auto before=Delivery::CatalogRecoveryRestores();
+        (void)Delivery::PrepareCatalogRecovery(use->Wallet(),session,**view,Delivery::CatalogRecoveryAction::Observe);
+        return Delivery::CatalogRecoveryRestores()-before;
+    };
+    // The exact catalog is remembered: the next plan restores nothing.
+    Delivery::ForgetCatalogRecovery();
+    Delivery::RememberCatalogRecovery(use->Wallet(),session,**view,real);
+    EXPECT_EQ(prepare_restores(),0u) << "exact catalog was not remembered";
+    // An archive list the bytes do not hold is refused: the next plan restores.
+    auto archives=real;archives.accounts[0].archive_revisions.emplace_back(orchard::Hash{7},uint64_t(1));
+    Delivery::ForgetCatalogRecovery();
+    Delivery::RememberCatalogRecovery(use->Wallet(),session,**view,archives);
+    EXPECT_EQ(prepare_restores(),1u) << "catalog with foreign archive records was remembered";
+    // So is a catalog revision the bytes do not hold.
+    auto catalog=real;++catalog.catalog.revision;
+    Delivery::ForgetCatalogRecovery();
+    Delivery::RememberCatalogRecovery(use->Wallet(),session,**view,catalog);
+    EXPECT_EQ(prepare_restores(),1u) << "catalog with a foreign revision was remembered";
 }
