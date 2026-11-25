@@ -1,0 +1,151 @@
+--- a/orchard-0.16.0/Cargo.toml
++++ b/orchard-0.16.0/Cargo.toml
+@@ -311,3 +311,9 @@
+ 
+ [profile.release]
+ debug = 2
++
++[dependencies.rand_legacy]
++package = "rand"
++version = "=0.8.8"
++default-features = false
++features = ["alloc"]
+--- a/orchard-0.16.0/src/builder.rs
++++ b/orchard-0.16.0/src/builder.rs
+@@ -32,6 +32,22 @@
+     },
+     nonempty::NonEmpty,
+ };
++
++
++// Preserve the rand 0.8.8 shuffle for explicitly selected profile-1 recovery.
++// Default builders and new plans retain the upstream current shuffle.
++fn legacy_shuffle<T, R: Rng + ?Sized>(values: &mut [T], rng: &mut R) {
++    struct Adapter<'a, R: ?Sized>(&'a mut R);
++    impl<R: Rng + ?Sized> rand_legacy::RngCore for Adapter<'_, R> {
++        fn next_u32(&mut self) -> u32 { self.0.next_u32() }
++        fn next_u64(&mut self) -> u64 { self.0.next_u64() }
++        fn fill_bytes(&mut self, dest: &mut [u8]) { self.0.fill_bytes(dest); }
++        fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_legacy::Error> {
++            self.0.fill_bytes(dest); Ok(())
++        }
++    }
++    rand_legacy::seq::SliceRandom::shuffle(values, &mut Adapter(rng));
++}
+ 
+ const DEFAULT_MIN_ACTIONS: u8 = 2;
+ 
+@@ -1164,6 +1180,33 @@
+         )
+     }
+ 
++    /// Reconstructs a saved profile-1 plan using its original shuffle algorithm.
++    /// This changes only the construction permutation, never circuit or wire rules.
++    /// Callers must verify the complete saved transcript and resulting bundle facts.
++    #[cfg(feature = "circuit")]
++    pub fn build_with_profile1_shuffle<V: TryFrom<i64>>(
++        self,
++        rng: impl Rng,
++    ) -> Result<Option<(UnauthorizedBundle<V>, BundleMetadata)>, BuildError> {
++        // An in-memory bundle proves against its anchor immediately; a deferred-anchor
++        // bundle has none, so it can only be built for a PCZT.
++        let anchor = match self.anchor {
++            BuilderAnchor::Fixed(anchor) => anchor,
++            BuilderAnchor::Deferred => return Err(BuildError::AnchorRequired),
++        };
++        bundle_with_shuffle(
++            rng,
++            self.bundle_type,
++            self.bundle_version,
++            self.flags,
++            anchor,
++            self.spends,
++            self.outputs,
++            self.changes,
++            true,
++        )
++    }
++
+     /// Builds a bundle containing the given spent notes and outputs along with their
+     /// metadata, for inclusion in a PCZT.
+     pub fn build_for_pczt(
+@@ -1187,6 +1230,7 @@
+             self.spends,
+             self.outputs,
+             self.changes,
++            false,
+             |pre_actions, flags, value_sum, bundle_meta, mut rng| {
+                 // Create the actions.
+                 let actions = pre_actions
+@@ -1236,6 +1280,23 @@
+     outputs: Vec<OutputInfo>,
+     changes: Vec<ChangeInfo>,
+ ) -> Result<Option<(UnauthorizedBundle<V>, BundleMetadata)>, BuildError> {
++    bundle_with_shuffle(rng, bundle_type, bundle_version, flags, anchor,
++        spends, outputs, changes, false)
++}
++
++#[allow(clippy::too_many_arguments)]
++#[cfg(feature = "circuit")]
++fn bundle_with_shuffle<V: TryFrom<i64>>(
++    rng: impl Rng,
++    bundle_type: BundleType,
++    bundle_version: BundleVersion,
++    flags: Flags,
++    anchor: Anchor,
++    spends: Vec<SpendInfo>,
++    outputs: Vec<OutputInfo>,
++    changes: Vec<ChangeInfo>,
++    legacy_profile1_shuffle: bool,
++) -> Result<Option<(UnauthorizedBundle<V>, BundleMetadata)>, BuildError> {
+     build_bundle(
+         rng,
+         bundle_version,
+@@ -1245,6 +1306,7 @@
+         spends,
+         outputs,
+         changes,
++        legacy_profile1_shuffle,
+         |pre_actions, flags, value_balance, bundle_meta, rng| {
+             finish_unauthorized_bundle(
+                 pre_actions,
+@@ -1326,6 +1388,7 @@
+     spends: Vec<SpendInfo>,
+     outputs: Vec<OutputInfo>,
+     changes: Vec<ChangeInfo>,
++    legacy_profile1_shuffle: bool,
+     finisher: impl FnOnce(Vec<ActionInfo>, Flags, ValueSum, BundleMetadata, R) -> Result<B, BuildError>,
+ ) -> Result<B, BuildError> {
+     // Every build path funnels through here (the free `bundle` function, `Builder::build`, and
+@@ -1445,7 +1508,11 @@
+         // Shuffle the action pairs, so that learning the position of a specific action
+         // doesn't reveal anything on its own about its meaning in the transaction
+         // context. The spend/output pairing inside each action is intentional.
+-        pairs.shuffle(&mut rng);
++        if legacy_profile1_shuffle {
++            legacy_shuffle(&mut pairs, &mut rng);
++        } else {
++            pairs.shuffle(&mut rng);
++        }
+ 
+         let mut bundle_meta = BundleMetadata::new(num_requested_spends, num_requested_outputs);
+         let pre_actions = pairs
+@@ -1504,8 +1571,16 @@
+         // Shuffle the spends and outputs, so that learning the position of a
+         // specific spent note or output note doesn't reveal anything on its own about
+         // the meaning of that note in the transaction context.
+-        indexed_spends.shuffle(&mut rng);
+-        indexed_outputs.shuffle(&mut rng);
++        if legacy_profile1_shuffle {
++            legacy_shuffle(&mut indexed_spends, &mut rng);
++        } else {
++            indexed_spends.shuffle(&mut rng);
++        }
++        if legacy_profile1_shuffle {
++            legacy_shuffle(&mut indexed_outputs, &mut rng);
++        } else {
++            indexed_outputs.shuffle(&mut rng);
++        }
+ 
+         let mut bundle_meta = BundleMetadata::new(num_requested_spends, num_requested_outputs);
+         let pre_actions = indexed_spends

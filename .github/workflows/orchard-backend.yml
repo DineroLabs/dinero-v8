@@ -5,6 +5,8 @@ on:
     paths:
       - 'rust/orchard_backend/**'
       - '.github/workflows/orchard-backend.yml'
+      - 'scripts/ci/check_orchard_vendor_provenance.py'
+      - 'scripts/ci/test_check_orchard_vendor_provenance.py'
       - 'CMakeLists.txt'
       - 'include/**'
       - 'src/**'
@@ -19,6 +21,8 @@ on:
     paths:
       - 'rust/orchard_backend/**'
       - '.github/workflows/orchard-backend.yml'
+      - 'scripts/ci/check_orchard_vendor_provenance.py'
+      - 'scripts/ci/test_check_orchard_vendor_provenance.py'
       - 'CMakeLists.txt'
       - 'include/**'
       - 'src/**'
@@ -44,6 +48,10 @@ jobs:
       CARGO_BUILD_JOBS: '2'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Vendored Orchard crate is upstream plus the reviewed patch
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/ci -p test_check_orchard_vendor_provenance.py
+          python3 scripts/ci/check_orchard_vendor_provenance.py | tee orchard-vendor-provenance.txt
       - name: Read pinned compiler
         id: rust-pin
         run: |

@@ -7,7 +7,11 @@ The current integration uses **Orchard 0.16.0 with a local patch**, selected by
 `vendor/orchard`; it is not an unmodified crates.io build. The original upstream
 identity and the saved profile-1 shuffle compatibility changes are recorded in
 [vendor/orchard/UPSTREAM.md](vendor/orchard/UPSTREAM.md). Preserve and review that
-patch when upgrading. The selected bundle is `orchard_v2()`, with the
+patch when upgrading. `scripts/ci/check_orchard_vendor_provenance.py` (run by
+the Orchard workflow) proves that `vendor/orchard` is the upstream 0.16.0
+archive plus exactly `vendor/orchard.local.patch` and that note; the patch
+changes how the builder orders actions for one saved-plan format and does not
+touch verification. The selected bundle is `orchard_v2()`, with the
 `FixedPostNu6_2` circuit key and version-5 commitments. No local proof arithmetic
 is introduced by the compatibility patch.
 

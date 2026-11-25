@@ -1,0 +1,8 @@
+{
+  "crate": "orchard",
+  "version": "0.16.0",
+  "archive_url": "https://static.crates.io/crates/orchard/orchard-0.16.0.crate",
+  "archive_sha256": "4ae7ceb7b5387bd76cf3c0712f57708795c925cecf097036cedb60b5c3706e8f",
+  "added_files": ["UPSTREAM.md"],
+  "patch": "orchard.local.patch"
+}
