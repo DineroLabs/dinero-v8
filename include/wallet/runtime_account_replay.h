@@ -80,6 +80,8 @@ public:
     }
     // SQL statements the replay's private store has prepared so far.
     uint64_t SpoolStatementsPrepared() const;
+    // Process-wide count of block nodes read from replay stores (tests).
+    static uint64_t NodeReads() noexcept;
 private:
     friend struct RuntimeAccountReplayTestAccess;
     static std::shared_ptr<const RuntimeAccountReplay> Capture(const Source&);

@@ -233,4 +233,82 @@ TEST(WalletV3NativeOrchardSpend, CaptureChecksAShieldHistoryOncePerCapture) {
     f.context.tx_ingress=nullptr;
 }
 
+TEST(WalletV3NativeOrchardSpend, ColdRestoreReadsEachParentLinkOnce) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-cold-restore-links-index");
+    std::string error;
+    const auto deliver=[&]{
+        ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+            WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    };
+    deliver();
+    f.context.tx_ingress=f.f.ingress.get();
+    auto ctx=f.RequestContext();
+    const auto created=rpc_context_wallet_orchard_createaccount(ctx,OrchardCreationRequest());
+    ASSERT_FALSE(created.isMember("error")) << created.toStyledString();
+    const auto [body,bundle]=f.Shield(f.AccountKeys());(void)bundle;
+    (void)f.Mine(body);
+    deliver();
+    const auto own=rpc_context_wallet_getnewaddress(ctx,din::obj());
+    ASSERT_FALSE(own.isMember("error")) << own.toStyledString();
+    const auto own_address=own.isMember("address")?own["address"].asString():own.asString();
+    const auto run=[&](bool shield,uint8_t tag,const din::Json& recipient){
+        din::Json request;
+        request["account"]=Json::UInt64(3);
+        request["expected_revision"]=Json::UInt64(f.Account().revision);
+        std::vector<uint8_t> id(32);id[0]=tag;request["request_id"]=util::hex(id);
+        request["fee_una"]=Json::UInt64(10000);request["payments"]=din::arr();
+        if(shield)request["payments"].append(recipient);
+        else{request["outputs"]=din::arr();request["outputs"].append(recipient);}
+        const auto queued=shield?rpc_context_wallet_orchard_queueshield(ctx,request)
+                                :rpc_context_wallet_orchard_queuespend(ctx,request);
+        EXPECT_FALSE(queued.isMember("error")) << queued.toStyledString();
+        if(queued.isMember("error"))return false;
+        {
+            auto use=WalletService::AcquireWalletUse(f.wallet);
+            orchard::Hash op{};std::copy(id.begin(),id.end(),op.begin());
+            EXPECT_EQ(ServiceProofTerminal(use->OrchardProofs(),op),wallet::OrchardProofJobs::State::Succeeded);
+        }
+        din::Json finish;finish["account"]=Json::UInt64(3);finish["request_id"]=request["request_id"];
+        const auto finished=shield?rpc_context_wallet_orchard_finishshield(ctx,request)
+                                  :rpc_context_wallet_orchard_finishspend(ctx,finish);
+        EXPECT_TRUE(finished["admitted"].asBool()) << finished.toStyledString();
+        if(!finished["admitted"].asBool())return false;
+        const auto pooled=f.f.ingress->mempool().getMempoolEntry(uint256::FromHexUnsafe(finished["txid"].asString()));
+        EXPECT_TRUE(bool(pooled));if(!pooled)return false;
+        EXPECT_TRUE(f.Mine(pooled->tx));
+        return true;
+    };
+    din::Json out;out["address"]=own_address;out["amount_una"]=Json::UInt64(100000);
+    ASSERT_TRUE(run(false,0x95,out));
+    deliver();
+    din::Json pay;pay["address"]=created["address"];pay["amount_una"]=Json::UInt64(20000);
+    ASSERT_TRUE(run(true,0x96,pay));
+    deliver();
+    ASSERT_EQ(f.Account().account.Scan().BalanceUna(),410000u);
+    // Many retained revisions, each restored at its own tip: every lookup walks
+    // back from that tip. Force one restore (no remembered catalog) and count
+    // block nodes read from the replay store. The view's links may already be
+    // warm here; the check is that reads no longer grow as lookups x depth.
+    constexpr int kBlocks=40;
+    for(int i=0;i<kBlocks;++i){(void)f.MineEmpty();deliver();}
+    wallet::OrchardAccountDelivery::ForgetCatalogRecovery();
+    RuntimeWalletRecovery::SetIdleCatalogFullPassIntervalForTest(std::chrono::milliseconds(0));
+    const auto restores=wallet::OrchardAccountDelivery::CatalogRecoveryRestores();
+    const auto reads=RuntimeAccountReplay::NodeReads();
+    deliver();
+    RuntimeWalletRecovery::SetIdleCatalogFullPassIntervalForTest(std::chrono::milliseconds(60000));
+    const auto restored=wallet::OrchardAccountDelivery::CatalogRecoveryRestores()-restores;
+    const auto read=RuntimeAccountReplay::NodeReads()-reads;
+    const auto height=f.Account().account.Scan().Checkpoint().height;
+    ASSERT_GT(restored,0u) << "nothing was restored";
+    // Each block's parent link is read from the store at most once per view;
+    // the rest is about one node per lookup. Walking every lookup down from
+    // its tip read ~6,400 nodes here (44 per block), growing with depth.
+    EXPECT_EQ(restored,1u);
+    EXPECT_LE(read,4*uint64_t(height)) << read << " node reads for a restore over a chain of height " << height;
+    EXPECT_EQ(f.Account().account.Delivery().sequence,NativeOrchardHead(f));
+    f.context.tx_ingress=nullptr;
+}
+
 } // namespace dinero
