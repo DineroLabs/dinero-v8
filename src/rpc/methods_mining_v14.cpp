@@ -23,6 +23,7 @@
  */
 
 #include "din_json.h"
+#include "rpc/orchard_job_retry.h"
 #include "util/hex.h"
 #include "rpc/rpc_registry.h"
 #include "rpc/gbt_template_time.h"
@@ -1055,7 +1056,22 @@ din::Json rpc_mining_getjob(const ExecutionContext& ctx, const din::Json& params
                     base->tip_hash_at_creation != selected_tip->hash)
                     throw std::invalid_argument("Pool base job expired or selected parent changed");
                 job.orchard = base->orchard;
-            } else job.orchard = assembler.CreateOrchardBlock(mining_address, *chain_guard);
+            } else {
+                // A block that arrives while the job is built is not an error:
+                // build it once more on the new tip (rpc/orchard_job_retry.h).
+                bool rebuilt = false;
+                job.orchard = ::dinero::rpc::BuildOrchardJobOnceMoreIfTipMoved(
+                    [&] { return assembler.CreateOrchardBlock(mining_address, *chain_guard); },
+                    [&]() -> std::optional<uint256> {
+                        const auto now = chain_db->getTip();
+                        if (!now.ok()) return std::nullopt;
+                        return now->hash;
+                    },
+                    selected_tip->hash, &rebuilt);
+                if (rebuilt)
+                    ::dinero::g_logger.info("[mining.getjob] a block arrived while the job was being built; "
+                                            "the job was built again on the new tip");
+            }
             if (job.orchard && (params_obj.isMember("coinbase_outputs") ||
                 params_obj.isMember("coinbase_extranonce")))
                 job.orchard = DeriveOrchardPayoutJob(*job.orchard, params_obj, *chain_guard);
