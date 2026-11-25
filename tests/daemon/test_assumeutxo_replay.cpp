@@ -1,4 +1,5 @@
 #include "daemon/services/retained_replay_policy.h"
+#include "rpc/orchard_job_retry.h"
 #include "daemon/services/runtime_replay_retry.h"
 #include "dinero/core/common/AddressCodec.h"
 #include "consensus/pow.hpp"
