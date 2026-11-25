@@ -64,7 +64,9 @@ private Q_SLOTS:
             {"retryable", true}});
 
         QVERIFY2(load->text() != QStringLiteral("Switching..."), "wallet.getinfo refusal left the wallet switch stuck");
-        QCOMPARE(load->text(), QStringLiteral("Reload Wallet"));
+        // India is the active wallet now and it is locked: the button offers
+        // the unlock (re-opening it would only start another locked session).
+        QCOMPARE(load->text(), QStringLiteral("Unlock Wallet"));
         QVERIFY(selector->isEnabled());
         QVERIFY(balance->text().contains("unavailable", Qt::CaseInsensitive));
         QVERIFY(!send->isEnabled());
@@ -81,7 +83,7 @@ private Q_SLOTS:
         QCOMPARE(load->text(), QStringLiteral("Switching..."));
         Q_EMIT rpc->rpcResult("wallet.open", QJsonObject{{"success", true}, {"wallet_name", "AFA"}, {"locked", true}});
         Q_EMIT rpc->rpcError("wallet.getinfo", -1, "Connection interrupted");
-        QCOMPARE(load->text(), QStringLiteral("Reload Wallet"));
+        QCOMPARE(load->text(), QStringLiteral("Unlock Wallet"));
         QVERIFY(balance->text().contains("unavailable", Qt::CaseInsensitive));
         QVERIFY(!send->isEnabled());
         QVERIFY(error->text().startsWith("Wallet balance unavailable;"));
