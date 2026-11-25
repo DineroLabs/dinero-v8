@@ -29,6 +29,7 @@
 #include "daemon/services/p2p_service.h"
 #if DINERO_WALLET_RAW_ORCHARD
 #include "p2p/orchard_phone_history.h"
+#include "orchard_transaction.h"
 #endif
 #include "daemon/services/wallet_service.h"  // Phase W.1.1: For WalletService access
 #include "daemon/services/config_service.h"
@@ -2396,11 +2397,15 @@ static bool GetPrevoutInfo(
         const auto made = chainstate->getTransactionInclusion(prev_txid);
         if (!made.ok()) return false;
         if (made->body.IsOrchard()) {
+#if DINERO_WALLET_RAW_ORCHARD
             const auto& outputs = made->body.Orchard().Outputs();
             if (vout >= outputs.size()) return false;
             out_value = static_cast<int64_t>(outputs[vout].amount_una);
             out_script = outputs[vout].script_pub_key;
             return true;
+#else
+            return false;  // a build without Orchard cannot read its outputs
+#endif
         }
         const auto& tx = made->body.Historical();
         if (vout >= tx.vout.size()) return false;
