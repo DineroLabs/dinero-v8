@@ -95,11 +95,12 @@ dinero-main), #975 (phone prepare re-arm, on codex/compact-v6-phone-publication)
 The Wallet page's "Shielded / private → Private:" line (`lblShieldedBalance_`,
 `qt/src/mainwindow.cpp`) is fed by `wallet.shieldedbalance`, which is the old,
 retired shielded pool. Orchard funds appear only on the Orchard tab and are
-not part of the Wallet page total. The owner made his first Orchard deposit
-(25 DIN, wallet Hotel, block 165,213) and the Wallet page shows "Private:
-0.00000000". Shielding must not look like money disappearing: show the
-Orchard balance there, include it in the total, and keep any retired-pool
-amount on its own named line. Not started.
+not part of the Wallet page total. After a first Orchard deposit on a mainnet
+desktop wallet the Wallet page showed "Private: 0.00000000". Shielding must
+not look like money disappearing: show the Orchard balance there, include it
+in the total, and keep any retired-pool amount on its own named line.
+Done in 18f548b69 (Orchard line counted in the total; the retired pool only
+when it holds something).
 
 ### Phone reorganisations (branch `claude/v826-phone-reorg`, 3b9ac9593 + a2c595541)
 Android, mainnet 165,229: a 4-block reorganisation wedged the phone ("Drain
@@ -129,26 +130,36 @@ explorer (`claude/v826-orchard-block-lookups`). Still using it:
 - `getblockfilters` now lists such heights in `unavailable_heights` but builds
   no filter for them; what that filter contains is undecided.
 
-### Windows desktop findings (owner's laptop AHLAPTOP, v8.2.5, 2026-11-23)
-- **A fresh wallet on a full node never catches up on a slow CPU (evidence, cause unconfirmed).**
-  Wallet Juliett was created that morning on v8.2.5 and mined to. At the tip,
-  with local mining off, `sync_meta.last_scanned_height` stays 0 and
-  `wallet.snapshot` lists no funded address, while `getaddressbalance` shows
-  1,100 DIN at its first address (`ismine` true) and `dinerod` keeps about 1.15
-  cores busy. Expected cause: the fresh wallet's cursor advances only through
-  the runtime account replay (full-archive path), and v8.2.5 discards a full
-  build whenever a block arrives while a reader holds it; the blocks come from
-  the network, so local mining is irrelevant. 6f06765cc, dd5521b00 and
-  684ad9b43 on this branch are the fix. Confirmation still owed: pause the
-  owner's Mac miner long enough for one full build on that laptop and watch
-  the cursor leave 0.
-- **Startup took 42 minutes to open RPC** (one busy thread, 3,152 CPU-seconds)
-  on a 57 GB full datadir; the same step takes 4-5 minutes on the owner's Mac.
+### Windows desktop findings (a Windows 11 laptop, v8.2.5, 2026-11-23/24)
+- **A wallet created on that node never shows its money.** A wallet was
+  created there on v8.2.5 and mined to. At the tip, with local mining off,
+  `sync_meta.last_scanned_height` stays 0 and `wallet.snapshot` lists no funded
+  address, while `getaddressbalance` shows the mined coins at its first address
+  (`ismine` true).
+  - First explanation, **refuted**: that the wallet's cursor could not advance
+    because v8.2.5 discards a full account-replay build whenever a block
+    arrives while a reader holds it. The chain then stood still for 96 minutes
+    with the wallet unlocked and the cursor stayed at 0.
+  - Cause found (2026-11-24): that datadir was started from the H52,287
+    snapshot (since fully validated and backfilled), so its wallet index is
+    schema v2 and can never be promoted to v3 (the v3 startup gate refuses a
+    former-snapshot datadir); a wallet created natively on v8.2.5 is not served
+    through the legacy index of such a node. It was never servable there.
+  - What this branch does: such a node now refuses to create the wallet, with
+    the way out, instead of creating one that stays at zero (1607d3106,
+    8e99e17d4, a9eda7425). It does **not** help a wallet that already exists
+    there: its recovery words restore it on a node synced from the first block
+    or in the phone app. Promoting former-snapshot datadirs to v3 is not done.
+- **Startup took 38-42 minutes to open RPC** (one busy thread; about 275 GB of
+  reads on a 57 GB full datadir); the same step takes 4-5 minutes on a Mac.
   Not investigated.
-- **No daemon log on Windows:** `%APPDATA%\Dinero\embedded-daemon.log` is 0 KB,
-  so nothing can say what the node is doing during that start.
+- **The daemon log looks empty on Windows but is not.** Explorer and `dir`
+  show `%APPDATA%\Dinero\embedded-daemon.log` as 0 KB while the node has it
+  open; read with shared access it was 30 MB. (An earlier version of this note
+  said there was no log. That was wrong.)
 - **`wallet.getsyncstate` ignores its wallet-name argument** and reports the
   active wallet (`rpc_context_wallet_getsyncstate` discards `params`).
 - **Orchard tab shows "Unknown"** when the node refuses a balance read while
-  the wallet catches up (seen on the Mac, wallet Hotel). Show the last known
-  balance with its block height instead.
+  the wallet catches up (seen on a Mac desktop wallet). Show the last known
+  balance with its block height instead. Done in 07ec77248; a refused read
+  alone changes nothing on screen since 7e487e902.
