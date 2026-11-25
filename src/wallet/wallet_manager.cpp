@@ -6102,8 +6102,11 @@ void WalletManager::DatabaseLease::StagePaymentOwned(const RecoverySeed& pin,con
     else transaction->Commit();
 }
 
+namespace { std::atomic<uint64_t> g_shield_history_validations{0}; }
+uint64_t WalletManager::DatabaseLease::ShieldHistoryValidations() noexcept{return g_shield_history_validations.load();}
 void WalletManager::DatabaseLease::ValidateShieldHistoryInTransaction(
         const RecoverySeed& pin,const ShieldHistory& expected) {
+    g_shield_history_validations.fetch_add(1,std::memory_order_relaxed);
     if(thread_!=std::this_thread::get_id() || pin.thread_!=thread_ || &pin.owner_!=&owner_ ||
        !db_ || db_!=owner_.db_ || session_!=owner_.database_session_ || owner_.recovery_seeds_!=1 ||
        sqlite3_get_autocommit(db_))throw std::runtime_error("Shield history owner unavailable");

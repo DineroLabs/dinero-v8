@@ -159,4 +159,78 @@ TEST(WalletV3NativeOrchardSpend, NativeWalletRoundTripsUnshieldAndShieldOnV3) {
     f.context.tx_ingress=nullptr;
 }
 
+// A confirmed shield stays in every later revision's operation queue, so one
+// catalog capture meets it once per retained parent. Its history row is the
+// same row in the same transaction each time: one capture checks it once.
+TEST(WalletV3NativeOrchardSpend, CaptureChecksAShieldHistoryOncePerCapture) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-shield-history-once-index");
+    std::string error;
+    const auto deliver=[&]{
+        ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+            WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    };
+    deliver();
+    f.context.tx_ingress=f.f.ingress.get();
+    auto ctx=f.RequestContext();
+    const auto created=rpc_context_wallet_orchard_createaccount(ctx,OrchardCreationRequest());
+    ASSERT_FALSE(created.isMember("error")) << created.toStyledString();
+    const auto [body,bundle]=f.Shield(f.AccountKeys());(void)bundle;
+    (void)f.Mine(body);
+    deliver();
+    const auto own=rpc_context_wallet_getnewaddress(ctx,din::obj());
+    ASSERT_FALSE(own.isMember("error")) << own.toStyledString();
+    const auto own_address=own.isMember("address")?own["address"].asString():own.asString();
+    const auto run=[&](bool shield,uint8_t tag,const din::Json& recipient){
+        din::Json request;
+        request["account"]=Json::UInt64(3);
+        request["expected_revision"]=Json::UInt64(f.Account().revision);
+        std::vector<uint8_t> id(32);id[0]=tag;request["request_id"]=util::hex(id);
+        request["fee_una"]=Json::UInt64(10000);request["payments"]=din::arr();
+        if(shield)request["payments"].append(recipient);
+        else{request["outputs"]=din::arr();request["outputs"].append(recipient);}
+        const auto queued=shield?rpc_context_wallet_orchard_queueshield(ctx,request)
+                                :rpc_context_wallet_orchard_queuespend(ctx,request);
+        EXPECT_FALSE(queued.isMember("error")) << queued.toStyledString();
+        if(queued.isMember("error"))return false;
+        {
+            auto use=WalletService::AcquireWalletUse(f.wallet);
+            orchard::Hash op{};std::copy(id.begin(),id.end(),op.begin());
+            EXPECT_EQ(ServiceProofTerminal(use->OrchardProofs(),op),wallet::OrchardProofJobs::State::Succeeded);
+        }
+        din::Json finish;finish["account"]=Json::UInt64(3);finish["request_id"]=request["request_id"];
+        const auto finished=shield?rpc_context_wallet_orchard_finishshield(ctx,request)
+                                  :rpc_context_wallet_orchard_finishspend(ctx,finish);
+        EXPECT_TRUE(finished["admitted"].asBool()) << finished.toStyledString();
+        if(!finished["admitted"].asBool())return false;
+        const auto pooled=f.f.ingress->mempool().getMempoolEntry(uint256::FromHexUnsafe(finished["txid"].asString()));
+        EXPECT_TRUE(bool(pooled));if(!pooled)return false;
+        EXPECT_TRUE(f.Mine(pooled->tx));
+        return true;
+    };
+    din::Json out;out["address"]=own_address;out["amount_una"]=Json::UInt64(100000);
+    ASSERT_TRUE(run(false,0x95,out));
+    deliver();
+    din::Json pay;pay["address"]=created["address"];pay["amount_una"]=Json::UInt64(20000);
+    ASSERT_TRUE(run(true,0x96,pay));
+    deliver();
+    ASSERT_EQ(f.Account().account.Scan().BalanceUna(),410000u);
+    // Each delivered block leaves one more retained parent carrying the shield.
+    constexpr int kBlocks=8;
+    for(int i=0;i<kBlocks;++i){(void)f.MineEmpty();deliver();}
+    // Force the complete pass at the head (no idle skip) and count.
+    RuntimeWalletRecovery::SetIdleCatalogFullPassIntervalForTest(std::chrono::milliseconds(0));
+    const auto captures=wallet::OrchardAccountDelivery::CatalogCaptures();
+    const auto checks=WalletManager::DatabaseLease::ShieldHistoryValidations();
+    deliver();
+    RuntimeWalletRecovery::SetIdleCatalogFullPassIntervalForTest(std::chrono::milliseconds(60000));
+    const auto captured=wallet::OrchardAccountDelivery::CatalogCaptures()-captures;
+    const auto checked=WalletManager::DatabaseLease::ShieldHistoryValidations()-checks;
+    ASSERT_GT(captured,0u) << "the forced pass captured nothing";
+    EXPECT_EQ(checked,captured) << "one shield history row checked " << checked << " times in "
+        << captured << " captures";
+    EXPECT_EQ(f.Account().account.Delivery().sequence,NativeOrchardHead(f));
+    f.context.tx_ingress=nullptr;
+}
+
 } // namespace dinero

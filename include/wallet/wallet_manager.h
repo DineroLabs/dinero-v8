@@ -398,6 +398,9 @@ public:
         [[nodiscard]] const std::string& WalletName() const noexcept { return name_; }
         // Process-local identity only, never a durable delivery checkpoint.
         [[nodiscard]] uint64_t Session() const noexcept { return session_; }
+        // Process-wide count of shield history rows checked by
+        // ValidateShieldHistoryInTransaction (tests).
+        static uint64_t ShieldHistoryValidations() noexcept;
         // Per-manager identity, even when another instance reopens the same
         // wallet backup with the same session counter. Holds only an opaque
         // token, not WalletManager or SQLite lifetime. Service ownership is

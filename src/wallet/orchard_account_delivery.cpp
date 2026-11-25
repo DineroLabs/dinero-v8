@@ -12,6 +12,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <tuple>
 #include "wallet/wallet_manager.h"
 #include "wallet/wallet_transaction_signer.h"
 #include "util/hex.h"
@@ -548,9 +549,19 @@ struct OrchardAccountDelivery::Owner {
             OrchardOwnershipInventory::Read(lease->Database(),seed->Bytes()),lease->InstanceToken());
         Check(result->ownership.catalog.Covers({profile.account,static_cast<uint8_t>(profile.domain.network_code),
             profile.domain.genesis_wire,profile.domain.branch_id,profile.activation}));
+        // A confirmed shield stays in every later revision's queue, so the
+        // parent walk below meets it once per retained revision. The whole
+        // capture is one transaction: the same summary against the same
+        // history row proves the same thing, so check each summary once per
+        // capture (as viewing_once does for keys). A differing summary for
+        // the same txid is a different key and is still checked.
+        std::set<std::tuple<std::string,std::string,uint64_t,int64_t>> histories_checked;
         const auto histories=[&](const OrchardOperationQueue& queue){
-            for(const auto& [id,entry]:queue.Entries())if(entry.shield_ready_time)
-                lease->ValidateShieldHistoryInTransaction(*seed,ShieldHistory(entry));
+            for(const auto& [id,entry]:queue.Entries())if(entry.shield_ready_time){
+                auto history=ShieldHistory(entry);
+                if(histories_checked.emplace(history.txid,history.address,history.debit_una,history.created_at).second)
+                    lease->ValidateShieldHistoryInTransaction(*seed,history);
+            }
         };
         for(const auto& account:result->ownership.accounts){
             const auto& entry=account.entry;
