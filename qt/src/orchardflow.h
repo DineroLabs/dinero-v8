@@ -143,6 +143,20 @@ public:
 
     void onFinishReply(const QJsonValue& v) {
         if (IsFinal(state_)) return;
+        if (v.toObject().value("error_code").toString() == "fee_below_minimum") {
+            // Refused before signing. Unlike a refusal at queue time, the
+            // request is still saved (reserved) on the node: finishing it can
+            // never work, so this is final here and the way on is to cancel it.
+            state_ = State::FeeTooLow;
+            requiredFeeUna_ = RequiredFeeUna(v);
+            detail_ = QString("The network fee is too low for this payment's size%1. Nothing was signed or sent, but the "
+                              "request is still saved: select it under saved payments and press \"Cancel selected "
+                              "request\", then start the payment again%2.")
+                          .arg(requiredFeeUna_ ? QString(". Minimum: %1 DIN").arg(FormatDin(*requiredFeeUna_)) : QString(),
+                               requiredFeeUna_ ? QString(" with that fee (the fee field now shows it)")
+                                               : QString(" with a higher fee"));
+            return;
+        }
         if (const auto e = OrchardContract::InBandError(v)) {
             if (OrchardContract::IsProofNotReady(v)) { state_ = State::Proving; detail_.clear(); return; }
             return retry(*e);

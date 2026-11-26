@@ -842,6 +842,43 @@ private Q_SLOTS:
             cleanup();init();
         }
     }
+    // The node also checks the fee when it is asked to FINISH a queued
+    // request, before signing it (a shield's size is only known then). The
+    // request then stays queued on the node: retrying it can never work, so
+    // the page says the fee it needs and points at cancelling it. Nothing is
+    // resent, and the saved request can be cancelled from the list.
+    void feeBelowMinimumAtFinishIsFinalAndPointsAtCancelling() {
+        ready();fillSend();confirmNextDialog();Find<QPushButton>(tab_,"orchardReview")->click();
+        const Sent queue=last("wallet.orchard.queuespend");
+        reply(queue,R"({"durable_state":"reserved","proof_queued":true})");
+        QMetaObject::invokeMethod(tab_,"onPoll");
+        const Sent finish=last("wallet.orchard.finishspend");
+        const QJsonObject refusal{{"error_code","fee_below_minimum"},{"required_fee_una",12466},{"virtual_size",12466}};
+        const QJsonValue data=QJsonObject{{"orchard",refusal}};
+        QVERIFY(QMetaObject::invokeMethod(tab_,"onRpcErrorDetailed",Qt::DirectConnection,
+            Q_ARG(QString,finish.tag),Q_ARG(int,-32000),
+            Q_ARG(QString,QString("Network fee is below the minimum for this payment's size")),Q_ARG(QJsonValue,data)));
+        QCOMPARE(*tab_->paymentState(),OrchardFlow::State::FeeTooLow);
+        const QString said=Find<QLabel>(tab_,"orchardPaymentDetail")->text();
+        QVERIFY2(said.contains("0.00012466 DIN"),qPrintable(said));
+        QVERIFY2(said.contains("Cancel selected request"),qPrintable(said));
+        QVERIFY2(said.contains("Nothing was signed or sent"),qPrintable(said));
+        QVERIFY(!said.contains("review the payment again to send it"));   // not the queue-time wording: it is still saved
+        QVERIFY(!Find<QPushButton>(tab_,"orchardRetry")->isVisible());
+        QCOMPARE(Find<QLineEdit>(tab_,"orchardFee")->text(),QString("0.00012466"));
+        // Nothing is resent, by a poll or by Retry.
+        const auto count=sent_.size();
+        QMetaObject::invokeMethod(tab_,"onPoll");QMetaObject::invokeMethod(tab_,"onRetry");
+        for(qsizetype i=count;i<sent_.size();++i)QVERIFY(!sent_[i].method.startsWith("wallet.orchard.finish"));
+        // The saved request is still on the node and can be cancelled here.
+        auto snapshot=storedSnapshot("wallet.orchard.finishspend");
+        auto rows=snapshot["operations"].toArray();auto row=rows[0].toObject();
+        row["operation_id"]=queue.params.value("request_id");row["durable_state"]="reserved";row.remove("txid");
+        rows[0]=row;snapshot["operations"]=rows;
+        rawReply(last("wallet.orchard.listoperations"),snapshot);
+        Find<QTableWidget>(tab_,"orchardOperationsTable")->selectRow(0);
+        QVERIFY(Find<QPushButton>(tab_,"orchardCancel")->isEnabled());
+    }
     void connectionChangeCannotRetargetPendingPayment() {
         ready();fillSend();confirmNextDialog();Find<QPushButton>(tab_,"orchardReview")->click();const auto queue=last("wallet.orchard.queuespend");
         const auto count=sent_.size();QMetaObject::invokeMethod(tab_,"onConnectionContextChanged",Qt::DirectConnection);

@@ -997,15 +997,14 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
     } else if (shortName == "queue" || shortName == "finish") {
         callInFlight_ = false;
         if (!payment_) return;
-        if (shortName == "queue") {
-            const auto before=payment_->state();
-            payment_->onQueueReply(result);
-            // Put the fee the node asked for where the user will see and
-            // confirm it. Never sent without a new review.
-            if(before!=OF::State::FeeTooLow && payment_->state()==OF::State::FeeTooLow && payment_->requiredFeeUna())
-                fee_->setText(OF::FormatDin(*payment_->requiredFeeUna()));
-        }
+        const auto before=payment_->state();
+        if (shortName == "queue") payment_->onQueueReply(result);
         else payment_->onFinishReply(result);
+        // Refused for its fee, at queue time or when finishing: put the fee
+        // the node asked for where the user will see and confirm it. It is
+        // never sent without a new review.
+        if(before!=OF::State::FeeTooLow && payment_->state()==OF::State::FeeTooLow && payment_->requiredFeeUna())
+            fee_->setText(OF::FormatDin(*payment_->requiredFeeUna()));
         advance();
     } else if (shortName == "ops") {
         const auto r = OC::ParseOperations(result);
