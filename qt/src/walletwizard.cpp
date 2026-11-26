@@ -1035,27 +1035,17 @@ void CreateSeedPage::onGenerateSeed() {
       // The HTTP RPC envelope promotes handler errors to this callback. A
       // transport error can also leave creation's outcome unknown. Neither
       // proves that this wizard owns a wallet with the requested name.
-      const bool snapshotPending = error.contains(
-          "still loading its starting snapshot", Qt::CaseInsensitive);
-      const bool historyPending = snapshotPending || error.contains(
-          "Orchard history is not ready; wallet was not created", Qt::CaseInsensitive);
       if (wizard())
         wizard()->setProperty("walletRollbackCandidateName", QString());
       QString rollbackError;
       rollbackProvisionedWallet(wizard(), &rollbackError);
-      lblSeed_->setText(historyPending
-          ? (snapshotPending
-              ? "Your node is still loading its starting snapshot. No wallet was created. Retry in a few minutes."
-              : "Orchard history is still downloading and verifying. No wallet was created. Retry after sync progresses.")
-          : "❌ Error generating seed: " + error + "\n\nPlease ensure daemon is running."
-                + (rollbackError.isEmpty()
-                   ? QString()
-                   : "\n\nRollback warning:\n" + rollbackError));
-      lblSeed_->setStyleSheet(historyPending
+      const auto refusal = WalletCreateRefusal::shownFromTransportError(error, rollbackError);
+      lblSeed_->setText(refusal.text);
+      lblSeed_->setStyleSheet(refusal.calm
           ? "QLabel { color: #f59f00; background: #2b2b2b; padding: 20px; }"
           : "QLabel { color: #ff6b6b; background: #ffe3e3; padding: 20px; }");
       btnReveal_->setEnabled(false);
-      btnRetry_->setVisible(historyPending);
+      btnRetry_->setVisible(refusal.retry);
       qWarning() << "CreateSeedPage: Failed to generate seed:" << error;
     }
   );
