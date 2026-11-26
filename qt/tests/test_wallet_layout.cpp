@@ -669,6 +669,44 @@ private Q_SLOTS:
         QCOMPARE(total->text(), QString("636,799.99999731 DIN"));
     }
 
+    // Owner, 2026-11-26, v8.2.6: after switching from a wallet holding 25 DIN
+    // in Orchard to a legacy wallet whose balance was still catching up, the
+    // Wallet page said "Balance unavailable" everywhere except the Orchard
+    // line, which still showed the FIRST wallet's 25 DIN. The branch that
+    // clears every amount on a switch did not know about the Orchard line.
+    void theOrchardLineNeverShowsThePreviousWalletsMoney() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        feedBalance(*window);
+        auto* rpc = window->findChild<RpcClient*>();
+        auto* orchard = named<QLabel>(*window, "lblOrchardBalance");
+        auto* total = named<QLabel>(*window, "walletTotalBalance");
+        QVERIFY(rpc && orchard && total);
+        if (!window->findChild<OrchardWidget*>()) QSKIP("built without the Orchard page");
+        QVERIFY(QMetaObject::invokeMethod(window.get(), "onOrchardBalanceChanged", Qt::DirectConnection,
+            Q_ARG(bool, true), Q_ARG(quint64, quint64(2500000000)), Q_ARG(bool, true), Q_ARG(quint64, quint64(165213))));
+        QCOMPARE(orchard->text(), QString("25.00000000 DIN"));
+
+        // Another wallet is selected: nothing of the first one stays on screen.
+        QVERIFY(bindTestWallet(*window, "Other"));
+        QCOMPARE(total->text(), QString("Loading..."));
+        QVERIFY2(!orchard->text().contains("25"), qPrintable(orchard->text()));
+        QCOMPARE(orchard->text(), QString("Loading..."));
+
+        // Its balance is refused (a legacy wallet still catching up).
+        Q_EMIT rpc->rpcError("wallet.getbalance", -32603,
+            "Legacy transparent wallet is catching up to the selected chain");
+        QCoreApplication::processEvents();
+        QCOMPARE(total->text(), QString("Balance unavailable"));
+        QVERIFY2(!orchard->text().contains("25"), qPrintable(orchard->text()));
+        QCOMPARE(orchard->text(), QString("Balance unavailable"));
+        // The Orchard page reporting "nothing known" for the new wallet does
+        // not bring the old figure back either.
+        QVERIFY(QMetaObject::invokeMethod(window.get(), "onOrchardBalanceChanged", Qt::DirectConnection,
+            Q_ARG(bool, false), Q_ARG(quint64, quint64(0)), Q_ARG(bool, false), Q_ARG(quint64, quint64(0))));
+        QCOMPARE(orchard->text(), QString("Balance unavailable"));
+    }
+
     // Owner, 2026-11-23: the shield row "showed once" and was gone. The page
     // asked for the newest 200 rows only, a miner adds a row a minute, and
     // there was no filter for shields and no way to older rows.
