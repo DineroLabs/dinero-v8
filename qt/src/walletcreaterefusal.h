@@ -24,4 +24,18 @@ inline Shown shown(const QString& code, const QString& error, const QString& rol
             false, false};
 }
 
+// ConnectionManager delivers some node refusals through its string-only
+// error callback. Preserve the node's specific explanation in that path too.
+inline Shown shownFromTransportError(const QString& error, const QString& rollbackError) {
+    if (error.contains("This node cannot show money in a new wallet", Qt::CaseInsensitive) &&
+        error.contains("data was started from an older snapshot", Qt::CaseInsensitive) &&
+        error.contains("No wallet was created", Qt::CaseInsensitive))
+        return shown("native_wallet_unservable", error, rollbackError);
+    if (error.contains("still loading its starting snapshot", Qt::CaseInsensitive))
+        return shown("snapshot_bootstrap_pending", error, rollbackError);
+    if (error.contains("Orchard history is not ready; wallet was not created", Qt::CaseInsensitive))
+        return shown("orchard_history_pending", error, rollbackError);
+    return shown({}, error, rollbackError);
+}
+
 }  // namespace WalletCreateRefusal
