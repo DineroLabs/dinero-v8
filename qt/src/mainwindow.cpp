@@ -6946,10 +6946,13 @@ void MainWindow::updateWalletBalanceDisplay() {
         ? QStringLiteral("Balance unavailable") : QStringLiteral("Loading...");
     for (QLabel* label : {lblBalance_, lblTotalWalletBalance_,
                           lblTransparentTaprootBalance_, lblTransparentP2mrBalance_,
-                          lblShieldedBalance_, findChild<QLabel*>("lblUnconfirmed"),
+                          lblShieldedBalance_, lblOrchardBalance_, findChild<QLabel*>("lblUnconfirmed"),
                           findChild<QLabel*>("lblImmature")}) {
       if (label) label->setText(state);
     }
+    // The Orchard line is an amount like the others: the previous wallet's
+    // figure (and the tooltip that explained it) must not outlive the switch.
+    if (lblOrchardBalance_) lblOrchardBalance_->setToolTip(QString());
     if (barPqRatio_) barPqRatio_->setValue(0);
     return;
   }
