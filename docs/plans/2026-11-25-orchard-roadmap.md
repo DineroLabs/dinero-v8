@@ -72,9 +72,9 @@ Size: small. Touches `wallet_prover.rs`, `recovery.rs`, one RPC field, one
 line of Qt. No consensus change.
 
 ### 1c. Independent review
-Not something this project can do for itself. Scope to offer a reviewer: the
-integration (bundle decoding, admission checks, the commitment-tree frontier,
-note encryption use, key derivation paths), not the upstream crate.
+Out of scope for this roadmap (owner, 2026-11-25). Recorded only so the gap
+is not forgotten: it is the one part of the "patched, not stock" concern that
+1a and 1b cannot close.
 
 ---
 
@@ -121,20 +121,37 @@ cost. Nodes coped; wallets did not, because every wallet has to try to
 decrypt every output. Zcash answered with a fee proportional to the number
 of actions (ZIP 317). Dinero today takes the fee as a number the wallet or
 user supplies (`fee_una` in `wallet.orchard.queueshield` / `queuespend`).
-What the mempool and the miner require of an Orchard transaction's fee was
-not established for this note and is the first thing the spec must pin down.
+
+### Facts
+- The mempool already refuses an Orchard transaction whose fee divided by its
+  virtual size is below the minimum fee rate (`src/daemon/mempool.cpp`,
+  "Orchard fee rate below minimum"; default `DEFAULT_MIN_FEE_RATE` = 1.0 una
+  per virtual byte).
+- Reported in review and not re-traced here: nothing overrides that default,
+  and the virtual size counts the whole bundle including its proof, so the
+  minimum already grows with the number of actions.
+- Not yet established: whether the block assembler applies the same minimum
+  to what it includes; the real sizes of a 2-action and a maximum-action
+  transaction; where the wallet's automatic fee is computed (the desktop app
+  sends `fee_una` only when the user typed one).
+
+So there is a per-byte floor today, not no rule. The open question is whether
+1 una per virtual byte prices a flood of outputs high enough, given that each
+output costs every wallet a trial decryption.
 
 ### Build, in two stages
-- Stage A, policy only (no fork): the wallet computes a default fee from the
-  action count; the mempool refuses to relay, and the block assembler
-  declines to include, an Orchard transaction paying less than
-  `per_action × max(actions, floor)`. Old wallets that underpay see a clear
-  refusal with the required amount.
+- Stage 0: establish the three unknowns above and measure what a block full
+  of minimum-fee Orchard actions costs to make today.
+- Stage A, policy only (no fork): build on the existing fee-rate check rather
+  than add a second one. Choose the rate, and whether it stays per virtual
+  byte or becomes `per_action × max(actions, floor)`; make the block
+  assembler and the wallet's automatic fee use the same rule. A wallet that
+  underpays sees a clear refusal with the required amount.
 - Stage B, only if stage A proves insufficient: the same rule as a consensus
   rule at an activation height.
 
-Decisions for the owner: the per-action amount and the floor; whether the
-phone app applies the same default at once.
+Decisions for the owner, after stage 0 has the numbers: the rate and its
+form. Proposed: phones change at the same time as the desktop.
 
 Size: medium. Stage A touches mempool admission, block assembly, the wallet
 default and both apps' fee fields. It is network policy, so it needs the
@@ -226,22 +243,26 @@ mode as an option, or move to light by default. 5a(1) is needed either way;
 | When | Item |
 |---|---|
 | Right after v8.2.6 ships | 1a into CI; 1b step 1 (count profile-1 plans); 2 export only |
-| Next minor release | 1b step 2; 2 watch-only import; 3 stage A spec agreed and built |
+| Next minor release | 1b step 2; 2 watch-only import; 3 stage 0, then stage A agreed and built |
 | v8.3 line | 5a design and baseline, then compact scan data; 1b step 3 (stock crate) |
-| Decide, then schedule | 4 (only if bundling is wanted); 5b (product decision); 1c (outside review) |
+| Not scheduled | 4 (dropped for now); 5b (waits on 5a); 1c (out of scope) |
 
-## Decisions needed from the owner
+## Decisions
 
-1. Viewing keys: full only, or full and incoming-only?
-2. Fee rule: per-action amount and floor; phones at the same time?
-3. Unified addresses: wanted, or drop the item?
-4. Phones: stay embedded nodes, light mode as an option, or light by default?
-5. Outside review: is there budget and a reviewer in mind?
+Decided by the owner (2026-11-25): outside review is out of scope here.
+
+Proposed in review, not yet confirmed by the owner:
+1. Viewing keys: the full viewing key only for now; an incoming-only key
+   later if someone asks for it.
+2. Fee rule: no number until stage 0 of item 3 has measured sizes and traced
+   the miner and wallet sides; then one rule everywhere, phones included.
+3. Unified addresses: dropped for now.
+4. Phones: stay embedded nodes; a light mode waits on fast sync.
 
 ## What this note does not claim
 
-- The fee handling of Orchard transactions in the mempool and miner was not
-  traced; item 3 starts by establishing it.
+- The fee handling of Orchard transactions is only partly traced: the mempool
+  minimum is confirmed, the miner side and the wallet's automatic fee are not.
 - No sizes above are estimates in days. "Small / medium / large" compare the
   items with each other.
 - The description of how other wallets sync is a summary of published
