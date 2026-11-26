@@ -8554,4 +8554,125 @@ To je eden od nastavljenih začetnih vrstnikov. Blokirajte ga samo pri odpravlja
             <translation>Blokiraj za 24 ur</translation>
         </message>
     </context>
+<context>
+    <name>LegacySnapshotDialog</name>
+    <message>
+        <source>Preserved Dinero data is missing</source>
+        <translation>Ohranjeni podatki Dinera manjkajo</translation>
+    </message>
+    <message>
+        <source>The preserved Dinero data folder is missing:
+%1
+
+Dinero will not silently switch to a different wallet.</source>
+        <translation>Mapa z ohranjenimi podatki Dinera manjka:
+%1
+
+Dinero ne bo samodejno preklopil na drugo denarnico.</translation>
+    </message>
+    <message>
+        <source>Dinero wallet data is missing</source>
+        <translation>Podatki denarnice Dinero manjkajo</translation>
+    </message>
+    <message>
+        <source>The selected Dinero data folder is missing:
+%1
+
+Restore that folder before opening the wallet. Dinero will not silently switch to a different wallet.</source>
+        <translation>Izbrana mapa s podatki Dinera manjka:
+%1
+
+Pred odpiranjem denarnice obnovite to mapo. Dinero ne bo samodejno preklopil na drugo denarnico.</translation>
+    </message>
+    <message>
+        <source>Update Dinero wallet data</source>
+        <translation>Posodobitev podatkov denarnice Dinero</translation>
+    </message>
+    <message>
+        <source>This computer has older Dinero data. A new wallet here might miss coins.</source>
+        <translation>V računalniku so starejši podatki Dinera. Nova denarnica tukaj morda ne bi prikazala kovancev.</translation>
+    </message>
+    <message>
+        <source>Dinero found existing wallet files. A separate new wallet can use current blockchain data, but it will NOT show or transfer coins from those existing wallets. Keep their recovery words and the old data folder.
+
+Old data folder:
+%1</source>
+        <translation>Dinero je našel datoteke obstoječih denarnic. Ločena nova denarnica lahko uporablja novejše podatke verige blokov, vendar NE bo prikazala ali prenesla kovancev iz obstoječih denarnic. Ohranite njihove obnovitvene besede in staro podatkovno mapo.
+
+Stara podatkovna mapa:
+%1</translation>
+    </message>
+    <message>
+        <source>Dinero found no wallet files or recovery keys in this data folder. It can start a new, separate data folder using current blockchain data. The old folder stays untouched at:
+%1
+
+The new node will need time to verify wallet history before you can create a wallet.</source>
+        <translation>Dinero v tej podatkovni mapi ni našel datotek denarnice ali obnovitvenih ključev. Ustvari lahko novo, ločeno podatkovno mapo z novejšimi podatki verige blokov. Stara mapa ostane nedotaknjena:
+%1
+
+Novo vozlišče mora pred ustvarjanjem denarnice preveriti zgodovino denarnic. To lahko traja nekaj časa.</translation>
+    </message>
+    <message>
+        <source>Start a separate new wallet</source>
+        <translation>Začni z ločeno novo denarnico</translation>
+    </message>
+    <message>
+        <source>Start with current data</source>
+        <translation>Začni z novejšimi podatki</translation>
+    </message>
+    <message>
+        <source>Keep old data for now</source>
+        <translation>Za zdaj obdrži stare podatke</translation>
+    </message>
+    <message>
+        <source>Language</source>
+        <translation>Jezik</translation>
+    </message>
+    <message>
+        <source>Recover existing wallets</source>
+        <translation>Obnovi obstoječe denarnice</translation>
+    </message>
+    <message>
+        <source>I understand this does not move my existing wallets or coins</source>
+        <translation>Razumem, da to ne prenese mojih obstoječih denarnic ali kovancev</translation>
+    </message>
+    <message>
+        <source>Recover an existing wallet</source>
+        <translation>Obnova obstoječe denarnice</translation>
+    </message>
+    <message>
+        <source>Your wallet files are still in:
+%1
+
+Do not delete this folder. A wallet with coins from before the current snapshot needs its full history checked before its balance can be trusted. Keep your recovery words and ask Dinero support to help recover the existing wallet. You can reopen the app later to create a separate new wallet.</source>
+        <translation>Datoteke vaše denarnice so še vedno v mapi:
+%1
+
+Te mape ne izbrišite. Preden lahko zaupate stanju denarnice s kovanci iz časa pred novejšim snapshotom, je treba preveriti njeno celotno zgodovino. Ohranite obnovitvene besede in se za pomoč pri obnovi obrnite na podporo Dinero. Aplikacijo lahko pozneje znova odprete in ustvarite ločeno novo denarnico.</translation>
+    </message>
+    <message>
+        <source>Dinero is already running</source>
+        <translation>Dinero že deluje</translation>
+    </message>
+    <message>
+        <source>A Dinero node started while this window was open. Close it and reopen the wallet to start with current data.</source>
+        <translation>Medtem ko je bilo to okno odprto, se je zagnalo vozlišče Dinero. Zaprite ga in znova odprite denarnico za uporabo novejših podatkov.</translation>
+    </message>
+    <message>
+        <source>Could not create Dinero data</source>
+        <translation>Podatkov Dinera ni bilo mogoče ustvariti</translation>
+    </message>
+    <message>
+        <source>Dinero could not create a separate data folder. The old data is untouched.</source>
+        <translation>Dinero ni mogel ustvariti ločene podatkovne mape. Stari podatki so nedotaknjeni.</translation>
+    </message>
+    <message>
+        <source>Could not save Dinero data location</source>
+        <translation>Lokacije podatkov Dinera ni bilo mogoče shraniti</translation>
+    </message>
+    <message>
+        <source>Dinero could not save the new data folder location. The old data is untouched.</source>
+        <translation>Dinero ni mogel shraniti lokacije nove podatkovne mape. Stari podatki so nedotaknjeni.</translation>
+    </message>
+</context>
 </TS>

@@ -84,6 +84,40 @@ int main(int argc, char** argv) {
   }
   Check("Slovenian appears in the language picker", sloveneAvailable);
   Check("every offered language has its flag", allAvailableFlagsExist);
+  Check("all ten shipped translations appear in the language picker",
+        dinero::qt::i18n::AvailableLanguages().size() >= 11);
+
+  // The old-snapshot decision appears before the normal app translator is
+  // installed. Every offered language must carry the safety-critical choices,
+  // not just the language originally used to introduce that dialog.
+  const char* legacyDialogSources[] = {
+      "Language",
+      "This computer has older Dinero data. A new wallet here might miss coins.",
+      "Start a separate new wallet",
+      "Keep old data for now",
+      "I understand this does not move my existing wallets or coins",
+      "Dinero could not create a separate data folder. The old data is untouched.",
+      "Your wallet files are still in:\n%1\n\n"
+      "Do not delete this folder. A wallet with coins from before the current "
+      "snapshot needs its full history checked before its balance can be trusted. "
+      "Keep your recovery words and ask Dinero support to help recover the existing wallet. "
+      "You can reopen the app later to create a separate new wallet.",
+  };
+  for (const auto& language : dinero::qt::i18n::AvailableLanguages()) {
+    if (language.code == dinero::qt::i18n::SourceLanguageCode()) continue;
+    QTranslator earlyDialogCatalog;
+    Check("offered catalog loads for the old-snapshot dialog",
+          earlyDialogCatalog.load(dinero::qt::i18n::CatalogResourcePath(language.code)),
+          language.code);
+    for (const char* source : legacyDialogSources) {
+      const QString translated = earlyDialogCatalog.translate("LegacySnapshotDialog", source);
+      Check("old-snapshot safety text is translated", !translated.isEmpty(),
+            language.code + QStringLiteral(": ") + QString::fromUtf8(source).left(55));
+      Check("old-snapshot folder placeholder survives translation",
+            translated.count(QStringLiteral("%1")) == QString::fromUtf8(source).count(QStringLiteral("%1")),
+            language.code);
+    }
+  }
 
   // Before the translator is installed, every string is its English self.
   std::printf("\n-- before install --\n");

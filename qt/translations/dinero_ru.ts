@@ -8667,4 +8667,125 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
         <translation>Забанить на 24 часа</translation>
     </message>
 </context>
+<context>
+    <name>LegacySnapshotDialog</name>
+    <message>
+        <source>Preserved Dinero data is missing</source>
+        <translation>Сохранившиеся данные Dinero отсутствуют.</translation>
+    </message>
+    <message>
+        <source>The preserved Dinero data folder is missing:
+%1
+
+Dinero will not silently switch to a different wallet.</source>
+        <translation>Сохранившаяся папка данных Dinero отсутствует:
+%1
+
+Dinero не будет молча переключаться на другой кошелек.</translation>
+    </message>
+    <message>
+        <source>Dinero wallet data is missing</source>
+        <translation>Данные кошелька Dinero отсутствуют.</translation>
+    </message>
+    <message>
+        <source>The selected Dinero data folder is missing:
+%1
+
+Restore that folder before opening the wallet. Dinero will not silently switch to a different wallet.</source>
+        <translation>Выбранная папка данных Dinero отсутствует:
+%1
+
+Восстановите эту папку, прежде чем открывать кошелек. Dinero не будет молча переключаться на другой кошелек.</translation>
+    </message>
+    <message>
+        <source>Update Dinero wallet data</source>
+        <translation>Обновить данные кошелька Dinero</translation>
+    </message>
+    <message>
+        <source>This computer has older Dinero data. A new wallet here might miss coins.</source>
+        <translation>На этом компьютере есть старые данные Dinero. Созданный здесь новый кошелёк может не показать некоторые монеты.</translation>
+    </message>
+    <message>
+        <source>Dinero found existing wallet files. A separate new wallet can use current blockchain data, but it will NOT show or transfer coins from those existing wallets. Keep their recovery words and the old data folder.
+
+Old data folder:
+%1</source>
+        <translation>Dinero обнаружил существующие файлы кошелька. Отдельный новый кошелек может использовать текущие данные блокчейна, но НЕ будет отображать или передавать монеты из существующих кошельков. Сохраните слова восстановления и старую папку с данными.
+
+Старая папка данных:
+%1</translation>
+    </message>
+    <message>
+        <source>Dinero found no wallet files or recovery keys in this data folder. It can start a new, separate data folder using current blockchain data. The old folder stays untouched at:
+%1
+
+The new node will need time to verify wallet history before you can create a wallet.</source>
+        <translation>Dinero не обнаружил в этой папке данных ни файлов кошелька, ни ключей восстановления. Он может создать новую отдельную папку данных, используя текущие данные блокчейна. Старая папка остается нетронутой по адресу:
+%1
+
+Новому узлу потребуется время для проверки истории кошелька, прежде чем вы сможете создать кошелек.</translation>
+    </message>
+    <message>
+        <source>Start a separate new wallet</source>
+        <translation>Заведите отдельный новый кошелек</translation>
+    </message>
+    <message>
+        <source>Start with current data</source>
+        <translation>Начать с текущих данных</translation>
+    </message>
+    <message>
+        <source>Keep old data for now</source>
+        <translation>Пока сохраните старые данные</translation>
+    </message>
+    <message>
+        <source>Language</source>
+        <translation>Язык</translation>
+    </message>
+    <message>
+        <source>Recover existing wallets</source>
+        <translation>Восстановить существующие кошельки</translation>
+    </message>
+    <message>
+        <source>I understand this does not move my existing wallets or coins</source>
+        <translation>Я понимаю, что это не приведет к перемещению моих существующих кошельков или монет.</translation>
+    </message>
+    <message>
+        <source>Recover an existing wallet</source>
+        <translation>Восстановить существующий кошелек</translation>
+    </message>
+    <message>
+        <source>Your wallet files are still in:
+%1
+
+Do not delete this folder. A wallet with coins from before the current snapshot needs its full history checked before its balance can be trusted. Keep your recovery words and ask Dinero support to help recover the existing wallet. You can reopen the app later to create a separate new wallet.</source>
+        <translation>Файлы вашего кошелька все еще находятся в:
+%1
+
+Не удаляйте эту папку. Кошелек с монетами до текущего снимка требует проверки полной истории, прежде чем его балансу можно будет доверять. Сохраните слова восстановления и попросите службу поддержки Dinero помочь восстановить существующий кошелек. Вы можете снова открыть приложение позже, чтобы создать отдельный новый кошелек.</translation>
+    </message>
+    <message>
+        <source>Dinero is already running</source>
+        <translation>Dinero уже работает</translation>
+    </message>
+    <message>
+        <source>A Dinero node started while this window was open. Close it and reopen the wallet to start with current data.</source>
+        <translation>Узел Dinero запустился, пока это окно было открыто. Закройте его и снова откройте кошелек, чтобы начать с текущих данных.</translation>
+    </message>
+    <message>
+        <source>Could not create Dinero data</source>
+        <translation>Не удалось создать данные Dinero.</translation>
+    </message>
+    <message>
+        <source>Dinero could not create a separate data folder. The old data is untouched.</source>
+        <translation>Dinero не удалось создать отдельную папку данных. Старые данные остались нетронутыми.</translation>
+    </message>
+    <message>
+        <source>Could not save Dinero data location</source>
+        <translation>Не удалось сохранить местоположение данных Dinero.</translation>
+    </message>
+    <message>
+        <source>Dinero could not save the new data folder location. The old data is untouched.</source>
+        <translation>Dinero не удалось сохранить новое местоположение папки с данными. Старые данные нетронуты.</translation>
+    </message>
+</context>
 </TS>

@@ -8667,4 +8667,125 @@ To jeden ze skonfigurowanych przez Ciebie węzłów startowych. Zbanuj go tylko 
         <translation>Zbanuj na 24 godziny</translation>
     </message>
 </context>
+<context>
+    <name>LegacySnapshotDialog</name>
+    <message>
+        <source>Preserved Dinero data is missing</source>
+        <translation>Brak zachowanych danych Dinero</translation>
+    </message>
+    <message>
+        <source>The preserved Dinero data folder is missing:
+%1
+
+Dinero will not silently switch to a different wallet.</source>
+        <translation>Brak zachowanego folderu danych Dinero:
+%1
+
+Dinero nie przełączy się po cichu na inny portfel.</translation>
+    </message>
+    <message>
+        <source>Dinero wallet data is missing</source>
+        <translation>Brak danych portfela Dinero</translation>
+    </message>
+    <message>
+        <source>The selected Dinero data folder is missing:
+%1
+
+Restore that folder before opening the wallet. Dinero will not silently switch to a different wallet.</source>
+        <translation>Brak wybranego folderu danych Dinero:
+%1
+
+Przywróć ten folder przed otwarciem portfela. Dinero nie przełączy się po cichu na inny portfel.</translation>
+    </message>
+    <message>
+        <source>Update Dinero wallet data</source>
+        <translation>Zaktualizuj dane portfela Dinero</translation>
+    </message>
+    <message>
+        <source>This computer has older Dinero data. A new wallet here might miss coins.</source>
+        <translation>Na tym komputerze są starsze dane Dinero. Utworzony tutaj nowy portfel może nie wyświetlić części monet.</translation>
+    </message>
+    <message>
+        <source>Dinero found existing wallet files. A separate new wallet can use current blockchain data, but it will NOT show or transfer coins from those existing wallets. Keep their recovery words and the old data folder.
+
+Old data folder:
+%1</source>
+        <translation>Dinero znalazł istniejące pliki portfela. Oddzielny nowy portfel może korzystać z bieżących danych blockchain, ale NIE będzie wyświetlał ani przesyłał monet z istniejących portfeli. Zachowaj słowa odzyskiwania i stary folder danych.
+
+Stary folder danych:
+%1</translation>
+    </message>
+    <message>
+        <source>Dinero found no wallet files or recovery keys in this data folder. It can start a new, separate data folder using current blockchain data. The old folder stays untouched at:
+%1
+
+The new node will need time to verify wallet history before you can create a wallet.</source>
+        <translation>Dinero nie znalazł plików portfela ani kluczy odzyskiwania w tym folderze danych. Może uruchomić nowy, oddzielny folder danych, korzystając z bieżących danych blockchain. Stary folder pozostaje nietknięty pod adresem:
+%1
+
+Nowy węzeł będzie potrzebował czasu na zweryfikowanie historii portfela, zanim będzie można utworzyć portfel.</translation>
+    </message>
+    <message>
+        <source>Start a separate new wallet</source>
+        <translation>Uruchom osobny nowy portfel</translation>
+    </message>
+    <message>
+        <source>Start with current data</source>
+        <translation>Zacznij od aktualnych danych</translation>
+    </message>
+    <message>
+        <source>Keep old data for now</source>
+        <translation>Zachowaj na razie stare dane</translation>
+    </message>
+    <message>
+        <source>Language</source>
+        <translation>Język</translation>
+    </message>
+    <message>
+        <source>Recover existing wallets</source>
+        <translation>Odzyskaj istniejące portfele</translation>
+    </message>
+    <message>
+        <source>I understand this does not move my existing wallets or coins</source>
+        <translation>Rozumiem, że nie powoduje to przeniesienia moich istniejących portfeli ani monet</translation>
+    </message>
+    <message>
+        <source>Recover an existing wallet</source>
+        <translation>Odzyskaj istniejący portfel</translation>
+    </message>
+    <message>
+        <source>Your wallet files are still in:
+%1
+
+Do not delete this folder. A wallet with coins from before the current snapshot needs its full history checked before its balance can be trusted. Keep your recovery words and ask Dinero support to help recover the existing wallet. You can reopen the app later to create a separate new wallet.</source>
+        <translation>Pliki Twojego portfela nadal znajdują się w:
+%1
+
+Nie usuwaj tego folderu. Jeśli portfel zawiera monety sprzed bieżącej migawki, trzeba sprawdzić jego pełną historię, zanim będzie można zaufać jego saldu. Zachowaj słowa odzyskiwania i poproś pomoc techniczną Dinero o pomoc w odzyskaniu istniejącego portfela. Później możesz ponownie otworzyć aplikację, aby utworzyć osobny nowy portfel.</translation>
+    </message>
+    <message>
+        <source>Dinero is already running</source>
+        <translation>Dinero już działa</translation>
+    </message>
+    <message>
+        <source>A Dinero node started while this window was open. Close it and reopen the wallet to start with current data.</source>
+        <translation>Węzeł Dinero został uruchomiony, gdy to okno było otwarte. Zamknij go i otwórz ponownie portfel, aby rozpocząć od bieżących danych.</translation>
+    </message>
+    <message>
+        <source>Could not create Dinero data</source>
+        <translation>Nie można utworzyć danych Dinero</translation>
+    </message>
+    <message>
+        <source>Dinero could not create a separate data folder. The old data is untouched.</source>
+        <translation>Dinero nie mógł utworzyć oddzielnego folderu danych. Stare dane pozostają nietknięte.</translation>
+    </message>
+    <message>
+        <source>Could not save Dinero data location</source>
+        <translation>Nie można zapisać lokalizacji danych Dinero</translation>
+    </message>
+    <message>
+        <source>Dinero could not save the new data folder location. The old data is untouched.</source>
+        <translation>Dinero nie mogło zapisać nowej lokalizacji folderu danych. Stare dane pozostają nietknięte.</translation>
+    </message>
+</context>
 </TS>

@@ -8667,4 +8667,125 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
         <translation>封禁 24 小时</translation>
     </message>
 </context>
+<context>
+    <name>LegacySnapshotDialog</name>
+    <message>
+        <source>Preserved Dinero data is missing</source>
+        <translation>找不到已保留的 Dinero 数据</translation>
+    </message>
+    <message>
+        <source>The preserved Dinero data folder is missing:
+%1
+
+Dinero will not silently switch to a different wallet.</source>
+        <translation>找不到已保留的 Dinero 数据文件夹：
+%1
+
+Dinero 不会在您不知情的情况下切换到其他钱包。</translation>
+    </message>
+    <message>
+        <source>Dinero wallet data is missing</source>
+        <translation>找不到 Dinero 钱包数据</translation>
+    </message>
+    <message>
+        <source>The selected Dinero data folder is missing:
+%1
+
+Restore that folder before opening the wallet. Dinero will not silently switch to a different wallet.</source>
+        <translation>找不到所选的 Dinero 数据文件夹：
+%1
+
+请先恢复此文件夹，再打开钱包。Dinero 不会在您不知情的情况下切换到其他钱包。</translation>
+    </message>
+    <message>
+        <source>Update Dinero wallet data</source>
+        <translation>更新 Dinero 钱包数据</translation>
+    </message>
+    <message>
+        <source>This computer has older Dinero data. A new wallet here might miss coins.</source>
+        <translation>这台电脑上有旧版 Dinero 数据。在这里创建的新钱包可能无法显示某些币。</translation>
+    </message>
+    <message>
+        <source>Dinero found existing wallet files. A separate new wallet can use current blockchain data, but it will NOT show or transfer coins from those existing wallets. Keep their recovery words and the old data folder.
+
+Old data folder:
+%1</source>
+        <translation>Dinero 发现了现有钱包文件。单独的新钱包可以使用当前区块链数据，但不会显示或转移这些现有钱包中的币。请保留恢复词和旧数据文件夹。
+
+旧数据文件夹：
+%1</translation>
+    </message>
+    <message>
+        <source>Dinero found no wallet files or recovery keys in this data folder. It can start a new, separate data folder using current blockchain data. The old folder stays untouched at:
+%1
+
+The new node will need time to verify wallet history before you can create a wallet.</source>
+        <translation>Dinero 在此数据文件夹中找不到钱包文件或恢复密钥。它可以使用当前的区块链数据启动一个新的、单独的数据文件夹。旧文件夹保持不变，位于：
+%1
+
+新节点需要时间验证钱包历史记录，然后才能创建钱包。</translation>
+    </message>
+    <message>
+        <source>Start a separate new wallet</source>
+        <translation>启动一个单独的新钱包</translation>
+    </message>
+    <message>
+        <source>Start with current data</source>
+        <translation>从当前数据开始</translation>
+    </message>
+    <message>
+        <source>Keep old data for now</source>
+        <translation>暂时保留旧数据</translation>
+    </message>
+    <message>
+        <source>Language</source>
+        <translation>语言</translation>
+    </message>
+    <message>
+        <source>Recover existing wallets</source>
+        <translation>恢复现有钱包</translation>
+    </message>
+    <message>
+        <source>I understand this does not move my existing wallets or coins</source>
+        <translation>我知道这不会移动我现有的钱包或硬币</translation>
+    </message>
+    <message>
+        <source>Recover an existing wallet</source>
+        <translation>恢复现有钱包</translation>
+    </message>
+    <message>
+        <source>Your wallet files are still in:
+%1
+
+Do not delete this folder. A wallet with coins from before the current snapshot needs its full history checked before its balance can be trusted. Keep your recovery words and ask Dinero support to help recover the existing wallet. You can reopen the app later to create a separate new wallet.</source>
+        <translation>您的钱包文件仍在：
+%1
+
+请勿删除此文件夹。如果钱包中有早于当前快照的币，必须核对其完整历史记录，才能信任余额。请保留恢复词，并联系 Dinero 支持人员协助恢复现有钱包。您可以稍后重新打开应用，创建一个单独的新钱包。</translation>
+    </message>
+    <message>
+        <source>Dinero is already running</source>
+        <translation>Dinero 已经运行</translation>
+    </message>
+    <message>
+        <source>A Dinero node started while this window was open. Close it and reopen the wallet to start with current data.</source>
+        <translation>此窗口打开时，Dinero 节点启动。关闭它并重新打开钱包以使用当前数据开始。</translation>
+    </message>
+    <message>
+        <source>Could not create Dinero data</source>
+        <translation>无法创建 Dinero 数据</translation>
+    </message>
+    <message>
+        <source>Dinero could not create a separate data folder. The old data is untouched.</source>
+        <translation>Dinero 无法创建单独的数据文件夹。旧数据未受影响。</translation>
+    </message>
+    <message>
+        <source>Could not save Dinero data location</source>
+        <translation>无法保存 Dinero 数据位置</translation>
+    </message>
+    <message>
+        <source>Dinero could not save the new data folder location. The old data is untouched.</source>
+        <translation>Dinero 无法保存新的数据文件夹位置。旧数据未受影响。</translation>
+    </message>
+</context>
 </TS>
