@@ -6260,6 +6260,65 @@ void MainWindow::setupUI() {
     developerLayout->addWidget(developerPanel);
     layout->addWidget(developerGroup);
 
+    // An old-snapshot user can return to the preserved wallet files without
+    // finding hidden folders or editing the app's settings database. Switching
+    // takes effect only after the current daemon has stopped with the app.
+    const QString newProfile = QSettings()
+        .value("data/active_dir_after_legacy_snapshot_v1").toString();
+    const QString preservedProfile = QDir::cleanPath(defaultDineroDataDir());
+    const QString currentProfile = actualDataDir();
+    if (!newProfile.isEmpty() &&
+        (currentProfile == preservedProfile || currentProfile == QDir::cleanPath(newProfile))) {
+      auto* profileGroup = new QGroupBox("Wallet data folders");
+      auto* profileLayout = new QVBoxLayout(profileGroup);
+      const bool usingPreserved = currentProfile == preservedProfile;
+      auto* profileNote = new QLabel(usingPreserved
+          ? QStringLiteral("This app is using your preserved older wallet data. "
+                           "A separate new wallet is available in another folder.")
+          : QStringLiteral("This app is using a separate new wallet. "
+                           "Your older wallet files remain in their original folder; "
+                           "their coins were not transferred."));
+      profileNote->setWordWrap(true);
+      profileNote->setStyleSheet(backupPanelStyle());
+      profileLayout->addWidget(profileNote);
+      auto* switchProfile = new QPushButton(usingPreserved
+          ? QStringLiteral("Use separate new wallet after restart")
+          : QStringLiteral("Open preserved older wallet after restart"));
+      switchProfile->setStyleSheet(chromeButtonStyle());
+      profileLayout->addWidget(switchProfile);
+      connect(switchProfile, &QPushButton::clicked, this,
+              [this, usingPreserved, newProfile, preservedProfile]() {
+        const QString destination = usingPreserved ? newProfile : preservedProfile;
+        if (!QFileInfo(destination).isDir()) {
+          QMessageBox::warning(this, "Wallet data folder missing",
+              QString("The wallet data folder is missing:\n%1\n\nNo change was made.")
+                  .arg(QDir::toNativeSeparators(destination)));
+          return;
+        }
+        const QString destinationName = usingPreserved
+            ? QStringLiteral("the separate new wallet")
+            : QStringLiteral("the preserved older wallet");
+        if (QMessageBox::question(this, "Switch wallet data after restart",
+                QString("After you quit and reopen Dinero, it will use %1. "
+                        "The current wallet stays open until you quit. "
+                        "Wallet files and coins are not moved between folders.\n\nContinue?")
+                    .arg(destinationName),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+          return;
+        QSettings settings;
+        settings.setValue("data/use_preserved_legacy_dir_v1", !usingPreserved);
+        settings.sync();
+        if (settings.status() != QSettings::NoError) {
+          QMessageBox::warning(this, "Could not save wallet selection",
+              "Dinero could not save the folder selection. No wallet files were moved.");
+          return;
+        }
+        QMessageBox::information(this, "Wallet data selection saved",
+            QString("Quit and reopen Dinero to use %1.").arg(destinationName));
+      });
+      layout->addWidget(profileGroup);
+    }
+
     // Backup section
     auto *backupGroup = new QGroupBox("💾 Backup");
     auto *backupLayout = new QVBoxLayout(backupGroup);
