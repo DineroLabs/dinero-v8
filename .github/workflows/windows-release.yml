@@ -414,13 +414,16 @@ jobs:
             throw 'dinero-qt.exe does not import the CUDA driver and NVRTC runtime'
           }
 
-      - name: Verify Qt, header ancestor, and Orchard cache safety
+      - name: Verify Qt wallet, legacy snapshot, header ancestor, and Orchard cache safety
         shell: powershell
         run: |
-          cmake --build build-msvc-native --config Release --parallel 2 --target test_daemon_output test_i18n test_wallet_backup_lock test_header_skip_pointers test_assumeutxo_replay
+          cmake --build build-msvc-native --config Release --parallel 2 --target test_daemon_output test_i18n test_wallet_layout test_wallet_backup_lock test_header_skip_pointers test_daemon_service_release test_assumeutxo_replay
           if ($LASTEXITCODE -ne 0) { throw 'Qt, header, or Orchard cache test build failed' }
-          ctest --test-dir build-msvc-native\qt -C Release -R '^(DaemonOutputBeforeEventLoop|QtI18nChain|QtSeedPhraseNeverTranslated|QtUniversalTermsUntranslated|WalletBackupLock)$' --output-on-failure
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          ctest --test-dir build-msvc-native\qt -C Release -R '^(DaemonOutputBeforeEventLoop|QtI18nChain|QtSeedPhraseNeverTranslated|QtUniversalTermsUntranslated|WalletLayout|WalletBackupLock)$' --output-on-failure --no-tests=error
           if ($LASTEXITCODE -ne 0) { throw 'Qt safety test failed' }
+          ctest --test-dir build-msvc-native -C Release -R '^WalletIndexV3Status$' --output-on-failure --no-tests=error
+          if ($LASTEXITCODE -ne 0) { throw 'Windows legacy snapshot wallet preflight failed' }
           ctest --test-dir build-msvc-native -C Release -R '^HeaderSkipPointers$' --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw 'header ancestor parity test failed' }
           $cacheTests = @(Get-ChildItem -Path 'build-msvc-native' -Filter 'test_assumeutxo_replay.exe' -Recurse -File)
