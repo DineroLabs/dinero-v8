@@ -8,6 +8,7 @@
 
 #include <QString>
 
+#include <cmath>
 #include <optional>
 #include <stdexcept>
 
@@ -23,6 +24,8 @@ enum class State {
     Confirmed,    // seen in a block by the account's synchronized checkpoint
     Archived,     // authenticated request is no longer current; never resubmit
     NeedsRetry,   // a call failed or the reply was unclear; retry is safe
+    FeeTooLow,    // the node refused the request for its fee before storing
+                  // anything; the same request can never succeed
 };
 
 inline QString Label(State s) {
@@ -36,10 +39,25 @@ inline QString Label(State s) {
         case State::Confirmed: return "Confirmed";
         case State::Archived: return "Archived — not resubmitted";
         case State::NeedsRetry: return "Needs retry";
+        case State::FeeTooLow: return "Fee too low — not sent";
     }
     return {};
 }
-inline bool IsFinal(State s) { return s == State::Confirmed || s == State::Archived; }
+// FeeTooLow is final for this request: nothing was stored under its id, so a
+// corrected payment is a new request, not a retry of this one.
+inline bool IsFinal(State s) { return s == State::Confirmed || s == State::Archived || s == State::FeeTooLow; }
+
+inline QString FormatDin(quint64 una);  // defined below
+
+// The fee the node says a refused request needs, from its reply. Only an
+// exact positive whole number of una is believed; anything else is "not said".
+inline std::optional<quint64> RequiredFeeUna(const QJsonValue& reply) {
+    const QJsonValue v = reply.toObject().value("required_fee_una");
+    if (!v.isDouble()) return std::nullopt;
+    const double d = v.toDouble();
+    if (!(d >= 1.0) || d > 9007199254740992.0 || d != std::floor(d)) return std::nullopt;
+    return static_cast<quint64>(d);
+}
 
 class OrchardPayment {
 public:
@@ -78,6 +96,8 @@ public:
     QString txid() const { return txid_; }
     QString operationId() const { return operationId_; }
     bool requiresExplicitRetry() const { return requiresExplicitRetry_; }
+    // Set with FeeTooLow when the node named the fee this payment's size needs.
+    std::optional<quint64> requiredFeeUna() const { return requiredFeeUna_; }
     bool canRetry() const { return !chainConflict_ && (state_==State::NeedsRetry || state_==State::Rejected ||
         (requiresExplicitRetry_ && (state_==State::Signed || state_==State::Queued))); }
     // Only a deliberate Retry click authorizes a read-discovered saved state
@@ -96,6 +116,19 @@ public:
     void onQueueReply(const QJsonValue& v) {
         if(!canQueue())return retry("Stored payment cannot be queued as a new request");
         if (IsFinal(state_)) return;
+        if (v.toObject().value("error_code").toString() == "fee_below_minimum") {
+            // Refused before anything was reserved or proved. Sending the same
+            // request again cannot work, so this is not a retry state.
+            state_ = State::FeeTooLow;
+            requiredFeeUna_ = RequiredFeeUna(v);
+            detail_ = requiredFeeUna_
+                ? QString("The network fee is too low for this payment's size. Minimum: %1 DIN. Nothing was sent or "
+                          "reserved. The fee field now shows the minimum: review the payment again to send it.")
+                      .arg(FormatDin(*requiredFeeUna_))
+                : QString("The network fee is too low for this payment's size, and the node did not say what fee it "
+                          "needs. Nothing was sent or reserved. Raise the fee and review the payment again.");
+            return;
+        }
         if (const auto e = OrchardContract::InBandError(v)) return retry(*e);
         const auto r = OrchardContract::ParseQueue(v);
         if (!r) return retry("Unexpected reply from the node");
@@ -110,6 +143,20 @@ public:
 
     void onFinishReply(const QJsonValue& v) {
         if (IsFinal(state_)) return;
+        if (v.toObject().value("error_code").toString() == "fee_below_minimum") {
+            // Refused before signing. Unlike a refusal at queue time, the
+            // request is still saved (reserved) on the node: finishing it can
+            // never work, so this is final here and the way on is to cancel it.
+            state_ = State::FeeTooLow;
+            requiredFeeUna_ = RequiredFeeUna(v);
+            detail_ = QString("The network fee is too low for this payment's size%1. Nothing was signed or sent, but the "
+                              "request is still saved: select it under saved payments and press \"Cancel selected "
+                              "request\", then start the payment again%2.")
+                          .arg(requiredFeeUna_ ? QString(". Minimum: %1 DIN").arg(FormatDin(*requiredFeeUna_)) : QString(),
+                               requiredFeeUna_ ? QString(" with that fee (the fee field now shows it)")
+                                               : QString(" with a higher fee"));
+            return;
+        }
         if (const auto e = OrchardContract::InBandError(v)) {
             if (OrchardContract::IsProofNotReady(v)) { state_ = State::Proving; detail_.clear(); return; }
             return retry(*e);
@@ -167,6 +214,7 @@ private:
     quint64 observedRevision_ = 0;
     bool chainConflict_ = false;
     bool requiresExplicitRetry_ = false;
+    std::optional<quint64> requiredFeeUna_;
     QString detail_, txid_, operationId_;
 };
 

@@ -17,10 +17,11 @@ struct HttpRpcRequestTestAccess {
     }
 };
 namespace {
-constexpr std::array<const char*,6> mutations{{
+constexpr std::array<const char*,7> mutations{{
     "wallet.orchard.createaccount","wallet.orchard.getnewaddress",
     "wallet.orchard.queueshield","wallet.orchard.finishshield",
-    "wallet.orchard.queuespend","wallet.orchard.finishspend"}};
+    "wallet.orchard.queuespend","wallet.orchard.finishspend",
+    "wallet.orchard.cancelreserved"}};
 constexpr std::array<const char*,5> observations{{
     "wallet.orchard.getwalletbinding","wallet.orchard.getbalance",
     "wallet.orchard.listaccounts","wallet.orchard.listoperations",

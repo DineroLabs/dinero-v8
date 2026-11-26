@@ -114,6 +114,26 @@ inline QString FinishMethod(const Request& r) { return r.kind == Request::Kind::
 
 inline QJsonObject AccountParams(quint64 account) { return QJsonObject{{"account", QJsonValue(qint64(account))}}; }
 
+// Cancelling a saved request that was reserved but never signed. Nothing was
+// sent for such a request; the node removes it and releases what it set
+// aside. A signed request is refused by the node (operation_signed).
+inline const QString kCancelReserved = QStringLiteral("wallet.orchard.cancelreserved");
+inline QJsonObject CancelParams(quint64 account, const QString& operationId) {
+    return QJsonObject{{"account", QJsonValue(qint64(account))}, {"operation_id", operationId}};
+}
+// The new account revision, only for a reply that says THIS request on THIS
+// account was cancelled.
+inline std::optional<quint64> ParseCancelled(const QJsonValue& v, quint64 account, const QString& operationId) {
+    if (!v.isObject()) return {};
+    const auto o = v.toObject();
+    if (o.contains("error") || !o.value("cancelled").isBool() || !o.value("cancelled").toBool()) return {};
+    if (!o.value("account").isDouble() || o.value("account").toDouble() != double(account)) return {};
+    if (o.value("operation_id").toString() != operationId || operationId.isEmpty()) return {};
+    const auto revision = o.value("account_revision");
+    if (!revision.isDouble() || revision.toDouble() < 1.0) return {};
+    return static_cast<quint64>(revision.toDouble());
+}
+
 // --- Results ---------------------------------------------------------------
 // swap.*/wallet.orchard.* report refusals in-band as {"error": "..."}.
 inline std::optional<QString> InBandError(const QJsonValue& v) {
@@ -349,6 +369,10 @@ struct Operation {
     quint64 height = 0;
     QString completionMethod; // absent for old intents; never infer it
 };
+// Reserved, not signed, and nothing observed on chain for it.
+inline bool Cancellable(const Operation& op) {
+    return op.durableState == "reserved" && op.outcome.isEmpty() && op.txid.isEmpty() && op.operationId.size() == 64;
+}
 struct OperationsReply {
     quint64 accountRevision = 0, accountSequence = 0, sourceSequence = 0;
     QVector<Operation> operations;

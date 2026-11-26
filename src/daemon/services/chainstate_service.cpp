@@ -24638,7 +24638,7 @@ std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
         WalletManager& wallet,uint64_t session,uint32_t account,const std::array<uint8_t,32>& operation,
         std::span<const orchard::ResolvedInput> inputs,std::span<const orchard::WalletPayment> payments,
         std::span<const orchard::TransparentOutput> outputs,uint64_t fee,wallet::OrchardProofJobs& jobs,
-        std::vector<uint8_t>* current_input_proof,bool reacquire_input_proofs){
+        std::vector<uint8_t>* current_input_proof,bool reacquire_input_proofs,double min_fee_rate){
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     if(current_input_proof)current_input_proof->clear();
     if(reacquire_input_proofs&&!current_input_proof)
@@ -24685,6 +24685,10 @@ std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
         // No selected owner or callbacks while the wallet key owner signs.
         envelope=wallet::OrchardAccountDelivery::SignShieldProofForReplay(wallet,session,profile,replay,
             operation,inputs,payments,outputs,fee,*snapshot,jobs);
+        // Its size is known only now that the transparent inputs are signed.
+        // Nothing is committed yet: refused here, the shield stays queued and
+        // cancellable, instead of a signed shield admission refuses forever.
+        wallet::RequireOrchardFeeRate(fee,wallet::OrchardVirtualSize(*envelope),min_fee_rate);
     }
     // Restore the complete account catalog before acquiring selected ownership.
     // The consumed writer below rechecks every captured owner before Ready.
@@ -24797,7 +24801,7 @@ std::vector<uint8_t> ChainstateService::finalizeRuntimeWalletShield(
     return bytes; // No admission/relay; selected owner leaves before caller receives bytes.
 #else
     (void)wallet;(void)session;(void)account;(void)operation;(void)inputs;(void)payments;(void)outputs;(void)fee;(void)jobs;
-    (void)current_input_proof;(void)reacquire_input_proofs;
+    (void)current_input_proof;(void)reacquire_input_proofs;(void)min_fee_rate;
     throw std::runtime_error("Authenticated Orchard wallet backend unavailable");
 #endif
 }

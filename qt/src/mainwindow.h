@@ -1,6 +1,7 @@
 #pragma once
 
 #include "orcharddisplaypolicy.h"
+#include "walletcatchup.h"
 #include <optional>
 #include <QFrame>
 #include <QMainWindow>
@@ -251,6 +252,9 @@ private:
   void updateSendModeUi();
   void updateWalletBalanceDisplay();
   void showWalletBalanceUnavailable(bool transientCatchUp = false);
+  void showWalletUnavailableBanner();
+  void askWalletCatchUp();
+  void forgetWalletCatchUp(bool walletChanged);
   void refreshShieldedBalanceSummary();
   void refreshConfidentialWalletState();
   bool collectSendForm(QString& recipient,
@@ -874,6 +878,12 @@ private:
   double cachedTransparentBalance_ = 0.0;
   bool walletBalanceAccepted_ = false;
   bool walletBalanceUnavailable_ = false;
+  // How far a wallet that is catching up has got (wallet.getsyncstate), while
+  // its balance is refused. Never kept across a wallet switch.
+  std::optional<WalletCatchUp::Progress> walletCatchUp_;
+  QTimer* walletCatchUpTimer_ = nullptr;
+  bool walletCatchUpInFlight_ = false;
+  bool walletCatchUpDiscardNext_ = false;
   bool walletRecoveryUnlockNeeded_ = false;
   qint64 walletBalanceVerifiedAtMs_ = 0;
   bool walletSendReady_ = false;

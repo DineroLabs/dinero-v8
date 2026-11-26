@@ -115,6 +115,19 @@ Hash Hash256(std::span<const std::uint8_t> bytes) {
     return second;
 }
 } // namespace
+std::size_t BundleBytesForActions(std::uint32_t actions) {
+    if (actions==0 || actions>DINERO_ORCHARD_V1_MAX_ACTIONS) Invalid();
+    // Header (magic, version+flags, count, value balance, anchor), then per
+    // action cv, nf, rk, cmx, epk, enc (580), out (80), spend-auth signature
+    // (64), then the length-prefixed proof and the binding signature.
+    constexpr std::size_t kBundleHeader=8+2+4+8+32, kAction=5*32+580+80+64;
+    constexpr std::size_t kProofBase=2720, kProofPerAction=2272;
+    return kBundleHeader+kAction*actions+4+kProofBase+kProofPerAction*actions+64;
+}
+std::size_t InputlessEnvelopeBytes(const std::vector<TransparentOutput>& outputs,
+    std::uint64_t fee, std::uint32_t actions) {
+    return Check({},outputs,fee,BundleBytesForActions(actions));
+}
 TransactionEnvelope::TransactionEnvelope(std::uint32_t lock_time, std::vector<EnvelopeInput> inputs,
     std::vector<TransparentOutput> outputs, std::uint64_t fee, Bytes bundle_bytes,
     ParsedBundle bundle, Bytes bytes)

@@ -6946,10 +6946,13 @@ void MainWindow::updateWalletBalanceDisplay() {
         ? QStringLiteral("Balance unavailable") : QStringLiteral("Loading...");
     for (QLabel* label : {lblBalance_, lblTotalWalletBalance_,
                           lblTransparentTaprootBalance_, lblTransparentP2mrBalance_,
-                          lblShieldedBalance_, findChild<QLabel*>("lblUnconfirmed"),
+                          lblShieldedBalance_, lblOrchardBalance_, findChild<QLabel*>("lblUnconfirmed"),
                           findChild<QLabel*>("lblImmature")}) {
       if (label) label->setText(state);
     }
+    // The Orchard line is an amount like the others: the previous wallet's
+    // figure (and the tooltip that explained it) must not outlive the switch.
+    if (lblOrchardBalance_) lblOrchardBalance_->setToolTip(QString());
     if (barPqRatio_) barPqRatio_->setValue(0);
     return;
   }
@@ -7059,15 +7062,49 @@ void MainWindow::showWalletBalanceUnavailable(bool transientCatchUp) {
     }
     return;
   }
-  if (lblErrorMessage_) {
-    errorMessageMethod_.clear();
-    lblErrorMessage_->setText(walletRecoveryUnlockNeeded_ && !walletUnlocked_
-        ? "Wallet history is incomplete. Unlock this wallet to finish recovery; sending is paused."
-        : walletBalanceAccepted_
-          ? "Wallet balance unavailable; showing the last verified amount. Sending paused."
+  showWalletUnavailableBanner();
+  askWalletCatchUp();
+}
+
+void MainWindow::showWalletUnavailableBanner() {
+  if (!lblErrorMessage_ || !walletBalanceUnavailable_) return;
+  errorMessageMethod_.clear();
+  lblErrorMessage_->setText(walletRecoveryUnlockNeeded_ && !walletUnlocked_
+      ? "Wallet history is incomplete. Unlock this wallet to finish recovery; sending is paused."
+      : walletBalanceAccepted_
+        ? "Wallet balance unavailable; showing the last verified amount. Sending paused."
+        : walletCatchUp_
+          ? WalletCatchUp::banner(*walletCatchUp_)
           : "Wallet balance unavailable; waiting for a complete wallet response.");
-    lblErrorMessage_->setVisible(true);
+  lblErrorMessage_->setVisible(true);
+}
+
+// While a newly selected wallet's balance is refused, ask the node how far
+// its catch-up has got, now and every few seconds. One request at a time.
+void MainWindow::askWalletCatchUp() {
+  if (!rpc_ || !walletBalanceUnavailable_ || walletBalanceAccepted_ || currentWalletName_.isEmpty()) return;
+  if (!walletCatchUpTimer_) {
+    walletCatchUpTimer_ = new QTimer(this);
+    walletCatchUpTimer_->setInterval(5000);
+    connect(walletCatchUpTimer_, &QTimer::timeout, this, &MainWindow::askWalletCatchUp);
   }
+  if (!walletCatchUpTimer_->isActive()) walletCatchUpTimer_->start();
+  if (walletCatchUpInFlight_) return;
+  walletCatchUpInFlight_ = true;
+  rpc_->call("wallet.getsyncstate");
+}
+
+// The balance was accepted, or another wallet was selected. A reply still on
+// its way for the previous wallet must not be shown for the new one.
+void MainWindow::forgetWalletCatchUp(bool walletChanged) {
+  // The banner may be showing this wallet's progress: it goes with it.
+  if (walletCatchUp_ && lblErrorMessage_ && lblErrorMessage_->text() == WalletCatchUp::banner(*walletCatchUp_)) {
+    lblErrorMessage_->clear();
+    lblErrorMessage_->setVisible(false);
+  }
+  walletCatchUp_.reset();
+  if (walletCatchUpTimer_) walletCatchUpTimer_->stop();
+  if (walletChanged && walletCatchUpInFlight_) walletCatchUpDiscardNext_ = true;
 }
 
 void MainWindow::refreshShieldedBalanceSummary() {
@@ -7259,6 +7296,15 @@ void MainWindow::onRefreshBlocks() {
 void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
   // Guard: if RPC client has been destroyed (app shutting down), bail out
   if (!rpc_) return;
+
+  if (method == QLatin1String("wallet.getsyncstate")) {
+    walletCatchUpInFlight_ = false;
+    if (walletCatchUpDiscardNext_) { walletCatchUpDiscardNext_ = false; return; }
+    if (!walletBalanceUnavailable_ || walletBalanceAccepted_) { walletCatchUp_.reset(); return; }
+    walletCatchUp_ = WalletCatchUp::parse(result);
+    showWalletUnavailableBanner();
+    return;
+  }
 
   if (method == QLatin1String("mining.use_wallet_address")) {
     miningWalletAddressPending_ = false;
@@ -7568,6 +7614,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         return;
       }
       const bool recoveringFromLockedWallet = walletRecoveryUnlockNeeded_;
+      forgetWalletCatchUp(false);
       walletBalanceAccepted_ = true;
       walletBalanceUnavailable_ = false;
       walletRecoveryUnlockNeeded_ = false;
@@ -9384,6 +9431,13 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
   if (method == "wallet.sendtoaddress" || method == "sendtoaddress" || method == "wallet.covenant.ctvfund")
     sendSubmissionPending_ = false;
   if (!rpc_) return;  // Guard: shutting down
+  if (method == QLatin1String("wallet.getsyncstate")) {
+    // No progress to show; the balance banner says what it said before.
+    walletCatchUpInFlight_ = false;
+    if (walletCatchUpDiscardNext_) { walletCatchUpDiscardNext_ = false; return; }
+    if (walletCatchUp_) { walletCatchUp_.reset(); showWalletUnavailableBanner(); }
+    return;
+  }
   if (method == QLatin1String("mining.use_wallet_address")) {
     miningWalletAddressPending_ = false;
     const QString requestedWallet = miningWalletAddressRequestWallet_;
@@ -15907,6 +15961,7 @@ void MainWindow::clearWalletScopedUiState() {
   miningRewardsRequestedAtMs_ = 0;
   miningRewardsRequestedHeight_ = -1;
   showMiningRewardsUnavailable();
+  forgetWalletCatchUp(true);
   walletBalanceAccepted_ = false;
   walletBalanceUnavailable_ = false;
   walletRecoveryUnlockNeeded_ = false;
