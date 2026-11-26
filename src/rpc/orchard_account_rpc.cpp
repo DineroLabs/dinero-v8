@@ -943,7 +943,7 @@ din::Json rpc_context_wallet_orchard_cancelreserved(const ExecutionContext& ctx,
         const auto account=SpendInteger(params["account"],"account");
         if(account>=0x80000000ULL)throw std::runtime_error("Orchard account number is out of range");
         const auto bytes=SpendHex(SpendText(params["operation_id"],"operation_id",64));
-        dinero::orchard::Hash id{};
+        std::array<uint8_t,32> id{}; // orchard::Hash; that header is absent with Orchard off
         if(bytes.size()!=id.size()||std::none_of(bytes.begin(),bytes.end(),[](auto n){return n!=0;}))
             throw std::runtime_error("operation_id must be nonzero 32-byte hex");
         std::copy(bytes.begin(),bytes.end(),id.begin());
