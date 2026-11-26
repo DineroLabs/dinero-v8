@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 # Full-v6 image source. H163965 is the primary only after final-source native
 # import/restart and public signed-asset qualification; older bases remain fallbacks.
-ARG DINERO_VERSION=8.2.5
-ARG PRIMARY_SNAPSHOT_RELEASE=v8.2.5
+ARG DINERO_VERSION=8.2.6
+ARG PRIMARY_SNAPSHOT_RELEASE=v8.2.6
 ARG RECOVERY_SNAPSHOT_RELEASE=v8.2.2
 ARG PRIMARY_SNAPSHOT_PAYLOAD_URL=
 ARG PRIMARY_SNAPSHOT_MANIFEST_URL=

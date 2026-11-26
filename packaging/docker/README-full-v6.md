@@ -18,7 +18,7 @@ lineage beyond the six desktop fallbacks.
 
 Before a release tag exists, the desktop candidate workflows and Docker manual
 dry-run can take the exact snapshot, publisher manifest, and signature HTTPS
-URLs as inputs. The Docker dry-run also needs the exact Linux 8.2.5 archive
+URLs as inputs. The Docker dry-run also needs the exact Linux 8.2.6 archive
 and SHA256SUMS from the qualified `linux-release.yml` candidate run, staged at
 HTTPS URLs with reviewed SHA-256 hashes for both files. Supply the full
 `candidate_source` SHA matching this workflow's checkout. The archive includes
@@ -32,13 +32,13 @@ qualification receipt. Its exact H163965 payload SHA-256 and length must come
 from a successful native export, import, and restart at the frozen source SHA.
 Pull-request CI runs source contracts only and explicitly reports that no
 image was qualified. It does not pair old 8.2.2 binaries with the new snapshot
-or fetch an unpublished v8.2.5 release URL. After the exact-source manual
+or fetch an unpublished v8.2.6 release URL. After the exact-source manual
 dry-run passes the real daemon fresh-volume and same-volume restart smoke,
 the release event repeats that smoke against the published assets before
 pushing an image to GHCR.
 
 After native source and payload qualification, run a hosted image smoke with
 all seven fallback paths. The release event builds and smokes
-the exact published v8.2.5 binaries and signed snapshot assets before pushing
+the exact published v8.2.6 binaries and signed snapshot assets before pushing
 the image. Until those assets exist, the normal PR image check is expected to
 fail closed. `v8.2.2` remains only the recovery snapshot release tag.
