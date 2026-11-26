@@ -26,6 +26,7 @@
 #include "rpcclient.h"
 #if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
 #include "orchardwidget.h"
+#include "walletcatchup.h"
 #include "walletcreaterefusal.h"
 #endif
 
@@ -705,6 +706,69 @@ private Q_SLOTS:
         QVERIFY(QMetaObject::invokeMethod(window.get(), "onOrchardBalanceChanged", Qt::DirectConnection,
             Q_ARG(bool, false), Q_ARG(quint64, quint64(0)), Q_ARG(bool, false), Q_ARG(quint64, quint64(0))));
         QCOMPARE(orchard->text(), QString("Balance unavailable"));
+    }
+
+    // Owner, 2026-11-26, v8.2.6: a legacy wallet that had been closed for a
+    // while showed only "Balance unavailable" for about an hour while the
+    // node read the blocks it had missed. The node reports how far it is;
+    // the page says it, and says nothing it was not told.
+    void aWalletThatIsCatchingUpSaysHowFarItIs() {
+        using WalletCatchUp::parse;
+        const QJsonObject live{{"balance_available", false}, {"blocks_remaining", 10127}, {"error_code", "wallet_balance_not_current"},
+            {"is_synced", false}, {"is_syncing", true}, {"last_scanned_height", 158138}, {"target_height", 168265},
+            {"wallet_loaded", true}};
+        const auto progress = parse(live);
+        QVERIFY(progress.has_value());
+        QCOMPARE(progress->scanned, quint64(158138));
+        QCOMPARE(progress->target, quint64(168265));
+        const QString text = WalletCatchUp::banner(*progress);
+        QVERIFY2(text.contains("block 158,138 of 168,265"), qPrintable(text));
+        QVERIFY2(text.contains("10,127 to go"), qPrintable(text));
+        // Not said, or not sensible: no progress is shown.
+        const auto without = [&](const char* key) { auto o = live; o.remove(key); return QJsonValue(o); };
+        const auto with = [&](const char* key, const QJsonValue& v) { auto o = live; o[key] = v; return QJsonValue(o); };
+        QVERIFY(!parse(with("is_syncing", false)));
+        QVERIFY(!parse(without("is_syncing")));
+        QVERIFY(!parse(with("is_syncing", "true")));
+        QVERIFY(!parse(without("last_scanned_height")));
+        QVERIFY(!parse(with("last_scanned_height", "158138")));
+        QVERIFY(!parse(with("last_scanned_height", 158138.5)));
+        QVERIFY(!parse(with("last_scanned_height", -1)));
+        QVERIFY(!parse(with("last_scanned_height", 168266)));   // beyond the target
+        QVERIFY(!parse(with("target_height", 0)));
+        QVERIFY(!parse(with("wallet_loaded", false)));
+        QVERIFY(!parse(QJsonValue(QString("syncing"))));
+
+        // On the page: the banner carries it while the balance is refused,
+        // the amounts still say "Balance unavailable", and it goes away with
+        // the first accepted balance and on a wallet switch.
+        auto window = makeWindow();
+        QVERIFY(window);
+        feedBalance(*window);
+        auto* rpc = window->findChild<RpcClient*>();
+        auto* total = named<QLabel>(*window, "walletTotalBalance");
+        auto* banner = named<QLabel>(*window, "walletGlobalError");
+        QVERIFY(rpc && total && banner);
+        QVERIFY(bindTestWallet(*window, "Other"));
+        Q_EMIT rpc->rpcError("wallet.getbalance", -32603, "Legacy transparent wallet is catching up to the selected chain");
+        QCoreApplication::processEvents();
+        QCOMPARE(total->text(), QString("Balance unavailable"));
+        QVERIFY(!banner->text().contains("catching up"));
+        Q_EMIT rpc->rpcResult("wallet.getsyncstate", live);
+        QCoreApplication::processEvents();
+        QVERIFY2(banner->text().contains("block 158,138 of 168,265"), qPrintable(banner->text()));
+        QVERIFY(!banner->isHidden());
+        QCOMPARE(total->text(), QString("Balance unavailable"));
+        // The node stops saying it: the page stops saying it.
+        Q_EMIT rpc->rpcResult("wallet.getsyncstate", with("is_syncing", false));
+        QCoreApplication::processEvents();
+        QVERIFY2(!banner->text().contains("catching up"), qPrintable(banner->text()));
+        Q_EMIT rpc->rpcResult("wallet.getsyncstate", live);
+        QCoreApplication::processEvents();
+        QVERIFY(banner->text().contains("catching up"));
+        // Another wallet: the first one's progress is never shown for it.
+        QVERIFY(bindTestWallet(*window, "Third"));
+        QVERIFY2(!banner->text().contains("158,138"), qPrintable(banner->text()));
     }
 
     // Owner, 2026-11-23: the shield row "showed once" and was gone. The page
