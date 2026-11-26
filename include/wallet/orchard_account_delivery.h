@@ -23,6 +23,37 @@ public:
 private:
     Code code_;
 };
+// A cancel request for an operation that is not a Reserved entry of this account.
+class OrchardOperationNotCancellable final : public std::runtime_error {
+public:
+    enum class Code { NotFound, Signed };
+    explicit OrchardOperationNotCancellable(Code code)
+        : std::runtime_error(code==Code::Signed
+              ? "The operation is already signed and cannot be cancelled"
+              : "No such Orchard operation in this account"), code_(code) {}
+    Code Reason() const noexcept { return code_; }
+private:
+    Code code_;
+};
+// A spend whose fee cannot meet the mempool's minimum rate at its exact size.
+// Thrown before anything is reserved, proved or stored: nothing to undo.
+class OrchardFeeBelowMinimum final : public std::runtime_error {
+public:
+    OrchardFeeBelowMinimum(uint64_t required_fee_una,uint64_t virtual_size)
+        : std::runtime_error("Network fee is below the minimum for this payment's size"),
+          required_fee_una_(required_fee_una),virtual_size_(virtual_size) {}
+    uint64_t RequiredFeeUna() const noexcept { return required_fee_una_; }
+    uint64_t VirtualSize() const noexcept { return virtual_size_; }
+private:
+    uint64_t required_fee_una_,virtual_size_;
+};
+// Throws OrchardFeeBelowMinimum, naming the smallest admissible fee, when
+// fee/vsize is below min_fee_rate, with the mempool's comparison exactly.
+// A rate of 0 checks nothing (no mempool).
+void RequireOrchardFeeRate(uint64_t fee,uint64_t vsize,double min_fee_rate);
+// The mempool's virtual size of an Orchard transaction: weight is three times
+// the txid preimage plus the canonical bytes (orchard_mempool_transaction.cpp).
+uint64_t OrchardVirtualSize(const orchard::TransactionEnvelope&);
 // An unforgeable, process-local capture of authenticated account bytes restored
 // against one retained immutable replay. This carries no durable authority:
 // the writer must authenticate the complete capture again in its transaction.
@@ -163,6 +194,16 @@ public:
     static IssuedReceiver IssueCatalogReceiverForReplay(WalletManager&,uint64_t session,
         const Profile&,const RuntimeAccountReplay&,orchard::WalletScope);
 
+    // Remove one Reserved (not yet signed) operation and release what it held:
+    // its notes, or a shield's transparent inputs, live only in that entry.
+    // Same capture/recheck/FULL-transaction discipline as issuance. A signed
+    // (Ready) or unknown operation refuses with OrchardOperationNotCancellable
+    // and nothing changes. After COMMIT, the in-memory proof job for this ID,
+    // if any, is cancelled or its unused result discarded; a running proof
+    // finishes and is discarded. Returns the new account revision.
+    static uint64_t CancelReservedForReplay(WalletManager&,uint64_t session,
+        const Profile&,const RuntimeAccountReplay&,const orchard::Hash& operation_id,OrchardProofJobs*);
+
     // A pure Orchard-input spend. The randomized plan escapes only after its
     // nullifiers and any internal change receiver are retained and committed.
     // Caller must prove outside the wallet lease, persist Ready through the
@@ -235,7 +276,10 @@ public:
         WalletManager&,uint64_t session,const Profile&,uint64_t expected_revision,
         const RuntimeAccountReplay&,const orchard::Hash& request_id,
         std::span<const orchard::WalletPayment>,std::span<const orchard::TransparentOutput>,
-        uint64_t fee_una,OrchardProofJobs&);
+        uint64_t fee_una,OrchardProofJobs&,
+        // >0: refuse, before reserving, a fee below this rate (una per vbyte,
+        // compared exactly as mempool admission does) at the spend's exact size.
+        double min_fee_rate=0.0);
     struct OwnedProof {
         uint64_t revision;
         std::optional<OrchardProofJobs::State> state;
@@ -559,13 +603,14 @@ private:
     struct SpendResult { std::unique_ptr<PreparedSpend> direct; std::unique_ptr<QueuedSpend> queued; };
     static SpendResult ReserveSpendForReplay(WalletManager&,uint64_t,const Profile&,uint64_t,
         const RuntimeAccountReplay&,const orchard::Hash&,std::span<const orchard::WalletPayment>,
-        std::span<const orchard::TransparentOutput>,uint64_t,OrchardProofJobs*,bool bind_request=false);
+        std::span<const orchard::TransparentOutput>,uint64_t,OrchardProofJobs*,bool bind_request=false,
+        double min_fee_rate=0.0);
 
     friend struct OrchardDetachedSpendReservationTestAccess;
     static SpendResult ReserveSpendWithRestorePoints(WalletManager&,uint64_t,const Profile&,uint64_t,
         const RuntimeAccountReplay&,const orchard::Hash&,std::span<const orchard::WalletPayment>,
         std::span<const orchard::TransparentOutput>,uint64_t,OrchardProofJobs*,bool,
-        const std::function<RestorePoint(RuntimeOutboxCursor)>&);
+        const std::function<RestorePoint(RuntimeOutboxCursor)>&,double min_fee_rate=0.0);
 
     friend struct OrchardDetachedShieldReservationTestAccess;
 public:

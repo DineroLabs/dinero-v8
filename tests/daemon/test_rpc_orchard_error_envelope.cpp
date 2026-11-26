@@ -69,6 +69,27 @@ TEST(RpcOrchardErrorEnvelope, MalformedDetailsNeverInventProofProgress) {
     body["error_code"]="proof_not_ready";ASSERT_TRUE(registry.registerHandler("wallet.other",[&](const ExecutionContext&,const Json::Value&){return body;},"test"));
     r=HttpRpcRequestTestAccess::Dispatch(server,"wallet.other");c=Client(r);Failure(r,c);EXPECT_FALSE(c.isMember("data"));
 }
+// v8.2.7: a fee refusal reaches the client with the fee it needs. Only for
+// that code, only as integers; everything else in the result stays behind.
+TEST(RpcOrchardErrorEnvelope, FeeBelowMinimumCarriesRequiredFeeAndSize) {
+    RpcRegistry registry;HttpRpcServer server("127.0.0.1",0);server.set_rpc_registry(&registry);
+    Json::Value body;body["error"]="Network fee is below the minimum for this payment's size";
+    body["error_code"]="fee_below_minimum";body["retryable"]=false;
+    body["required_fee_una"]=Json::UInt64(12410);body["virtual_size"]=Json::UInt64(12410);
+    body["private_payment"]="must not escape";
+    ASSERT_TRUE(registry.registerHandler("wallet.orchard.queuespend",[&](const ExecutionContext&,const Json::Value&){return body;},"test"));
+    auto r=HttpRpcRequestTestAccess::Dispatch(server,"wallet.orchard.queuespend");auto c=Client(r);Failure(r,c);
+    EXPECT_EQ(c["data"]["orchard"]["error_code"].asString(),"fee_below_minimum");
+    EXPECT_EQ(c["data"]["orchard"]["required_fee_una"].asUInt64(),12410u);
+    EXPECT_EQ(c["data"]["orchard"]["virtual_size"].asUInt64(),12410u);
+    EXPECT_EQ(c["data"]["orchard"].size(),3u);EXPECT_FALSE(c["data"].isMember("private_payment"));
+    body["required_fee_una"]="12410";body["virtual_size"]=-1;
+    r=HttpRpcRequestTestAccess::Dispatch(server,"wallet.orchard.queuespend");c=Client(r);Failure(r,c);
+    EXPECT_EQ(c["data"]["orchard"].size(),1u) << "malformed sizes must not cross";
+    body["error_code"]="proof_not_ready";body["required_fee_una"]=Json::UInt64(1);
+    r=HttpRpcRequestTestAccess::Dispatch(server,"wallet.orchard.queuespend");c=Client(r);Failure(r,c);
+    EXPECT_FALSE(c["data"]["orchard"].isMember("required_fee_una")) << "only a fee refusal carries a fee";
+}
 TEST(RpcOrchardErrorEnvelope, ExistingStructuredErrorsAndNullSuccessRemainCompatible) {
     RpcRegistry registry;HttpRpcServer server("127.0.0.1",0);server.set_rpc_registry(&registry);Json::Value body;
     body["error"]["code"]=-123;body["error"]["message"]="existing";body["error"]["data"]["reason"]="old";

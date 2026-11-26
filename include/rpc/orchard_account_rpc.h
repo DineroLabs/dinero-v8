@@ -13,6 +13,7 @@ din::Json rpc_context_wallet_orchard_queuespend(const ExecutionContext&,const di
 din::Json rpc_context_wallet_orchard_finishspend(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_orchard_queueshield(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_orchard_finishshield(const ExecutionContext&,const din::Json&);
+din::Json rpc_context_wallet_orchard_cancelreserved(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_orchard_getbalance(const ExecutionContext&,const din::Json&);
 
 // Registry bootstrap: explicit intended name, no wallet switching or enrollment.

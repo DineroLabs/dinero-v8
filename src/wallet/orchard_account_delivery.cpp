@@ -7,6 +7,7 @@
 #include "wallet/runtime_account_replay.h"
 #include "wallet/orchard_operation_archive.h"
 #include <algorithm>
+#include <cmath>
 #include <atomic>
 #include <iostream>
 #include <map>
@@ -1576,6 +1577,21 @@ std::vector<OrchardAccountDelivery::Enrolled> OrchardAccountDelivery::Owner::Val
     }
     ValidateRetainedInventory(inventory,view);return inventory;
 }
+void RequireOrchardFeeRate(uint64_t fee,uint64_t vsize,double min_fee_rate){
+    if(!(min_fee_rate>0.0))return;
+    Check(vsize>0);
+    // Admission refuses when fee/vsize < floor; use that exact comparison.
+    const auto meets=[&](uint64_t f){return !(static_cast<double>(f)/static_cast<double>(vsize)<min_fee_rate);};
+    if(meets(fee))return;
+    auto needed=static_cast<uint64_t>(std::ceil(min_fee_rate*static_cast<double>(vsize)));
+    while(!meets(needed))++needed;
+    while(needed>0&&meets(needed-1))--needed;
+    throw OrchardFeeBelowMinimum(needed,vsize);
+}
+uint64_t OrchardVirtualSize(const orchard::TransactionEnvelope& envelope){
+    const uint64_t weight=3*uint64_t(envelope.TxidPreimage().size())+uint64_t(envelope.CanonicalBytes().size());
+    return (weight+3)/4;
+}
 OrchardAccountDelivery::IssuedReceiver OrchardAccountDelivery::IssueCatalogReceiverForReplay(
         WalletManager& w,uint64_t session,const Profile& p,const RuntimeAccountReplay& view,orchard::WalletScope scope){
     return IssueCatalogWithRestorePoints(w,session,p,view,scope,false,
@@ -1703,6 +1719,72 @@ OrchardAccountDelivery::IssuedReceiver OrchardAccountDelivery::IssueCatalogWithR
         bytes.current={result.revision,std::move(encoded)};++captured->ownership.retained_rows;
     }
     captured->Recheck(*fresh);tx.Commit();return result;
+}
+uint64_t OrchardAccountDelivery::CancelReservedForReplay(
+        WalletManager& w,uint64_t session,const Profile& p,const RuntimeAccountReplay& view,
+        const orchard::Hash& id,OrchardProofJobs* jobs){
+    Check(p.domain.network_code<=2&&p.account<0x80000000&&p.activation>0);
+    const auto context=view.Profile();
+    Check(context.activation_height==p.activation&&context.domain.network_code==p.domain.network_code&&
+        context.domain.genesis_wire==p.domain.genesis_wire&&context.domain.branch_id==p.domain.branch_id);
+    std::unique_ptr<Owner::CapturedCatalog> captured;
+    {
+        auto lease=w.AcquireDatabaseLease();
+        Check(lease->Session()==session&&lease->Database()&&w.database_leases_==1);
+        RequireShieldFullSync(lease->Database());Transaction tx(lease->Database());
+        captured=Owner::CaptureCatalog(w,session,p);tx.Commit();
+    }
+    const auto inventory=captured->Restore([&view](RuntimeOutboxCursor cursor){return view.Point(cursor);});
+    const auto found=std::find_if(inventory.accounts.begin(),inventory.accounts.end(),
+        [&](const auto& entry){return entry.number==p.account;});
+    Check(found!=inventory.accounts.end());
+    const auto& entries=found->state.account.Operations().Entries();
+    const auto entry=entries.find(id);
+    if(entry==entries.end())
+        throw OrchardOperationNotCancellable(OrchardOperationNotCancellable::Code::NotFound);
+    if(entry->second.phase!=OrchardOperationQueue::Phase::Reserved)
+        throw OrchardOperationNotCancellable(OrchardOperationNotCancellable::Code::Signed);
+    // The entry is the whole reservation: its notes, or a shield's transparent
+    // inputs and change, are held only by it (CommitShieldReservation).
+    auto encoded=found->state.account.CancelReserved(id).Encode();
+    const auto expected_revision=found->state.revision;
+    Check(expected_revision<uint64_t(INT64_MAX));
+    const auto revision=expected_revision+1;
+    const auto index=static_cast<size_t>(found-inventory.accounts.begin());
+    {
+        auto& bytes=*captured->bytes[index];
+        Check(captured->ownership.retained_rows<OrchardOwnershipInventory::kMaxRows);
+        bytes.retained.reserve(bytes.retained.size()+1);
+    }
+    {
+        auto lease=w.AcquireDatabaseLease();
+        Check(lease->Session()==session&&lease->Database()&&w.database_leases_==1);
+        RequireShieldFullSync(lease->Database());Transaction tx(lease->Database());
+        {auto fresh=Owner::CaptureCatalog(w,session,p);captured->Recheck(*fresh);}
+        {
+            Owner owner(w,session,p,true,false);
+            Check(owner.store.StageReplaceRetaining(expected_revision,encoded)==revision);
+        }
+        auto fresh=Owner::CaptureCatalog(w,session,p);
+        auto& bytes=*captured->bytes[index];bytes.retained.push_back(std::move(bytes.current));
+        bytes.current={revision,std::move(encoded)};++captured->ownership.retained_rows;
+        captured->Recheck(*fresh);tx.Commit();
+    }
+    // The durable cancel is committed. Free the in-memory proof slot for this
+    // ID; its result can no longer become Ready because the entry is gone.
+    if(jobs){
+        try{
+            if(const auto state=jobs->Query(id)){
+                if(*state==OrchardProofJobs::State::Succeeded)(void)jobs->TakeResult(id);
+                else if(*state==OrchardProofJobs::State::Queued||*state==OrchardProofJobs::State::Running)
+                    (void)jobs->Cancel(id);
+                const auto now=jobs->Query(id);
+                if(now&&(*now==OrchardProofJobs::State::Failed||*now==OrchardProofJobs::State::Cancelled))
+                    jobs->Forget(id);
+            }
+        }catch(...){} // Slot cleanup only; never report a committed cancel as failed.
+    }
+    return revision;
 }
 void OrchardAccountDelivery::Owner::ReconcileSpendCatalog(WalletManager& w,uint64_t session,
         const Profile& p,const RuntimeAccountReplay& view,const std::optional<orchard::Hash>& new_operation){
@@ -2267,21 +2349,22 @@ std::unique_ptr<OrchardAccountDelivery::QueuedSpend> OrchardAccountDelivery::Que
 std::unique_ptr<OrchardAccountDelivery::QueuedSpend> OrchardAccountDelivery::QueueCatalogRequestForReplay(
         WalletManager& w,uint64_t session,const Profile& p,uint64_t expected,const RuntimeAccountReplay& view,
         const orchard::Hash& id,std::span<const orchard::WalletPayment> payments,
-        std::span<const orchard::TransparentOutput> outputs,uint64_t fee,OrchardProofJobs& jobs){
-    return ReserveSpendForReplay(w,session,p,expected,view,id,payments,outputs,fee,&jobs,true).queued;
+        std::span<const orchard::TransparentOutput> outputs,uint64_t fee,OrchardProofJobs& jobs,double min_fee_rate){
+    return ReserveSpendForReplay(w,session,p,expected,view,id,payments,outputs,fee,&jobs,true,min_fee_rate).queued;
 }
 OrchardAccountDelivery::SpendResult OrchardAccountDelivery::ReserveSpendForReplay(
         WalletManager& w,uint64_t session,const Profile& p,uint64_t expected,const RuntimeAccountReplay& view,
         const orchard::Hash& id,std::span<const orchard::WalletPayment> payments,
-        std::span<const orchard::TransparentOutput> outputs,uint64_t fee,OrchardProofJobs* jobs,bool bind_request){
+        std::span<const orchard::TransparentOutput> outputs,uint64_t fee,OrchardProofJobs* jobs,bool bind_request,
+        double min_fee_rate){
     return ReserveSpendWithRestorePoints(w,session,p,expected,view,id,payments,outputs,fee,jobs,bind_request,
-        [&view](RuntimeOutboxCursor cursor){return view.Point(cursor);});
+        [&view](RuntimeOutboxCursor cursor){return view.Point(cursor);},min_fee_rate);
 }
 OrchardAccountDelivery::SpendResult OrchardAccountDelivery::ReserveSpendWithRestorePoints(
         WalletManager& w,uint64_t session,const Profile& p,uint64_t expected,const RuntimeAccountReplay& view,
         const orchard::Hash& id,std::span<const orchard::WalletPayment> payments,
         std::span<const orchard::TransparentOutput> outputs,uint64_t fee,OrchardProofJobs* jobs,bool bind_request,
-        const std::function<RestorePoint(RuntimeOutboxCursor)>& points){
+        const std::function<RestorePoint(RuntimeOutboxCursor)>& points,double min_fee_rate){
     Check(id!=orchard::Hash{}&&(!payments.empty()||!outputs.empty())&&payments.size()<=DINERO_ORCHARD_V1_MAX_ACTIONS);
     Check(fee<=orchard::kMaxMoneyUna);uint64_t required=fee;
     const auto add=[&](uint64_t amount){Check(amount>0&&amount<=orchard::kMaxMoneyUna-required);required+=amount;};
@@ -2378,6 +2461,14 @@ OrchardAccountDelivery::SpendResult OrchardAccountDelivery::ReserveSpendWithRest
         Check(recipients.size()<DINERO_ORCHARD_V1_MAX_ACTIONS);
         auto issued=account.IssueReceiver(orchard::WalletScope::Internal);account=std::move(issued.first);
         recipients.push_back({selected-required,std::move(issued.second)});
+    }
+    if(min_fee_rate>0.0){
+        // Priced exactly as admission will price it (fee/vsize < floor refuses):
+        // a spend has no transparent inputs, so its size is known now. Refusing
+        // here leaves nothing behind; refusing at admission would leave a signed
+        // operation that every retry resubmits unchanged, its notes reserved.
+        const auto actions=static_cast<uint32_t>(std::max<size_t>({inputs.size(),recipients.size(),2}));
+        RequireOrchardFeeRate(fee,orchard::InputlessEnvelopeBytes({outputs.begin(),outputs.end()},fee,actions),min_fee_rate);
     }
     orchard::Hash anchor{};const auto& checkpoint=current.account.Scan().Checkpoint();
     Check(checkpoint.height>=p.activation);std::copy(checkpoint.anchor.begin(),checkpoint.anchor.end(),anchor.begin());

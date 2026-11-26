@@ -72,6 +72,19 @@ struct ShieldRpcFixture:ShieldReservationFixture {
     auto FinishRpc(const din::Json& request){return rpc_context_wallet_orchard_finishshield(execution,request);}
     void Complete(){auto use=WalletService::AcquireWalletUse(wallet);
         Need(ServiceProofTerminal(use->OrchardProofs(),orchard::Hash{81})==wallet::OrchardProofJobs::State::Succeeded);}
+    // Signs the RPC-queued shield (Ready) without any fee floor, as a node
+    // before v8.2.7 did. finishshield now refuses a not-yet-signed shield below
+    // the floor; an already signed one is still resent unchanged.
+    void SignWithoutFloor(uint64_t fee){
+        auto payments=Payments();payments[0].memo[0]=1; // memo_hex "0100", as Request() sends
+        auto use=WalletService::AcquireWalletUse(wallet);auto source=ChainstateService::AcquireWalletIndexUse(f.service);
+        const auto view=View();
+        const auto stored=wallet::OrchardAccountDelivery::FindStoredShieldRequestForReplay(use->Wallet(),Selected().session,
+            {Domain(),102,3},*view,orchard::Hash{81},payments,fee);
+        Need(stored&&stored->durable&&stored->durable->phase==wallet::OrchardOperationQueue::Phase::Reserved);
+        (void)f.service->finalizeRuntimeWalletShield(use->Wallet(),Selected().session,3,orchard::Hash{81},
+            stored->durable->inputs,payments,stored->transparent_outputs,fee,use->OrchardProofs());
+    }
 };
 }
 TEST(OrchardOperationStatus, StoredShieldCompletionMethodSurvivesReadyAndReopen) {
@@ -120,7 +133,15 @@ TEST(WalletShieldRpc, AutomaticSelectionRetryReadyAdmissionMiningAndRecovery){
 TEST(WalletShieldRpc, LowFeeRefusalRetainsExactReadyAcrossReopenAndRetry){
     ShieldRpcFixture f;const auto request=f.Request(1000);
     const auto queued=f.QueueRpc(request);ASSERT_FALSE(queued.isMember("error"))<<queued.toStyledString();
-    f.Complete();const auto finished=f.FinishRpc(request);
+    f.Complete();
+    // v8.2.7: not yet signed, it is refused before signing and stays reserved.
+    {const auto reserved=f.Snapshot();const auto early=f.FinishRpc(request);
+     EXPECT_EQ(early["error_code"].asString(),"fee_below_minimum")<<early.toStyledString();
+     EXPECT_EQ(f.Snapshot(),reserved);EXPECT_EQ(f.broadcasts,0u);
+     EXPECT_EQ(f.Account(3).account.Operations().Entries().at(orchard::Hash{81}).phase,wallet::OrchardOperationQueue::Phase::Reserved);}
+    // Signed by a node before v8.2.7: the resend keeps the exact Ready bytes.
+    f.SignWithoutFloor(1000);
+    const auto finished=f.FinishRpc(request);
     ASSERT_FALSE(finished.isMember("error"))<<finished.toStyledString();
     EXPECT_FALSE(finished["admitted"].asBool());EXPECT_FALSE(finished["already_in_mempool"].asBool());
     EXPECT_EQ(finished["submission_code"].asString(),TxRejectCodeToString(TxRejectCode::INSUFFICIENT_FEE));
@@ -241,6 +262,7 @@ TEST(OrchardShieldFinishById, StoredSelectionAndAdmissionResultSurviveReopen) {
         ShieldRpcFixture f;const auto request=f.Request(fee);ASSERT_FALSE(f.QueueRpc(request).isMember("error"));f.Complete();
         din::Json id;id["account"]=request["account"];id["request_id"]=request["request_id"];
         RegisterOrchardAccountRpc();const auto* method=g_rpcRegistry.lookup("wallet.orchard.finishshield");ASSERT_NE(method,nullptr);
+        if(fee==1000)f.SignWithoutFloor(fee); // Signed before v8.2.7; finish refuses to sign it now.
         const auto finished=(*method)(f.execution,OrchardBoundParamsForTest(f.execution,id));ASSERT_FALSE(finished.isMember("error"))<<finished.toStyledString();
         EXPECT_EQ(finished["admitted"].asBool(),fee==10000);EXPECT_EQ(f.broadcasts,fee==10000?1u:0u);
         const auto before=f.Snapshot();const auto account=f.Account(3);const auto bytes=account.account.Operations().Entries().at(orchard::Hash{81}).transaction;ASSERT_FALSE(bytes.empty());

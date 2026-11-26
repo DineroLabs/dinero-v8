@@ -6310,6 +6310,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     # The Orchard suite includes two full-window retention cases; together
     # they exceed five minutes on the Linux CI runner even when both progress.
     set_tests_properties(WalletV3NativeOrchard PROPERTIES TIMEOUT 900)
+    # Six full send/restore cases (about 90 s on a fast Mac); the Linux runner
+    # is several times slower, as for WalletV3NativeOrchard above.
+    set_tests_properties(WalletV3NativeOrchardSpend PROPERTIES TIMEOUT 900)
   endif()
   add_test(NAME VaultCanonicalObservation COMMAND test_assumeutxo_replay --gtest_filter=VaultCanonicalObservation.*)
   set_tests_properties(VaultCanonicalObservation PROPERTIES TIMEOUT 120 LABELS "daemon;vault;mandatory")
@@ -17530,7 +17533,11 @@ if(UNIX)
   set_tests_properties(RpcOrchardReadOnlyPolicy PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE LABELS "rpc;orchard;policy;offline;mandatory")
 endif()
 
-if(UNIX AND DINERO_TEST_ORCHARD_QT_CONTRACT)
+# The node-to-desktop error envelope test needs only QtCore/QtNetwork, not the
+# Qt contract fixtures that DINERO_TEST_ORCHARD_QT_CONTRACT adds to the replay
+# binary, so CI can build it on its own (tests.yml).
+option(DINERO_TEST_ORCHARD_ERROR_ENVELOPE "Build the Orchard node/Qt error envelope test" OFF)
+if(UNIX AND (DINERO_TEST_ORCHARD_QT_CONTRACT OR DINERO_TEST_ORCHARD_ERROR_ENVELOPE))
   add_executable(test_rpc_orchard_error_envelope
     tests/daemon/test_rpc_orchard_error_envelope.cpp
     src/daemon/http_rpc_server.cpp src/daemon/rpc_auth.cpp src/daemon/config.cpp

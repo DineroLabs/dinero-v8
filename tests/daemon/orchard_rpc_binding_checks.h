@@ -1,17 +1,21 @@
 #pragma once
 namespace dinero {
 namespace {
-const std::array<const char*,8> OrchardBoundMethods{
+const std::array<const char*,9> OrchardBoundMethods{
     "wallet.orchard.createaccount","wallet.orchard.getnewaddress",
     "wallet.orchard.getbalance","wallet.orchard.listoperations",
     "wallet.orchard.queuespend","wallet.orchard.finishspend",
-    "wallet.orchard.queueshield","wallet.orchard.finishshield"};
+    "wallet.orchard.queueshield","wallet.orchard.finishshield",
+    "wallet.orchard.cancelreserved"};
 din::Json OrchardBindingRequest(const char* name="canonical-recovery") {
     din::Json p;p["wallet_name"]=name;return p;
 }
 din::Json OrchardBoundShape(const std::string& method) {
     if(method.ends_with("shield"))return ShieldRpcShape();
     if(method.ends_with("spend"))return SpendRpcShape();
+    if(method.ends_with("cancelreserved")){
+        auto p=OrchardOperationListRequest();p["operation_id"]=std::string(63,'0')+"1";return p;
+    }
     return OrchardOperationListRequest();
 }
 }
