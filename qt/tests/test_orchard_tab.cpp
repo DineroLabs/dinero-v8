@@ -693,6 +693,75 @@ private Q_SLOTS:
         QCOMPARE(sent_.size(),count);QCOMPARE(Find<QLabel>(tab_,"orchardBalance")->text(),QString("Unknown"));
         QVERIFY(!Find<QPushButton>(tab_,"orchardReview")->isEnabled());QVERIFY(!Find<QPushButton>(tab_,"orchardNewAddress")->isEnabled());
     }
+    // Measured 2026-11-26: every client sends a fixed 0.0001 DIN fee, and a
+    // private payment that needs three or more actions is larger than that
+    // fee covers at the network minimum. The node (v8.2.7) refuses such a
+    // payment before reserving anything and says what fee its size needs.
+    // The page must not offer "Retry" (the same fee can never work), must say
+    // the minimum in DIN, put it in the fee field for the user to see, and
+    // let a new review send it under a NEW request id.
+    void feeBelowMinimumShowsTheRequiredFeeAndStartsANewRequest() {
+        ready();fillSend();confirmNextDialog();Find<QPushButton>(tab_,"orchardReview")->click();
+        const Sent first=last("wallet.orchard.queuespend");
+        QCOMPARE(first.params.value("fee_una").toVariant().toULongLong(),quint64(10000));
+        const auto count=sent_.size();
+        // As the HTTP transport delivers it: a JSON-RPC error whose
+        // data.orchard carries the code and the two numbers.
+        const QJsonObject refusal{{"error_code","fee_below_minimum"},{"required_fee_una",12466},{"virtual_size",12466}};
+        const QJsonValue data=QJsonObject{{"orchard",refusal}};
+        QVERIFY(QMetaObject::invokeMethod(tab_,"onRpcErrorDetailed",Qt::DirectConnection,
+            Q_ARG(QString,first.tag),Q_ARG(int,-32000),
+            Q_ARG(QString,QString("Network fee is below the minimum for this payment's size")),
+            Q_ARG(QJsonValue,data)));
+        QVERIFY(tab_->paymentState().has_value());
+        QCOMPARE(*tab_->paymentState(),OrchardFlow::State::FeeTooLow);
+        auto* state=Find<QLabel>(tab_,"orchardPaymentState");auto* detail=Find<QLabel>(tab_,"orchardPaymentDetail");
+        QVERIFY(state->text().contains("Fee too low"));
+        QVERIFY(detail->text().contains("0.00012466 DIN"));
+        QVERIFY(detail->text().contains("Nothing was sent"));
+        QVERIFY(!Find<QPushButton>(tab_,"orchardRetry")->isVisible());
+        QCOMPARE(Find<QLineEdit>(tab_,"orchardFee")->text(),QString("0.00012466"));
+        // Nothing is resent by itself: not on a poll, not on Retry.
+        QMetaObject::invokeMethod(tab_,"onPoll");QMetaObject::invokeMethod(tab_,"onRetry");
+        for(qsizetype i=count;i<sent_.size();++i)QVERIFY(!sent_[i].method.startsWith("wallet.orchard.queue"));
+        // The user reviews again: the dialog shows the new fee, and the
+        // request goes out with that fee under a new id.
+        auto* review=Find<QPushButton>(tab_,"orchardReview");QVERIFY(review->isEnabled());
+        confirmNextDialog();review->click();
+        const Sent second=last("wallet.orchard.queuespend");
+        QVERIFY(second.tag!=first.tag);
+        QCOMPARE(second.params.value("fee_una").toVariant().toULongLong(),quint64(12466));
+        QVERIFY(second.params.value("request_id").toString()!=first.params.value("request_id").toString());
+        QCOMPARE(second.params.value("payments"),first.params.value("payments"));
+    }
+    // The same refusal arriving in-band (a result object with "error"), and a
+    // refusal that names no usable fee: said plainly, nothing invented.
+    void feeBelowMinimumInBandAndWithoutAUsableFigure() {
+        ready();fillSend();confirmNextDialog();Find<QPushButton>(tab_,"orchardReview")->click();
+        rawReply(last("wallet.orchard.queuespend"),QJsonObject{
+            {"error","Network fee is below the minimum for this payment's size"},{"error_code","fee_below_minimum"},
+            {"retryable",false},{"required_fee_una",12466},{"virtual_size",12466}});
+        QCOMPARE(*tab_->paymentState(),OrchardFlow::State::FeeTooLow);
+        QCOMPARE(Find<QLineEdit>(tab_,"orchardFee")->text(),QString("0.00012466"));
+
+        confirmNextDialog();Find<QPushButton>(tab_,"orchardReview")->click();
+        const QString typed=Find<QLineEdit>(tab_,"orchardFee")->text();
+        for(const QJsonValue bad:{QJsonValue("12466"),QJsonValue(-5),QJsonValue(12466.5),QJsonValue(0),QJsonValue()}) {
+            QJsonObject orchard{{"error_code","fee_below_minimum"}};
+            if(!bad.isUndefined())orchard["required_fee_una"]=bad;
+            const QJsonValue data=QJsonObject{{"orchard",orchard}};
+            const QString tag=last("wallet.orchard.queuespend").tag;
+            QVERIFY(QMetaObject::invokeMethod(tab_,"onRpcErrorDetailed",Qt::DirectConnection,
+                Q_ARG(QString,tag),Q_ARG(int,-32000),
+                Q_ARG(QString,QString("Network fee is below the minimum for this payment's size")),
+                Q_ARG(QJsonValue,data)));
+            QCOMPARE(*tab_->paymentState(),OrchardFlow::State::FeeTooLow);
+            QVERIFY(Find<QLabel>(tab_,"orchardPaymentDetail")->text().contains("did not say"));
+            QCOMPARE(Find<QLineEdit>(tab_,"orchardFee")->text(),typed);   // the field is not touched
+            QVERIFY(!Find<QPushButton>(tab_,"orchardRetry")->isVisible());
+            confirmNextDialog();Find<QPushButton>(tab_,"orchardReview")->click();
+        }
+    }
     void connectionChangeCannotRetargetPendingPayment() {
         ready();fillSend();confirmNextDialog();Find<QPushButton>(tab_,"orchardReview")->click();const auto queue=last("wallet.orchard.queuespend");
         const auto count=sent_.size();QMetaObject::invokeMethod(tab_,"onConnectionContextChanged",Qt::DirectConnection);

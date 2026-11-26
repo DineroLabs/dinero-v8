@@ -88,6 +88,7 @@ Tone ToneOf(OF::State s) {
         case OF::State::Submitted: return Tone::Info;
         case OF::State::Rejected: return Tone::Bad;
         case OF::State::NeedsRetry: return Tone::Warn;
+        case OF::State::FeeTooLow: return Tone::Warn;
         case OF::State::Archived: return Tone::Neutral;
         default: return Tone::Neutral;
     }
@@ -669,6 +670,7 @@ void OrchardWidget::advance() {
         case OF::State::Rejected:
         case OF::State::Confirmed:
         case OF::State::Archived:
+        case OF::State::FeeTooLow:
             // Keep observing checkpoint/reorg changes; do not auto-resubmit.
             if(OC::ValidBinding(walletBinding_) && !poll_->isActive())poll_->start();
             break;
@@ -790,6 +792,11 @@ void OrchardWidget::onRpcErrorDetailed(const QString& method, int, const QString
         failure["error_code"]=detail.value("error_code");
         if(token(detail.value("proof_state"),32))failure["proof_state"]=detail.value("proof_state");
         if(detail.value("reservation_retained").isBool())failure["reservation_retained"]=detail.value("reservation_retained");
+        // The fee a refused payment needs, and its size. Numbers only; the
+        // payment decides whether the figure is usable.
+        if(detail.value("error_code").toString()=="fee_below_minimum")
+            for(const char* key:{"required_fee_una","virtual_size"})
+                if(detail.value(key).isDouble())failure[key]=detail.value(key);
     }
     handle(tag->method, failure);
 }
@@ -920,7 +927,14 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
     } else if (shortName == "queue" || shortName == "finish") {
         callInFlight_ = false;
         if (!payment_) return;
-        if (shortName == "queue") payment_->onQueueReply(result);
+        if (shortName == "queue") {
+            const auto before=payment_->state();
+            payment_->onQueueReply(result);
+            // Put the fee the node asked for where the user will see and
+            // confirm it. Never sent without a new review.
+            if(before!=OF::State::FeeTooLow && payment_->state()==OF::State::FeeTooLow && payment_->requiredFeeUna())
+                fee_->setText(OF::FormatDin(*payment_->requiredFeeUna()));
+        }
         else payment_->onFinishReply(result);
         advance();
     } else if (shortName == "ops") {
