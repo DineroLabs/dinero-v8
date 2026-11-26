@@ -1,11 +1,12 @@
 // Interface language support for dinero-qt.
 //
-// Design rules this module implements (see qt/MULTI-LANGUAGE-PLAN.md):
+// Design rules this module implements:
 //   1. English is the SOURCE language. There is no English catalog: with no
 //      translator installed, tr() returns the English source text. A string
 //      missing from a catalog therefore falls back to English automatically.
-//   2. The language is chosen only in Settings and applied on restart. Nothing
-//      here retranslates a live widget tree.
+//   2. Settings applies a changed language on restart. The legacy-data dialog
+//      can also save a choice before the main wallet opens. Nothing here
+//      retranslates a live widget tree.
 //   3. WORDS ONLY. This module never touches QLocale::setDefault(), so number
 //      and amount formatting stays on the C locale (dot decimal separator) in
 //      every language. Changing that would alter how amounts are parsed and
@@ -25,7 +26,7 @@ class QCoreApplication;
 
 namespace dinero::qt::i18n {
 
-// A language offered in the Settings picker.
+// A language offered in Settings and the prestart legacy-data picker.
 struct Language {
   QString code;        // Qt locale code, e.g. "de", "pt_BR", "zh_CN"
   QString nativeName;  // shown in the picker, in that language
