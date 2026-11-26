@@ -73,6 +73,13 @@ void OrchardRpcFailure(din::Json& result,const std::exception& error) {
             case Code::RequestNotCurrent:result["error_code"]="request_not_current";break;
         }
     }
+    if(const auto* fee=dynamic_cast<const dinero::wallet::OrchardFeeBelowMinimum*>(&error)) {
+        // Nothing was reserved. Retrying the same request cannot succeed; a
+        // higher fee or a payment that uses fewer notes can.
+        result["error_code"]="fee_below_minimum";result["retryable"]=false;
+        result["required_fee_una"]=Json::UInt64(fee->RequiredFeeUna());
+        result["virtual_size"]=Json::UInt64(fee->VirtualSize());
+    }
     if(const auto* proof=dynamic_cast<const dinero::wallet::OrchardProofUnavailable*>(&error)) {
         result["error_code"]="proof_not_ready";
         const auto state=proof->ObservedState();
@@ -799,8 +806,13 @@ din::Json OrchardSpendCall(const ExecutionContext& ctx,const din::Json& params,b
             result["submission_message"]=submitted.message;
             return result;
         }
+        // Price the spend against this node's live relay floor before anything
+        // is reserved. Without a mempool, admission cannot refuse it either.
+        const auto pool=ctx.daemon->mempool?std::dynamic_pointer_cast<dinero::MempoolService>(ctx.daemon->mempool):nullptr;
+        const double min_fee_rate=pool?pool->mempool().getMinFeeRate():0.0;
         const auto queued=dinero::wallet::OrchardAccountDelivery::QueueCatalogRequestForReplay(
-            wallet_use->Wallet(),session,profile,request.revision,**view,request.id,payments,outputs,request.fee,wallet_use->OrchardProofs());
+            wallet_use->Wallet(),session,profile,request.revision,**view,request.id,payments,outputs,request.fee,wallet_use->OrchardProofs(),
+            min_fee_rate);
         if(!queued->durable)throw std::runtime_error("Missing committed Orchard request");
         result["operation_id"]=util::hex(std::vector<unsigned char>(queued->operation_id.begin(),queued->operation_id.end()));
         result["account"]=Json::UInt64(request.account);result["account_revision"]=Json::UInt64(queued->revision);

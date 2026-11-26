@@ -116,7 +116,9 @@ TEST(OrchardSpendRpc, ActualUnshieldAndMixedRecipientsRetainExactOutputAmounts){
     }
 }
 TEST(OrchardSpendRpc, TransparentDestinationTypesBindExactOrderedScripts){
-    OrchardSpendRpcFixture f;auto params=f.RequestJson();params["payments"]=din::arr();params["fee_una"]=Json::UInt64(1000);
+    // v8.2.7: an admissible fee (the queue now refuses one below the relay
+    // floor at the spend's size, ~9.4 kvB here); 1000 una never was.
+    OrchardSpendRpcFixture f;auto params=f.RequestJson();params["payments"]=din::arr();params["fee_una"]=Json::UInt64(20000);
     std::vector<std::pair<std::string,std::vector<uint8_t>>> destinations;std::vector<uint8_t> hash(20,0x31);
     for(const uint8_t version:{AddressVersion::DINERO_TESTNET_P2PKH,AddressVersion::DINERO_TESTNET_P2SH}){
         std::vector<uint8_t> payload{version};payload.insert(payload.end(),hash.begin(),hash.end());
@@ -131,7 +133,7 @@ TEST(OrchardSpendRpc, TransparentDestinationTypesBindExactOrderedScripts){
     std::vector<orchard::TransparentOutput> outputs;
     for(const auto& [address,script]:destinations){din::Json output;output["address"]=address;output["amount_una"]=Json::UInt64(100);params["outputs"].append(output);outputs.push_back({100,script});}
     const auto result=f.CallSpend(params);ASSERT_FALSE(result.isMember("error"))<<result["error"].asString();const auto before=f.Snapshot();
-    auto use=WalletService::AcquireWalletUse(f.wallet);auto& jobs=use->OrchardProofs();const auto exact=f.Invoke(jobs,{},outputs,1000,params["expected_revision"].asUInt64());EXPECT_TRUE(exact->existing_request);EXPECT_FALSE(exact->enqueued);EXPECT_EQ(f.Snapshot(),before);
+    auto use=WalletService::AcquireWalletUse(f.wallet);auto& jobs=use->OrchardProofs();const auto exact=f.Invoke(jobs,{},outputs,20000,params["expected_revision"].asUInt64());EXPECT_TRUE(exact->existing_request);EXPECT_FALSE(exact->enqueued);EXPECT_EQ(f.Snapshot(),before);
     auto changed=params;changed["outputs"][0]=params["outputs"][1];changed["outputs"][1]=params["outputs"][0];SpendRpcRefused(f.CallSpend(changed));EXPECT_EQ(f.Snapshot(),before);
     EXPECT_EQ(ServiceProofTerminal(jobs,f.Operation(1)),wallet::OrchardProofJobs::State::Succeeded);
 }

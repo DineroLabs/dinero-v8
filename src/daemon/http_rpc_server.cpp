@@ -1025,6 +1025,12 @@ Json::Value HttpRpcServer::process_admitted_rpc_call(const Json::Value& request)
                             detail["error_code"] = result["error_code"];
                             if (token(result["proof_state"], 32)) detail["proof_state"] = result["proof_state"];
                             if (result["reservation_retained"].isBool()) detail["reservation_retained"] = result["reservation_retained"];
+                            // A fee refusal names the fee that would be admitted:
+                            // two sizes, no payment material.
+                            if (result["error_code"].asString() == "fee_below_minimum") {
+                                for (const char* field : {"required_fee_una", "virtual_size"})
+                                    if (result[field].isUInt64()) detail[field] = result[field];
+                            }
                             normalized["data"]["orchard"] = detail;
                         }
                         response["error"] = normalized;

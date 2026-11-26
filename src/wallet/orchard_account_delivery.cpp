@@ -7,6 +7,7 @@
 #include "wallet/runtime_account_replay.h"
 #include "wallet/orchard_operation_archive.h"
 #include <algorithm>
+#include <cmath>
 #include <atomic>
 #include <iostream>
 #include <map>
@@ -2267,21 +2268,22 @@ std::unique_ptr<OrchardAccountDelivery::QueuedSpend> OrchardAccountDelivery::Que
 std::unique_ptr<OrchardAccountDelivery::QueuedSpend> OrchardAccountDelivery::QueueCatalogRequestForReplay(
         WalletManager& w,uint64_t session,const Profile& p,uint64_t expected,const RuntimeAccountReplay& view,
         const orchard::Hash& id,std::span<const orchard::WalletPayment> payments,
-        std::span<const orchard::TransparentOutput> outputs,uint64_t fee,OrchardProofJobs& jobs){
-    return ReserveSpendForReplay(w,session,p,expected,view,id,payments,outputs,fee,&jobs,true).queued;
+        std::span<const orchard::TransparentOutput> outputs,uint64_t fee,OrchardProofJobs& jobs,double min_fee_rate){
+    return ReserveSpendForReplay(w,session,p,expected,view,id,payments,outputs,fee,&jobs,true,min_fee_rate).queued;
 }
 OrchardAccountDelivery::SpendResult OrchardAccountDelivery::ReserveSpendForReplay(
         WalletManager& w,uint64_t session,const Profile& p,uint64_t expected,const RuntimeAccountReplay& view,
         const orchard::Hash& id,std::span<const orchard::WalletPayment> payments,
-        std::span<const orchard::TransparentOutput> outputs,uint64_t fee,OrchardProofJobs* jobs,bool bind_request){
+        std::span<const orchard::TransparentOutput> outputs,uint64_t fee,OrchardProofJobs* jobs,bool bind_request,
+        double min_fee_rate){
     return ReserveSpendWithRestorePoints(w,session,p,expected,view,id,payments,outputs,fee,jobs,bind_request,
-        [&view](RuntimeOutboxCursor cursor){return view.Point(cursor);});
+        [&view](RuntimeOutboxCursor cursor){return view.Point(cursor);},min_fee_rate);
 }
 OrchardAccountDelivery::SpendResult OrchardAccountDelivery::ReserveSpendWithRestorePoints(
         WalletManager& w,uint64_t session,const Profile& p,uint64_t expected,const RuntimeAccountReplay& view,
         const orchard::Hash& id,std::span<const orchard::WalletPayment> payments,
         std::span<const orchard::TransparentOutput> outputs,uint64_t fee,OrchardProofJobs* jobs,bool bind_request,
-        const std::function<RestorePoint(RuntimeOutboxCursor)>& points){
+        const std::function<RestorePoint(RuntimeOutboxCursor)>& points,double min_fee_rate){
     Check(id!=orchard::Hash{}&&(!payments.empty()||!outputs.empty())&&payments.size()<=DINERO_ORCHARD_V1_MAX_ACTIONS);
     Check(fee<=orchard::kMaxMoneyUna);uint64_t required=fee;
     const auto add=[&](uint64_t amount){Check(amount>0&&amount<=orchard::kMaxMoneyUna-required);required+=amount;};
@@ -2378,6 +2380,21 @@ OrchardAccountDelivery::SpendResult OrchardAccountDelivery::ReserveSpendWithRest
         Check(recipients.size()<DINERO_ORCHARD_V1_MAX_ACTIONS);
         auto issued=account.IssueReceiver(orchard::WalletScope::Internal);account=std::move(issued.first);
         recipients.push_back({selected-required,std::move(issued.second)});
+    }
+    if(min_fee_rate>0.0){
+        // Priced exactly as admission will price it (fee/vsize < floor refuses):
+        // a spend has no transparent inputs, so its size is known now. Refusing
+        // here leaves nothing behind; refusing at admission would leave a signed
+        // operation that every retry resubmits unchanged, its notes reserved.
+        const auto actions=static_cast<uint32_t>(std::max<size_t>({inputs.size(),recipients.size(),2}));
+        const auto vsize=orchard::InputlessEnvelopeBytes({outputs.begin(),outputs.end()},fee,actions);
+        const auto meets=[&](uint64_t f){return !(static_cast<double>(f)/static_cast<double>(vsize)<min_fee_rate);};
+        if(!meets(fee)){
+            auto needed=static_cast<uint64_t>(std::ceil(min_fee_rate*static_cast<double>(vsize)));
+            while(!meets(needed))++needed;
+            while(needed>0&&meets(needed-1))--needed;
+            throw OrchardFeeBelowMinimum(needed,vsize);
+        }
     }
     orchard::Hash anchor{};const auto& checkpoint=current.account.Scan().Checkpoint();
     Check(checkpoint.height>=p.activation);std::copy(checkpoint.anchor.begin(),checkpoint.anchor.end(),anchor.begin());

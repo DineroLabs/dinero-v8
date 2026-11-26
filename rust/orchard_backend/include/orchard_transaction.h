@@ -85,4 +85,13 @@ private:
     const ParsedBundle bundle_;
     const std::vector<std::uint8_t> bytes_;
 };
+// Exact canonical bytes of an Orchard bundle with `actions` actions: the
+// proof length is fixed per action count (orchard::Proof::expected_proof_size,
+// which the backend decoder requires exactly).
+[[nodiscard]] std::size_t BundleBytesForActions(std::uint32_t actions);
+// Exact canonical size of an envelope with NO transparent inputs and such a
+// bundle. With no witnesses it is also the virtual size admission prices.
+// Used to price a spend before anything is reserved or proved.
+[[nodiscard]] std::size_t InputlessEnvelopeBytes(const std::vector<TransparentOutput>& outputs,
+    std::uint64_t fee, std::uint32_t actions);
 } // namespace dinero::orchard

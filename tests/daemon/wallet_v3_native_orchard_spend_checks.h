@@ -55,6 +55,11 @@ TEST(WalletV3NativeOrchardSpend, NativeWalletSpendsDeliveredNoteOnV3) {
     const auto txid=uint256::FromHexUnsafe(finished["txid"].asString());
     const auto pooled=f.f.ingress->mempool().getMempoolEntry(txid);
     ASSERT_TRUE(bool(pooled));
+    // v8.2.7: the queue-time price of a 2-action unshield with one transparent
+    // output is the admitted transaction's exact size.
+    std::vector<uint8_t> script{0x51,0x20};script.insert(script.end(),program.begin(),program.end());
+    EXPECT_EQ(pooled->tx.GetVirtualSize(),
+        orchard::InputlessEnvelopeBytes({{100000,script}},10000,2));
     ASSERT_TRUE(f.Mine(pooled->tx));
     ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
         WalletService::CanonicalRecovery::AppliedPrefix) << error;
@@ -308,6 +313,115 @@ TEST(WalletV3NativeOrchardSpend, ColdRestoreReadsEachParentLinkOnce) {
     EXPECT_EQ(restored,1u);
     EXPECT_LE(read,4*uint64_t(height)) << read << " node reads for a restore over a chain of height " << height;
     EXPECT_EQ(f.Account().account.Delivery().sequence,NativeOrchardHead(f));
+    f.context.tx_ingress=nullptr;
+}
+
+// One shield that pays the account three separate notes, from the fixture's
+// funded coin (the same coin and signing as OrchardCycleFixture::Shield).
+MempoolTransaction ShieldThreeNotes(OrchardCreationFixture& f,const orchard::WalletKeys& receiver,uint64_t each) {
+    const OutPoint point(f.f.blocks[1].vtx.front().GetTxid(),0);
+    const auto& coin=f.f.replay->ProvenUtxos().at(point);
+    orchard::EnvelopeInput input{};
+    std::copy(point.txid.AsUint256().begin(),point.txid.AsUint256().end(),input.txid_wire.begin());
+    input.output_index=0;input.sequence=UINT32_MAX;
+    constexpr uint64_t fee=100000;
+    const std::vector<orchard::TransparentOutput> outputs{{coin.value.GetUna()-fee-3*each,f.f.script}};
+    std::vector<orchard::WalletPayment> payments;
+    for(int i=0;i<3;++i)payments.push_back({each,receiver.Receiver(orchard::WalletScope::External,{}),{}});
+    const std::vector<orchard::ResolvedInput> inputs{{input.txid_wire,0,input.sequence,coin.value.GetUna(),f.f.script}};
+    const auto bundle=orchard::WalletBundlePlan::PrepareShield(receiver,payments)
+        .Prove(orchard::SigningContext::Create(f.Domain(),0,inputs,outputs,fee));
+    const auto draft=orchard::TransactionEnvelope::Create(0,{input},outputs,fee,bundle.Bytes());
+    FirstBoundaryView view(*f.f.replay);
+    const auto snapshot=consensus::OrchardCoinSnapshot::ResolveUnderChainstateLock(draft,view);
+    const auto digest=consensus::OrchardTransparentSigningDigest(snapshot,f.Domain(),0);
+    std::unique_ptr<secp256k1_context,decltype(&secp256k1_context_destroy)> signing(
+        secp256k1_context_create(SECP256K1_CONTEXT_NONE),secp256k1_context_destroy);
+    secp256k1_keypair pair;OrchardAdmissionFixture::Require(secp256k1_keypair_create(signing.get(),&pair,f.f.secret.data()));
+    std::vector<uint8_t> signature(64);orchard::Hash aux{};
+    OrchardAdmissionFixture::Require(secp256k1_schnorrsig_sign32(signing.get(),signature.data(),digest.data(),&pair,aux.data()));
+    input.witness={signature};
+    return MempoolTransaction::FromOrchard(orchard::TransactionEnvelope::Create(0,{input},outputs,fee,bundle.Bytes()));
+}
+
+// v8.2.7 fee floor: a private send that needs three notes has three actions
+// (about 12.4 kvB), so the 10,000 una fee every client sends today is below
+// the mempool's 1 una/vB floor for it. Before this fix the operation was
+// signed, admission refused it ("Orchard fee rate below minimum"), every
+// retry resubmitted the same bytes, and all 450,000 una stayed reserved with
+// no way to release them. Now the queue refuses it first, with the exact fee
+// it needs, and leaves nothing behind; that fee is then admitted.
+TEST(WalletV3NativeOrchardSpend, ThreeNoteSendBelowFeeFloorRefusedBeforeReserving) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-orchard-fee-floor-index");
+    std::string error;
+    const auto deliver=[&]{
+        ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+            WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    };
+    deliver();
+    f.context.tx_ingress=f.f.ingress.get();
+    auto ctx=f.RequestContext();
+    const auto created=rpc_context_wallet_orchard_createaccount(ctx,OrchardCreationRequest());
+    ASSERT_FALSE(created.isMember("error")) << created.toStyledString();
+    (void)f.Mine(ShieldThreeNotes(f,f.AccountKeys(),150000));
+    deliver();
+    ASSERT_EQ(f.Account().account.Scan().BalanceUna(),450000u);
+    ASSERT_EQ(f.f.ingress->mempool().getMinFeeRate(),1.0);
+
+    const auto spend=[&](uint8_t tag,uint64_t fee){
+        din::Json request,pay;
+        request["account"]=Json::UInt64(3);
+        request["expected_revision"]=Json::UInt64(f.Account().revision);
+        std::vector<uint8_t> id(32);id[0]=tag;request["request_id"]=util::hex(id);
+        request["fee_una"]=Json::UInt64(fee);
+        request["payments"]=din::arr();request["outputs"]=din::arr();
+        pay["address"]=created["address"];pay["amount_una"]=Json::UInt64(400000);
+        request["payments"].append(pay);
+        return std::pair{request,rpc_context_wallet_orchard_queuespend(ctx,request)};
+    };
+    const auto nothing_left=[&](const char* when){
+        const auto balance=rpc_context_wallet_orchard_getbalance(ctx,OrchardOperationListRequest());
+        EXPECT_EQ(balance["reserved_confirmed_una"].asUInt64(),0u) << when << balance.toStyledString();
+        EXPECT_EQ(balance["unreserved_confirmed_una"].asUInt64(),450000u) << when;
+        const auto listed=rpc_context_wallet_orchard_listoperations(ctx,OrchardOperationListRequest());
+        ASSERT_TRUE(listed["operations"].isArray()) << when << listed.toStyledString();
+        EXPECT_TRUE(listed["operations"].empty()) << when << listed.toStyledString();
+    };
+    const auto [low_request,low]=spend(0xa7,10000);(void)low_request;
+    ASSERT_TRUE(low.isMember("error")) << low.toStyledString();
+    EXPECT_EQ(low["error_code"].asString(),"fee_below_minimum") << low.toStyledString();
+    EXPECT_FALSE(low["retryable"].asBool());
+    const auto required=low["required_fee_una"].asUInt64();
+    const auto vsize=low["virtual_size"].asUInt64();
+    // Three actions, no transparent inputs: priced at 1 una/vB, about 12.4k.
+    EXPECT_EQ(required,vsize);EXPECT_GT(required,12000u);EXPECT_LT(required,13000u);
+    nothing_left("after the default fee");
+    const auto [short_request,short_by_one]=spend(0xa8,required-1);(void)short_request;
+    EXPECT_EQ(short_by_one["error_code"].asString(),"fee_below_minimum") << short_by_one.toStyledString();
+    EXPECT_EQ(short_by_one["required_fee_una"].asUInt64(),required);
+    nothing_left("after one una short");
+
+    // The exact fee the refusal named is admitted, at exactly the size it gave.
+    const auto [request,queued]=spend(0xa9,required);
+    ASSERT_FALSE(queued.isMember("error")) << queued.toStyledString();
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        orchard::Hash op{};op[0]=0xa9;
+        ASSERT_EQ(ServiceProofTerminal(use->OrchardProofs(),op),wallet::OrchardProofJobs::State::Succeeded);
+    }
+    din::Json finish;finish["account"]=Json::UInt64(3);finish["request_id"]=request["request_id"];
+    const auto finished=rpc_context_wallet_orchard_finishspend(ctx,finish);
+    ASSERT_FALSE(finished.isMember("error")) << finished.toStyledString();
+    ASSERT_TRUE(finished["admitted"].asBool()) << finished.toStyledString();
+    const auto pooled=f.f.ingress->mempool().getMempoolEntry(uint256::FromHexUnsafe(finished["txid"].asString()));
+    ASSERT_TRUE(bool(pooled));
+    EXPECT_EQ(pooled->tx.GetVirtualSize(),vsize) << "queue-time size differs from the admitted transaction";
+    EXPECT_EQ(pooled->tx.ExplicitFee(),std::optional<uint64_t>(required));
+    ASSERT_TRUE(f.Mine(pooled->tx));
+    deliver();
+    // The payment went to the account's own address: only the fee left it.
+    EXPECT_EQ(f.Account().account.Scan().BalanceUna(),450000u-required);
     f.context.tx_ingress=nullptr;
 }
 
