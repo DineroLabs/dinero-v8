@@ -359,6 +359,13 @@ attestation, new activation authority or release qualification. The native link
 smoke's `--consensus-json` output can check actual compiled network parameters
 against the declaration without starting a node.
 
+The 2026-11-09 receipt review also records the H1 coinbase-structure boundary:
+mainnet and regtest activate at height 1, while testnet remains dormant at
+`UINT32_MAX`. The native link smoke's `--coinbase-structure-json` output checks
+those compiled parameters against the receipt. The reviewed source hashes now
+include the H1 chainparams additions; the packaging guard still refuses any
+later unreviewed chainparams change.
+
 XCFramework/Android composition propagates the compatible input declarations
 and source identity, not the packager's current HEAD. Missing legacy declarations,
 mixed source revisions, dirty source inputs and incompatible FFI headers refuse

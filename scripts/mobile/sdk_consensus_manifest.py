@@ -11,8 +11,8 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
 REVIEWED = {
-    'src/consensus/chainparams_impl.cpp': '61d0a18d675c9ffb8eb39e637170b976ef79a18feed26ad323adcacc310fd9b4',
-    'include/consensus/chainparams.h': 'ab60a2f1a4fa7e0e8b6aed9f5da75ea963a14d99666b383ab278c0572ac6eb4b',
+    'src/consensus/chainparams_impl.cpp': '83d6fc945985d42c77a5e8e66c64250f3422eb97b1bb071f69df15463c477ef5',
+    'include/consensus/chainparams.h': '9c1714adc86d41eddf428b972809b98c81056f37370afa2d2ccfb216efcc0eaf',
 }
 
 
@@ -23,6 +23,7 @@ def reviewed_defaults(root=ROOT):
     return dict(schema=1, authority='compiled ChainParams; packaging cannot activate consensus',
                 evidence='reviewed source defaults, NOT runtime attestation', source_sha256=actual,
                 dnorst02_activation_height=dict(mainnet=150000, testnet=4294967295, regtest=4294967295),
+                coinbase_structure_activation_height=dict(mainnet=1, testnet=4294967295, regtest=1),
                 never_activation_height=4294967295)
 
 
