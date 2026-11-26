@@ -46,22 +46,22 @@ class ReleaseRevisionTagTest(unittest.TestCase):
     def test_revision_tag_preserves_tag_and_numeric_product_version(self):
         for workflow in WORKFLOWS:
             with self.subTest(workflow=workflow):
-                process, fields = evaluate(workflow, ref_type='tag', ref_name='v8.2.5-r1')
+                process, fields = evaluate(workflow, ref_type='tag', ref_name='v8.2.6-r1')
                 self.assertEqual(process.returncode, 0, process.stderr)
-                self.assertEqual(fields['version'], '8.2.5')
-                self.assertEqual(fields['release_tag'], 'v8.2.5-r1')
+                self.assertEqual(fields['version'], '8.2.6')
+                self.assertEqual(fields['release_tag'], 'v8.2.6-r1')
 
     def test_plain_tag_remains_supported(self):
         for workflow in WORKFLOWS:
             with self.subTest(workflow=workflow):
-                process, fields = evaluate(workflow, ref_type='tag', ref_name='v8.2.5')
+                process, fields = evaluate(workflow, ref_type='tag', ref_name='v8.2.6')
                 self.assertEqual(process.returncode, 0, process.stderr)
-                self.assertEqual(fields['version'], '8.2.5')
-                self.assertEqual(fields['release_tag'], 'v8.2.5')
+                self.assertEqual(fields['version'], '8.2.6')
+                self.assertEqual(fields['release_tag'], 'v8.2.6')
 
     def test_bad_revision_and_source_mismatch_refuse(self):
         for workflow in WORKFLOWS:
-            for tag in ('v8.2.5-r0', 'v8.2.5-r1-extra', 'v8.2.6-r1'):
+            for tag in ('v8.2.6-r0', 'v8.2.6-r1-extra', 'v8.2.7-r1'):
                 with self.subTest(workflow=workflow, tag=tag):
                     process, _ = evaluate(workflow, ref_type='tag', ref_name=tag)
                     self.assertNotEqual(process.returncode, 0)
@@ -70,10 +70,10 @@ class ReleaseRevisionTagTest(unittest.TestCase):
         for workflow in WORKFLOWS:
             with self.subTest(workflow=workflow):
                 process, fields = evaluate(workflow, ref_type='branch', ref_name='work',
-                                           manual_tag='v8.2.5-r1')
+                                           manual_tag='v8.2.6-r1')
                 self.assertEqual(process.returncode, 0, process.stderr)
-                self.assertEqual(fields['version'], '8.2.5')
-                self.assertEqual(fields['release_tag'], 'v8.2.5-r1')
+                self.assertEqual(fields['version'], '8.2.6')
+                self.assertEqual(fields['release_tag'], 'v8.2.6-r1')
 
     def test_candidate_source_still_uses_source_version(self):
         head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
@@ -82,7 +82,7 @@ class ReleaseRevisionTagTest(unittest.TestCase):
                 process, fields = evaluate(workflow, ref_type='branch', ref_name='work',
                                            candidate_source=head)
                 self.assertEqual(process.returncode, 0, process.stderr)
-                self.assertEqual(fields['version'], '8.2.5')
+                self.assertEqual(fields['version'], '8.2.6')
                 self.assertEqual(fields['release_tag'], '')
                 self.assertEqual(fields['source_sha'], head)
 
