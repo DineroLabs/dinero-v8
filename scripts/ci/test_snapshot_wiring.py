@@ -125,15 +125,15 @@ class SnapshotWiring(unittest.TestCase):
             self.assertIn('cmp -s "${GITHUB_WORKSPACE}/tooling/packaging/mac/build-installer.sh" packaging/mac/build-installer.sh', source)
 
         smoke = (ROOT / '.github/workflows/windows-openssl-release-smoke.yml').read_text(encoding='utf-8')
-        self.assertIn("-SnapshotFileName 'dinero-assumeutxo-163965-v6-full.dat'", smoke)
+        self.assertIn("-SnapshotFileName 'dinero-assumeutxo-167856-v6-full.dat'", smoke)
         self.assertIn('fetch_desktop_primary.py', smoke)
-        candidate_url = (f'https://seed3.dinerolabs.org/v823-candidate/v824/'
+        candidate_url = (f'https://seed3.dinerolabs.org/v823-candidate/v826/'
                          f'h{self.primary_height}-{self.primary_sha256[:8]}')
         for name, flag in [('snapshot.dat', '--payload-url'),
                            ('manifest.json', '--manifest-url'),
                            ('manifest.sig', '--signature-url')]:
             self.assertIn(f"{flag} '{candidate_url}/{name}'", smoke)
-        self.assertIn('--publisher-signature snapshot-inputs/dinero-assumeutxo-163965-v6-full.dat.publisher.manifest.sig', smoke)
+        self.assertIn('--publisher-signature snapshot-inputs/dinero-assumeutxo-167856-v6-full.dat.publisher.manifest.sig', smoke)
         version = re.search(r"-Version '([^']+)'", smoke)[1]
         filename = 'Dinero-Server-' + version + '-windows-x86_64-Setup.exe'
         self.assertEqual(smoke.count(filename), 2, 'Install and artifact paths must match the built version')

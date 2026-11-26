@@ -25,7 +25,7 @@ param(
     [string]$SnapshotPath       = '',
     [string]$SnapshotManifestPath = '',
     [string]$SnapshotAssetName  = '',
-    [string]$SnapshotFileName   = 'dinero-assumeutxo-163965-v6-full.dat',
+    [string]$SnapshotFileName   = 'dinero-assumeutxo-167856-v6-full.dat',
     [string]$SnapshotReleaseTag = 'v8.2.6',
     [switch]$SkipBuild,
     [switch]$CiOrchardQualification
@@ -197,7 +197,7 @@ function Resolve-Snapshot {
     #   2. Cached copy at $DistDir\$SnapshotAssetName
     #   3. Download $SnapshotAssetName from the v8 release tagged by -SnapshotReleaseTag.
     #
-    # Default is the height-163965 full-v6 snapshot. The daemon
+    # Default is the height-167856 full-v6 snapshot. The daemon
     # verifies its checksum, selected header-chain commitment and burial.
     # Existing installs keep their prior dinero.conf and datadir snapshot, so an
     # in-progress older lifecycle is not rewritten by an installer upgrade. When
