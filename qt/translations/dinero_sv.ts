@@ -8667,4 +8667,125 @@ Detta är en av dina konfigurerade uppstartsmotparter. Blockera den endast om du
         <translation>Blockera i 24 timmar</translation>
     </message>
 </context>
+<context>
+    <name>LegacySnapshotDialog</name>
+    <message>
+        <source>Preserved Dinero data is missing</source>
+        <translation>Bevarad Dinero-data saknas</translation>
+    </message>
+    <message>
+        <source>The preserved Dinero data folder is missing:
+%1
+
+Dinero will not silently switch to a different wallet.</source>
+        <translation>Den bevarade Dinero-datamappen saknas:
+%1
+
+Dinero byter inte tyst till en annan plånbok.</translation>
+    </message>
+    <message>
+        <source>Dinero wallet data is missing</source>
+        <translation>Dinero plånboksdata saknas</translation>
+    </message>
+    <message>
+        <source>The selected Dinero data folder is missing:
+%1
+
+Restore that folder before opening the wallet. Dinero will not silently switch to a different wallet.</source>
+        <translation>Den valda Dinero-datamappen saknas:
+%1
+
+Återställ den mappen innan du öppnar plånboken. Dinero byter inte tyst till en annan plånbok.</translation>
+    </message>
+    <message>
+        <source>Update Dinero wallet data</source>
+        <translation>Uppdatera Dinero plånboksdata</translation>
+    </message>
+    <message>
+        <source>This computer has older Dinero data. A new wallet here might miss coins.</source>
+        <translation>Den här datorn har äldre Dinero-data. En ny plånbok som skapas här kanske inte visar alla mynt.</translation>
+    </message>
+    <message>
+        <source>Dinero found existing wallet files. A separate new wallet can use current blockchain data, but it will NOT show or transfer coins from those existing wallets. Keep their recovery words and the old data folder.
+
+Old data folder:
+%1</source>
+        <translation>Dinero hittade befintliga plånboksfiler. En separat ny plånbok kan använda aktuell blockchain-data, men den kommer INTE att visa eller överföra mynt från dessa befintliga plånböcker. Behåll deras återställningsord och den gamla datamappen.
+
+Gammal datamapp:
+%1</translation>
+    </message>
+    <message>
+        <source>Dinero found no wallet files or recovery keys in this data folder. It can start a new, separate data folder using current blockchain data. The old folder stays untouched at:
+%1
+
+The new node will need time to verify wallet history before you can create a wallet.</source>
+        <translation>Dinero hittade inga plånboksfiler eller återställningsnycklar i den här datamappen. Den kan starta en ny, separat datamapp med hjälp av aktuell blockkedjedata. Den gamla mappen förblir orörd på:
+%1
+
+Den nya noden kommer att behöva tid för att verifiera plånbokshistoriken innan du kan skapa en plånbok.</translation>
+    </message>
+    <message>
+        <source>Start a separate new wallet</source>
+        <translation>Starta en separat ny plånbok</translation>
+    </message>
+    <message>
+        <source>Start with current data</source>
+        <translation>Börja med aktuella data</translation>
+    </message>
+    <message>
+        <source>Keep old data for now</source>
+        <translation>Behåll gamla data tills vidare</translation>
+    </message>
+    <message>
+        <source>Language</source>
+        <translation>Språk</translation>
+    </message>
+    <message>
+        <source>Recover existing wallets</source>
+        <translation>Återställ befintliga plånböcker</translation>
+    </message>
+    <message>
+        <source>I understand this does not move my existing wallets or coins</source>
+        <translation>Jag förstår att detta inte flyttar mina befintliga plånböcker eller mynt</translation>
+    </message>
+    <message>
+        <source>Recover an existing wallet</source>
+        <translation>Återställ en befintlig plånbok</translation>
+    </message>
+    <message>
+        <source>Your wallet files are still in:
+%1
+
+Do not delete this folder. A wallet with coins from before the current snapshot needs its full history checked before its balance can be trusted. Keep your recovery words and ask Dinero support to help recover the existing wallet. You can reopen the app later to create a separate new wallet.</source>
+        <translation>Dina plånboksfiler finns fortfarande i:
+%1
+
+Ta inte bort den här mappen. Om en plånbok innehåller mynt från tiden före den aktuella ögonblicksbilden måste hela dess historik kontrolleras innan saldot kan anses tillförlitligt. Behåll dina återställningsord och be Dineros support om hjälp med att återställa den befintliga plånboken. Du kan öppna appen igen senare för att skapa en separat ny plånbok.</translation>
+    </message>
+    <message>
+        <source>Dinero is already running</source>
+        <translation>Dinero är redan igång</translation>
+    </message>
+    <message>
+        <source>A Dinero node started while this window was open. Close it and reopen the wallet to start with current data.</source>
+        <translation>En Dinero-nod startade medan detta fönster var öppet. Stäng den och öppna plånboken igen för att börja med aktuell data.</translation>
+    </message>
+    <message>
+        <source>Could not create Dinero data</source>
+        <translation>Det gick inte att skapa Dinero-data</translation>
+    </message>
+    <message>
+        <source>Dinero could not create a separate data folder. The old data is untouched.</source>
+        <translation>Dinero kunde inte skapa en separat datamapp. Den gamla datan är orörd.</translation>
+    </message>
+    <message>
+        <source>Could not save Dinero data location</source>
+        <translation>Det gick inte att spara Dinero-dataplatsen</translation>
+    </message>
+    <message>
+        <source>Dinero could not save the new data folder location. The old data is untouched.</source>
+        <translation>Dinero kunde inte spara den nya datamappens plats. Den gamla datan är orörd.</translation>
+    </message>
+</context>
 </TS>

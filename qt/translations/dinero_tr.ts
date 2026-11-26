@@ -8667,4 +8667,125 @@ Bu, yapılandırdığınız önyükleme eşlerinden biridir. Yalnızca hata ayı
         <translation>24 saat yasakla</translation>
     </message>
 </context>
+<context>
+    <name>LegacySnapshotDialog</name>
+    <message>
+        <source>Preserved Dinero data is missing</source>
+        <translation>Korunmuş Dinero verileri eksik</translation>
+    </message>
+    <message>
+        <source>The preserved Dinero data folder is missing:
+%1
+
+Dinero will not silently switch to a different wallet.</source>
+        <translation>Korunan Dinero veri klasörü eksik:
+%1
+
+Dinero sessizce farklı bir cüzdana geçmeyecek.</translation>
+    </message>
+    <message>
+        <source>Dinero wallet data is missing</source>
+        <translation>Dinero cüzdan verileri eksik</translation>
+    </message>
+    <message>
+        <source>The selected Dinero data folder is missing:
+%1
+
+Restore that folder before opening the wallet. Dinero will not silently switch to a different wallet.</source>
+        <translation>Seçilen Dinero veri klasörü eksik:
+%1
+
+Cüzdanı açmadan önce bu klasörü geri yükleyin. Dinero başka bir cüzdana sessizce geçmeyecek.</translation>
+    </message>
+    <message>
+        <source>Update Dinero wallet data</source>
+        <translation>Dinero cüzdan verilerini güncelleyin</translation>
+    </message>
+    <message>
+        <source>This computer has older Dinero data. A new wallet here might miss coins.</source>
+        <translation>Bu bilgisayarda eski Dinero verileri var. Burada oluşturulan yeni bir cüzdan bazı coinleri göstermeyebilir.</translation>
+    </message>
+    <message>
+        <source>Dinero found existing wallet files. A separate new wallet can use current blockchain data, but it will NOT show or transfer coins from those existing wallets. Keep their recovery words and the old data folder.
+
+Old data folder:
+%1</source>
+        <translation>Dinero mevcut cüzdan dosyalarını buldu. Ayrı bir yeni cüzdan, mevcut blockchain verilerini kullanabilir, ancak mevcut cüzdanlardaki paraları göstermez veya aktarmaz. Kurtarma sözcüklerini ve eski veri klasörünü saklayın.
+
+Eski veri klasörü:
+%1</translation>
+    </message>
+    <message>
+        <source>Dinero found no wallet files or recovery keys in this data folder. It can start a new, separate data folder using current blockchain data. The old folder stays untouched at:
+%1
+
+The new node will need time to verify wallet history before you can create a wallet.</source>
+        <translation>Dinero bu veri klasöründe cüzdan dosyası veya kurtarma anahtarı bulamadı. Güncel blockchain verilerini kullanan yeni ve ayrı bir veri klasörü oluşturabilir. Eski klasör şu konumda değiştirilmeden kalır:
+%1
+
+Yeni düğümün cüzdan geçmişini doğrulaması zaman alacaktır; bundan sonra cüzdan oluşturabilirsiniz.</translation>
+    </message>
+    <message>
+        <source>Start a separate new wallet</source>
+        <translation>Ayrı bir yeni cüzdan başlatın</translation>
+    </message>
+    <message>
+        <source>Start with current data</source>
+        <translation>Güncel verilerle başlayın</translation>
+    </message>
+    <message>
+        <source>Keep old data for now</source>
+        <translation>Şimdilik eski verileri sakla</translation>
+    </message>
+    <message>
+        <source>Language</source>
+        <translation>Dil</translation>
+    </message>
+    <message>
+        <source>Recover existing wallets</source>
+        <translation>Mevcut cüzdanları kurtarın</translation>
+    </message>
+    <message>
+        <source>I understand this does not move my existing wallets or coins</source>
+        <translation>Bunun mevcut cüzdanlarımı veya paralarımı taşımadığını anlıyorum</translation>
+    </message>
+    <message>
+        <source>Recover an existing wallet</source>
+        <translation>Mevcut bir cüzdanı kurtarın</translation>
+    </message>
+    <message>
+        <source>Your wallet files are still in:
+%1
+
+Do not delete this folder. A wallet with coins from before the current snapshot needs its full history checked before its balance can be trusted. Keep your recovery words and ask Dinero support to help recover the existing wallet. You can reopen the app later to create a separate new wallet.</source>
+        <translation>Cüzdan dosyalarınız hâlâ şu konumda:
+%1
+
+Bu klasörü silmeyin. Mevcut anlık görüntüden önceki coinleri içeren bir cüzdanın bakiyesine güvenilebilmesi için tüm geçmişi kontrol edilmelidir. Kurtarma kelimelerinizi saklayın ve mevcut cüzdanı kurtarmak için Dinero desteğinden yardım isteyin. Ayrı bir yeni cüzdan oluşturmak için uygulamayı daha sonra yeniden açabilirsiniz.</translation>
+    </message>
+    <message>
+        <source>Dinero is already running</source>
+        <translation>Dinero zaten çalışıyor</translation>
+    </message>
+    <message>
+        <source>A Dinero node started while this window was open. Close it and reopen the wallet to start with current data.</source>
+        <translation>Bu pencere açıkken bir Dinero düğümü başlatıldı. Mevcut verilerle başlamak için cüzdanı kapatın ve yeniden açın.</translation>
+    </message>
+    <message>
+        <source>Could not create Dinero data</source>
+        <translation>Dinero verileri oluşturulamadı</translation>
+    </message>
+    <message>
+        <source>Dinero could not create a separate data folder. The old data is untouched.</source>
+        <translation>Dinero ayrı bir veri klasörü oluşturamadı. Eski verilere dokunulmaz.</translation>
+    </message>
+    <message>
+        <source>Could not save Dinero data location</source>
+        <translation>Dinero veri konumu kaydedilemedi</translation>
+    </message>
+    <message>
+        <source>Dinero could not save the new data folder location. The old data is untouched.</source>
+        <translation>Dinero yeni veri klasörü konumunu kaydedemedi. Eski verilere dokunulmaz.</translation>
+    </message>
+</context>
 </TS>

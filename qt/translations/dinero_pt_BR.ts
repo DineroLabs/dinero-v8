@@ -8667,4 +8667,125 @@ Este é um dos seus pares de bootstrap configurados. Bana apenas se estiver depu
         <translation>Banir por 24 horas</translation>
     </message>
 </context>
+<context>
+    <name>LegacySnapshotDialog</name>
+    <message>
+        <source>Preserved Dinero data is missing</source>
+        <translation>Dados preservados do Dinero estão faltando</translation>
+    </message>
+    <message>
+        <source>The preserved Dinero data folder is missing:
+%1
+
+Dinero will not silently switch to a different wallet.</source>
+        <translation>A pasta de dados Dinero preservada está faltando:
+%1
+
+Dinero não mudará silenciosamente para uma carteira diferente.</translation>
+    </message>
+    <message>
+        <source>Dinero wallet data is missing</source>
+        <translation>Os dados da carteira Dinero estão faltando</translation>
+    </message>
+    <message>
+        <source>The selected Dinero data folder is missing:
+%1
+
+Restore that folder before opening the wallet. Dinero will not silently switch to a different wallet.</source>
+        <translation>A pasta de dados Dinero selecionada está faltando:
+%1
+
+Restaure essa pasta antes de abrir a carteira. Dinero não mudará silenciosamente para uma carteira diferente.</translation>
+    </message>
+    <message>
+        <source>Update Dinero wallet data</source>
+        <translation>Atualizar dados da carteira Dinero</translation>
+    </message>
+    <message>
+        <source>This computer has older Dinero data. A new wallet here might miss coins.</source>
+        <translation>Este computador tem dados antigos do Dinero. Uma carteira nova criada aqui pode não mostrar algumas moedas.</translation>
+    </message>
+    <message>
+        <source>Dinero found existing wallet files. A separate new wallet can use current blockchain data, but it will NOT show or transfer coins from those existing wallets. Keep their recovery words and the old data folder.
+
+Old data folder:
+%1</source>
+        <translation>Dinero encontrou arquivos de carteira existentes. Uma nova carteira separada pode usar dados atuais de blockchain, mas NÃO mostrará ou transferirá moedas dessas carteiras existentes. Mantenha suas palavras de recuperação e a pasta de dados antiga.
+
+Pasta de dados antiga:
+%1</translation>
+    </message>
+    <message>
+        <source>Dinero found no wallet files or recovery keys in this data folder. It can start a new, separate data folder using current blockchain data. The old folder stays untouched at:
+%1
+
+The new node will need time to verify wallet history before you can create a wallet.</source>
+        <translation>Dinero não encontrou arquivos de carteira ou chaves de recuperação nesta pasta de dados. Ele pode iniciar uma nova pasta de dados separada usando os dados atuais do blockchain. A pasta antiga permanece intacta em:
+%1
+
+O novo nó precisará de tempo para verificar o histórico da carteira antes que você possa criar uma carteira.</translation>
+    </message>
+    <message>
+        <source>Start a separate new wallet</source>
+        <translation>Comece uma nova carteira separada</translation>
+    </message>
+    <message>
+        <source>Start with current data</source>
+        <translation>Comece com dados atuais</translation>
+    </message>
+    <message>
+        <source>Keep old data for now</source>
+        <translation>Mantenha os dados antigos por enquanto</translation>
+    </message>
+    <message>
+        <source>Language</source>
+        <translation>Idioma</translation>
+    </message>
+    <message>
+        <source>Recover existing wallets</source>
+        <translation>Recuperar carteiras existentes</translation>
+    </message>
+    <message>
+        <source>I understand this does not move my existing wallets or coins</source>
+        <translation>Entendo que isso não move minhas carteiras ou moedas existentes</translation>
+    </message>
+    <message>
+        <source>Recover an existing wallet</source>
+        <translation>Recuperar uma carteira existente</translation>
+    </message>
+    <message>
+        <source>Your wallet files are still in:
+%1
+
+Do not delete this folder. A wallet with coins from before the current snapshot needs its full history checked before its balance can be trusted. Keep your recovery words and ask Dinero support to help recover the existing wallet. You can reopen the app later to create a separate new wallet.</source>
+        <translation>Os arquivos da sua carteira ainda estão em:
+%1
+
+Não exclua esta pasta. Uma carteira com moedas anteriores ao instantâneo atual precisa que seu histórico completo seja verificado antes que seu saldo possa ser confiável. Mantenha suas palavras de recuperação e peça ao suporte da Dinero para ajudar a recuperar a carteira existente. Você pode reabrir o aplicativo mais tarde para criar uma nova carteira separada.</translation>
+    </message>
+    <message>
+        <source>Dinero is already running</source>
+        <translation>O Dinero já está em execução</translation>
+    </message>
+    <message>
+        <source>A Dinero node started while this window was open. Close it and reopen the wallet to start with current data.</source>
+        <translation>Um nó Dinero foi iniciado enquanto esta janela estava aberta. Feche-a e reabra a carteira para começar com os dados atuais.</translation>
+    </message>
+    <message>
+        <source>Could not create Dinero data</source>
+        <translation>Não foi possível criar dados do Dinero</translation>
+    </message>
+    <message>
+        <source>Dinero could not create a separate data folder. The old data is untouched.</source>
+        <translation>Dinero não conseguiu criar uma pasta de dados separada. Os dados antigos permanecem intocados.</translation>
+    </message>
+    <message>
+        <source>Could not save Dinero data location</source>
+        <translation>Não foi possível salvar a localização dos dados do Dinero</translation>
+    </message>
+    <message>
+        <source>Dinero could not save the new data folder location. The old data is untouched.</source>
+        <translation>Dinero não conseguiu salvar o novo local da pasta de dados. Os dados antigos permanecem intocados.</translation>
+    </message>
+</context>
 </TS>

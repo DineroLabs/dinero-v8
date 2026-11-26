@@ -8667,4 +8667,125 @@ Ovo je jedan od vaših podešenih početnih peer-ova. Zabranite ga samo ako otkl
         <translation>Zabrani 24 sata</translation>
     </message>
 </context>
+<context>
+    <name>LegacySnapshotDialog</name>
+    <message>
+        <source>Preserved Dinero data is missing</source>
+        <translation>Nedostaju sačuvani Dinero podaci</translation>
+    </message>
+    <message>
+        <source>The preserved Dinero data folder is missing:
+%1
+
+Dinero will not silently switch to a different wallet.</source>
+        <translation>Nedostaje sačuvana mapa Dinero podataka:
+%1
+
+Dinero se neće tiho prebaciti na drugi novčanik.</translation>
+    </message>
+    <message>
+        <source>Dinero wallet data is missing</source>
+        <translation>Nedostaju podaci Dinero novčanika</translation>
+    </message>
+    <message>
+        <source>The selected Dinero data folder is missing:
+%1
+
+Restore that folder before opening the wallet. Dinero will not silently switch to a different wallet.</source>
+        <translation>Odabrana mapa Dinero podataka nedostaje:
+%1
+
+Vratite tu mapu prije otvaranja novčanika. Dinero se neće bez upozorenja prebaciti na drugi novčanik.</translation>
+    </message>
+    <message>
+        <source>Update Dinero wallet data</source>
+        <translation>Ažurirajte podatke Dinero novčanika</translation>
+    </message>
+    <message>
+        <source>This computer has older Dinero data. A new wallet here might miss coins.</source>
+        <translation>Ovaj računar ima starije Dinero podatke. Novi novčanik kreiran ovdje možda neće prikazati neke novčiće.</translation>
+    </message>
+    <message>
+        <source>Dinero found existing wallet files. A separate new wallet can use current blockchain data, but it will NOT show or transfer coins from those existing wallets. Keep their recovery words and the old data folder.
+
+Old data folder:
+%1</source>
+        <translation>Dinero je pronašao postojeće fajlove novčanika. Zaseban novi novčanik može koristiti trenutne blockchain podatke, ali NEĆE prikazati niti prenositi novčiće iz tih postojećih novčanika. Zadržite njihove riječi za oporavak i staru mapu podataka.
+
+Stari folder sa podacima:
+%1</translation>
+    </message>
+    <message>
+        <source>Dinero found no wallet files or recovery keys in this data folder. It can start a new, separate data folder using current blockchain data. The old folder stays untouched at:
+%1
+
+The new node will need time to verify wallet history before you can create a wallet.</source>
+        <translation>Dinero nije pronašao datoteke novčanika ili ključeve za oporavak u ovoj mapi podataka. Može pokrenuti novu, zasebnu mapu podataka koristeći trenutne blockchain podatke. Stari folder ostaje netaknut na:
+%1
+
+Novom čvoru će trebati vrijeme da provjeri historiju novčanika prije nego što možete kreirati novčanik.</translation>
+    </message>
+    <message>
+        <source>Start a separate new wallet</source>
+        <translation>Započnite poseban novi novčanik</translation>
+    </message>
+    <message>
+        <source>Start with current data</source>
+        <translation>Počnite sa trenutnim podacima</translation>
+    </message>
+    <message>
+        <source>Keep old data for now</source>
+        <translation>Sačuvajte stare podatke za sada</translation>
+    </message>
+    <message>
+        <source>Language</source>
+        <translation>Jezik</translation>
+    </message>
+    <message>
+        <source>Recover existing wallets</source>
+        <translation>Oporavi postojeće novčanike</translation>
+    </message>
+    <message>
+        <source>I understand this does not move my existing wallets or coins</source>
+        <translation>Razumijem da ovo ne pomjera moje postojeće novčanike ili novčiće</translation>
+    </message>
+    <message>
+        <source>Recover an existing wallet</source>
+        <translation>Povratite postojeći novčanik</translation>
+    </message>
+    <message>
+        <source>Your wallet files are still in:
+%1
+
+Do not delete this folder. A wallet with coins from before the current snapshot needs its full history checked before its balance can be trusted. Keep your recovery words and ask Dinero support to help recover the existing wallet. You can reopen the app later to create a separate new wallet.</source>
+        <translation>Vaši fajlovi novčanika su još uvijek u:
+%1
+
+Nemojte brisati ovaj folder. Novčaniku s novčićima prije trenutnog snimka potrebno je provjeriti potpunu historiju prije nego što se može vjerovati njegovom stanju. Zadržite svoje riječi za oporavak i zamolite Dinero podršku da vam pomogne u oporavku postojećeg novčanika. Aplikaciju možete ponovo otvoriti kasnije da kreirate poseban novi novčanik.</translation>
+    </message>
+    <message>
+        <source>Dinero is already running</source>
+        <translation>Dinero već radi</translation>
+    </message>
+    <message>
+        <source>A Dinero node started while this window was open. Close it and reopen the wallet to start with current data.</source>
+        <translation>Dinero čvor je pokrenut dok je ovaj prozor bio otvoren. Zatvorite ga i ponovo otvorite novčanik da počnete sa trenutnim podacima.</translation>
+    </message>
+    <message>
+        <source>Could not create Dinero data</source>
+        <translation>Nije moguće kreirati Dinero podatke</translation>
+    </message>
+    <message>
+        <source>Dinero could not create a separate data folder. The old data is untouched.</source>
+        <translation>Dinero nije mogao kreirati zasebnu mapu podataka. Stari podaci su netaknuti.</translation>
+    </message>
+    <message>
+        <source>Could not save Dinero data location</source>
+        <translation>Nije moguće pohraniti Dinero podatkovnu lokaciju</translation>
+    </message>
+    <message>
+        <source>Dinero could not save the new data folder location. The old data is untouched.</source>
+        <translation>Dinero nije mogao sačuvati novu lokaciju mape podataka. Stari podaci su netaknuti.</translation>
+    </message>
+</context>
 </TS>
