@@ -57,6 +57,8 @@
 #include "build_identity.h"
 #include "debugconsole.h"
 #include "portcheck.h"
+#include "apprestart.h"
+#include "i18n.h"
 
 #include "swaplaunchpolicy.h"
 #include "minercontroller.h"
@@ -1323,6 +1325,9 @@ int main(int argc, char** argv) {
   app.setApplicationName("Dinero");
   app.setApplicationVersion(QStringLiteral(DINERO_RELEASE_TAG));
   app.setOrganizationName("Dinero");
+  // Install the chosen catalog before constructing any widgets. Language
+  // selection never changes the locale used for amounts or recovery words.
+  dinero::qt::i18n::InstallTranslator(app);
 
   // Install suppressing message handler early to prevent console output
   // This will be replaced with the full Debug Console handler later
@@ -1355,7 +1360,18 @@ int main(int argc, char** argv) {
   static QLockFile* singleInstanceLock =
       new QLockFile(QDir(datadir).filePath(QStringLiteral(".dinero-qt.lock")));
   singleInstanceLock->setStaleLockTime(0);
-  if (!singleInstanceLock->tryLock(0)) {
+  bool acquiredSingleInstanceLock = singleInstanceLock->tryLock(0);
+  if (!acquiredSingleInstanceLock &&
+      dinero::qt::apprestart::StartedAwaitingRestart(args)) {
+    QElapsedTimer restartLockWait;
+    restartLockWait.start();
+    while (!acquiredSingleInstanceLock &&
+           restartLockWait.elapsed() < dinero::qt::apprestart::LockWaitMilliseconds()) {
+      QThread::msleep(200);
+      acquiredSingleInstanceLock = singleInstanceLock->tryLock(0);
+    }
+  }
+  if (!acquiredSingleInstanceLock) {
     qWarning() << "Another dinero-qt instance already holds the lock for"
                << datadir << "- refusing to start a second instance";
     QMessageBox box;
@@ -1580,6 +1596,15 @@ int main(int argc, char** argv) {
   if (daemonProcess) {
     gracefulShutdownDaemon(daemonProcess, datadir);
     delete daemonProcess;
+  }
+
+  if (dinero::qt::apprestart::RestartRequested()) {
+    const QString program = QCoreApplication::applicationFilePath();
+    const QStringList relaunchArgs =
+        dinero::qt::apprestart::RelaunchArguments(args);
+    if (!QProcess::startDetached(program, relaunchArgs)) {
+      qWarning() << "restart: relaunch failed; start Dinero manually";
+    }
   }
 
   return ret;
