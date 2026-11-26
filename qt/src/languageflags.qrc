@@ -1,0 +1,20 @@
+<RCC>
+  <qresource prefix="/language-flags">
+    <file alias="LICENSE.flag-icons">../assets/flags/LICENSE.flag-icons</file>
+    <file alias="gb.png">../assets/flags/gb.png</file>
+    <file alias="es.png">../assets/flags/es.png</file>
+    <file alias="cn.png">../assets/flags/cn.png</file>
+    <file alias="ru.png">../assets/flags/ru.png</file>
+    <file alias="br.png">../assets/flags/br.png</file>
+    <file alias="de.png">../assets/flags/de.png</file>
+    <file alias="fr.png">../assets/flags/fr.png</file>
+    <file alias="tr.png">../assets/flags/tr.png</file>
+    <file alias="pl.png">../assets/flags/pl.png</file>
+    <file alias="ua.png">../assets/flags/ua.png</file>
+    <file alias="jp.png">../assets/flags/jp.png</file>
+    <file alias="vn.png">../assets/flags/vn.png</file>
+    <file alias="ba.png">../assets/flags/ba.png</file>
+    <file alias="se.png">../assets/flags/se.png</file>
+    <file alias="si.png">../assets/flags/si.png</file>
+  </qresource>
+</RCC>

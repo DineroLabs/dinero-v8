@@ -39,7 +39,7 @@ IdentitySection::IdentitySection(QWidget* parent) : QWidget(parent) {
     nodeIdLabel_->setStyleSheet("font-family: monospace;");
     nodeIdCopyBtn_ = new QPushButton("📋", this);
     nodeIdCopyBtn_->setFixedWidth(28);
-    nodeIdCopyBtn_->setToolTip("Copy node_id");
+    nodeIdCopyBtn_->setToolTip(tr("Copy node_id"));
     connect(nodeIdCopyBtn_, &QPushButton::clicked, this, [this]() {
         const QString raw = nodeIdLabel_->text().remove(' ');
         QApplication::clipboard()->setText(raw);

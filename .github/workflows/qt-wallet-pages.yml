@@ -31,7 +31,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            qt6-base-dev ninja-build cmake g++ libcurl4-openssl-dev libssl-dev pkg-config \
+            qt6-base-dev qt6-tools-dev qt6-tools-dev-tools ninja-build cmake g++ libcurl4-openssl-dev libssl-dev pkg-config \
             nlohmann-json3-dev
           # nlohmann-json3-dev: the embedded miner library uses the system
           # package when present, so configuring fetches nothing from the network.
@@ -42,16 +42,16 @@ jobs:
             -DBUILD_TESTING=ON \
             -DDIN_ENABLE_ORCHARD_UI=ON \
             -DDINERO_QT_ENABLE_SOLO_CUDA=OFF
-      - name: Build the three page tests
+      - name: Build page and language tests
         run: |
           cmake --build build-qt-pages --parallel 4 --target \
-            test_orchard_tab test_wallet_layout test_wallet_navigation
+            test_orchard_tab test_wallet_layout test_wallet_navigation test_i18n
       - name: Run them
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
           ctest --test-dir build-qt-pages --output-on-failure --no-tests=error \
-            -R '^(OrchardTab|WalletLayout|WalletNavigation)$' | tee qt-wallet-pages.txt
-          # All three must have run: a renamed or dropped test is a failure,
+            -R '^(OrchardTab|WalletLayout|WalletNavigation|QtI18nChain|QtSeedPhraseNeverTranslated|QtUniversalTermsUntranslated)$' | tee qt-wallet-pages.txt
+          # All six must have run: a renamed or dropped test is a failure,
           # not a quiet pass.
-          grep -Eq '100% tests passed, 0 tests failed out of 3$' qt-wallet-pages.txt
+          grep -Eq '100% tests passed, 0 tests failed out of 6$' qt-wallet-pages.txt
