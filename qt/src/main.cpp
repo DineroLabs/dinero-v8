@@ -1555,9 +1555,6 @@ int main(int argc, char** argv) {
   app.setApplicationName("Dinero");
   app.setApplicationVersion(QStringLiteral(DINERO_RELEASE_TAG));
   app.setOrganizationName("Dinero");
-  // Install the chosen catalog before constructing any widgets. Language
-  // selection never changes the locale used for amounts or recovery words.
-  dinero::qt::i18n::InstallTranslator(app);
 
   // Install suppressing message handler early to prevent console output
   // This will be replaced with the full Debug Console handler later
@@ -1593,6 +1590,10 @@ int main(int argc, char** argv) {
     if (!selected) return 1;
     datadir = *selected;
   }
+  // The legacy-data dialog can change the language before the wallet opens.
+  // Install its final choice now, before constructing the main UI. Locale,
+  // amount formatting, and recovery words remain unchanged.
+  dinero::qt::i18n::InstallTranslator(app);
 
   // Single-instance guard. dinero-qt embeds and manages a dinerod bound to
   // fixed ports (RPC 20998 / P2P 20999) against this datadir. A second GUI
