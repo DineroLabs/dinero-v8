@@ -11,20 +11,23 @@ class SnapshotWiring(unittest.TestCase):
     def setUp(self):
         catalog = json.loads((ROOT / 'packaging/snapshot/desktop-inputs-candidate.json').read_text(encoding='utf-8'))
         pinned = [catalog['primary']['filename'], *(e['filename'] for e in catalog['fallbacks'])]
-        # Package defaults must follow the exact pinned primary and six
+        # Package defaults must follow the exact pinned primary and seven
         # older recovery inputs. Native admission is qualified separately.
         self.names = pinned
         self.primary_height = catalog['primary']['height']
         self.primary_sha256 = catalog['primary']['sha256']
-        self.assertEqual(len(self.names), 7)
-        self.assertEqual(catalog['fallbacks'][0]['height'], 155650)
+        self.assertEqual(len(self.names), 8)
+        self.assertEqual(catalog['fallbacks'][0]['height'], 163965)
         self.assertEqual(catalog['fallbacks'][0]['sha256'],
-                         '3a8e7cde0d366a2d7498a083848fd2734173edca070bf813098494ba12796e9b')
-        self.assertEqual(catalog['fallbacks'][1]['height'], 153578)
+                         '7736af68fb2ca12b71319036206e99853bb595b4dd90c4f3e22e9c8e364a6646')
+        self.assertEqual(catalog['fallbacks'][1]['height'], 155650)
         self.assertEqual(catalog['fallbacks'][1]['sha256'],
-                         '3bb6185106744297a8ae0e6f51c0f734aab8a70eaa7044d8d5dc1880b1cf57cd')
-        self.assertEqual(catalog['fallbacks'][2]['height'], 153051)
+                         '3a8e7cde0d366a2d7498a083848fd2734173edca070bf813098494ba12796e9b')
+        self.assertEqual(catalog['fallbacks'][2]['height'], 153578)
         self.assertEqual(catalog['fallbacks'][2]['sha256'],
+                         '3bb6185106744297a8ae0e6f51c0f734aab8a70eaa7044d8d5dc1880b1cf57cd')
+        self.assertEqual(catalog['fallbacks'][3]['height'], 153051)
+        self.assertEqual(catalog['fallbacks'][3]['sha256'],
                          '20d87ae691ebc9cd4c42a8800ce7d69af58a4bb97a565f4a8bc1532792fb513f')
 
     def test_release_notes_name_the_pinned_primary_height(self):
@@ -35,12 +38,15 @@ class SnapshotWiring(unittest.TestCase):
         self.assertIn('SHA256SUMS-assumeutxo-153051', notes)
         self.assertIn(self.names[1] + '.publisher.manifest.sig', notes)
 
-    def test_gui_selection_and_windows_derivation_cover_all_seven(self):
+    def test_gui_selection_and_windows_derivation_cover_all_eight(self):
         source = (ROOT / 'qt/src/main.cpp').read_text(encoding='utf-8')
         builder = (ROOT / 'packaging/windows/build-installer.ps1').read_text(encoding='utf-8')
-        for name, constant in zip(self.names, ['Primary', 'PreviousPrimary', 'PriorFullV6', 'RecentFallback', 'Fallback', 'LegacyFallback', 'OldestFallback']):
+        for name, constant in zip(self.names, ['Primary', 'ImmediatePrevious', 'PreviousPrimary', 'PriorFullV6', 'RecentFallback', 'Fallback', 'LegacyFallback', 'OldestFallback']):
             self.assertEqual(re.search(r'kBundledSnapshot' + constant + r'\[\]\s*=\s*"([^"]+)"', source)[1], name)
-            if constant == 'PreviousPrimary':
+            if constant == 'ImmediatePrevious':
+                self.assertIn("$immediateName = '" + name + "'", builder)
+                self.assertIn("throw 'Required H163965 exact-lifecycle snapshot fallback missing.'", builder)
+            elif constant == 'PreviousPrimary':
                 self.assertIn("$previousName = '" + name + "'", builder)
                 self.assertIn("throw 'Required H155650 exact-lifecycle snapshot fallback missing.'", builder)
             elif constant == 'PriorFullV6':
@@ -54,10 +60,11 @@ class SnapshotWiring(unittest.TestCase):
         self.assertIn("throw 'Required oldest exact-lifecycle snapshot fallback missing.'", builder)
         self.assertIn("throw 'Required H153051 exact-lifecycle snapshot fallback missing.'", builder)
 
-    def test_linux_stages_all_seven(self):
+    def test_linux_stages_all_eight(self):
         source = (ROOT / 'packaging/linux/stage-snapshot-pair.sh').read_text(encoding='utf-8')
-        for name, variable in zip(self.names, ['PRIMARY_NAME', 'PREVIOUS_PRIMARY_NAME', 'PRIOR_FULL_V6_NAME', 'RECENT_FALLBACK_NAME', 'FALLBACK_NAME', 'LEGACY_FALLBACK_NAME', 'OLDEST_FALLBACK_NAME']):
+        for name, variable in zip(self.names, ['PRIMARY_NAME', 'IMMEDIATE_PREVIOUS_NAME', 'PREVIOUS_PRIMARY_NAME', 'PRIOR_FULL_V6_NAME', 'RECENT_FALLBACK_NAME', 'FALLBACK_NAME', 'LEGACY_FALLBACK_NAME', 'OLDEST_FALLBACK_NAME']):
             self.assertEqual(re.search(r'^' + variable + r'="([^"]+)"', source, re.M)[1], name)
+        self.assertIn('verify_and_stage "$IMMEDIATE_PREVIOUS_DATA"', source)
         self.assertIn('verify_and_stage "$LEGACY_FALLBACK_DATA"', source)
         self.assertIn('verify_and_stage "$OLDEST_FALLBACK_DATA"', source)
         self.assertIn('verify_and_stage "$PREVIOUS_PRIMARY_DATA"', source)
@@ -69,9 +76,10 @@ class SnapshotWiring(unittest.TestCase):
     def test_macos_defaults_and_copy_destinations_agree(self):
         source = (ROOT / 'packaging/mac/build-installer.sh').read_text(encoding='utf-8')
         defaults = re.findall(r'packaging/mac/snapshot/([^"}]+\.dat)', source)
-        self.assertEqual(defaults, [self.names[0], *self.names[3:]])
-        self.assertIn('SNAPSHOT_PREVIOUS_PRIMARY_DAT="$(dirname "$SNAPSHOT_DAT")/' + self.names[1], source)
-        self.assertIn('SNAPSHOT_PRIOR_FULL_V6_DAT="$(dirname "$SNAPSHOT_DAT")/' + self.names[2], source)
+        self.assertEqual(defaults, [self.names[0], *self.names[4:]])
+        self.assertIn('SNAPSHOT_IMMEDIATE_PREVIOUS_DAT="$(dirname "$SNAPSHOT_DAT")/' + self.names[1], source)
+        self.assertIn('SNAPSHOT_PREVIOUS_PRIMARY_DAT="$(dirname "$SNAPSHOT_DAT")/' + self.names[2], source)
+        self.assertIn('SNAPSHOT_PRIOR_FULL_V6_DAT="$(dirname "$SNAPSHOT_DAT")/' + self.names[3], source)
         for name in self.names:
             self.assertIn('Contents/Resources/' + name, source)
 
@@ -98,14 +106,16 @@ class SnapshotWiring(unittest.TestCase):
                     self.assertGreaterEqual(source.count(self.names[0] + '.publisher.manifest.json'), expected_count)
                     self.assertGreaterEqual(source.count(self.names[0] + '.publisher.manifest.sig'), expected_count)
                 self.assertIn(self.names[0] + '.manifest.json', source)
+                self.assertIn(self.names[1], source)
+                self.assertIn('--fallback-height 163965' if path == 'macos-desktop-candidate.yml' else "--pattern '" + self.names[1] + "*'", source)
                 self.assertIn('--fallback-height 153051', source)
                 if path == 'macos-desktop-candidate.yml':
                     self.assertIn('--fallback-height 155650', source)
                 else:
-                    self.assertIn("--pattern '" + self.names[1] + "*'", source)
+                    self.assertIn("--pattern '" + self.names[2] + "*'", source)
                 self.assertIn('h153051-f7-05105aa3-20d87ae6/', source)
                 if path != 'macos-desktop-candidate.yml':
-                    self.assertIn(self.names[1], source)
+                    self.assertIn(self.names[2], source)
                 if path.startswith('windows'):
                     self.assertIn('-SnapshotRecentFallbackPath', source)
                     self.assertIn('-SnapshotRecentFallbackManifestPath', source)
@@ -149,7 +159,7 @@ class SnapshotWiring(unittest.TestCase):
                 self.assertNotRegex(source, r'https://[^\s\'"/]+/snapshot/full-v6/(?:latest/)?(?:snapshot\.dat|manifest\.json)')
 
     def test_h153051_release_builds_use_same_tag_signed_assets(self):
-        base = self.names[3]
+        base = self.names[4]
         signed_names = (base, base + '.manifest.json',
                         base + '.publisher.manifest.json',
                         base + '.publisher.manifest.sig')

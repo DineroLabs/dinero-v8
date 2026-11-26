@@ -135,8 +135,8 @@ jobs:
             exit 1
           }
 
-      # Draft assets require authenticated GitHub access. Keep the three
-      # published prior bases available for GUI recovery after an upgrade.
+      # Draft assets require authenticated GitHub access. Keep the published
+      # prior bases available for GUI recovery after an upgrade.
       - name: Fetch full-v6 primary and exact recovery bases
         env:
           GH_TOKEN: ${{ github.token }}
@@ -160,6 +160,9 @@ jobs:
               --pattern 'dinero-assumeutxo-167856-v6-full.dat.publisher.manifest.sig' \
               --dir packaging/windows/dist --clobber
             gh release download "$PRIMARY_RELEASE" --repo DineroLabs/dinero-v8 \
+              --pattern 'dinero-assumeutxo-163965-v6-full.dat*' \
+              --dir packaging/windows/dist --clobber
+            gh release download "$PRIMARY_RELEASE" --repo DineroLabs/dinero-v8 \
               --pattern 'dinero-assumeutxo-155650-v6-full.dat*' \
               --dir packaging/windows/dist --clobber
             gh release download "$PRIMARY_RELEASE" --repo DineroLabs/dinero-v8 \
@@ -172,6 +175,11 @@ jobs:
             python packaging/snapshot/fetch_desktop_primary.py \
               --payload-url "$SNAPSHOT_PAYLOAD_URL" \
               --manifest-url "$SNAPSHOT_MANIFEST_URL" \
+              --destination packaging/windows/dist
+            python packaging/snapshot/fetch_desktop_primary.py \
+              --fallback-height 163965 \
+              --payload-url 'https://github.com/DineroLabs/dinero-v8/releases/download/v8.2.5/dinero-assumeutxo-163965-v6-full.dat' \
+              --manifest-url 'https://github.com/DineroLabs/dinero-v8/releases/download/v8.2.5/dinero-assumeutxo-163965-v6-full.dat.publisher.manifest.json' \
               --destination packaging/windows/dist
             python packaging/snapshot/fetch_desktop_primary.py \
               --fallback-height 155650 \

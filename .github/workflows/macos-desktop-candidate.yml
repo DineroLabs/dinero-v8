@@ -132,7 +132,7 @@ jobs:
             echo 'variant=${{ matrix.variant }}'
             echo 'qt_version=${{ matrix.qt }}'
             echo 'deployment_target=13.0'
-            echo 'snapshot_inputs=signed H167856 full-v6 primary from pinned HTTPS inputs; H155650/H153578/H153051/H148375/H99677/H65300 recovery bases'
+            echo 'snapshot_inputs=signed H167856 full-v6 primary from pinned HTTPS inputs; H163965/H155650/H153578/H153051/H148375/H99677/H65300 recovery bases'
             echo "source_commit=$SOURCE_HEAD"
             echo "tooling_commit=$TOOLING_HEAD"
             echo "sv2_commit=$SV2_HEAD"
@@ -227,6 +227,11 @@ jobs:
           PATH="$OPENSSL_BIN:$PATH" python3 packaging/snapshot/fetch_desktop_primary.py \
             --payload-url "$SNAPSHOT_PAYLOAD_URL" \
             --manifest-url "$SNAPSHOT_MANIFEST_URL" \
+            --destination release-inputs
+          PATH="$OPENSSL_BIN:$PATH" python3 packaging/snapshot/fetch_desktop_primary.py \
+            --fallback-height 163965 \
+            --payload-url 'https://github.com/DineroLabs/dinero-v8/releases/download/v8.2.5/dinero-assumeutxo-163965-v6-full.dat' \
+            --manifest-url 'https://github.com/DineroLabs/dinero-v8/releases/download/v8.2.5/dinero-assumeutxo-163965-v6-full.dat.publisher.manifest.json' \
             --destination release-inputs
           PATH="$OPENSSL_BIN:$PATH" python3 packaging/snapshot/fetch_desktop_primary.py \
             --fallback-height 155650 \

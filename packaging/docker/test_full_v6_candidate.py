@@ -46,10 +46,10 @@ class FullV6DockerCandidateTest(unittest.TestCase):
         self.assertEqual(tracked.returncode, 0,
                          "publisher key exists locally but is absent from the source checkout")
 
-    def test_entrypoint_passes_all_seven_fallbacks_to_daemon(self):
+    def test_entrypoint_passes_all_eight_fallbacks_to_daemon(self):
         primary = self.root / "primary.dat"
         primary.touch()
-        fallbacks = [self.root / f"fallback-{i}.dat" for i in range(7)]
+        fallbacks = [self.root / f"fallback-{i}.dat" for i in range(8)]
         for path in fallbacks:
             path.touch()
         stub = self.root / "dinerod"
@@ -91,16 +91,17 @@ class FullV6DockerCandidateTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("fallback", result.stderr)
 
-    def test_recovery_manifest_checker_requires_all_seven_exact_payloads(self):
-        names = ["dinero-assumeutxo-155650-v6-full.dat",
+    def test_recovery_manifest_checker_requires_all_eight_exact_payloads(self):
+        names = ["dinero-assumeutxo-163965-v6-full.dat",
+                 "dinero-assumeutxo-155650-v6-full.dat",
                  "dinero-assumeutxo-153578-v6-full.dat",
                  "dinero-assumeutxo-153051-v6-full.dat",
                  "dinero-assumeutxo-148375-v5.dat",
                  "dinero-assumeutxo-99677-v4.dat",
                  "dinero-assumeutxo-73035-v4.dat",
                  "utxo-snapshot-65300.dat"]
-        heights = [155650, 153578, 153051, 148375, 99677, 73035, 65300]
-        versions = [6, 6, 6, 5, 4, 4, 4]
+        heights = [163965, 155650, 153578, 153051, 148375, 99677, 73035, 65300]
+        versions = [6, 6, 6, 6, 5, 4, 4, 4]
         pins = []
         for name, height, version in zip(names, heights, versions):
             block_hash = f"{height:064x}"
@@ -133,13 +134,13 @@ class FullV6DockerCandidateTest(unittest.TestCase):
                 manifest["snapshot_profile"] = "full"
             (self.root / (name + ".manifest.json")).write_text(json.dumps(manifest))
         catalog = self.root / "catalog.json"
-        catalog.write_text(json.dumps({"fallbacks": [*pins[:5], pins[6]]}))
-        self.assertEqual(verify(self.root, catalog, pins[5]), names)
+        catalog.write_text(json.dumps({"fallbacks": [*pins[:6], pins[7]]}))
+        self.assertEqual(verify(self.root, catalog, pins[6]), names)
         # A missing old recovery base fails image preparation, even though the
         # new primary may be present.
         (self.root / names[0]).unlink()
         with self.assertRaises(FileNotFoundError):
-            verify(self.root, catalog, pins[5])
+            verify(self.root, catalog, pins[6])
 
     def test_live_image_uses_reviewed_full_v6_sources(self):
         self.assertEqual((ROOT / "Dockerfile").read_bytes(),
@@ -387,13 +388,13 @@ exit 1
         for path in primary_sidecars:
             path.touch()
         primary_sidecars[-1].write_text('{"publisher_signature_verified": true}\n')
-        fallbacks = [self.root / f'fallback {i}-v6-full.dat' for i in range(3)]
-        fallbacks.extend(self.root / f'fallback {i}.dat' for i in range(3, 7))
+        fallbacks = [self.root / f'fallback {i}-v6-full.dat' for i in range(4)]
+        fallbacks.extend(self.root / f'fallback {i}.dat' for i in range(4, 8))
         for path in fallbacks:
             path.touch()
             Path(str(path) + '.manifest.json').touch()
         publisher_sidecars = []
-        for path in fallbacks[:3]:
+        for path in fallbacks[:4]:
             for suffix in ('.publisher.manifest.json', '.publisher.manifest.sig'):
                 sidecar = Path(str(path) + suffix)
                 sidecar.touch()
@@ -419,7 +420,7 @@ exit 1
         primary_sidecars[-1].write_text('{"publisher_signature_verified": false}\n')
         self.assertNotEqual(run_check().returncode, 0)
         primary_sidecars[-1].write_text('{"publisher_signature_verified": true}\n')
-        check_env['DINERO_SNAPSHOT_FALLBACKS'] = ';'.join(map(str, fallbacks[:6]))
+        check_env['DINERO_SNAPSHOT_FALLBACKS'] = ';'.join(map(str, fallbacks[:7]))
         self.assertNotEqual(run_check().returncode, 0)
 
 
