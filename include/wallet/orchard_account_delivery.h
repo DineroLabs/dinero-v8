@@ -23,6 +23,18 @@ public:
 private:
     Code code_;
 };
+// A cancel request for an operation that is not a Reserved entry of this account.
+class OrchardOperationNotCancellable final : public std::runtime_error {
+public:
+    enum class Code { NotFound, Signed };
+    explicit OrchardOperationNotCancellable(Code code)
+        : std::runtime_error(code==Code::Signed
+              ? "The operation is already signed and cannot be cancelled"
+              : "No such Orchard operation in this account"), code_(code) {}
+    Code Reason() const noexcept { return code_; }
+private:
+    Code code_;
+};
 // A spend whose fee cannot meet the mempool's minimum rate at its exact size.
 // Thrown before anything is reserved, proved or stored: nothing to undo.
 class OrchardFeeBelowMinimum final : public std::runtime_error {
@@ -174,6 +186,16 @@ public:
     // This does not assert chain catch-up or change the narrow legacy read API.
     static IssuedReceiver IssueCatalogReceiverForReplay(WalletManager&,uint64_t session,
         const Profile&,const RuntimeAccountReplay&,orchard::WalletScope);
+
+    // Remove one Reserved (not yet signed) operation and release what it held:
+    // its notes, or a shield's transparent inputs, live only in that entry.
+    // Same capture/recheck/FULL-transaction discipline as issuance. A signed
+    // (Ready) or unknown operation refuses with OrchardOperationNotCancellable
+    // and nothing changes. After COMMIT, the in-memory proof job for this ID,
+    // if any, is cancelled or its unused result discarded; a running proof
+    // finishes and is discarded. Returns the new account revision.
+    static uint64_t CancelReservedForReplay(WalletManager&,uint64_t session,
+        const Profile&,const RuntimeAccountReplay&,const orchard::Hash& operation_id,OrchardProofJobs*);
 
     // A pure Orchard-input spend. The randomized plan escapes only after its
     // nullifiers and any internal change receiver are retained and committed.

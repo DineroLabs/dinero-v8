@@ -1705,6 +1705,72 @@ OrchardAccountDelivery::IssuedReceiver OrchardAccountDelivery::IssueCatalogWithR
     }
     captured->Recheck(*fresh);tx.Commit();return result;
 }
+uint64_t OrchardAccountDelivery::CancelReservedForReplay(
+        WalletManager& w,uint64_t session,const Profile& p,const RuntimeAccountReplay& view,
+        const orchard::Hash& id,OrchardProofJobs* jobs){
+    Check(p.domain.network_code<=2&&p.account<0x80000000&&p.activation>0);
+    const auto context=view.Profile();
+    Check(context.activation_height==p.activation&&context.domain.network_code==p.domain.network_code&&
+        context.domain.genesis_wire==p.domain.genesis_wire&&context.domain.branch_id==p.domain.branch_id);
+    std::unique_ptr<Owner::CapturedCatalog> captured;
+    {
+        auto lease=w.AcquireDatabaseLease();
+        Check(lease->Session()==session&&lease->Database()&&w.database_leases_==1);
+        RequireShieldFullSync(lease->Database());Transaction tx(lease->Database());
+        captured=Owner::CaptureCatalog(w,session,p);tx.Commit();
+    }
+    const auto inventory=captured->Restore([&view](RuntimeOutboxCursor cursor){return view.Point(cursor);});
+    const auto found=std::find_if(inventory.accounts.begin(),inventory.accounts.end(),
+        [&](const auto& entry){return entry.number==p.account;});
+    Check(found!=inventory.accounts.end());
+    const auto& entries=found->state.account.Operations().Entries();
+    const auto entry=entries.find(id);
+    if(entry==entries.end())
+        throw OrchardOperationNotCancellable(OrchardOperationNotCancellable::Code::NotFound);
+    if(entry->second.phase!=OrchardOperationQueue::Phase::Reserved)
+        throw OrchardOperationNotCancellable(OrchardOperationNotCancellable::Code::Signed);
+    // The entry is the whole reservation: its notes, or a shield's transparent
+    // inputs and change, are held only by it (CommitShieldReservation).
+    auto encoded=found->state.account.CancelReserved(id).Encode();
+    const auto expected_revision=found->state.revision;
+    Check(expected_revision<uint64_t(INT64_MAX));
+    const auto revision=expected_revision+1;
+    const auto index=static_cast<size_t>(found-inventory.accounts.begin());
+    {
+        auto& bytes=*captured->bytes[index];
+        Check(captured->ownership.retained_rows<OrchardOwnershipInventory::kMaxRows);
+        bytes.retained.reserve(bytes.retained.size()+1);
+    }
+    {
+        auto lease=w.AcquireDatabaseLease();
+        Check(lease->Session()==session&&lease->Database()&&w.database_leases_==1);
+        RequireShieldFullSync(lease->Database());Transaction tx(lease->Database());
+        {auto fresh=Owner::CaptureCatalog(w,session,p);captured->Recheck(*fresh);}
+        {
+            Owner owner(w,session,p,true,false);
+            Check(owner.store.StageReplaceRetaining(expected_revision,encoded)==revision);
+        }
+        auto fresh=Owner::CaptureCatalog(w,session,p);
+        auto& bytes=*captured->bytes[index];bytes.retained.push_back(std::move(bytes.current));
+        bytes.current={revision,std::move(encoded)};++captured->ownership.retained_rows;
+        captured->Recheck(*fresh);tx.Commit();
+    }
+    // The durable cancel is committed. Free the in-memory proof slot for this
+    // ID; its result can no longer become Ready because the entry is gone.
+    if(jobs){
+        try{
+            if(const auto state=jobs->Query(id)){
+                if(*state==OrchardProofJobs::State::Succeeded)(void)jobs->TakeResult(id);
+                else if(*state==OrchardProofJobs::State::Queued||*state==OrchardProofJobs::State::Running)
+                    (void)jobs->Cancel(id);
+                const auto now=jobs->Query(id);
+                if(now&&(*now==OrchardProofJobs::State::Failed||*now==OrchardProofJobs::State::Cancelled))
+                    jobs->Forget(id);
+            }
+        }catch(...){} // Slot cleanup only; never report a committed cancel as failed.
+    }
+    return revision;
+}
 void OrchardAccountDelivery::Owner::ReconcileSpendCatalog(WalletManager& w,uint64_t session,
         const Profile& p,const RuntimeAccountReplay& view,const std::optional<orchard::Hash>& new_operation){
     std::vector<Enrolled> inventory;

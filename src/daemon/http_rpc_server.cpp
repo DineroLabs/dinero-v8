@@ -62,6 +62,7 @@ static const std::unordered_set<std::string> ADMIN_METHODS = {
     "wallet.orchard.finishshield",
     "wallet.orchard.queuespend",
     "wallet.orchard.finishspend",
+    "wallet.orchard.cancelreserved",
     "swap.deposit",  // allocates a swap and its deposit address
     "swap.recoverdeposits",  // sends BTC left on deposit addresses to an address of the user's
     "btc.start",             // starts the node's Bitcoin client for the built-in wallet

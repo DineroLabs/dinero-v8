@@ -425,4 +425,119 @@ TEST(WalletV3NativeOrchardSpend, ThreeNoteSendBelowFeeFloorRefusedBeforeReservin
     f.context.tx_ingress=nullptr;
 }
 
+// v8.2.7 cancel: a queued (Reserved, unsigned) operation held its notes and
+// blocked the desktop's Orchard page with no way out. cancelreserved removes
+// it and releases the notes, frees its finished proof, and refuses an unknown
+// or signed operation without changing anything.
+TEST(WalletV3NativeOrchardSpend, CancelReservedReleasesQueuedSpendAndRefusesSigned) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-orchard-cancel-index");
+    std::string error;
+    const auto deliver=[&]{
+        ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+            WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    };
+    deliver();
+    f.context.tx_ingress=f.f.ingress.get();
+    auto ctx=f.RequestContext();
+    const auto created=rpc_context_wallet_orchard_createaccount(ctx,OrchardCreationRequest());
+    ASSERT_FALSE(created.isMember("error")) << created.toStyledString();
+    (void)f.Mine(ShieldThreeNotes(f,f.AccountKeys(),150000));
+    deliver();
+    ASSERT_EQ(f.Account().account.Scan().BalanceUna(),450000u);
+
+    constexpr uint64_t fee=20000;
+    const auto id_hex=[](uint8_t tag){std::vector<uint8_t> id(32);id[0]=tag;return util::hex(id);};
+    const auto spend=[&](uint8_t tag){
+        din::Json request,pay;
+        request["account"]=Json::UInt64(3);
+        request["expected_revision"]=Json::UInt64(f.Account().revision);
+        request["request_id"]=id_hex(tag);
+        request["fee_una"]=Json::UInt64(fee);
+        request["payments"]=din::arr();request["outputs"]=din::arr();
+        pay["address"]=created["address"];pay["amount_una"]=Json::UInt64(400000);
+        request["payments"].append(pay);
+        return rpc_context_wallet_orchard_queuespend(ctx,request);
+    };
+    const auto cancel=[&](const std::string& id){
+        din::Json request;request["account"]=Json::UInt64(3);request["operation_id"]=id;
+        return rpc_context_wallet_orchard_cancelreserved(ctx,request);
+    };
+    const auto reserved=[&]{
+        return rpc_context_wallet_orchard_getbalance(ctx,OrchardOperationListRequest())["reserved_confirmed_una"].asUInt64();
+    };
+    const auto listed=[&]{
+        return rpc_context_wallet_orchard_listoperations(ctx,OrchardOperationListRequest())["operations"];
+    };
+    const auto job=[&](uint8_t tag){
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        orchard::Hash op{};op[0]=tag;return use->OrchardProofs().Query(op);
+    };
+
+    // A queued spend holds all three notes, and its proof finishes.
+    const auto queued=spend(0xc1);
+    ASSERT_FALSE(queued.isMember("error")) << queued.toStyledString();
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        orchard::Hash op{};op[0]=0xc1;
+        ASSERT_EQ(ServiceProofTerminal(use->OrchardProofs(),op),wallet::OrchardProofJobs::State::Succeeded);
+    }
+    ASSERT_EQ(reserved(),450000u);
+    ASSERT_EQ(listed().size(),1u);
+    ASSERT_EQ(listed()[0]["durable_state"].asString(),"reserved");
+
+    // An unknown ID is refused and changes nothing.
+    const auto revision_before=f.Account().revision;
+    const auto unknown=cancel(id_hex(0xc9));
+    EXPECT_EQ(unknown["error_code"].asString(),"operation_not_found") << unknown.toStyledString();
+    EXPECT_EQ(f.Account().revision,revision_before);
+    EXPECT_EQ(reserved(),450000u);
+
+    // Cancelling the queued spend releases its notes and frees its proof slot.
+    const auto cancelled=cancel(listed()[0]["operation_id"].asString());
+    ASSERT_FALSE(cancelled.isMember("error")) << cancelled.toStyledString();
+    EXPECT_TRUE(cancelled["cancelled"].asBool());
+    EXPECT_EQ(cancelled["account"].asUInt64(),3u);
+    EXPECT_EQ(cancelled["operation_id"].asString(),id_hex(0xc1));
+    EXPECT_EQ(cancelled["account_revision"].asUInt64(),f.Account().revision);
+    EXPECT_EQ(f.Account().revision,revision_before+1);
+    EXPECT_TRUE(listed().empty()) << listed().toStyledString();
+    EXPECT_EQ(reserved(),0u);
+    EXPECT_FALSE(job(0xc1).has_value()) << "the finished proof of a cancelled operation still holds a slot";
+    din::Json stale;stale["account"]=Json::UInt64(3);stale["request_id"]=id_hex(0xc1);
+    const auto refinished=rpc_context_wallet_orchard_finishspend(ctx,stale);
+    EXPECT_TRUE(refinished.isMember("error")) << "a cancelled operation was finished: " << refinished.toStyledString();
+    EXPECT_TRUE(listed().empty());
+
+    // The released notes pay a new request, which is signed and admitted.
+    const auto again=spend(0xc2);
+    ASSERT_FALSE(again.isMember("error")) << again.toStyledString();
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        orchard::Hash op{};op[0]=0xc2;
+        ASSERT_EQ(ServiceProofTerminal(use->OrchardProofs(),op),wallet::OrchardProofJobs::State::Succeeded);
+    }
+    din::Json finish;finish["account"]=Json::UInt64(3);finish["request_id"]=id_hex(0xc2);
+    const auto finished=rpc_context_wallet_orchard_finishspend(ctx,finish);
+    ASSERT_FALSE(finished.isMember("error")) << finished.toStyledString();
+    ASSERT_TRUE(finished["admitted"].asBool()) << finished.toStyledString();
+
+    // A signed operation cannot be cancelled here, and stays as it was.
+    const auto signed_revision=f.Account().revision;
+    const auto refused=cancel(id_hex(0xc2));
+    EXPECT_EQ(refused["error_code"].asString(),"operation_signed") << refused.toStyledString();
+    EXPECT_FALSE(refused["retryable"].asBool());
+    EXPECT_EQ(f.Account().revision,signed_revision);
+    ASSERT_EQ(listed().size(),1u);
+    EXPECT_EQ(listed()[0]["durable_state"].asString(),"signed");
+    EXPECT_EQ(reserved(),450000u);
+
+    const auto pooled=f.f.ingress->mempool().getMempoolEntry(uint256::FromHexUnsafe(finished["txid"].asString()));
+    ASSERT_TRUE(bool(pooled));
+    ASSERT_TRUE(f.Mine(pooled->tx));
+    deliver();
+    EXPECT_EQ(f.Account().account.Scan().BalanceUna(),450000u-fee);
+    f.context.tx_ingress=nullptr;
+}
+
 } // namespace dinero

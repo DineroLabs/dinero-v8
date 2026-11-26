@@ -36,6 +36,8 @@ A new payment owns one nonzero 32-byte request ID and its original recipients/am
 
 After reopening, discovery alone never sends a payment. The user selects a stored operation and confirms **Resume saved payment**. Selection, binding, generation, revision and operation details are checked again after the dialog. This flow holds no recipient or fee data and cannot queue a new payment. Recipients are not persisted by the UI. Unknown pending operations block starting another payment in the selected account.
 
+`wallet.orchard.cancelreserved {account, operation_id}` removes one `reserved` (unsigned) operation and releases what it held: its notes, or a shield's transparent inputs and change, which live only in that entry. Success returns `account`, `operation_id`, the new `account_revision` and `cancelled=true`. The operation is removed, not archived, so `listoperations` no longer lists it. Its in-memory proof is cancelled or its finished result discarded. A `signed` operation refuses with `operation_signed` and an unknown ID with `operation_not_found` (both `retryable=false`), and nothing changes. A signed operation's bytes may already be in a mempool, so releasing its notes is a separate design. The call needs an unlocked wallet, and read-only RPC refuses it.
+
 Queued, proving and proof-ready states are distinct from submission. Admission or already-in-mempool means Submitted, not Confirmed. Confirmation/conflict comes from the account's authenticated block observation; reorgs can change that observation. An in-flight request may finish for the original wallet after a UI switch; the app warns and requires that wallet/node to be checked.
 
 ## Remaining work

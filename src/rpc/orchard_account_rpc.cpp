@@ -73,6 +73,11 @@ void OrchardRpcFailure(din::Json& result,const std::exception& error) {
             case Code::RequestNotCurrent:result["error_code"]="request_not_current";break;
         }
     }
+    if(const auto* cancel=dynamic_cast<const dinero::wallet::OrchardOperationNotCancellable*>(&error)) {
+        result["error_code"]=cancel->Reason()==dinero::wallet::OrchardOperationNotCancellable::Code::Signed
+            ? "operation_signed" : "operation_not_found";
+        result["retryable"]=false;
+    }
     if(const auto* fee=dynamic_cast<const dinero::wallet::OrchardFeeBelowMinimum*>(&error)) {
         // Nothing was reserved. Retrying the same request cannot succeed; a
         // higher fee or a payment that uses fewer notes can.
@@ -922,6 +927,49 @@ din::Json OrchardShieldCall(const ExecutionContext& ctx,const din::Json& params,
 din::Json rpc_context_wallet_orchard_queueshield(const ExecutionContext& ctx,const din::Json& params){return OrchardShieldCall(ctx,params,false);}
 din::Json rpc_context_wallet_orchard_finishshield(const ExecutionContext& ctx,const din::Json& params){return OrchardShieldCall(ctx,params,true);}
 
+din::Json rpc_context_wallet_orchard_cancelreserved(const ExecutionContext& ctx,const din::Json& params){
+    din::Json result;
+    try {
+        if(!params.isObject()||params.size()!=2||!params.isMember("account")||!params.isMember("operation_id"))
+            throw std::runtime_error("Usage: wallet.orchard.cancelreserved {account, operation_id}");
+        const auto account=SpendInteger(params["account"],"account");
+        if(account>=0x80000000ULL)throw std::runtime_error("Orchard account number is out of range");
+        const auto bytes=SpendHex(SpendText(params["operation_id"],"operation_id",64));
+        dinero::orchard::Hash id{};
+        if(bytes.size()!=id.size()||std::none_of(bytes.begin(),bytes.end(),[](auto n){return n!=0;}))
+            throw std::runtime_error("operation_id must be nonzero 32-byte hex");
+        std::copy(bytes.begin(),bytes.end(),id.begin());
+#if DINERO_WALLET_RAW_ORCHARD
+        if(!ctx.daemon)throw std::runtime_error("Daemon services unavailable");
+        auto source=std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        auto wallet=std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
+        auto source_use=dinero::ChainstateService::AcquireWalletIndexUse(source);
+        auto wallet_use=dinero::WalletService::AcquireWalletUse(wallet);
+        uint64_t session;
+        {
+            auto lease=wallet_use->Wallet().AcquireDatabaseLease();
+            CheckOrchardRequestWallet(ctx,*lease);
+            session=lease->Session();
+        }
+        if(source->IsInSafeMode())throw std::runtime_error("Orchard wallet changes unavailable in safe mode");
+        const auto view=source->getRuntimeAccountReplayForWallet(wallet_use->Wallet(),session);
+        if(!view.ok())throw std::runtime_error("Authenticated Orchard replay source unavailable");
+        const auto context=(*view)->Profile();
+        const dinero::wallet::OrchardAccountDelivery::Profile profile{
+            context.domain,context.activation_height,static_cast<uint32_t>(account)};
+        const auto revision=dinero::wallet::OrchardAccountDelivery::CancelReservedForReplay(
+            wallet_use->Wallet(),session,profile,**view,id,&wallet_use->OrchardProofs());
+        result["account"]=Json::UInt64(account);
+        result["operation_id"]=params["operation_id"].asString();
+        result["account_revision"]=Json::UInt64(revision);
+        result["cancelled"]=true;
+#else
+        (void)ctx;(void)id;throw std::runtime_error("Orchard wallet backend unavailable");
+#endif
+    }catch(const std::exception& e){OrchardRpcFailure(result,e);}
+    return result;
+}
+
 din::Json rpc_context_orchard_getactivationstatus(const ExecutionContext& ctx,const din::Json& params) {
     din::Json result;
     try {
@@ -1034,6 +1082,14 @@ void RegisterOrchardAccountRpc(){
         {"object","Durable signed transaction ID and separate admission result."},
         "Provide account and request_id to use authenticated stored details, or resend the complete original queue intent. Completion loads retained inputs/change; it never selects replacements. Missing process-local Reserved work requires the original encrypted randomized intent and complete current catalog; it never steals an old session job. Signing and full source verification precede Ready commit; submission follows outside owners. Explicit reacquire_input_proofs=true authenticates the same signed Ready and fetches CURRENT per-input DATA only when its compact pool entry is absent. Existing missing/stale/invalid retained proof DATA still refuses, with no fallback/repair. No new Orchard proof, wallet owner, history or mixed readiness is created. Failed admission retains the same bytes; archived requests are not resubmitted."};
     RegisterBoundOrchard(shield_completion,rpc_context_wallet_orchard_finishshield);
+    const RpcMethodMeta cancellation{
+        "wallet.orchard.cancelreserved","wallet",
+        "Cancel a queued Orchard operation that has not been signed, releasing the notes or transparent coins it reserved.",
+        {{"account","integer","Existing Orchard operation owner account.",true},
+         {"operation_id","string","operation_id from wallet.orchard.listoperations (nonzero 32-byte hex).",true}},
+        {"object","account, operation_id, the new account_revision and cancelled=true."},
+        "Requires an unlocked wallet and complete authenticated account catalog. Only durable_state reserved can be cancelled: nothing was signed or sent for it. A signed operation refuses with operation_signed and an unknown ID with operation_not_found; neither changes anything. An in-memory proof for the operation is cancelled or discarded."};
+    RegisterBoundOrchard(cancellation,rpc_context_wallet_orchard_cancelreserved);
 
     const RpcMethodMeta spending{
         "wallet.orchard.queuespend","wallet",
