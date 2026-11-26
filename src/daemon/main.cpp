@@ -37,6 +37,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <stdexcept>
+#include <memory>
+#include <sqlite3.h>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -210,6 +212,136 @@ int RunOfflineWalletIndexV3Upgrade(const dinero::daemon::DatadirGuard& guard,
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "Wallet index v3 offline upgrade refused: " << error.what() << '\n';
+        return 1;
+    }
+}
+
+// A foreground, read-only probe for the desktop's old-snapshot recovery
+// choice. An empty wallet registry alone is insufficient: orphaned wallet or
+// HD-key files still count as wallet material. Unknown state always refuses
+// the clean-start offer. The old datadir is never changed by this command.
+bool HasLegacyWalletMaterial(const std::filesystem::path& datadir) {
+    const auto has_entries = [](const std::filesystem::path& path) {
+        std::error_code error;
+        const auto status = std::filesystem::symlink_status(path, error);
+        if (error == std::errc::no_such_file_or_directory ||
+            (!error && status.type() == std::filesystem::file_type::not_found))
+            return false;
+        if (error || std::filesystem::is_symlink(status) ||
+            !std::filesystem::is_directory(status))
+            throw std::runtime_error("Wallet material directory cannot be verified: " + path.string());
+        std::filesystem::directory_iterator it(path, error);
+        if (error) throw std::runtime_error("Wallet material directory cannot be read: " + path.string());
+        return it != std::filesystem::directory_iterator{};
+    };
+    if (has_entries(datadir / "wallets") || has_entries(datadir / "hd_wallet"))
+        return true;
+    for (const auto* name : {"wallet.dat", "wallet.db"}) {
+        std::error_code error;
+        const auto status = std::filesystem::symlink_status(datadir / name, error);
+        if (error == std::errc::no_such_file_or_directory ||
+            (!error && status.type() == std::filesystem::file_type::not_found))
+            continue;
+        if (error) throw std::runtime_error("Wallet material file cannot be checked");
+        return true;
+    }
+    const auto registry = datadir / "wallet_registry.db";
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(registry, error);
+    if (error == std::errc::no_such_file_or_directory ||
+        (!error && status.type() == std::filesystem::file_type::not_found)) {
+        // A stranded SQLite journal may still hold wallet registry changes.
+        // Do not call this installation empty merely because its main file
+        // is absent.
+        for (const auto* suffix : {"-wal", "-shm", "-journal"}) {
+            auto sidecar = registry;
+            sidecar += suffix;
+            error.clear();
+            const auto sidecar_status = std::filesystem::symlink_status(sidecar, error);
+            if (error == std::errc::no_such_file_or_directory ||
+                (!error && sidecar_status.type() == std::filesystem::file_type::not_found))
+                continue;
+            if (error) throw std::runtime_error("Wallet registry sidecar cannot be checked");
+            return true;
+        }
+        return false;
+    }
+    RequireUnlinkedMaintenancePath(registry, false);
+    for (const auto* suffix : {"-wal", "-shm", "-journal"}) {
+        auto sidecar = registry;
+        sidecar += suffix;
+        RequireUnlinkedMaintenancePath(sidecar, false, true);
+    }
+    sqlite3* raw = nullptr;
+    if (sqlite3_open_v2(registry.string().c_str(), &raw, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+        if (raw) sqlite3_close(raw);
+        throw std::runtime_error("Wallet registry cannot be read");
+    }
+    std::unique_ptr<sqlite3, decltype(&sqlite3_close)> db(raw, sqlite3_close);
+    sqlite3_stmt* query = nullptr;
+    if (sqlite3_prepare_v2(db.get(), "SELECT 1 FROM wallets LIMIT 1", -1, &query, nullptr) != SQLITE_OK)
+        throw std::runtime_error("Wallet registry cannot be verified");
+    const int step = sqlite3_step(query);
+    sqlite3_finalize(query);
+    if (step != SQLITE_ROW && step != SQLITE_DONE)
+        throw std::runtime_error("Wallet registry query failed");
+    return step == SQLITE_ROW;
+}
+
+int RunLegacySnapshotStatus(const dinero::daemon::DatadirGuard& guard, int argc, char* argv[]) {
+    try {
+        if (!guard.IsHeld()) throw std::runtime_error("Data directory is not locked");
+        for (int i = 1; i < argc; ++i) {
+            const std::string arg = argv[i];
+            if (arg == "--legacy-snapshot-status" || arg == "--regtest" || arg == "-regtest" ||
+                arg == "--testnet" || arg == "-testnet") continue;
+            if (arg == "--datadir" || arg == "-datadir") { ++i; continue; }
+            if (arg.starts_with("--datadir=") || arg.starts_with("-datadir=")) continue;
+            throw std::runtime_error("Legacy snapshot status refuses unrelated option: " + arg);
+        }
+        const auto blockchain = guard.DataDir() / "blockchain";
+        const auto index_path = blockchain / "utxo";
+        std::error_code error;
+        if (!std::filesystem::exists(index_path, error) && !error) {
+            std::cout << "legacy_snapshot_status=missing\n";
+            return 0;
+        }
+        RequireUnlinkedMaintenancePath(blockchain, true);
+        RequireUnlinkedMaintenancePath(index_path, false);
+        for (const auto* suffix : {"-wal", "-shm", "-journal"}) {
+            auto sidecar = index_path;
+            sidecar += suffix;
+            RequireUnlinkedMaintenancePath(sidecar, false, true);
+        }
+        const auto version = dinero::ReadWalletIndexSchemaVersionReadOnly(index_path);
+        if (!version || *version != 2) {
+            std::cout << "legacy_snapshot_status=current_or_full\n";
+            return 0;
+        }
+        const bool imported = dinero::WalletIndexHasImportedSnapshotMarkerReadOnly(index_path);
+        if (!imported) {
+            std::cout << "legacy_snapshot_status=current_or_full\n";
+            return 0;
+        }
+        const auto chain_path = blockchain / "chaindb";
+        RequireUnlinkedMaintenancePath(chain_path, true);
+        dinero::ChainDB chain;
+        if (chain.initReadOnlyForWalletIndexMaintenance(chain_path) != dinero::Status::Ok)
+            throw std::runtime_error("Chain history cannot be checked");
+        const auto genesis = chain.getBlockHashByHeight(0);
+        if (!genesis.ok() ||
+            genesis.value() != dinero::uint256::FromHexUnsafe(dinero::Params().genesis_hash))
+            throw std::runtime_error("Chain genesis does not match selected network");
+        if (dinero::storage::ReadOrchardSnapshotBase(chain)) {
+            std::cout << "legacy_snapshot_status=current_or_full\n";
+            return 0;
+        }
+        std::cout << "legacy_snapshot_status="
+                  << (HasLegacyWalletMaterial(guard.DataDir()) ? "legacy_wallets" : "legacy_empty")
+                  << '\n';
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << "Legacy snapshot status refused: " << error.what() << '\n';
         return 1;
     }
 }
@@ -556,6 +688,7 @@ void print_usage(const char* program_name) {
     std::cout << "  --repair-db --confirm          Scan AND repair detected issues\n";
     std::cout << "  --upgrade-wallet-index-v3 --datadir=<dir>  Offline full-archive v2 index upgrade; exits after verification\n";
     std::cout << "  --wallet-index-v3-status --datadir=<dir>  Read-only full-archive wallet index preflight\n";
+    std::cout << "  --legacy-snapshot-status --datadir=<dir>  Read-only old-snapshot and wallet-material preflight\n";
     std::cout << "  --wipe-stale-chain             Wipe incompatible chain data (backs up wallet first)\n";
     std::cout << "\n";
     std::cout << "Diagnostics:\n";
@@ -617,6 +750,7 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
     bool do_repair_db = false;
     bool upgrade_wallet_index_v3 = false;
     bool wallet_index_v3_status = false;
+    bool legacy_snapshot_status = false;
     bool repair_confirm = false;
     bool wipe_stale_chain = false;
     long embedded_parent_pid = 0;
@@ -770,10 +904,14 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
             upgrade_wallet_index_v3 = true;
         } else if (arg == "--wallet-index-v3-status") {
             wallet_index_v3_status = true;
+        } else if (arg == "--legacy-snapshot-status") {
+            legacy_snapshot_status = true;
         } else if (arg.starts_with("--upgrade-wallet-index-v3=")) {
             std::cerr << "Use --upgrade-wallet-index-v3 without a value\n"; return 1;
         } else if (arg.starts_with("--wallet-index-v3-status=")) {
             std::cerr << "Use --wallet-index-v3-status without a value\n"; return 1;
+        } else if (arg.starts_with("--legacy-snapshot-status=")) {
+            std::cerr << "Use --legacy-snapshot-status without a value\n"; return 1;
         } else if (arg == "--confirm") {
             repair_confirm = true;
         } else if (arg == "--wipe-stale-chain" || arg == "--auto-wipe-stale-chain") {
@@ -822,11 +960,12 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
         wallet_socket_port = 50051;  // Default
     }
 
-    if (upgrade_wallet_index_v3 && wallet_index_v3_status) {
-        std::cerr << "Choose one wallet index v3 maintenance command\n";
+    if (int(upgrade_wallet_index_v3) + int(wallet_index_v3_status) +
+            int(legacy_snapshot_status) > 1) {
+        std::cerr << "Choose one wallet history maintenance command\n";
         return 1;
     }
-    if ((upgrade_wallet_index_v3 || wallet_index_v3_status) &&
+    if ((upgrade_wallet_index_v3 || wallet_index_v3_status || legacy_snapshot_status) &&
         (!explicit_datadir || run_as_daemon || running_as_windows_service ||
          do_reindex || do_reindex_chainstate || do_repair_db || repair_confirm ||
          wipe_stale_chain || embedded_parent_pid > 0 || show_help || show_version ||
@@ -834,7 +973,7 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
         std::cerr << "Wallet index v3 upgrade requires an explicit datadir and foreground-only maintenance\n";
         return 1;
     }
-    if (upgrade_wallet_index_v3 || wallet_index_v3_status) {
+    if (upgrade_wallet_index_v3 || wallet_index_v3_status || legacy_snapshot_status) {
         for (int i = 1; i < argc; ++i) {
             const std::string arg = argv[i];
             if ((arg == "--datadir" || arg == "-datadir" ||
@@ -1021,6 +1160,11 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
         dinero::SelectParams(use_regtest ? dinero::Chain::REGTEST :
                              use_testnet ? dinero::Chain::TESTNET : dinero::Chain::MAINNET);
         return RunOfflineWalletIndexV3Upgrade(datadir_guard, argc, argv, wallet_index_v3_status);
+    }
+    if (legacy_snapshot_status) {
+        dinero::SelectParams(use_regtest ? dinero::Chain::REGTEST :
+                             use_testnet ? dinero::Chain::TESTNET : dinero::Chain::MAINNET);
+        return RunLegacySnapshotStatus(datadir_guard, argc, argv);
     }
 
     bool full_archive_wallet_index_v3 = false;
