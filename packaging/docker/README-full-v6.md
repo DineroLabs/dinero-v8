@@ -12,9 +12,9 @@ manifest. It independently checks the payload profile, internal checksum,
 catalog SHA-256 and byte count, and manifest age. The normalized manifest is
 **unsigned** because its `snapshot_file` field names the installed asset rather
 than the publisher's `snapshot.dat`. Its catalog pin and the daemon's native
-selected-chain check remain mandatory. The image retains H155650, H153578, H153051, H148375, H99677,
-H73035, and H65300 for exact-base restart recovery. H73035 is extra image
-lineage beyond the six desktop fallbacks.
+selected-chain check remain mandatory. The image retains H163965, H155650, H153578,
+H153051, H148375, H99677, H73035, and H65300 for exact-base restart recovery.
+H73035 is extra image lineage beyond the seven desktop fallbacks.
 
 Before a release tag exists, the desktop candidate workflows and Docker manual
 dry-run can take the exact snapshot, publisher manifest, and signature HTTPS
@@ -38,7 +38,7 @@ the release event repeats that smoke against the published assets before
 pushing an image to GHCR.
 
 After native source and payload qualification, run a hosted image smoke with
-all seven fallback paths. The release event builds and smokes
+all eight fallback paths. The release event builds and smokes
 the exact published v8.2.6 binaries and signed snapshot assets before pushing
 the image. Until those assets exist, the normal PR image check is expected to
 fail closed. `v8.2.2` remains only the recovery snapshot release tag.

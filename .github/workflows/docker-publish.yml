@@ -86,7 +86,7 @@ jobs:
       - name: Preserve Docker fresh and existing configuration authority
         run: python3 -B tests/integration/test_docker_entrypoint_config.py -v
 
-      - name: Check full-v6 primary and seven recovery fallback contracts
+      - name: Check full-v6 primary and eight recovery fallback contracts
         run: python3 -B packaging/docker/test_full_v6_candidate.py -v
 
       - name: PR result is contract-only, not image-qualified

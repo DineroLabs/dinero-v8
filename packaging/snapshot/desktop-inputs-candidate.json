@@ -12,6 +12,15 @@
   },
   "fallbacks": [
     {
+      "filename": "dinero-assumeutxo-163965-v6-full.dat",
+      "height": 163965,
+      "format_version": 6,
+      "snapshot_profile": "full",
+      "block_hash": "00000016ce3a6fba20d958c45e92b2c0eff5de69bbea6e289af5a9d1cd8a9e5b",
+      "bytes": 150320718,
+      "sha256": "7736af68fb2ca12b71319036206e99853bb595b4dd90c4f3e22e9c8e364a6646"
+    },
+    {
       "filename": "dinero-assumeutxo-155650-v6-full.dat",
       "height": 155650,
       "format_version": 6,

@@ -305,6 +305,11 @@ jobs:
               --manifest-url "$SNAPSHOT_MANIFEST_URL" \
               --destination release-inputs
             python3 packaging/snapshot/fetch_desktop_primary.py \
+              --fallback-height 163965 \
+              --payload-url 'https://github.com/DineroLabs/dinero-v8/releases/download/v8.2.5/dinero-assumeutxo-163965-v6-full.dat' \
+              --manifest-url 'https://github.com/DineroLabs/dinero-v8/releases/download/v8.2.5/dinero-assumeutxo-163965-v6-full.dat.publisher.manifest.json' \
+              --destination release-inputs
+            python3 packaging/snapshot/fetch_desktop_primary.py \
               --fallback-height 155650 \
               --payload-url 'https://seed3.dinerolabs.org/v823-candidate/v824/h155650/snapshot.dat' \
               --manifest-url 'https://seed3.dinerolabs.org/v823-candidate/v824/h155650/manifest.json' \
@@ -321,6 +326,10 @@ jobs:
               --pattern dinero-assumeutxo-167856-v6-full.dat.manifest.json \
               --pattern dinero-assumeutxo-167856-v6-full.dat.publisher.manifest.json \
               --pattern dinero-assumeutxo-167856-v6-full.dat.publisher.manifest.sig \
+              --dir release-inputs
+            gh release download "${{ inputs.release_tag }}" \
+              --repo DineroLabs/dinero-v8 \
+              --pattern 'dinero-assumeutxo-163965-v6-full.dat*' \
               --dir release-inputs
             gh release download "${{ inputs.release_tag }}" \
               --repo DineroLabs/dinero-v8 \
@@ -611,6 +620,10 @@ jobs:
             --pattern dinero-assumeutxo-167856-v6-full.dat.manifest.json \
             --pattern dinero-assumeutxo-167856-v6-full.dat.publisher.manifest.json \
             --pattern dinero-assumeutxo-167856-v6-full.dat.publisher.manifest.sig \
+            --dir release-inputs
+          gh release download "${{ inputs.release_tag }}" \
+            --repo DineroLabs/dinero-v8 \
+            --pattern 'dinero-assumeutxo-163965-v6-full.dat*' \
             --dir release-inputs
           gh release download "${{ inputs.release_tag }}" \
             --repo DineroLabs/dinero-v8 \
