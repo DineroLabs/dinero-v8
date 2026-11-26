@@ -162,11 +162,20 @@ network's existing minimum and is refused.
   carry the formula: a field in the queue reply, or a small estimate request.
   The desktop field stays editable but starts from the computed value and
   refuses to go below it.
-- Stage 1b, the stuck operation: establish what a refused signed operation
-  holds, then give it a way out (cancel it and release its notes, or let it
-  be re-made with a sufficient fee). Until that exists, the node should
-  refuse to queue an operation whose fee cannot meet the minimum at its
-  size, before anything is reserved or proved.
+- Stage 1b, the stuck operation. A signed operation that can never be
+  admitted, with no request that cancels it, means notes reserved with no way
+  out: this is a correctness item. Establish what such an operation holds,
+  then give it a way out (cancel it and release its notes, or let it be
+  re-made with a sufficient fee). Alongside that, the node refuses at queue
+  time, before anything is reserved or proved, an operation whose fee cannot
+  meet the minimum at its size, and says what fee is required. The required
+  fee is computed from the real transaction: the Orchard part is exact from
+  the action count; the transparent part comes from the actual inputs and
+  outputs, whose sizes differ a great deal (post-quantum witnesses), never
+  from a constant; plus a margin.
+  Reach: phones embed their own node, so this refusal reaches a phone only
+  with a new app release, like stage 1. On the desktop it takes effect with
+  the node.
 - Stage 2: wait until the clients that compute the fee are what people run.
 - Stage 3, only then: consider raising the minimum to price spam, per
   virtual byte or per action. Raising it earlier would refuse even 2-action
