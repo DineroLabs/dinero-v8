@@ -1232,22 +1232,33 @@ static std::optional<QString> selectLegacySnapshotDataDir(const QString& origina
   constexpr auto kActiveDirKey = "data/active_dir_after_legacy_snapshot_v1";
   constexpr auto kUseOldDirKey = "data/use_preserved_legacy_dir_v1";
   QSettings settings;
+  bool slovene = settings.value(QStringLiteral("ui/language")).toString() == QStringLiteral("sl");
+  auto wording = [&slovene](const char* english, const char* slovenian) {
+    return QString::fromUtf8(slovene ? slovenian : english);
+  };
   const QString selected = settings.value(QString::fromLatin1(kActiveDirKey)).toString();
   if (!selected.isEmpty()) {
     if (settings.value(QString::fromLatin1(kUseOldDirKey), false).toBool()) {
       if (!QFileInfo(original).isDir()) {
-        QMessageBox::critical(nullptr, QStringLiteral("Preserved Dinero data is missing"),
-            QStringLiteral("The preserved Dinero data folder is missing:\n%1\n\n"
-                           "Dinero will not silently switch to a different wallet.").arg(original));
+        QMessageBox::critical(nullptr, wording("Preserved Dinero data is missing",
+            "Ohranjeni podatki Dinera manjkajo"),
+            wording("The preserved Dinero data folder is missing:\n%1\n\n"
+                    "Dinero will not silently switch to a different wallet.",
+                    "Mapa z ohranjenimi podatki Dinera manjka:\n%1\n\n"
+                    "Dinero ne bo samodejno preklopil na drugo denarnico.").arg(original));
         return std::nullopt;
       }
       return original;
     }
     if (!QFileInfo(selected).isDir()) {
-      QMessageBox::critical(nullptr, QStringLiteral("Dinero wallet data is missing"),
-          QStringLiteral("The selected Dinero data folder is missing:\n%1\n\n"
-                         "Restore that folder before opening the wallet. "
-                         "Dinero will not silently switch to a different wallet.").arg(selected));
+      QMessageBox::critical(nullptr, wording("Dinero wallet data is missing",
+          "Podatki denarnice Dinero manjkajo"),
+          wording("The selected Dinero data folder is missing:\n%1\n\n"
+                  "Restore that folder before opening the wallet. "
+                  "Dinero will not silently switch to a different wallet.",
+                  "Izbrana mapa s podatki Dinera manjka:\n%1\n\n"
+                  "Pred odpiranjem denarnice obnovite to mapo. "
+                  "Dinero ne bo samodejno preklopil na drugo denarnico.").arg(selected));
       return std::nullopt;
     }
     return selected;
@@ -1272,46 +1283,79 @@ static std::optional<QString> selectLegacySnapshotDataDir(const QString& origina
 
   QMessageBox choice;
   choice.setIcon(hasWallets ? QMessageBox::Warning : QMessageBox::Information);
-  choice.setWindowTitle(QStringLiteral("Update Dinero wallet data"));
-  choice.setText(QStringLiteral(
-      "This computer has older Dinero data. A new wallet here might miss coins."));
-  if (hasWallets) {
-    choice.setInformativeText(QStringLiteral(
-        "Dinero found existing wallet files. A separate new wallet can use current "
-        "blockchain data, but it will NOT show or transfer coins from those existing wallets. "
-        "Keep their recovery words and the old data folder.\n\n"
-        "Old data folder:\n%1")
-        .arg(QDir::toNativeSeparators(original)));
-  } else {
-    choice.setInformativeText(QStringLiteral(
-        "Dinero found no wallet files or recovery keys in this data folder. "
-        "It can start a new, separate data folder using current blockchain data. "
-        "The old folder stays untouched at:\n%1\n\n"
-        "The new node will need time to verify wallet history before you can create a wallet.")
-        .arg(QDir::toNativeSeparators(original)));
-  }
-  auto* start = choice.addButton(hasWallets ? QStringLiteral("Start a separate new wallet") :
-      QStringLiteral("Start with current data"), QMessageBox::AcceptRole);
-  auto* later = choice.addButton(QStringLiteral("Keep old data for now"), QMessageBox::RejectRole);
+  auto* start = choice.addButton(QString(), QMessageBox::AcceptRole);
+  auto* later = choice.addButton(QString(), QMessageBox::RejectRole);
+  auto* switchLanguage = choice.addButton(QString(), QMessageBox::ActionRole);
   QPushButton* helpButton = nullptr;
+  QCheckBox* acknowledge = nullptr;
   if (hasWallets) {
-    helpButton = choice.addButton(QStringLiteral("Recover existing wallets"), QMessageBox::HelpRole);
-    auto* acknowledge = new QCheckBox(QStringLiteral(
-        "I understand this does not move my existing wallets or coins"), &choice);
+    helpButton = choice.addButton(QString(), QMessageBox::HelpRole);
+    acknowledge = new QCheckBox(&choice);
     choice.setCheckBox(acknowledge);
     start->setEnabled(false);
     QObject::connect(acknowledge, &QCheckBox::toggled, start, &QPushButton::setEnabled);
   }
+  auto updateWording = [&]() {
+    choice.setWindowTitle(wording("Update Dinero wallet data", "Posodobitev podatkov denarnice Dinero"));
+    choice.setText(wording(
+        "This computer has older Dinero data. A new wallet here might miss coins.",
+        "V računalniku so starejši podatki Dinera. Nova denarnica tukaj morda ne bi prikazala kovancev."));
+    if (hasWallets) {
+      choice.setInformativeText(wording(
+          "Dinero found existing wallet files. A separate new wallet can use current "
+          "blockchain data, but it will NOT show or transfer coins from those existing wallets. "
+          "Keep their recovery words and the old data folder.\n\n"
+          "Old data folder:\n%1",
+          "Dinero je našel datoteke obstoječih denarnic. Ločena nova denarnica lahko uporablja "
+          "novejše podatke verige blokov, vendar NE bo prikazala ali prenesla kovancev iz obstoječih "
+          "denarnic. Ohranite njihove obnovitvene besede in staro podatkovno mapo.\n\n"
+          "Stara podatkovna mapa:\n%1")
+          .arg(QDir::toNativeSeparators(original)));
+    } else {
+      choice.setInformativeText(wording(
+          "Dinero found no wallet files or recovery keys in this data folder. "
+          "It can start a new, separate data folder using current blockchain data. "
+          "The old folder stays untouched at:\n%1\n\n"
+          "The new node will need time to verify wallet history before you can create a wallet.",
+          "Dinero v tej podatkovni mapi ni našel datotek denarnice ali obnovitvenih ključev. "
+          "Ustvari lahko novo, ločeno podatkovno mapo z novejšimi podatki verige blokov. "
+          "Stara mapa ostane nedotaknjena:\n%1\n\n"
+          "Novo vozlišče mora pred ustvarjanjem denarnice preveriti zgodovino denarnic. To lahko traja nekaj časa.")
+          .arg(QDir::toNativeSeparators(original)));
+    }
+    start->setText(hasWallets
+        ? wording("Start a separate new wallet", "Začni z ločeno novo denarnico")
+        : wording("Start with current data", "Začni z novejšimi podatki"));
+    later->setText(wording("Keep old data for now", "Za zdaj obdrži stare podatke"));
+    switchLanguage->setText(slovene ? QStringLiteral("English") : QStringLiteral("Slovenščina"));
+    if (helpButton) helpButton->setText(wording("Recover existing wallets", "Obnovi obstoječe denarnice"));
+    if (acknowledge) acknowledge->setText(wording(
+        "I understand this does not move my existing wallets or coins",
+        "Razumem, da to ne prenese mojih obstoječih denarnic ali kovancev"));
+  };
+  updateWording();
   choice.setDefaultButton(later);
   choice.setEscapeButton(later);
-  choice.exec();
+  while (true) {
+    choice.exec();
+    if (choice.clickedButton() != switchLanguage) break;
+    slovene = !slovene;
+    settings.setValue(QStringLiteral("ui/language"), slovene ? QStringLiteral("sl") : QStringLiteral("en"));
+    settings.sync();
+    updateWording();
+  }
   if (helpButton && choice.clickedButton() == helpButton) {
-    QMessageBox::information(nullptr, QStringLiteral("Recover an existing wallet"),
-        QStringLiteral("Your wallet files are still in:\n%1\n\n"
-                       "Do not delete this folder. A wallet with coins from before the current "
-                       "snapshot needs its full history checked before its balance can be trusted. "
-                       "Keep your recovery words and ask Dinero support to help recover the existing wallet. "
-                       "You can reopen the app later to create a separate new wallet.")
+    QMessageBox::information(nullptr, wording("Recover an existing wallet", "Obnova obstoječe denarnice"),
+        wording("Your wallet files are still in:\n%1\n\n"
+                "Do not delete this folder. A wallet with coins from before the current "
+                "snapshot needs its full history checked before its balance can be trusted. "
+                "Keep your recovery words and ask Dinero support to help recover the existing wallet. "
+                "You can reopen the app later to create a separate new wallet.",
+                "Datoteke vaše denarnice so še vedno v mapi:\n%1\n\n"
+                "Te mape ne izbrišite. Preden lahko zaupate stanju denarnice s kovanci iz časa "
+                "pred novejšim snapshotom, je treba preveriti njeno celotno zgodovino. "
+                "Ohranite obnovitvene besede in se za pomoč pri obnovi obrnite na podporo Dinero. "
+                "Aplikacijo lahko pozneje znova odprete in ustvarite ločeno novo denarnico.")
             .arg(QDir::toNativeSeparators(original)));
     return std::nullopt;
   }
@@ -1321,9 +1365,11 @@ static std::optional<QString> selectLegacySnapshotDataDir(const QString& origina
   // read the dialog. No running process may be silently switched to a new
   // wallet source.
   if (isDaemonRunning(300)) {
-    QMessageBox::warning(nullptr, QStringLiteral("Dinero is already running"),
-        QStringLiteral("A Dinero node started while this window was open. "
-                       "Close it and reopen the wallet to start with current data."));
+    QMessageBox::warning(nullptr, wording("Dinero is already running", "Dinero že deluje"),
+        wording("A Dinero node started while this window was open. "
+                "Close it and reopen the wallet to start with current data.",
+                "Medtem ko je bilo to okno odprto, se je zagnalo vozlišče Dinero. "
+                "Zaprite ga in znova odprite denarnico za uporabo novejših podatkov."));
     return std::nullopt;
   }
   const QDir parent = QFileInfo(original).dir();
@@ -1337,16 +1383,19 @@ static std::optional<QString> selectLegacySnapshotDataDir(const QString& origina
     if (!info.exists() && !info.isSymbolicLink()) { replacement = candidate; break; }
   }
   if (replacement.isEmpty() || !QDir().mkpath(replacement)) {
-    QMessageBox::critical(nullptr, QStringLiteral("Could not create Dinero data"),
-        QStringLiteral("Dinero could not create a separate data folder. The old data is untouched."));
+    QMessageBox::critical(nullptr, wording("Could not create Dinero data", "Podatkov Dinera ni bilo mogoče ustvariti"),
+        wording("Dinero could not create a separate data folder. The old data is untouched.",
+                "Dinero ni mogel ustvariti ločene podatkovne mape. Stari podatki so nedotaknjeni."));
     return std::nullopt;
   }
   settings.setValue(QString::fromLatin1(kActiveDirKey), replacement);
   settings.setValue(QString::fromLatin1(kUseOldDirKey), false);
   settings.sync();
   if (settings.status() != QSettings::NoError) {
-    QMessageBox::critical(nullptr, QStringLiteral("Could not save Dinero data location"),
-        QStringLiteral("Dinero could not save the new data folder location. The old data is untouched."));
+    QMessageBox::critical(nullptr, wording("Could not save Dinero data location",
+        "Lokacije podatkov Dinera ni bilo mogoče shraniti"),
+        wording("Dinero could not save the new data folder location. The old data is untouched.",
+                "Dinero ni mogel shraniti lokacije nove podatkovne mape. Stari podatki so nedotaknjeni."));
     return std::nullopt;
   }
   return replacement;
