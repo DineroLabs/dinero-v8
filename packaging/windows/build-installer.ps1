@@ -64,7 +64,7 @@ param(
     [string]$SnapshotFileName   = '',
     [string]$SnapshotPath       = '',
     [string]$SnapshotManifestPath = '',
-    [string]$SnapshotReleaseTag = 'v8.2.5',
+    [string]$SnapshotReleaseTag = 'v8.2.6',
     [string]$SnapshotRecentFallbackFileName = '',
     [string]$SnapshotRecentFallbackPath = '',
     [string]$SnapshotRecentFallbackManifestPath = '',
@@ -129,7 +129,7 @@ if ((-not $SnapshotFileName -or -not $SnapshotRecentFallbackFileName -or -not $S
             $m = Select-String -Path $qtMain -Pattern 'kBundledSnapshotOldestFallback\[\]\s*=\s*"([^"]+)"' | Select-Object -First 1
             if ($m) { $SnapshotOldestFallbackFileName = $m.Matches[0].Groups[1].Value }
         }
-        Write-Host "Bundled snapshot names: primary=$SnapshotFileName fallbacks=H155650,H153578,$SnapshotRecentFallbackFileName,$SnapshotFallbackFileName,$SnapshotLegacyFallbackFileName,$SnapshotOldestFallbackFileName"
+        Write-Host "Bundled snapshot names: primary=$SnapshotFileName fallbacks=H163965,H155650,H153578,$SnapshotRecentFallbackFileName,$SnapshotFallbackFileName,$SnapshotLegacyFallbackFileName,$SnapshotOldestFallbackFileName"
     }
 }
 
@@ -412,7 +412,7 @@ try {
     $ErrorActionPreference = $oldEAP
 }
 
-# Bundle the full-v6 primary and six prior exact lifecycle bases. The old
+# Bundle the full-v6 primary and seven prior exact lifecycle bases. The old
 # files allow interrupted imports to restart after Program Files is replaced.
 $snap = Resolve-BundledSnapshot $SnapshotFileName $SnapshotPath $SnapshotReleaseTag 'primary'
 if ($snap) {
@@ -432,6 +432,23 @@ if ($snap) {
     }
 } elseif (-not $NoSnapshot) {
     throw 'Required primary snapshot missing; refusing to produce an installer that silently syncs from genesis.'
+}
+$immediateName = 'dinero-assumeutxo-163965-v6-full.dat'
+$immediateRelease = 'v8.2.5'
+$immediateRole = 'H163965 fallback'
+$immediateSnap = Resolve-BundledSnapshot $immediateName '' $immediateRelease $immediateRole
+if ($immediateSnap) {
+    $immediateManifest = Resolve-BundledSnapshotManifest $immediateName $immediateSnap '' $immediateRelease $immediateRole
+    if (-not $immediateManifest) { throw 'Required H163965 snapshot fallback manifest missing.' }
+    Assert-SnapshotManifest $immediateSnap $immediateManifest $immediateName $immediateRole
+    $immediatePublisherManifest = Resolve-PrimaryPublisherAsset $immediateSnap "$immediateName.publisher.manifest.json" $immediateRelease
+    $immediatePublisherSignature = Resolve-PrimaryPublisherAsset $immediateSnap "$immediateName.publisher.manifest.sig" $immediateRelease
+    & python (Join-Path $ProjectRoot 'packaging\snapshot\check_desktop_primary.py') --recent-fallback --payload $immediateSnap --manifest $immediateManifest --expected-name $immediateName --publisher-manifest $immediatePublisherManifest --publisher-signature $immediatePublisherSignature
+    if ($LASTEXITCODE -ne 0) { throw 'H163965 fallback is not the signed pinned full-v6 input.' }
+    Copy-Item $immediateSnap (Join-Path $Stage $immediateName)
+    Copy-Item $immediateManifest (Join-Path $Stage "$immediateName.manifest.json")
+} elseif (-not $NoSnapshot) {
+    throw 'Required H163965 exact-lifecycle snapshot fallback missing.'
 }
 $previousName = 'dinero-assumeutxo-155650-v6-full.dat'
 $previousRelease = 'v8.2.4'

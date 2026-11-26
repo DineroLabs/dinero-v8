@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the Docker image's seven retained exact-base recovery payloads."""
+"""Check the Docker image's eight retained exact-base recovery payloads."""
 
 import argparse
 import hashlib
@@ -20,6 +20,7 @@ EXTRA_DOCKER_BASE = {
     "sha256": "0a98ab1bd544d333afae7c8d2b42b0a910fb5e7fcdefd40642c6d3e0c6aae8a4",
 }
 EXPECTED_RECOVERY_ORDER = [
+    "dinero-assumeutxo-163965-v6-full.dat",
     "dinero-assumeutxo-155650-v6-full.dat",
     "dinero-assumeutxo-153578-v6-full.dat",
     "dinero-assumeutxo-153051-v6-full.dat",

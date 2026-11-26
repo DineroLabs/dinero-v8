@@ -1,0 +1,57 @@
+name: Qt wallet and Orchard pages
+
+# The desktop wallet's page tests, on every pull request that can change what
+# they cover. They run offline against a passive transport (no node, no
+# network) and need only Qt: the desktop sources are configured on their own
+# (cmake -S qt), so this does not build the daemon.
+#
+# Until this workflow existed these tests were built only by the release and
+# candidate workflows, which run a single other test, so they ran on
+# developers' machines only.
+on:
+  pull_request:
+    paths:
+      - 'qt/**'
+      - 'miner/**'
+      - '.github/workflows/qt-wallet-pages.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: qt-wallet-pages-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  pages:
+    name: Wallet, navigation and Orchard page tests (Linux, Qt 6)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Qt and build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            qt6-base-dev ninja-build cmake g++ libcurl4-openssl-dev libssl-dev pkg-config \
+            nlohmann-json3-dev
+          # nlohmann-json3-dev: the embedded miner library uses the system
+          # package when present, so configuring fetches nothing from the network.
+      - name: Configure the desktop sources on their own
+        run: |
+          cmake -S qt -B build-qt-pages -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON \
+            -DDIN_ENABLE_ORCHARD_UI=ON \
+            -DDINERO_QT_ENABLE_SOLO_CUDA=OFF
+      - name: Build the three page tests
+        run: |
+          cmake --build build-qt-pages --parallel 4 --target \
+            test_orchard_tab test_wallet_layout test_wallet_navigation
+      - name: Run them
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          ctest --test-dir build-qt-pages --output-on-failure --no-tests=error \
+            -R '^(OrchardTab|WalletLayout|WalletNavigation)$' | tee qt-wallet-pages.txt
+          # All three must have run: a renamed or dropped test is a failure,
+          # not a quiet pass.
+          grep -Eq '100% tests passed, 0 tests failed out of 3$' qt-wallet-pages.txt

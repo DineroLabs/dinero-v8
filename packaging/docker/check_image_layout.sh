@@ -47,7 +47,7 @@ while :; do
     count=$((count + 1))
     [ -n "$remaining" ] || break
 done
-if [ "$count" -ne 7 ]; then
-    echo "Docker image has $count recovery fallbacks; expected seven" >&2
+if [ "$count" -ne 8 ]; then
+    echo "Docker image has $count recovery fallbacks; expected eight" >&2
     exit 1
 fi
