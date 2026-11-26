@@ -113,49 +113,74 @@ consensus change.
 
 ---
 
-## 3. A fee rule that prices spam
+## 3. Fees: first stop larger payments being refused, then price spam
 
-### Why
-In mid-2022 someone filled Zcash blocks with shielded outputs at almost no
-cost. Nodes coped; wallets did not, because every wallet has to try to
-decrypt every output. Zcash answered with a fee proportional to the number
-of actions (ZIP 317). Dinero today takes the fee as a number the wallet or
-user supplies (`fee_una` in `wallet.orchard.queueshield` / `queuespend`).
+### Why this item changed (stage 0 findings, 2026-11-26)
+The first version of this note treated the fee as a spam question. Tracing
+and measuring it showed a nearer problem: with the fee every client sends
+today, an Orchard transaction with three or more actions is below the
+network's existing minimum and is refused.
 
 ### Facts
-- The mempool already refuses an Orchard transaction whose fee divided by its
-  virtual size is below the minimum fee rate (`src/daemon/mempool.cpp`,
-  "Orchard fee rate below minimum"; default `DEFAULT_MIN_FEE_RATE` = 1.0 una
-  per virtual byte).
-- Reported in review and not re-traced here: nothing overrides that default,
-  and the virtual size counts the whole bundle including its proof, so the
-  minimum already grows with the number of actions.
-- Not yet established: whether the block assembler applies the same minimum
-  to what it includes; the real sizes of a 2-action and a maximum-action
-  transaction; where the wallet's automatic fee is computed (the desktop app
-  sends `fee_una` only when the user typed one).
+- Admission: the mempool refuses an Orchard transaction whose fee divided by
+  its virtual size is below 1 una per virtual byte (`src/daemon/mempool.cpp`,
+  "Orchard fee rate below minimum", `DEFAULT_MIN_FEE_RATE`). Reported in
+  review, not re-traced here: nothing overrides that default.
+- Miner: no minimum of its own. Block selection orders by fee rate and drops
+  nothing for a low fee; it relies on admission. No consensus fee minimum was
+  found.
+- Clients: all three send a fixed fee of 10,000 una (0.0001 DIN). On the
+  desktop Orchard page it is an editable default (`qt/src/orchardwidget.cpp`,
+  the `orchardFee` field). On both phone apps it is a constant the user
+  cannot change. None computes the fee from the transaction's size.
+- Sizes, measured with the stock 0.16 builder and verified proofs: an Orchard
+  bundle is 2,842 + 3,156 × actions bytes, so 9,154 bytes for 2 actions,
+  12,310 for 3 and 28,090 for 8. A 2-action shield seen on mainnet has a
+  virtual size a little over 9,300, which matches.
+- Therefore: at 10,000 una a 2-action transaction clears the minimum with
+  about 690 virtual bytes to spare, and **any transaction with 3 or more
+  actions does not** (a private send that has to combine three or more
+  notes, for example). Not measured: a 2-action shield with several, or
+  post-quantum, transparent inputs, which may use up that margin.
+- What happens to the refused operation: the transaction is finalised and
+  stored as "signed" before it is submitted, and a retry resubmits the same
+  bytes (`src/rpc/orchard_account_rpc.cpp`, the comment "retry retains the
+  same Ready transaction, never a fresh proof"), so it is refused every time.
+  No `wallet.orchard.*` request cancels an operation. Not yet established:
+  whether the notes it reserved stay reserved for good. If they do, this
+  locks part of a balance, not just one payment.
+- Spam at today's minimum: a block of about a million virtual bytes holds
+  about 107 two-action shields, about 0.011 DIN per block.
 
-So there is a per-byte floor today, not no rule. The open question is whether
-1 una per virtual byte prices a flood of outputs high enough, given that each
-output costs every wallet a trial decryption.
+### Build, in this order
+- Stage 0 (done): the facts above.
+- Stage 1, the fix: every client computes the fee from the size of the
+  transaction it is about to build, `fee ≥ minimum rate × virtual size` with a
+  margin, and shows it before the user confirms. The size is known before
+  proving (it depends only on the number of actions and the transparent
+  parts). The node should offer the number, so three clients do not each
+  carry the formula: a field in the queue reply, or a small estimate request.
+  The desktop field stays editable but starts from the computed value and
+  refuses to go below it.
+- Stage 1b, the stuck operation: establish what a refused signed operation
+  holds, then give it a way out (cancel it and release its notes, or let it
+  be re-made with a sufficient fee). Until that exists, the node should
+  refuse to queue an operation whose fee cannot meet the minimum at its
+  size, before anything is reserved or proved.
+- Stage 2: wait until the clients that compute the fee are what people run.
+- Stage 3, only then: consider raising the minimum to price spam, per
+  virtual byte or per action. Raising it earlier would refuse even 2-action
+  payments from every client in the field.
 
-### Build, in two stages
-- Stage 0: establish the three unknowns above and measure what a block full
-  of minimum-fee Orchard actions costs to make today.
-- Stage A, policy only (no fork): build on the existing fee-rate check rather
-  than add a second one. Choose the rate, and whether it stays per virtual
-  byte or becomes `per_action × max(actions, floor)`; make the block
-  assembler and the wallet's automatic fee use the same rule. A wallet that
-  underpays sees a clear refusal with the required amount.
-- Stage B, only if stage A proves insufficient: the same rule as a consensus
-  rule at an activation height.
+Tests to write first: a three-note private send at the default fee on a
+regtest node (expected today: refused, operation left signed), and the same
+after stage 1 (accepted, fee shown equals the fee paid).
 
-Decisions for the owner, after stage 0 has the numbers: the rate and its
-form. Proposed: phones change at the same time as the desktop.
+Decisions for the owner: whether stage 1 and the queue-time refusal go into
+v8.2.6 before it is released; the margin; later, the stage 3 rate.
 
-Size: medium. Stage A touches mempool admission, block assembly, the wallet
-default and both apps' fee fields. It is network policy, so it needs the
-separation-gate review that consensus-adjacent changes get.
+Size: stage 1 is small on the node and small in each client, but it is three
+clients and two app-store releases. Stage 1b depends on what the trace finds.
 
 ---
 
@@ -243,7 +268,8 @@ mode as an option, or move to light by default. 5a(1) is needed either way;
 | When | Item |
 |---|---|
 | Right after v8.2.6 ships | 1a into CI; 1b step 1 (count profile-1 plans); 2 export only |
-| Next minor release | 1b step 2; 2 watch-only import; 3 stage 0, then stage A agreed and built |
+| As soon as decided | 3 stage 1 and the queue-time refusal (candidate for v8.2.6 itself) |
+| Next minor release | 1b step 2; 2 watch-only import; 3 stage 1b |
 | v8.3 line | 5a design and baseline, then compact scan data; 1b step 3 (stock crate) |
 | Not scheduled | 4 (dropped for now); 5b (waits on 5a); 1c (out of scope) |
 
@@ -254,15 +280,16 @@ Decided by the owner (2026-11-25): outside review is out of scope here.
 Proposed in review, not yet confirmed by the owner:
 1. Viewing keys: the full viewing key only for now; an incoming-only key
    later if someone asks for it.
-2. Fee rule: no number until stage 0 of item 3 has measured sizes and traced
-   the miner and wallet sides; then one rule everywhere, phones included.
+2. Fees (revised after stage 0): do not raise the minimum first. Clients
+   compute the fee from size, then adoption, then consider the minimum.
 3. Unified addresses: dropped for now.
 4. Phones: stay embedded nodes; a light mode waits on fast sync.
 
 ## What this note does not claim
 
-- The fee handling of Orchard transactions is only partly traced: the mempool
-  minimum is confirmed, the miner side and the wallet's automatic fee are not.
+- That a three-action payment is refused today follows from the measured
+  sizes and the admission rule; nobody has yet run one on a node and watched
+  it be refused. Whether its reserved notes stay locked is not established.
 - No sizes above are estimates in days. "Small / medium / large" compare the
   items with each other.
 - The description of how other wallets sync is a summary of published
