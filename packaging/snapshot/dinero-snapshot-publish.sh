@@ -26,6 +26,14 @@ SNAPSHOT_ROOT=$DATADIR/snapshots
 # other's retained candidate while it waits for burial.
 DUMPDIR=$SNAPSHOT_ROOT
 if [ "$SNAPSHOT_PROFILE" = full ]; then DUMPDIR=$SNAPSHOT_ROOT/full; fi
+# A private phone qualification candidate must not consume the exact H149999
+# capture in pending.*. Keep the normal publication namespace unchanged.
+if [ -n "${SNAPSHOT_COMPACT_PENDING_NAMESPACE:-}" ]; then
+    [ "$SNAPSHOT_PROFILE" = compact ] || { echo 'compact pending namespace requires compact profile' >&2; exit 2; }
+    [[ "$SNAPSHOT_COMPACT_PENDING_NAMESPACE" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || { echo 'invalid compact pending namespace' >&2; exit 2; }
+    [ "$SNAPSHOT_COMPACT_PENDING_NAMESPACE" != full ] || { echo 'compact namespace cannot use full' >&2; exit 2; }
+    DUMPDIR=$SNAPSHOT_ROOT/$SNAPSHOT_COMPACT_PENDING_NAMESPACE
+fi
 PUBROOT=${PUBROOT:-/var/www/dinero-snapshots}
 KEY=${KEY:-/etc/dinero-snapshot/ed25519.key}
 CLI=("${CLI_BIN:-dinero-cli}" "-datadir=$DATADIR")
@@ -155,6 +163,30 @@ print(height,block,version,profile)
 PYFIELDS
 ) || { discard_pending_unless_boundary "invalid pending metadata/header/profile"; fail "invalid pending snapshot metadata/header/profile"; }
 read -r HEIGHT BASE_HASH FORMAT FILE_PROFILE <<< "$FIELDS"
+# The compact pending slot is shared with the exact H149999 v5 capture. An
+# endpoint never moves to an older snapshot format than it already serves, nor
+# below its declared SNAPSHOT_MIN_FORMAT (set 6 for an empty v6-only root).
+# Refusal leaves both latest and the pending candidate untouched.
+verify_no_format_downgrade() {
+    local floor=${SNAPSHOT_MIN_FORMAT:-0} served
+    [[ "$floor" =~ ^[0-9]+$ ]] || fail "invalid SNAPSHOT_MIN_FORMAT"
+    if [ "$FORMAT" -lt "$floor" ]; then
+        fail "candidate format v$FORMAT is below the endpoint minimum v$floor; kept latest and pending"
+    fi
+    if [ -e "$PUBROOT/latest/manifest.json" ]; then
+        served=$(python3 - "$PUBROOT/latest/manifest.json" <<'PYSERVED'
+import json,sys
+with open(sys.argv[1]) as stream: version=json.load(stream).get('format_version')
+if type(version) is not int: raise SystemExit(1)
+print(version)
+PYSERVED
+        ) || fail "unreadable latest format; kept latest and pending"
+        if [ "$FORMAT" -lt "$served" ]; then
+            fail "refusing format downgrade v$served -> v$FORMAT; kept latest and pending"
+        fi
+    fi
+}
+verify_no_format_downgrade
 CURRENT_HASH=$("${CLI[@]}" getblockhash "$HEIGHT" | tr -d '\"\r\n') || fail "base ancestry RPC failed"
 if [ "$CURRENT_HASH" != "$BASE_HASH" ]; then
     discard_pending_unless_boundary "pending base left selected chain"
@@ -292,6 +324,7 @@ CURRENT_HASH=$("${CLI[@]}" getblockhash "$HEIGHT" | tr -d '\"\r\n') || fail "fin
 
 # ── 5. Publish atomically ───────────────────────────────────────────────────
 verify_endpoint_profile
+verify_no_format_downgrade
 SET_DIR=$PUBROOT/archive/$TS
 mkdir -p "$SET_DIR"
 cp "$DUMP_FILE"  "$SET_DIR/snapshot.dat"
