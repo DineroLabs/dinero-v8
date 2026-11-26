@@ -165,7 +165,7 @@ jobs:
           host: mac
           target: desktop
           arch: clang_64
-          modules: qtwebsockets qttools
+          modules: qtwebsockets
           cache: true
 
       - name: Verify Qt version and native build host

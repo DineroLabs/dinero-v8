@@ -119,7 +119,6 @@ jobs:
         with:
           version: '6.9.1'
           arch: win64_msvc2022_64
-          modules: qttools
           cache: true
 
       - name: Cache vendored OpenSSL
