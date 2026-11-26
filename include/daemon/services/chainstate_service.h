@@ -1267,7 +1267,8 @@ public:
         WalletManager&,uint64_t session,uint32_t account,const std::array<uint8_t,32>& operation,
         std::span<const orchard::ResolvedInput>,std::span<const orchard::WalletPayment>,
         std::span<const orchard::TransparentOutput>,uint64_t fee_una,wallet::OrchardProofJobs&,
-        std::vector<uint8_t>* current_input_proof=nullptr,bool reacquire_input_proofs=false);
+        std::vector<uint8_t>* current_input_proof=nullptr,bool reacquire_input_proofs=false,
+        double min_fee_rate=0.0); // A not-yet-signed shield below this rate refuses before Ready.
 
 
 

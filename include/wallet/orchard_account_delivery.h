@@ -47,6 +47,13 @@ public:
 private:
     uint64_t required_fee_una_,virtual_size_;
 };
+// Throws OrchardFeeBelowMinimum, naming the smallest admissible fee, when
+// fee/vsize is below min_fee_rate, with the mempool's comparison exactly.
+// A rate of 0 checks nothing (no mempool).
+void RequireOrchardFeeRate(uint64_t fee,uint64_t vsize,double min_fee_rate);
+// The mempool's virtual size of an Orchard transaction: weight is three times
+// the txid preimage plus the canonical bytes (orchard_mempool_transaction.cpp).
+uint64_t OrchardVirtualSize(const orchard::TransactionEnvelope&);
 // An unforgeable, process-local capture of authenticated account bytes restored
 // against one retained immutable replay. This carries no durable authority:
 // the writer must authenticate the complete capture again in its transaction.

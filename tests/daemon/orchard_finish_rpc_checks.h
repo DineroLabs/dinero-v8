@@ -107,7 +107,14 @@ TEST(OrchardFinishRpc, ReadyWriteAndCommitRefusalRetainProofWithoutSubmission){
 }
 TEST(OrchardFinishRpc, RejectedAdmissionRetainsReadyForExactReopenRetry){
     OrchardFinishRpcFixture f;const auto params=f.RequestJson();ASSERT_FALSE(f.CallSpend(params).isMember("error"));f.CompleteProof();
-    f.f.ingress->mempool().setMinFeeRate(1000000.0);const auto refused=f.Finish(params);
+    f.f.ingress->mempool().setMinFeeRate(1000000.0);
+    // v8.2.7: not yet signed, it is refused before signing and stays reserved.
+    {const auto reserved=f.Snapshot();const auto early=f.Finish(params);
+     EXPECT_EQ(early["error_code"].asString(),"fee_below_minimum")<<early.toStyledString();
+     EXPECT_EQ(f.Snapshot(),reserved);f.ExpectUnsubmitted();}
+    // Signed by a node before v8.2.7 (no floor): the resend keeps the exact Ready bytes.
+    (void)f.FinishSpend({},100000);
+    const auto refused=f.Finish(params);
     ASSERT_FALSE(refused.isMember("error"))<<refused["error"].asString();EXPECT_FALSE(refused["admitted"].asBool());EXPECT_EQ(refused["durable_state"].asString(),"signed");
     EXPECT_EQ(refused["submission_code"].asString(),TxRejectCodeToString(TxRejectCode::INSUFFICIENT_FEE));f.ExpectUnsubmitted();
     const auto before=f.Snapshot();const auto bytes=f.Account(3).account.Operations().Entries().at(f.Operation(1)).transaction;

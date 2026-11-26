@@ -633,4 +633,145 @@ TEST(WalletV3NativeOrchardSpend, CancelReservedShieldReleasesItsTransparentCoin)
     f.context.tx_ingress=nullptr;
 }
 
+// v8.2.7: the fee is checked again just before an operation is signed. A
+// request queued without the queue-time check (before the upgrade, or with a
+// lower floor) and finished below the floor would otherwise become a signed
+// operation that admission refuses on every retry and nothing can cancel.
+// Refused before signing, it stays queued; cancel then releases its notes.
+TEST(WalletV3NativeOrchardSpend, FinishBelowFeeFloorRefusedBeforeSigningAndStaysCancellable) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-finish-fee-floor-index");
+    std::string error;
+    const auto deliver=[&]{
+        ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+            WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    };
+    deliver();
+    f.context.tx_ingress=f.f.ingress.get();
+    auto ctx=f.RequestContext();
+    const auto created=rpc_context_wallet_orchard_createaccount(ctx,OrchardCreationRequest());
+    ASSERT_FALSE(created.isMember("error")) << created.toStyledString();
+    (void)f.Mine(ShieldThreeNotes(f,f.AccountKeys(),150000));
+    deliver();
+    auto& pool=f.f.ingress->mempool();
+    ASSERT_EQ(pool.getMinFeeRate(),1.0);
+    std::vector<uint8_t> id(32);id[0]=0xe1;
+    din::Json request,pay;
+    request["account"]=Json::UInt64(3);
+    request["expected_revision"]=Json::UInt64(f.Account().revision);
+    request["request_id"]=util::hex(id);request["fee_una"]=Json::UInt64(10000);
+    request["payments"]=din::arr();request["outputs"]=din::arr();
+    pay["address"]=created["address"];pay["amount_una"]=Json::UInt64(400000);request["payments"].append(pay);
+    // Queued as a pre-upgrade wallet would have: no floor at queue time.
+    pool.setMinFeeRate(0.0);
+    const auto queued=rpc_context_wallet_orchard_queuespend(ctx,request);
+    pool.setMinFeeRate(1.0);
+    ASSERT_FALSE(queued.isMember("error")) << queued.toStyledString();
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        orchard::Hash op{};op[0]=0xe1;
+        ASSERT_EQ(ServiceProofTerminal(use->OrchardProofs(),op),wallet::OrchardProofJobs::State::Succeeded);
+    }
+    const auto listed=[&]{
+        return rpc_context_wallet_orchard_listoperations(ctx,OrchardOperationListRequest())["operations"];
+    };
+    din::Json finish;finish["account"]=Json::UInt64(3);finish["request_id"]=request["request_id"];
+    for(int attempt=0;attempt<2;++attempt){
+        SCOPED_TRACE(attempt);
+        const auto refused=rpc_context_wallet_orchard_finishspend(ctx,finish);
+        ASSERT_TRUE(refused.isMember("error")) << "signed below the floor: " << refused.toStyledString();
+        EXPECT_EQ(refused["error_code"].asString(),"fee_below_minimum") << refused.toStyledString();
+        EXPECT_GT(refused["required_fee_una"].asUInt64(),12000u);
+        EXPECT_EQ(refused["required_fee_una"].asUInt64(),refused["virtual_size"].asUInt64());
+        ASSERT_EQ(listed().size(),1u);
+        EXPECT_EQ(listed()[0]["durable_state"].asString(),"reserved") << listed().toStyledString();
+        EXPECT_FALSE(listed()[0].isMember("txid"));
+    }
+    EXPECT_EQ(pool.size(),0u);
+    din::Json cancel;cancel["account"]=Json::UInt64(3);cancel["operation_id"]=util::hex(id);
+    const auto cancelled=rpc_context_wallet_orchard_cancelreserved(ctx,cancel);
+    ASSERT_FALSE(cancelled.isMember("error")) << cancelled.toStyledString();
+    EXPECT_TRUE(listed().empty());
+    EXPECT_EQ(rpc_context_wallet_orchard_getbalance(ctx,OrchardOperationListRequest())["reserved_confirmed_una"].asUInt64(),0u);
+    f.context.tx_ingress=nullptr;
+}
+
+// The owner's case: shields have no queue-time fee check, so a queued shield
+// can carry any fee. Finishing one below the floor is refused before it is
+// signed, with the fee it needs; it stays queued and can be cancelled.
+TEST(WalletV3NativeOrchardSpend, FinishShieldBelowFeeFloorRefusedBeforeSigningAndStaysCancellable) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-finish-shield-fee-floor-index");
+    std::string error;
+    const auto deliver=[&]{
+        ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+            WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    };
+    deliver();
+    f.context.tx_ingress=f.f.ingress.get();
+    auto ctx=f.RequestContext();
+    const auto created=rpc_context_wallet_orchard_createaccount(ctx,OrchardCreationRequest());
+    ASSERT_FALSE(created.isMember("error")) << created.toStyledString();
+    const auto [body,bundle]=f.Shield(f.AccountKeys());(void)bundle;
+    (void)f.Mine(body);
+    deliver();
+    const auto own=rpc_context_wallet_getnewaddress(ctx,din::obj());
+    ASSERT_FALSE(own.isMember("error")) << own.toStyledString();
+    const auto own_address=own.isMember("address")?own["address"].asString():own.asString();
+    const auto id_hex=[](uint8_t tag){std::vector<uint8_t> id(32);id[0]=tag;return util::hex(id);};
+    const auto proved=[&](uint8_t tag){
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        orchard::Hash op{};op[0]=tag;return ServiceProofTerminal(use->OrchardProofs(),op);
+    };
+    {
+        din::Json request,out;
+        request["account"]=Json::UInt64(3);
+        request["expected_revision"]=Json::UInt64(f.Account().revision);
+        request["request_id"]=id_hex(0xe0);request["fee_una"]=Json::UInt64(10000);
+        request["payments"]=din::arr();request["outputs"]=din::arr();
+        out["address"]=own_address;out["amount_una"]=Json::UInt64(100000);request["outputs"].append(out);
+        ASSERT_FALSE(rpc_context_wallet_orchard_queuespend(ctx,request).isMember("error"));
+        ASSERT_EQ(proved(0xe0),wallet::OrchardProofJobs::State::Succeeded);
+        din::Json finish;finish["account"]=Json::UInt64(3);finish["request_id"]=request["request_id"];
+        const auto finished=rpc_context_wallet_orchard_finishspend(ctx,finish);
+        ASSERT_TRUE(finished["admitted"].asBool()) << finished.toStyledString();
+        const auto pooled=f.f.ingress->mempool().getMempoolEntry(uint256::FromHexUnsafe(finished["txid"].asString()));
+        ASSERT_TRUE(bool(pooled));ASSERT_TRUE(f.Mine(pooled->tx));
+        deliver();
+    }
+    const auto queued_ops=[&]{
+        din::Json queued=din::arr();
+        const auto all=rpc_context_wallet_orchard_listoperations(ctx,OrchardOperationListRequest());
+        for(const auto& op:all["operations"])if(op["durable_state"].asString()!="signed"||!op.isMember("chain_observation")||
+            op["chain_observation"].isNull())queued.append(op);
+        return queued;
+    };
+    din::Json request,pay;
+    request["account"]=Json::UInt64(3);
+    request["expected_revision"]=Json::UInt64(f.Account().revision);
+    request["request_id"]=id_hex(0xe2);request["fee_una"]=Json::UInt64(5000); // below 1 una/vB for any shield
+    request["payments"]=din::arr();
+    pay["address"]=created["address"];pay["amount_una"]=Json::UInt64(20000);request["payments"].append(pay);
+    const auto queued=rpc_context_wallet_orchard_queueshield(ctx,request);
+    ASSERT_FALSE(queued.isMember("error")) << queued.toStyledString();
+    ASSERT_EQ(proved(0xe2),wallet::OrchardProofJobs::State::Succeeded);
+    din::Json stored;stored["account"]=Json::UInt64(3);stored["request_id"]=id_hex(0xe2);
+    for(const auto& finish:{request,stored}){
+        const auto refused=rpc_context_wallet_orchard_finishshield(ctx,finish);
+        ASSERT_TRUE(refused.isMember("error")) << "signed below the floor: " << refused.toStyledString();
+        EXPECT_EQ(refused["error_code"].asString(),"fee_below_minimum") << refused.toStyledString();
+        EXPECT_EQ(refused["required_fee_una"].asUInt64(),refused["virtual_size"].asUInt64());
+        EXPECT_GT(refused["required_fee_una"].asUInt64(),5000u);
+        const auto open=queued_ops();
+        ASSERT_EQ(open.size(),1u) << open.toStyledString();
+        EXPECT_EQ(open[0]["durable_state"].asString(),"reserved") << open.toStyledString();
+    }
+    EXPECT_EQ(f.f.ingress->mempool().size(),0u);
+    din::Json cancel;cancel["account"]=Json::UInt64(3);cancel["operation_id"]=id_hex(0xe2);
+    const auto cancelled=rpc_context_wallet_orchard_cancelreserved(ctx,cancel);
+    ASSERT_FALSE(cancelled.isMember("error")) << cancelled.toStyledString();
+    EXPECT_TRUE(queued_ops().empty()) << queued_ops().toStyledString();
+    f.context.tx_ingress=nullptr;
+}
+
 } // namespace dinero

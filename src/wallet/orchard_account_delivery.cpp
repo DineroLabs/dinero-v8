@@ -1577,6 +1577,21 @@ std::vector<OrchardAccountDelivery::Enrolled> OrchardAccountDelivery::Owner::Val
     }
     ValidateRetainedInventory(inventory,view);return inventory;
 }
+void RequireOrchardFeeRate(uint64_t fee,uint64_t vsize,double min_fee_rate){
+    if(!(min_fee_rate>0.0))return;
+    Check(vsize>0);
+    // Admission refuses when fee/vsize < floor; use that exact comparison.
+    const auto meets=[&](uint64_t f){return !(static_cast<double>(f)/static_cast<double>(vsize)<min_fee_rate);};
+    if(meets(fee))return;
+    auto needed=static_cast<uint64_t>(std::ceil(min_fee_rate*static_cast<double>(vsize)));
+    while(!meets(needed))++needed;
+    while(needed>0&&meets(needed-1))--needed;
+    throw OrchardFeeBelowMinimum(needed,vsize);
+}
+uint64_t OrchardVirtualSize(const orchard::TransactionEnvelope& envelope){
+    const uint64_t weight=3*uint64_t(envelope.TxidPreimage().size())+uint64_t(envelope.CanonicalBytes().size());
+    return (weight+3)/4;
+}
 OrchardAccountDelivery::IssuedReceiver OrchardAccountDelivery::IssueCatalogReceiverForReplay(
         WalletManager& w,uint64_t session,const Profile& p,const RuntimeAccountReplay& view,orchard::WalletScope scope){
     return IssueCatalogWithRestorePoints(w,session,p,view,scope,false,
@@ -2453,14 +2468,7 @@ OrchardAccountDelivery::SpendResult OrchardAccountDelivery::ReserveSpendWithRest
         // here leaves nothing behind; refusing at admission would leave a signed
         // operation that every retry resubmits unchanged, its notes reserved.
         const auto actions=static_cast<uint32_t>(std::max<size_t>({inputs.size(),recipients.size(),2}));
-        const auto vsize=orchard::InputlessEnvelopeBytes({outputs.begin(),outputs.end()},fee,actions);
-        const auto meets=[&](uint64_t f){return !(static_cast<double>(f)/static_cast<double>(vsize)<min_fee_rate);};
-        if(!meets(fee)){
-            auto needed=static_cast<uint64_t>(std::ceil(min_fee_rate*static_cast<double>(vsize)));
-            while(!meets(needed))++needed;
-            while(needed>0&&meets(needed-1))--needed;
-            throw OrchardFeeBelowMinimum(needed,vsize);
-        }
+        RequireOrchardFeeRate(fee,orchard::InputlessEnvelopeBytes({outputs.begin(),outputs.end()},fee,actions),min_fee_rate);
     }
     orchard::Hash anchor{};const auto& checkpoint=current.account.Scan().Checkpoint();
     Check(checkpoint.height>=p.activation);std::copy(checkpoint.anchor.begin(),checkpoint.anchor.end(),anchor.begin());

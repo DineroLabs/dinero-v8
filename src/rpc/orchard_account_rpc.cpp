@@ -793,6 +793,13 @@ din::Json OrchardSpendCall(const ExecutionContext& ctx,const din::Json& params,b
                         "Owned Orchard proof is not available; reservation retained");
                 return dinero::orchard::TransactionEnvelope::Create(0,{},outputs,request.fee,captured.proof->Bytes());
             }();
+            // Before these bytes become a signed operation: one the mempool would
+            // refuse for its fee could never leave, and could not be cancelled.
+            // Refused here, it stays queued and cancellable. A request queued
+            // before the queue-time check, or with a floor raised since, lands here.
+            if(captured.durable.phase==Queue::Phase::Reserved)
+                dinero::wallet::RequireOrchardFeeRate(request.fee,dinero::wallet::OrchardVirtualSize(envelope),
+                    ingress->mempool().getMinFeeRate());
             const auto authorization=source->AuthorizeOrchardWalletTransaction(envelope,profile.domain,profile.activation);
             if(!authorization)throw std::runtime_error("Orchard wallet authorizations unavailable");
             const auto finalized=dinero::wallet::OrchardAccountDelivery::FinalizeCatalogProofForReplay(
@@ -892,7 +899,8 @@ din::Json OrchardShieldCall(const ExecutionContext& ctx,const din::Json& params,
             if(stored->archived)throw std::runtime_error("Shield request is archived; no new submission");
             std::vector<uint8_t> input_proof;
             const auto bytes=source->finalizeRuntimeWalletShield(wallet_use->Wallet(),session,request.account,request.id,
-                stored->durable->inputs,payments,stored->transparent_outputs,request.fee,jobs,&input_proof,reacquire_input_proofs);
+                stored->durable->inputs,payments,stored->transparent_outputs,request.fee,jobs,&input_proof,reacquire_input_proofs,
+                ingress->mempool().getMinFeeRate());
             const auto envelope=dinero::orchard::TransactionEnvelope::DecodeExact(bytes);
             const auto body=dinero::MempoolTransaction::FromOrchard(envelope);
             // Ready already committed. No wallet SQLite or selected owner is
