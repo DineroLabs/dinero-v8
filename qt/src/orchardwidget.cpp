@@ -271,6 +271,11 @@ void OrchardWidget::setupUi() {
     resume_->setToolTip("Complete this node's saved request using its original recipients and fee. This may submit the payment.");
     ol->addWidget(resume_);
     connect(resume_,&QPushButton::clicked,this,&OrchardWidget::onResumeSelected);
+    cancel_=new QPushButton("Cancel selected request",ops);
+    cancel_->setObjectName("orchardCancel");
+    cancel_->setStyleSheet(chromeButtonStyle());
+    ol->addWidget(cancel_);
+    connect(cancel_,&QPushButton::clicked,this,&OrchardWidget::onCancelSelected);
     connect(operations_,&QTableWidget::itemSelectionChanged,this,&OrchardWidget::updateForm);
     operationDetail_=new QLabel("Select an operation above to see its details.",ops);
     operationDetail_->setObjectName("orchardOperationDetail");
@@ -397,7 +402,7 @@ void OrchardWidget::send(const QString& shortName, const QString& method, const 
         if (!OC::ValidBinding(walletBinding_)) return;
         bound["wallet_binding"]=walletBinding_;
     }
-    const auto requestId=shortName=="history" ? historyRequestTag_ :
+    const auto requestId=shortName=="history" ? historyRequestTag_ : shortName=="cancel" ? cancelOperationId_ :
         (shortName=="queue" || shortName=="finish") && payment_ ? payment_->requestId() : QString();
     const QString tag = OF::ReplyTag::Make(shortName, wallet_, generation_,requestId);
     const auto sendingGeneration=generation_;const auto sendingWallet=wallet_;const auto sendingBinding=walletBinding_;
@@ -422,7 +427,7 @@ void OrchardWidget::clearAccountView() {
     operationsInFlight_=balanceInFlight_=false;forgetBalance();
     receiveAddress_->clear();receiveAddress_->setVisible(false);copyAddress_->setVisible(false);
     operations_->setRowCount(0);operations_->setVisible(false);operationsEmpty_->setVisible(true);
-    detailTxid_.clear();txDetails_.clear();txProblems_.clear();
+    detailTxid_.clear();txDetails_.clear();txProblems_.clear();cancelOperationId_.clear();
     if(operationDetail_){operationDetail_->setVisible(false);operationDetail_->setText({});}
 }
 void OrchardWidget::refreshAccounts() {
@@ -528,6 +533,37 @@ const OC::Operation* OrchardWidget::selectedResumableOperation() const {
     if(!op.outcome.isEmpty() || (op.completionMethod!=OC::kFinishShield && op.completionMethod!=OC::kFinishSpend))return nullptr;
     return &op;
 }
+// A reserved request can be cancelled whether or not the account is caught
+// up: nothing was sent for it. Never while another call or a live payment of
+// this page is in progress.
+const OC::Operation* OrchardWidget::selectedCancellableOperation() const {
+    if(!operationsSnapshot_ || !accountKnown() || !unlocked_ || !OC::ValidBinding(walletBinding_) || callInFlight_ ||
+       !cancelOperationId_.isEmpty() || (payment_ && !OF::IsFinal(payment_->state()) &&
+           payment_->state()!=OF::State::NeedsRetry))return nullptr;
+    const auto row=operations_->currentRow();
+    if(row<0 || row>=operationsSnapshot_->operations.size())return nullptr;
+    const auto& op=operationsSnapshot_->operations[row];
+    return OC::Cancellable(op) ? &op : nullptr;
+}
+void OrchardWidget::onCancelSelected() {
+    const auto* selected=selectedCancellableOperation();if(!selected)return;
+    const auto reviewed=*selected;const auto generation=generation_;const auto binding=walletBinding_;
+    QMessageBox box(this);box.setWindowTitle("Cancel saved request");box.setIcon(QMessageBox::Question);
+    box.setText("Cancel request "+reviewed.operationId.left(16)+QString::fromUtf8("…?"));
+    box.setInformativeText("Nothing was sent for this request. Cancelling removes it from this wallet and releases "
+                           "what it had set aside. To make the payment after all, start it again as a new one.");
+    auto* go=box.addButton("Cancel this request",QMessageBox::AcceptRole);
+    auto* keep=box.addButton("Keep it",QMessageBox::RejectRole);box.setDefaultButton(keep);box.exec();
+    if(box.clickedButton()!=go)return;
+    // The dialog processes events: act only on the same wallet and the same row.
+    selected=selectedCancellableOperation();
+    if(generation!=generation_ || binding!=walletBinding_ || !selected || selected->operationId!=reviewed.operationId) {
+        showStatus("Wallet or saved request changed; select it again.",true);return;
+    }
+    cancelOperationId_=reviewed.operationId;
+    send("cancel", OC::kCancelReserved, OC::CancelParams(account_, cancelOperationId_));
+    updateForm();
+}
 void OrchardWidget::onResumeSelected() {
     const auto* selected=selectedResumableOperation();if(!selected)return;
     const auto reviewed=*selected;const auto generation=generation_;const auto binding=walletBinding_;
@@ -585,6 +621,18 @@ void OrchardWidget::updateForm() {
     newAddress_->setEnabled(accountKnown() && unlocked_ && activationObserved_ && OC::ValidBinding(walletBinding_) && revision_!=0);
     review_->setEnabled(blocker.isEmpty());
     resume_->setEnabled(selectedResumableOperation()!=nullptr);
+    cancel_->setEnabled(selectedCancellableOperation()!=nullptr);
+    {
+        const auto row=operations_->currentRow();
+        const bool chosen=operationsSnapshot_ && row>=0 && row<operationsSnapshot_->operations.size();
+        const auto* op=chosen?&operationsSnapshot_->operations[row]:nullptr;
+        cancel_->setToolTip(!op ? "Select a saved request that was queued but never sent."
+            : op->durableState=="signed" || !op->txid.isEmpty()
+                ? "This request is already signed, so it cannot be cancelled here."
+            : !op->outcome.isEmpty() ? "This request has already been seen on the chain."
+            : !unlocked_ ? "Unlock the wallet to cancel this request."
+            : "Remove this queued request. Nothing was sent for it; what it set aside is released.");
+    }
     historyRefresh_->setEnabled(!historyInFlight_ && accountKnown() && OC::ValidBinding(walletBinding_));
     formHint_->setText(blocker.isEmpty() ? "Ready. Review shows the payment before anything is sent."
                                          : "To continue: " + blocker);
@@ -765,6 +813,7 @@ void OrchardWidget::onRpcResult(const QString& method, const QJsonValue& result)
         (!payment_ || tag->requestId!=payment_->requestId()))return;
     if(tag->method=="history" && (!historyInFlight_ || tag->requestId!=historyRequestTag_))return;
     if(tag->method=="txdetail" && tag->requestId!=detailTxid_)return;
+    if(tag->method=="cancel" && (cancelOperationId_.isEmpty() || tag->requestId!=cancelOperationId_))return;
     handle(tag->method, result);
 }
 
@@ -779,6 +828,7 @@ void OrchardWidget::onRpcErrorDetailed(const QString& method, int, const QString
         (!payment_ || tag->requestId!=payment_->requestId()))return;
     if(tag->method=="history" && (!historyInFlight_ || tag->requestId!=historyRequestTag_))return;
     if(tag->method=="txdetail" && tag->requestId!=detailTxid_)return;
+    if(tag->method=="cancel" && (cancelOperationId_.isEmpty() || tag->requestId!=cancelOperationId_))return;
     QJsonObject failure{{"error", message}};
     const auto detail = data.toObject().value("orchard").toObject();
     auto token = [](const QJsonValue& value, int limit) {
@@ -814,6 +864,26 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
         updateForm();return;
     }
 
+    if(shortName=="cancel") {
+        const QString id=cancelOperationId_;cancelOperationId_.clear();
+        if(OC::ParseCancelled(result,account_,id)) {
+            // A payment of this page that was following that request is over.
+            if(payment_ && payment_->requestId()==id){payment_.reset();callInFlight_=false;showPayment();}
+            showStatus("Request cancelled. Nothing was sent for it.",false);
+            refreshOperations();refreshBalance();
+        } else {
+            const auto code=object.value("error_code").toString();
+            const auto error=OC::InBandError(result).value_or(QString());
+            if(code=="operation_signed")
+                showStatus("That request is already signed, so it cannot be cancelled here. Nothing was changed.",true);
+            else if(code=="operation_not_found") {
+                showStatus("That request is no longer on the node. Reading the list again.",true);
+                refreshOperations();
+            } else showStatus(error.isEmpty() ? QString("The node's answer was not understood. Nothing is assumed to have "
+                                                        "been cancelled.") : FriendlyError(error),true);
+        }
+        updateForm();return;
+    }
     if(shortName=="txdetail") {
         const QString txid=detailTxid_;detailTxid_.clear();
         if(txid.isEmpty())return;

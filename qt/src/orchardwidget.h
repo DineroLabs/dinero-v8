@@ -72,6 +72,7 @@ private Q_SLOTS:
     void onReview();
     void onRetry();
     void onResumeSelected();
+    void onCancelSelected();
     void onPoll();
     void updateForm();
 
@@ -89,6 +90,7 @@ private:
     bool discoveryReady() const;
     bool hasOtherPendingOperation() const;
     const OrchardContract::Operation* selectedResumableOperation() const;
+    const OrchardContract::Operation* selectedCancellableOperation() const;
     void refreshBalance();
     void clearHistory(const QString& message);
     void refreshHistory();
@@ -148,6 +150,8 @@ private:
     QLabel* paymentDetail_;
     QPushButton* retry_;
     QPushButton* resume_;
+    QPushButton* cancel_ = nullptr;
+    QString cancelOperationId_;   // the request a cancel call is in flight for
     QTableWidget* operations_;
     QLabel* operationsEmpty_;
     QLabel* status_;

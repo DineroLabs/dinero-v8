@@ -762,6 +762,86 @@ private Q_SLOTS:
             confirmNextDialog();Find<QPushButton>(tab_,"orchardReview")->click();
         }
     }
+    // Mainnet desktop, 2026-11-26: a shield was left "Queued" for good (its
+    // proof never finished across restarts). The page then refuses every new
+    // payment ("check the saved payments before starting another") and had
+    // no way to clear the row. A reserved, unsigned request can now be
+    // cancelled on the node; nothing was sent for it.
+    void aReservedRequestCanBeCancelledAndASignedOneCannot() {
+        for(const auto& method:QStringList{"wallet.orchard.finishshield","wallet.orchard.finishspend"}) {
+            ready();
+            auto snapshot=storedSnapshot(method);
+            auto rows=snapshot["operations"].toArray();auto row=rows[0].toObject();
+            row["durable_state"]="reserved";row.remove("txid");rows[0]=row;snapshot["operations"]=rows;
+            rawReply(last("wallet.orchard.listoperations"),snapshot);
+            auto* table=Find<QTableWidget>(tab_,"orchardOperationsTable");
+            auto* cancel=Find<QPushButton>(tab_,"orchardCancel");
+            auto* review=Find<QPushButton>(tab_,"orchardReview");
+            QVERIFY(!cancel->isEnabled());                     // nothing selected yet
+            fillSend();QVERIFY(!review->isEnabled());           // the saved request blocks a new payment
+            table->selectRow(0);QVERIFY(cancel->isEnabled());
+            // Declining the confirmation sends nothing.
+            auto count=sent_.size();
+            QTimer::singleShot(100,[]{if(auto* box=qobject_cast<QMessageBox*>(QApplication::activeModalWidget()))box->reject();});
+            cancel->click();
+            for(qsizetype i=count;i<sent_.size();++i)QVERIFY(sent_[i].method!="wallet.orchard.cancelreserved");
+            // Confirming sends exactly the request the node documents.
+            confirmNextDialog();cancel->click();
+            const Sent sent=last("wallet.orchard.cancelreserved");
+            QCOMPARE(sent.params.value("account").toInt(),0);
+            QCOMPARE(sent.params.value("operation_id").toString(),QString(64,'b'));
+            QCOMPARE(sent.params.value("wallet_binding").toString(),QString(64,'a'));
+            QCOMPARE(sent.params.size(),3);
+            QVERIFY(!cancel->isEnabled());                     // one call at a time
+            // The node confirms: the page says so and reads the list again.
+            count=sent_.size();
+            rawReply(sent,QJsonObject{{"account",0},{"operation_id",QString(64,'b')},{"account_revision",6},{"cancelled",true}});
+            QVERIFY(Find<QLabel>(tab_,"orchardStatus")->text().contains("cancelled",Qt::CaseInsensitive));
+            QVERIFY(Find<QLabel>(tab_,"orchardStatus")->text().contains("Nothing was sent"));
+            bool reread=false;for(qsizetype i=count;i<sent_.size();++i)reread=reread||sent_[i].method=="wallet.orchard.listoperations";
+            QVERIFY(reread);
+            // The list comes back without it: a new payment can be reviewed.
+            auto empty=storedSnapshot(method);empty["operations"]=QJsonArray{};empty["account_revision"]=6;
+            rawReply(last("wallet.orchard.listoperations"),empty);
+            QVERIFY(review->isEnabled());
+            cleanup();init();
+        }
+        // A signed request is not offered for cancelling, and the node's
+        // refusals are said in plain words without changing the list.
+        ready();rawReply(last("wallet.orchard.listoperations"),storedSnapshot("wallet.orchard.finishspend"));
+        auto* table=Find<QTableWidget>(tab_,"orchardOperationsTable");auto* cancel=Find<QPushButton>(tab_,"orchardCancel");
+        table->selectRow(0);
+        QVERIFY(!cancel->isEnabled());
+        QVERIFY(cancel->toolTip().contains("signed"));
+    }
+    void cancelRefusalsAndMismatchedRepliesChangeNothing() {
+        const auto reserved=[&]{
+            auto snapshot=storedSnapshot("wallet.orchard.finishshield");
+            auto rows=snapshot["operations"].toArray();auto row=rows[0].toObject();
+            row["durable_state"]="reserved";row.remove("txid");rows[0]=row;snapshot["operations"]=rows;return snapshot;
+        };
+        const QList<QPair<QJsonObject,QString>> cases{
+            {QJsonObject{{"error","Operation is signed"},{"error_code","operation_signed"},{"retryable",false}},"already signed"},
+            {QJsonObject{{"error","No such operation"},{"error_code","operation_not_found"},{"retryable",false}},"no longer"},
+            {QJsonObject{{"error","Wallet is locked"}},"Wallet is locked"},
+            // A success that is not for this request, or does not say cancelled.
+            {QJsonObject{{"account",0},{"operation_id",QString(64,'e')},{"account_revision",6},{"cancelled",true}},"not understood"},
+            {QJsonObject{{"account",1},{"operation_id",QString(64,'b')},{"account_revision",6},{"cancelled",true}},"not understood"},
+            {QJsonObject{{"account",0},{"operation_id",QString(64,'b')},{"account_revision",6},{"cancelled",false}},"not understood"},
+            {QJsonObject{{"account",0},{"operation_id",QString(64,'b')},{"account_revision",6}},"not understood"}};
+        for(const auto& c:cases) {
+            ready();rawReply(last("wallet.orchard.listoperations"),reserved());
+            Find<QTableWidget>(tab_,"orchardOperationsTable")->selectRow(0);
+            confirmNextDialog();Find<QPushButton>(tab_,"orchardCancel")->click();
+            rawReply(last("wallet.orchard.cancelreserved"),c.first);
+            const QString said=Find<QLabel>(tab_,"orchardStatus")->text();
+            QVERIFY2(said.contains(c.second,Qt::CaseInsensitive),qPrintable(said));
+            QVERIFY(!said.contains("Nothing was sent"));
+            QCOMPARE(Find<QTableWidget>(tab_,"orchardOperationsTable")->rowCount(),1);   // the row is still shown
+            QVERIFY(Find<QPushButton>(tab_,"orchardCancel")->isEnabled() || c.second=="no longer"); // can be tried again
+            cleanup();init();
+        }
+    }
     void connectionChangeCannotRetargetPendingPayment() {
         ready();fillSend();confirmNextDialog();Find<QPushButton>(tab_,"orchardReview")->click();const auto queue=last("wallet.orchard.queuespend");
         const auto count=sent_.size();QMetaObject::invokeMethod(tab_,"onConnectionContextChanged",Qt::DirectConnection);
