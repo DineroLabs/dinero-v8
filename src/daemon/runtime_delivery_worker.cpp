@@ -109,6 +109,11 @@ void RuntimeDeliveryWorker::RecoverWallet(Report& report,
     report.wallet=WalletOutcome::Deferred;report.wallet_head.reset();
     report.wallet_recovery_attempts=recovery_attempts;
     if (!wallet_) {report.wallet=WalletOutcome::ExplicitlyAbsent;return;}
+    // This worker returns every retry interval. If another reader holds the
+    // retained account replay when a block has arrived, wait for the next
+    // pass instead of rebuilding the replay from the origin (minutes on a
+    // long chain, with every wallet read refused meanwhile).
+    const ChainstateService::PreferReplayRetryScope prefer_retry;
     // A stop request cancels long chain-length replays on this thread, so Stop
     // can join promptly; the cancelled attempt fails before any projection and
     // its committed per-store prefixes stay retryable.

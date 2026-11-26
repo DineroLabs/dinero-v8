@@ -6029,6 +6029,11 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     --gtest_filter=SnapshotWalletBirth.*)
   set_tests_properties(SnapshotWalletBirth PROPERTIES
     LABELS "snapshot;daemon;wallet;mandatory" TIMEOUT 120)
+  # A held phone replay is kept, not rebuilt, when a block arrives (retained_replay_policy.h).
+  add_test(NAME RetainedReplayPolicy COMMAND test_assumeutxo_replay
+    --gtest_filter=RetainedReplayPolicy.*)
+  set_tests_properties(RetainedReplayPolicy PROPERTIES
+    LABELS "snapshot;daemon;wallet;mandatory" TIMEOUT 120)
   # wallet.createhd repeats the history read for a bounded time (runtime_replay_retry.h).
   add_test(NAME RuntimeReplayRetry COMMAND test_assumeutxo_replay
     --gtest_filter=RuntimeReplayRetry.*)
@@ -6361,6 +6366,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(OperatorStatusOwner PROPERTIES TIMEOUT 60 LABELS "daemon;consensus;storage;mandatory")
   add_test(NAME OrchardTransactionRpc COMMAND test_assumeutxo_replay --gtest_filter=OrchardTransactionRpc.*)
   set_tests_properties(OrchardTransactionRpc PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;rpc;mandatory")
+  add_test(NAME OrchardSelectedTipAudit COMMAND test_assumeutxo_replay --gtest_filter=OrchardSelectedTipAudit.*)
+  set_tests_properties(OrchardSelectedTipAudit PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;consensus;mandatory")
   add_test(NAME OrchardHeaderRpc COMMAND test_assumeutxo_replay --gtest_filter=OrchardHeaderRpc.*)
   set_tests_properties(OrchardHeaderRpc PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;rpc;mandatory")
   add_test(NAME OrchardCycle COMMAND test_assumeutxo_replay --gtest_filter=OrchardCycle.*)

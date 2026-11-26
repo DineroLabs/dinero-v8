@@ -411,6 +411,7 @@ struct BalanceReply {
     quint64 confirmed=0, reserved=0, unreserved=0;
     bool caughtUp=false;
     quint64 account=0, accountRevision=0, accountSequence=0, sourceSequence=0;
+    quint64 height=0;  // the wallet checkpoint this balance was read at
 };
 inline std::optional<BalanceReply> ParseBalance(const QJsonValue& v) {
     if (InBandError(v) || !v.isObject()) return {};
@@ -428,7 +429,7 @@ inline std::optional<BalanceReply> ParseBalance(const QJsonValue& v) {
         *unreserved!=*confirmed-*reserved || !o.value("account_caught_up_to_captured_source").isBool() ||
         o.value("account_caught_up_to_captured_source").toBool()!=(*sequence==*source)) return {};
     return BalanceReply{*confirmed,*reserved,*unreserved,o.value("account_caught_up_to_captured_source").toBool(),
-        *account,*revision,*sequence,*source};
+        *account,*revision,*sequence,*source,*height};
 }
 
 }  // namespace OrchardContract

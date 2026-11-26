@@ -1,6 +1,9 @@
 #pragma once
 #include <chrono>
+#include <thread>
 #include "wallet/orchard_ownership_inventory.h"
+#include "daemon/services/chainstate_recovery_source.h"
+#include "wallet/runtime_wallet_recovery.h"
 #include <cstdio>
 #include <cstdlib>
 // #939 phase 3: Orchard delivery for native wallets on a full-archive v3 node.
@@ -10,6 +13,13 @@
 namespace dinero {
 
 namespace {
+// While alive, every reuse of a remembered catalog is also restored and must
+// be identical (catalog revision, each account's revision, encoded state and
+// archive revisions); a difference throws out of the delivery pass.
+struct VerifyCatalogReuse {
+    VerifyCatalogReuse(){wallet::OrchardAccountDelivery::VerifyCatalogRecoveryReuseForTest(true);}
+    ~VerifyCatalogReuse(){wallet::OrchardAccountDelivery::VerifyCatalogRecoveryReuseForTest(false);}
+};
 uint64_t NativeOrchardHead(CanonicalRecoveryFixture& f) {
     const auto view=f.f.service->getRuntimeAccountReplay();
     OrchardAdmissionFixture::Require(view.ok());
@@ -52,6 +62,98 @@ TEST(WalletV3NativeOrchard, FullAccountReplayReusesPrefixAndExtendsTail) {
     EXPECT_EQ(f.f.service->FullReplayCaptureCounts().second,cached.second+2);
 }
 
+namespace {
+// Runs delivery passes on the calling thread until Orchard account 0 is at the head.
+bool DeliverAllOrchardForReplayTest(OrchardCreationFixture& f,int max_passes) {
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+    const auto session=use->Wallet().AcquireDatabaseLease()->Session();
+    for(int i=0;i<max_passes;++i) {
+        const auto next=f.f.service->resumeRuntimeWalletRecoveryV3IfNeeded(
+            use->Wallet(),index->Index(),session,128*1024*1024,1);
+        if(!next.ok())return false;
+        if(*next)return true;
+    }
+    return false;
+}
+} // namespace
+
+// The retained full view is not rebuilt from the origin because another
+// reader happened to hold it when a block arrived. A rebuild takes minutes on
+// a long chain, and until it ends nothing is delivered and every balance read
+// is refused (seen on a mainnet wallet: ten minutes without a balance while
+// mining). The reader is waited for, briefly; one that does not let go still
+// gets a full capture, as before.
+TEST(WalletV3NativeOrchard, FullAccountReplayWaitsForAReaderInsteadOfRebuilding) {
+    OrchardCreationFixture f;
+    {const auto first=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(first.ok());}
+    const auto built=f.f.service->FullReplayCaptureCounts();
+
+    // Another thread holds the view for a moment while a block arrives.
+    {
+        auto held=f.f.service->getRuntimeAccountReplay();
+        ASSERT_TRUE(held.ok());
+        f.MineEmpty();
+        std::thread reader([view=std::move(*held)]() mutable {
+            std::this_thread::sleep_for(std::chrono::milliseconds(60));
+            view.reset();
+        });
+        held=Status::Invalid;
+        const auto extended=f.f.service->getRuntimeAccountReplay();
+        reader.join();
+        ASSERT_TRUE(extended.ok());
+        EXPECT_EQ((*extended)->Point((*extended)->Head()).checkpoint.block_hash,f.f.service->GetActiveTip()->hash);
+    }
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,built.first) << "no full capture for a reader that lets go";
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().second,built.second+1);
+
+    // The same for a reader that holds only the view's DATA (the hash lookup
+    // a restore keeps after it has dropped the view): ExtendTail refuses for
+    // it too, so it is waited for too.
+    {
+        const auto extensions=f.f.service->FullReplayCaptureCounts().second;
+        std::function<StatusOr<uint256>(uint32_t)> lookup;
+        {
+            const auto view=f.f.service->getRuntimeAccountReplay();
+            ASSERT_TRUE(view.ok());
+            lookup=(*view)->SelectedHashes((*view)->Head());
+        }
+        f.MineEmpty();
+        std::thread reader([held=std::move(lookup)]() mutable {
+            std::this_thread::sleep_for(std::chrono::milliseconds(60));
+            held=nullptr;
+        });
+        const auto extended=f.f.service->getRuntimeAccountReplay();
+        reader.join();
+        ASSERT_TRUE(extended.ok());
+        EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,built.first) << "no full capture for a holder of the data alone";
+        EXPECT_EQ(f.f.service->FullReplayCaptureCounts().second,extensions+1);
+    }
+
+    // A holder that does not let go (here, the caller itself) is answered
+    // all the same, by a full capture, after the bounded wait.
+    {
+        const auto held=f.f.service->getRuntimeAccountReplay();
+        ASSERT_TRUE(held.ok());
+        f.MineEmpty();
+        const auto started=std::chrono::steady_clock::now();
+        const auto answer=f.f.service->getRuntimeAccountReplay();
+        const auto waited=std::chrono::steady_clock::now()-started;
+        ASSERT_TRUE(answer.ok());
+        EXPECT_EQ((*answer)->Point((*answer)->Head()).checkpoint.block_hash,f.f.service->GetActiveTip()->hash);
+        EXPECT_GE(waited,std::chrono::milliseconds(200));
+        EXPECT_LT(waited,std::chrono::seconds(10));
+    }
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,built.first+1);
+
+    // The new capture is the cache: the next block is a tail extension again.
+    const auto after_capture=f.f.service->FullReplayCaptureCounts();
+    f.MineEmpty();
+    {const auto next=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(next.ok());}
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,after_capture.first);
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().second,after_capture.second+1);
+}
+
 // A native-complete wallet on v3 creates an Orchard account, and an Orchard
 // note sent to it is delivered by the v3 route: the account cursor advances
 // only when delivery runs, matches the authenticated source, the note shows
@@ -61,6 +163,7 @@ TEST(WalletV3NativeOrchard, FullAccountReplayReusesPrefixAndExtendsTail) {
 TEST(WalletV3NativeOrchard, NativeWalletReceivesOrchardNoteThroughV3Delivery) {
     OrchardCreationFixture f;   // native create() wallet, tip at activation
     NativeV3IndexScope v3(f,"v3-native-orchard-index");
+    VerifyCatalogReuse verify_reuse;
     std::string error;
     ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
         WalletService::CanonicalRecovery::AppliedPrefix) << error;
@@ -235,6 +338,79 @@ TEST(WalletV3NativeOrchard, WorkerRevisitsPartialReplayBeforeNormalRetry) {
     EXPECT_GT(report.wallet_recovery_attempts,1u);
 }
 
+// First enrolment (and every address-pool extension) took the coverage
+// projection, which holds the account replay, and kept it while the Orchard
+// delivery read the replay again. A block arriving between the two made that
+// second read rebuild the replay from the origin, because this thread itself
+// still held the view.
+TEST(WalletV3NativeOrchard, PendingPassReleasesTheReplayBeforeItsOrchardRead) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-orchard-pending-release-index");
+    std::string enrol_error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&enrol_error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << enrol_error;
+    ASSERT_FALSE(f.Call(0).isMember("error"));  // an Orchard account, so the pass has an Orchard read to make
+    ASSERT_TRUE(DeliverAllOrchardForReplayTest(f,32));
+    // Use receive addresses until the pool must be extended, and begin the
+    // extension: the wallet is durably Pending again, as on a node in use.
+    const auto request=f.RequestContext();
+    bool low=false;
+    for(int i=0;i<4*int(WalletManager::kNativeV3ReceivePool)&&!low;++i) {
+        ASSERT_FALSE(NativeIssue(request).isMember("error"));
+        low=WalletService::AcquireWalletUse(f.wallet)->Wallet().AcquireDatabaseLease()->NativeV3PoolNeedsExtension();
+    }
+    ASSERT_TRUE(low);
+    ASSERT_TRUE(NativeBeginExtension(f));
+    {const auto prime=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(prime.ok());}
+    const auto before=f.f.service->FullReplayCaptureCounts();
+    bool landed=false;
+    f.f.service->SetV3PendingReconcileHookForTest([&]{if(!landed){landed=true;(void)f.MineEmpty();}});
+    std::string error;
+    (void)f.wallet->RecoverActiveWalletFromCanonicalSource(&error);
+    f.f.service->SetV3PendingReconcileHookForTest({});
+    ASSERT_TRUE(landed) << "the pass did not go through the pending branch: " << error;
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,before.first)
+        << "the replay was rebuilt from the origin inside one delivery pass";
+}
+
+// The delivery worker comes back every retry interval. When another reader
+// (a wallet request) holds the replay while a block has arrived, the worker
+// waits for its next pass instead of rebuilding the replay from the origin:
+// on a mainnet wallet that rebuild was ten minutes without a balance.
+TEST(WalletV3NativeOrchard, WorkerWaitsForItsNextPassWhileAReaderHoldsTheReplay) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-orchard-worker-retry-index");
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ASSERT_FALSE(f.Call(0).isMember("error"));
+    ASSERT_TRUE(DeliverAllOrchardForReplayTest(f,32));
+    auto held=f.f.service->getRuntimeAccountReplay();
+    ASSERT_TRUE(held.ok());
+    const auto delivered_before=f.Account(0).account.Delivery().sequence;
+    const auto before=f.f.service->FullReplayCaptureCounts();
+    (void)f.MineEmpty();
+    RuntimeDeliveryWorker worker(f.f.service,f.wallet,
+        RuntimeDeliveryWorker::Limits{1,std::chrono::milliseconds(100)});
+    worker.Start();
+    // Several passes go by while the reader still holds the view.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,before.first)
+        << "the worker rebuilt the replay instead of waiting for its next pass";
+    // (This thread does not read the account meanwhile: that read takes the
+    // replay too, and with the view held it would be the one to rebuild it.)
+    EXPECT_GT(worker.Snapshot().wallet_recovery_attempts,3u) << "the worker kept coming back";
+    held=Status::Invalid;  // the reader lets go
+    const auto passes_at_release=worker.Snapshot().wallet_recovery_attempts;
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(15);
+    while(worker.Snapshot().wallet_recovery_attempts<passes_at_release+6&&std::chrono::steady_clock::now()<deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    worker.Stop();
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,before.first);
+    EXPECT_GT(f.f.service->FullReplayCaptureCounts().second,before.second) << "the tail was extended once the reader let go";
+    EXPECT_GT(f.Account(0).account.Delivery().sequence,delivered_before) << "delivered on a later pass";
+}
+
 TEST(WalletV3NativeOrchard, OrdinaryBacklogPreemptsOrchardReplay) {
     OrchardCreationFixture f;
     NativeV3IndexScope v3(f,"v3-native-orchard-ordinary-priority-index");
@@ -347,6 +523,7 @@ constexpr int kSlack=int(wallet::OrchardAccountDelivery::kRetainedSlack); // 1-2
 // inside the window, and refuses a rewind deeper than the window.
 TEST(WalletV3NativeOrchard, ActiveRetainedHistoryIsBoundedAndStillRewinds) {
     OrchardCreationFixture f;
+    VerifyCatalogReuse verify_reuse;
     NativeV3IndexScope v3(f,"v3-native-orchard-bounded-retention-index");
     std::string error;
     ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
@@ -504,4 +681,176 @@ TEST(WalletV3NativeOrchard, RetainedHistoryBoundIsPerAccountWithinWalletBudget) 
         EXPECT_LE(RetainedRows(f,account),kWindow+kSlack) << account;
         EXPECT_EQ(f.Account(account).account.Delivery().sequence,NativeOrchardHead(f)) << account;
     }
+}
+
+// Delivery carries the catalog it committed into the next event. Restoring the
+// wallet's whole current+retained inventory for every event cost ~12 s twice
+// per block on a mainnet wallet (owner's Mac, v8.2.6 pilot, 2026-11-24), so the
+// Orchard account fell behind a ~20 s block interval. Every reuse here is also
+// restored and compared (VerifyCatalogReuse).
+TEST(WalletV3NativeOrchard, DeliveryReusesItsCommittedCatalogInsteadOfRestoringEachEvent) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-orchard-carry-index");
+    VerifyCatalogReuse verify_reuse;
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ASSERT_FALSE(f.Call(0).isMember("error"));
+    for(int i=0;i<6;++i)(void)f.MineEmpty();
+    ASSERT_TRUE(DeliverAllOrchard(f,64));
+    using Delivery=wallet::OrchardAccountDelivery;
+    const auto builds=f.f.service->FullReplayCaptureCounts().first;
+    const auto restores=Delivery::CatalogRecoveryRestores();
+    constexpr int kEvents=20;
+    for(int i=0;i<kEvents;++i){(void)f.MineEmpty();ASSERT_TRUE(DeliverAllOrchard(f,16)) << "event " << i;}
+    EXPECT_EQ(f.Account(0).account.Delivery().sequence,NativeOrchardHead(f));
+    EXPECT_LE(Delivery::CatalogRecoveryRestores()-restores,2u) << "delivery restored its catalog per event";
+    // The remembered catalog holds no replay data: the retained view still
+    // extends instead of being rebuilt from the origin.
+    EXPECT_EQ(f.f.service->FullReplayCaptureCounts().first,builds);
+    // Readers of the same bytes reuse what delivery committed.
+    {
+        const auto observed=Delivery::ObservedCatalogRestores();
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        const auto session=use->Wallet().AcquireDatabaseLease()->Session();
+        const auto view=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(view.ok());
+        (void)Delivery::ObserveCatalogForReplay(use->Wallet(),session,**view);
+        EXPECT_EQ(Delivery::ObservedCatalogRestores(),observed) << "reader restored what delivery had committed";
+    }
+    // A write delivery did not make is never reused over: the next event restores.
+    ASSERT_FALSE(f.Issue(0).isMember("error"));
+    auto before=Delivery::CatalogRecoveryRestores();
+    (void)f.MineEmpty();ASSERT_TRUE(DeliverAllOrchard(f,16));
+    EXPECT_GE(Delivery::CatalogRecoveryRestores()-before,1u) << "reused across a foreign write";
+    // Locking forgets the decrypted catalog; after unlock the next event restores.
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        use->Wallet().lockWallet();use->Wallet().unlockWallet("canonical-fixture-pass",0);
+    }
+    before=Delivery::CatalogRecoveryRestores();
+    (void)f.MineEmpty();ASSERT_TRUE(DeliverAllOrchard(f,16));
+    EXPECT_GE(Delivery::CatalogRecoveryRestores()-before,1u) << "catalog survived a wallet lock";
+    EXPECT_EQ(f.Account(0).account.Delivery().sequence,NativeOrchardHead(f));
+}
+
+// Delivery remembers its committed catalog only if it is exactly what a
+// restore of the stored bytes returns, archive records and catalog included:
+// on a remembered hit the delivery loop's own equal() checks compare the
+// catalog with itself, so this is the guard that keeps a stale one out.
+TEST(WalletV3NativeOrchard, DeliveryRemembersOnlyTheCatalogItsBytesRestoreTo) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-orchard-remember-guard-index");
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ASSERT_FALSE(f.Call(0).isMember("error"));
+    for(int i=0;i<3;++i)(void)f.MineEmpty();
+    ASSERT_TRUE(DeliverAllOrchard(f,32));
+    using Delivery=wallet::OrchardAccountDelivery;
+    auto use=WalletService::AcquireWalletUse(f.wallet);
+    const auto session=use->Wallet().AcquireDatabaseLease()->Session();
+    const auto view=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(view.ok());
+    const auto real=Delivery::ReadCatalogForReplay(use->Wallet(),session,**view);
+    ASSERT_FALSE(real.accounts.empty());
+    const auto prepare_restores=[&]{
+        const auto before=Delivery::CatalogRecoveryRestores();
+        (void)Delivery::PrepareCatalogRecovery(use->Wallet(),session,**view,Delivery::CatalogRecoveryAction::Observe);
+        return Delivery::CatalogRecoveryRestores()-before;
+    };
+    // The exact catalog is remembered: the next plan restores nothing.
+    Delivery::ForgetCatalogRecovery();
+    Delivery::RememberCatalogRecovery(use->Wallet(),session,**view,real);
+    EXPECT_EQ(prepare_restores(),0u) << "exact catalog was not remembered";
+    // An archive list the bytes do not hold is refused: the next plan restores.
+    auto archives=real;archives.accounts[0].archive_revisions.emplace_back(orchard::Hash{7},uint64_t(1));
+    Delivery::ForgetCatalogRecovery();
+    Delivery::RememberCatalogRecovery(use->Wallet(),session,**view,archives);
+    EXPECT_EQ(prepare_restores(),1u) << "catalog with foreign archive records was remembered";
+    // So is a catalog revision the bytes do not hold.
+    auto catalog=real;++catalog.catalog.revision;
+    Delivery::ForgetCatalogRecovery();
+    Delivery::RememberCatalogRecovery(use->Wallet(),session,**view,catalog);
+    EXPECT_EQ(prepare_restores(),1u) << "catalog with a foreign revision was remembered";
+}
+
+// The delivery worker returns about once a second. With every account at the
+// head and nothing written since, a pass re-proved the same catalog: about six
+// complete captures (~1 s each on the owner's mainnet wallet, pilot 2b,
+// 2026-11-24), so the worker was busy ~80% of the time with no block to apply
+// and held the retained replay that wallet reads then had to refuse. An idle
+// pass now captures nothing. Any wallet write, by this connection or another,
+// a lock, or the forced periodic pass brings the complete pass back.
+TEST(WalletV3NativeOrchard, IdleDeliveryPassAtTheHeadCapturesNothing) {
+    OrchardCreationFixture f;
+    NativeV3IndexScope v3(f,"v3-native-orchard-idle-skip-index");
+    VerifyCatalogReuse verify_reuse;
+    struct Interval{~Interval(){RuntimeWalletRecovery::SetIdleCatalogFullPassIntervalForTest(std::chrono::minutes(1));}} interval;
+    RuntimeWalletRecovery::SetIdleCatalogFullPassIntervalForTest(std::chrono::minutes(10));
+    std::string error;
+    ASSERT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(&error),
+        WalletService::CanonicalRecovery::AppliedPrefix) << error;
+    ASSERT_FALSE(f.Call(0).isMember("error"));
+    for(int i=0;i<3;++i)(void)f.MineEmpty();
+    ASSERT_TRUE(DeliverAllOrchard(f,32)); // its last pass completed at the head
+    using Delivery=wallet::OrchardAccountDelivery;
+    const auto idle_passes=[&](int n){
+        const auto captures=Delivery::CatalogCaptures();const auto skipped=RuntimeWalletRecovery::IdleCatalogPassesSkipped();
+        for(int i=0;i<n;++i)if(!DeliverAllOrchard(f,1))return std::pair<uint64_t,uint64_t>{~0ull,~0ull};
+        return std::pair{Delivery::CatalogCaptures()-captures,RuntimeWalletRecovery::IdleCatalogPassesSkipped()-skipped};
+    };
+    // Idle: no capture at all, and every pass still reports the head.
+    EXPECT_EQ(idle_passes(5),(std::pair<uint64_t,uint64_t>{0,5})) << "idle pass captured the catalog";
+    EXPECT_EQ(f.Account(0).account.Delivery().sequence,NativeOrchardHead(f));
+
+    // A write by the wallet's own connection: the next pass is complete again.
+    ASSERT_FALSE(f.Issue(0).isMember("error"));
+    {const auto [captures,skipped]=idle_passes(1);EXPECT_GT(captures,0u) << "own-connection write was skipped over";EXPECT_EQ(skipped,0u);}
+    EXPECT_EQ(idle_passes(2),(std::pair<uint64_t,uint64_t>{0,2}));
+
+    // A commit by another connection to the same file moves only data_version.
+    {
+        std::string path;
+        {auto use=WalletService::AcquireWalletUse(f.wallet);auto lease=use->Wallet().AcquireDatabaseLease();
+         path=sqlite3_db_filename(lease->Database(),"main");}
+        sqlite3* other=nullptr;ASSERT_EQ(sqlite3_open(path.c_str(),&other),SQLITE_OK);
+        const int rc=sqlite3_exec(other,"CREATE TABLE IF NOT EXISTS idle_probe(x INTEGER);INSERT INTO idle_probe VALUES(1)",
+            nullptr,nullptr,nullptr);
+        sqlite3_close(other);ASSERT_EQ(rc,SQLITE_OK);
+    }
+    {const auto [captures,skipped]=idle_passes(1);EXPECT_GT(captures,0u) << "another connection's write was skipped over";EXPECT_EQ(skipped,0u);}
+
+    // Locking forgets: after unlock the next pass is complete.
+    {auto use=WalletService::AcquireWalletUse(f.wallet);
+     use->Wallet().lockWallet();use->Wallet().unlockWallet("canonical-fixture-pass",0);}
+    {const auto [captures,skipped]=idle_passes(1);EXPECT_GT(captures,0u) << "skip survived a wallet lock";EXPECT_EQ(skipped,0u);}
+
+    // The forced periodic pass runs complete, and finds nothing the key missed.
+    RuntimeWalletRecovery::SetIdleCatalogFullPassIntervalForTest(std::chrono::milliseconds(0));
+    const auto misses=RuntimeWalletRecovery::IdleCatalogSkipMisses();
+    {const auto [captures,skipped]=idle_passes(2);EXPECT_GT(captures,0u);EXPECT_EQ(skipped,0u);}
+    EXPECT_EQ(RuntimeWalletRecovery::IdleCatalogSkipMisses(),misses);
+    // A new block is never skipped, even when nothing was written to the wallet
+    // before the Orchard pass (driven directly, without transparent delivery).
+    RuntimeWalletRecovery::SetIdleCatalogFullPassIntervalForTest(std::chrono::minutes(10));
+    EXPECT_EQ(idle_passes(1),(std::pair<uint64_t,uint64_t>{0,1})) << "skip not armed";
+    (void)f.MineEmpty();
+    {
+        const auto view=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(view.ok());
+        ASSERT_GT((*view)->Head().sequence,f.Account(0).account.Delivery().sequence);
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        const auto session=use->Wallet().AcquireDatabaseLease()->Session();
+        const ChainstateRuntimeRecoverySource source(*f.f.service);
+        const auto skipped=RuntimeWalletRecovery::IdleCatalogPassesSkipped();
+        const auto result=RuntimeWalletRecovery::AdvancePreparedOrchardCatalogStores(**view,source,use->Wallet(),session,
+            [](const RuntimeWalletRecovery::OrchardWrite& write){write([]{});},16);
+        EXPECT_EQ(RuntimeWalletRecovery::IdleCatalogPassesSkipped(),skipped) << "a moved head was skipped";
+        ASSERT_TRUE(result.has_value());
+        EXPECT_EQ(result->applied,(*view)->Head());
+        EXPECT_EQ(f.Account(0).account.Delivery().sequence,(*view)->Head().sequence);
+    }
+    (void)f.MineEmpty();
+    {const auto skipped=RuntimeWalletRecovery::IdleCatalogPassesSkipped();
+     ASSERT_TRUE(DeliverAllOrchard(f,16));
+     EXPECT_EQ(RuntimeWalletRecovery::IdleCatalogPassesSkipped(),skipped) << "a new block was skipped";}
+    EXPECT_EQ(f.Account(0).account.Delivery().sequence,NativeOrchardHead(f));
 }

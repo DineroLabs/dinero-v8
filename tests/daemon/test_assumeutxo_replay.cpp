@@ -1,3 +1,5 @@
+#include "daemon/services/retained_replay_policy.h"
+#include "rpc/orchard_job_retry.h"
 #include "daemon/services/runtime_replay_retry.h"
 #include "dinero/core/common/AddressCodec.h"
 #include "consensus/pow.hpp"
@@ -960,6 +962,27 @@ TEST(RuntimeReplayRetry, AsksAgainOnlyWhileItCanWinAndOnlyForABoundedTime) {
     // But if every further attempt is itself that long (the kept history was lost), one more is all that is tried.
     EXPECT_EQ(run({{Status::Invalid},true,Ms{60000}},&reads,&waited).status(),Status::Invalid);
     EXPECT_EQ(reads,2);
+}
+
+// The retained phone replay is kept when a block arrives while a reader holds
+// it (retained_replay_policy.h). It used to be dropped and rebuilt: seven
+// minutes on a phone, on every block, so a wallet never finished recovery.
+TEST(RetainedReplayPolicy, AHeldReplayIsKeptNotRebuilt) {
+    using A=RetainedReplayAction;
+    // Still at the head: handed out as it is, however long it has been held.
+    EXPECT_EQ(WhenRetainedReplayIsHeld(true,0),A::ReturnCurrent);
+    EXPECT_EQ(WhenRetainedReplayIsHeld(true,kRetainedReplayHeldRefusals+5),A::ReturnCurrent);
+    // Held and a block has arrived: kept, and the caller retries.
+    EXPECT_EQ(WhenRetainedReplayIsHeld(false,0),A::KeepAndRetry);
+    EXPECT_EQ(WhenRetainedReplayIsHeld(false,kRetainedReplayHeldRefusals-1),A::KeepAndRetry);
+    // A holder that never lets go does not block the wallet for ever.
+    EXPECT_EQ(WhenRetainedReplayIsHeld(false,kRetainedReplayHeldRefusals),A::DropAndRebuild);
+    EXPECT_EQ(WhenRetainedReplayIsHeld(false,3,3),A::DropAndRebuild);
+    // The same refusal, repeating, is said again with its count.
+    EXPECT_FALSE(RepeatedRefusalIsLogged(1));EXPECT_FALSE(RepeatedRefusalIsLogged(9));
+    EXPECT_TRUE(RepeatedRefusalIsLogged(10));EXPECT_TRUE(RepeatedRefusalIsLogged(100));
+    EXPECT_FALSE(RepeatedRefusalIsLogged(999));EXPECT_TRUE(RepeatedRefusalIsLogged(1000));
+    EXPECT_FALSE(RepeatedRefusalIsLogged(1500));EXPECT_TRUE(RepeatedRefusalIsLogged(987000));
 }
 
 TEST(SnapshotWalletBirth, FirstRunRefusesABirthBelowTheSnapshotBase) {

@@ -398,6 +398,9 @@ public:
         [[nodiscard]] const std::string& WalletName() const noexcept { return name_; }
         // Process-local identity only, never a durable delivery checkpoint.
         [[nodiscard]] uint64_t Session() const noexcept { return session_; }
+        // Process-wide count of shield history rows checked by
+        // ValidateShieldHistoryInTransaction (tests).
+        static uint64_t ShieldHistoryValidations() noexcept;
         // Per-manager identity, even when another instance reopens the same
         // wallet backup with the same session counter. Holds only an opaque
         // token, not WalletManager or SQLite lifetime. Service ownership is
@@ -622,6 +625,11 @@ public:
     void decryptWallet(const std::string& passphrase);
     void changePassphrase(const std::string& oldPassphrase, const std::string& newPassphrase);
     void lockWallet();
+    // A component that keeps decrypted wallet views in memory (the Orchard
+    // catalog memo) registers here; called on lock, on timeout auto-lock and
+    // on every database session change (open, close, switch). Must not throw
+    // and must not take wallet locks.
+    static void SetDecryptedViewsClearedHook(void (*hook)() noexcept) noexcept;
     void unlockWallet(const std::string& passphrase, int timeoutSeconds = 0);
     bool isWalletEncrypted() const;
     bool isWalletLocked() const;

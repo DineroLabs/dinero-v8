@@ -236,6 +236,16 @@ TEST(OrchardPhoneHistory, ReorgAboveVerifiedPrefixKeepsReplayAndReplacesRequest)
     EXPECT_EQ(complete->Body(102),first_bytes);
     EXPECT_EQ(complete->Body(103),replacement_bytes);
     EXPECT_EQ(verifiers.load(),1u);
+    // A wallet replay kept from before the reorganisation ends at the old
+    // block. The adoption check asks whether that end and the verified
+    // checkpoint are on one chain (ChainstateService::getRuntimeAccountReplay,
+    // `adopt`): across the two branches the answer is no in both directions,
+    // so a replay that ends on the dead branch is never handed out with a
+    // checkpoint from the living one, nor the reverse. Only the common part is shared.
+    EXPECT_FALSE(host.OnChainOf(replacement,103,old_hash));
+    EXPECT_FALSE(host.OnChainOf(original,103,replacement_hash));
+    EXPECT_TRUE(host.OnChainOf(replacement,102,base));
+    EXPECT_TRUE(host.OnChainOf(original,102,base));
 
     // Once height 103 is verified, switching branches at that height must
     // discard the prior replay and validate the common block again.
@@ -3231,6 +3241,85 @@ TEST(OrchardSnapshotRuntime, DeferredV5WaitsForBurialBeforeLoaderAttempt) {
         EXPECT_EQ(db->getTip()->height,0);
         EXPECT_EQ(std::filesystem::file_size(snapshot),68u);
     }
+}
+// Android, mainnet 165,230 (2026-11-23): the phone had connected three blocks
+// of a branch that lost. The winning branch's bodies arrived and were stored
+// (metadata + HeaderStore, no raw ChainDB header yet), but the node could not
+// switch to them before it was stopped. Every start then refused with
+// "Retained Orchard header unavailable", because a stored block that is not
+// yet connected was only recognised ABOVE the tip's height, and the winning
+// branch starts at or below it. A stored competitor of a selected block is
+// just as unconnected; only a selected or executed row may not be missing.
+TEST(OrchardSnapshotRuntime, StoredCompetitorAtOrBelowTheTipHeightDoesNotRefuseStartup) {
+    using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;
+    OrchardCycleFixture source(true);
+    HeaderChainSelector ancestry;
+    for(const auto& block:source.f.blocks)ASSERT_TRUE(ancestry.AddHeader(block.header));
+    const auto tip=source.f.db.getTip();ASSERT_TRUE(tip.ok());
+    const auto selected=ancestry.GetHeaderValue(tip->hash);ASSERT_TRUE(selected);
+    const auto parent=ancestry.GetHeaderValue(selected->prev_hash);ASSERT_TRUE(parent);
+    // A different, valid block at the tip's own height, on the same parent.
+    BlockHeader rival=selected->header;rival.merkle_root.data[0]^=1;
+    {HeaderChainSelector grind;for(const auto& block:source.f.blocks)ASSERT_TRUE(grind.AddHeader(block.header));
+        bool found=false;
+        for(uint32_t nonce=0;nonce<2000000&&!found;++nonce){rival.nonce=nonce;found=grind.AddHeader(rival);}
+        ASSERT_TRUE(found);}
+    HeaderIndexEntry pending(rival,&*parent);const auto hash=pending.hash;
+    ASSERT_NE(hash,tip->hash);ASSERT_EQ(pending.height,uint32_t(tip->height));
+    shielded_store_fixture::TempDir directory;
+    HeaderStore store((directory.path/"headers").string());ASSERT_TRUE(store.Open());
+    ASSERT_TRUE(store.StoreHeader(pending));
+    ChainDB::PersistedHeaderMetadata metadata;
+    metadata.height=int32_t(pending.height);metadata.parent_hash=pending.prev_hash;metadata.chainwork=pending.chainwork;
+    metadata.status_flags=uint32_t(BLOCK_VALID_HEADER)|uint32_t(BLOCK_VALID_CHAIN)|uint32_t(BLOCK_HAVE_DATA);
+    metadata.file_number=0;metadata.data_pos=191230;metadata.data_size=437;   // as the phone's row
+    ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,metadata),Status::Ok);
+    ASSERT_EQ(source.f.db.getHeader(hash).status(),Status::NotFound);
+    const auto seed=[&]{HeaderChainSelector checked;
+        for(const auto& block:source.f.blocks)if(!checked.AddHeader(block.header))
+            throw std::runtime_error("genuine retained parent header refused");
+        Access::Seed(source.f.db,checked,store);
+        const auto value=checked.GetHeaderValue(hash);if(!value||value->height!=pending.height||
+            value->chainwork!=pending.chainwork)throw std::runtime_error("stored competitor was not independently derived");};
+    EXPECT_NO_THROW(seed());
+    EXPECT_EQ(source.f.db.getHeader(hash).status(),Status::NotFound); // No database repair or publication.
+    EXPECT_EQ(source.f.db.getTip()->hash,tip->hash);
+
+    // What may not be missing stays refused: a row that claims execution.
+    auto bad=metadata;bad.status_flags|=uint32_t(BLOCK_HAVE_UNDO);
+    ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,bad),Status::Ok);EXPECT_ANY_THROW(seed());
+    bad=metadata;bad.status_flags|=uint32_t(BLOCK_VALID_SCRIPTS);
+    ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,bad),Status::Ok);EXPECT_ANY_THROW(seed());
+    bad=metadata;bad.parent_hash=uint256{};
+    ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,bad),Status::Ok);EXPECT_ANY_THROW(seed());
+    ASSERT_EQ(source.f.db.putHeaderMetadata(source.f.token,hash,metadata),Status::Ok);
+    EXPECT_NO_THROW(seed());
+}
+// One accepted block on an Orchard tip: the old tip is audited before the
+// commit and the new tip after it. It was five full audits per block.
+TEST(OrchardSelectedTipAudit, AcceptingABlockAuditsEachTipOnce) {
+    CanonicalPoolFixture source(true);
+    MutableParams().orchard_catalog_commitment_activation_height=102;
+    MutableParams().state_commitment_burial_depth=0;
+    source.f.service->setRuntimeBlockNotifications(std::make_shared<TypedForkNotices>());
+    const auto first=SolveCatalogTemplate(source.Build());ASSERT_TRUE(first);
+    ASSERT_TRUE(source.Submit(first->WireBytes()).connected);
+    auto& service=*source.f.service;std::string why;
+    ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    uint64_t full=0,reused=0;const int blocks=3;
+    for(int i=0;i<blocks;++i) {
+        BlockAssembler assembler(&source.f.db);WireOrchardAssembler(assembler,source.f);
+        const auto next=SolveCatalogTemplate(assembler.CreateOrchardBlock(OrchardMiningPayout));ASSERT_TRUE(next);
+        const auto before=service.SelectedTipAuditCounts();
+        const auto submitted=source.Submit(next->WireBytes());
+        ASSERT_TRUE(submitted.connected)<<"block "<<i<<": "<<submitted.reason;
+        const auto after=service.SelectedTipAuditCounts();
+        full+=after.first-before.first;reused+=after.second-before.second;
+        ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    }
+    std::cerr<<"[tip audit] "<<blocks<<" accepted blocks: "<<full<<" full audits, "<<reused<<" reused"<<std::endl;
+    EXPECT_LE(full,uint64_t(2*blocks));   // at most the old tip and the new tip
+    EXPECT_GE(reused,uint64_t(blocks));   // the repeats are answered from the pass
 }
 TEST(OrchardSnapshotRuntime, QueuedDownloadedHeaderIsRevalidatedWithoutSelectedPublication) {
     using namespace consensus;using Access=OrchardSnapshotStoreTestAccess;

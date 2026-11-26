@@ -51,6 +51,7 @@ struct RuntimeAccountReplayTestAccess {
     static auto CaptureSource(const std::function<RuntimeOutboxPage(RuntimeOutboxCursor,size_t)>& source) {
         return RuntimeAccountReplay::Capture(source);
     }
+    static auto PointAt(const RuntimeAccountReplay& view,const uint256& tip) {return view.PointAt(tip);}
     static auto Capture(const ChainDB& db,const consensus::OrchardBlockContext& context,size_t page=128) {
         return RuntimeAccountReplay::Capture([&](RuntimeOutboxCursor after,size_t count){
             return ReadRuntimeOutboxUnderLock(db,context,after,std::min(page,count));
@@ -854,6 +855,17 @@ static void OutboxReplayChecks(ChainDB& db,const OrchardBlockContext& context,
         else LookupReject(Status::Corruption,[&]{(void)point.lookups.selected_block(context.height,context.block_hash);});
     }
     auto bad=all.head;bad.digest=H(99);LookupReject(Status::Corruption,[&]{(void)view->Point(bad);});
+    // Repeated lookups reuse their prepared statements. Re-preparing SQL on
+    // every Get was about a third of each lookup on the owner's Mac and, under
+    // the wallet lease, starved block delivery behind a 60 s block interval.
+    {
+        // PointAt(block) is the path the owner's Mac spent its time in:
+        // Ancestor -> At -> Find -> RuntimeReplayIndex::Get -> spool.
+        (void)RuntimeAccountReplayTestAccess::PointAt(*view,context.block_hash);
+        const auto warmed=view->SpoolStatementsPrepared();
+        for(int i=0;i<100;++i)(void)RuntimeAccountReplayTestAccess::PointAt(*view,context.block_hash);
+        Require(view->SpoolStatementsPrepared()==warmed);
+    }
     // Retaining one record must not pin unrelated records or the replay view.
     // The four values must remain usable after that view has been released.
     {

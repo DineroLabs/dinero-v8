@@ -72,6 +72,16 @@ public:
     // continuity or validation failure throws and the material is discarded.
     static std::shared_ptr<const RuntimeAccountReplay> ExtendTail(
         std::shared_ptr<const RuntimeAccountReplay>&&,const Source&);
+    // Would ExtendTail take this view now? It takes it only from its sole
+    // owner, of the view AND of its data (restore points and prepared plans
+    // hold the data without holding the view).
+    static bool SoleOwner(const std::shared_ptr<const RuntimeAccountReplay>& view) {
+        return view&&view.use_count()==1&&view->data_.use_count()==1;
+    }
+    // SQL statements the replay's private store has prepared so far.
+    uint64_t SpoolStatementsPrepared() const;
+    // Process-wide count of block nodes read from replay stores (tests).
+    static uint64_t NodeReads() noexcept;
 private:
     friend struct RuntimeAccountReplayTestAccess;
     static std::shared_ptr<const RuntimeAccountReplay> Capture(const Source&);

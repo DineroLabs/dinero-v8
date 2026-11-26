@@ -197,6 +197,39 @@ TEST(OrchardMiningRpc, CanonicalParentChangeRejectsOldJob) {
     EXPECT_EQ(f.raw.f.service->GetActiveTip()->hash,competitor.GetHash());EXPECT_EQ(f.raw.notices->published,1u);
     EXPECT_TRUE(ShieldedStateStartupTestAccess::AuditBoundary(*f.raw.f.service));
 }
+// Owner's Mac, 2026-11-24, GPU mining 25-35 blocks a minute: mining.getjob
+// answered "Selected Orchard mining construction unavailable" twice, and the
+// node log said "mining/before-image (Corruption)". Nothing was corrupt: a
+// block had arrived while the job was being built. The job is now built once
+// more on the new tip; other failures are reported as before.
+TEST(OrchardMiningRpc, AJobWhoseTipMovedWhileItWasBuiltIsBuiltOnceMore) {
+    using dinero::rpc::BuildOrchardJobOnceMoreIfTipMoved;
+    int builds=0;bool rebuilt=true;
+    // Built first time: one build, no second look at the tip.
+    EXPECT_EQ(BuildOrchardJobOnceMoreIfTipMoved([&]{++builds;return 7;},
+        []()->std::optional<int>{ADD_FAILURE()<<"tip read after a successful build";return 1;},1,&rebuilt),7);
+    EXPECT_EQ(builds,1);EXPECT_FALSE(rebuilt);
+    // The tip moved during a failed build: built again, and that job is returned.
+    builds=0;
+    EXPECT_EQ(BuildOrchardJobOnceMoreIfTipMoved([&]{if(++builds==1)throw std::runtime_error("stale");return 9;},
+        []()->std::optional<int>{return 2;},1,&rebuilt),9);
+    EXPECT_EQ(builds,2);EXPECT_TRUE(rebuilt);
+    // The tip did not move: the failure is the caller's, with one build only.
+    builds=0;
+    EXPECT_THROW(BuildOrchardJobOnceMoreIfTipMoved([&]()->int{++builds;throw std::runtime_error("real");},
+        []()->std::optional<int>{return 1;},1,&rebuilt),std::runtime_error);
+    EXPECT_EQ(builds,1);EXPECT_FALSE(rebuilt);
+    // The tip cannot be read: no second build.
+    builds=0;
+    EXPECT_THROW(BuildOrchardJobOnceMoreIfTipMoved([&]()->int{++builds;throw std::runtime_error("real");},
+        []()->std::optional<int>{return std::nullopt;},1,&rebuilt),std::runtime_error);
+    EXPECT_EQ(builds,1);
+    // It moved, and the second build fails too: reported, never a third build.
+    builds=0;
+    EXPECT_THROW(BuildOrchardJobOnceMoreIfTipMoved([&]()->int{++builds;throw std::runtime_error("again");},
+        []()->std::optional<int>{return 2;},1,&rebuilt),std::runtime_error);
+    EXPECT_EQ(builds,2);
+}
 #else
 TEST(OrchardMiningRpc, MissingServiceRefusesWithoutBackend) {
     ExecutionContext context;din::Json p;p["address"]="unused-isolated-address";

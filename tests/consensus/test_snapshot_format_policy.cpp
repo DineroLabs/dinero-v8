@@ -66,6 +66,34 @@ TEST(SnapshotFormatPolicy, LegacyFormatsRefuseAtIndependentOrchardBoundary) {
     EXPECT_EQ(EvaluateSnapshotFormat(6,150000,0,0,150000),SnapshotFormatVerdict::RejectV6WithoutCatalogCommitment);
     EXPECT_EQ(EvaluateSnapshotFormat(99,150000,0,0,150000),SnapshotFormatVerdict::RejectUnknownVersion);
 }
+// v8.2.6: mainnet bootstraps only from Orchard (v6) snapshots. With the
+// option on, every legacy container below Orchard is refused, including the
+// formerly bundled bases; v6 is unchanged, and the option off keeps the
+// historical policy (regtest/testnet fixtures, wallet recovery parsing).
+TEST(SnapshotFormatPolicy, OrchardOnlyBootstrapRefusesEveryPreOrchardBase) {
+    using namespace dinero::consensus;
+    constexpr uint32_t kOrchard = 150000;
+    for (const uint32_t version : {SNAPSHOT_VERSION_V3, SNAPSHOT_VERSION_V4, SNAPSHOT_VERSION_V5})
+        for (const uint32_t height : {1U, 52287U, 65300U, 73035U, 84131U, 99677U, 148375U, 149999U})
+            EXPECT_EQ(EvaluateSnapshotFormat(version, height, 0, 111000, kOrchard, kOrchard, true),
+                      SnapshotFormatVerdict::RejectPreOrchardBootstrap)
+                << "v" << version << " at " << height;
+    EXPECT_EQ(EvaluateSnapshotFormat(SNAPSHOT_VERSION_V6, 163965, 0, 111000, kOrchard, kOrchard, true),
+              SnapshotFormatVerdict::Accept);
+    // Dormant Orchard cannot satisfy an Orchard-only requirement: fail closed.
+    EXPECT_EQ(EvaluateSnapshotFormat(SNAPSHOT_VERSION_V4, 65300, 0, kU32Max, kU32Max, kU32Max, true),
+              SnapshotFormatVerdict::RejectPreOrchardBootstrap);
+    // Version-specific diagnostics keep their precedence.
+    EXPECT_EQ(EvaluateSnapshotFormat(SNAPSHOT_VERSION_V2, 65300, 0, 111000, kOrchard, kOrchard, true),
+              SnapshotFormatVerdict::RejectV2Deprecated);
+    EXPECT_EQ(EvaluateSnapshotFormat(99, 65300, 0, 111000, kOrchard, kOrchard, true),
+              SnapshotFormatVerdict::RejectUnknownVersion);
+    // Option off: the historical policy is unchanged.
+    EXPECT_EQ(EvaluateSnapshotFormat(SNAPSHOT_VERSION_V5, 149999, 0, 111000, kOrchard, kOrchard, false),
+              SnapshotFormatVerdict::Accept);
+    EXPECT_EQ(EvaluateSnapshotFormat(SNAPSHOT_VERSION_V4, 65300, 0, 111000, kOrchard, kOrchard, false),
+              SnapshotFormatVerdict::Accept);
+}
 TEST(SnapshotFormatPolicy, V6RequiresExplicitIndependentCatalogActivation) {
     using namespace dinero::consensus;
     for(const auto orchard:{22U,150000U})for(const auto catalog:{orchard,orchard+100}) {

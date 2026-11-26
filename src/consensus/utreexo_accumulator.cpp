@@ -3337,6 +3337,8 @@ bool UtreexoForest::removeLastNLeaves(uint64_t count) {
 
     std::cout << "🔄 [Utreexo Remove] Removing last " << count << " leaves" << std::endl;
     std::cout << "   numLeaves before: " << state_->numLeaves_ << std::endl;
+    const uint64_t leaves_before = state_->numLeaves_;
+    const auto roots_before = state_->roots_;
 
     // Track active leaves removed (for logging)
     uint64_t active_removed = 0;
@@ -3413,10 +3415,18 @@ bool UtreexoForest::removeLastNLeaves(uint64_t count) {
         return position >= state_->numLeaves_;
     });
 
-    // Recompute roots based on new numLeaves
-    // The roots_ array represents the binary decomposition of numLeaves
-    // We need to rebuild it based on the new count
-    rebuildRoots();
+    // Recompute roots based on new numLeaves. A tree of the new decomposition
+    // with the same start and height as a tree of the old one holds exactly
+    // the same leaves and tombstones (only positions >= the new numLeaves
+    // changed), so its root is the old root. Only the trees past the first
+    // differing bit are hashed. A full rebuildRoots() hashed the whole forest
+    // here; the Orchard tip audit stages this undo several times per block
+    // under the chain lock (~4 s each on mainnet, owner's Mac 2026-11-24).
+    // Pre-canonical forests keep the full rebuild, which also re-canonicalizes.
+    if (state_->canonical_empty_roots_)
+        rebuildRootsAfterTruncation(leaves_before, roots_before);
+    else
+        rebuildRoots();
 
 #ifdef ENABLE_UTREEXO_INVARIANT_CHECKS
     if (!validateLeafIndexConsistency()) {
@@ -3431,6 +3441,36 @@ bool UtreexoForest::removeLastNLeaves(uint64_t count) {
     std::cout << "   numRoots after: " << getNumRoots() << std::endl;
 
     return true;
+}
+
+void UtreexoForest::rebuildRootsAfterTruncation(
+    uint64_t leaves_before, const std::vector<std::optional<UtreexoHash>>& roots_before) {
+    EnsureUniqueState();
+    // Same output as rebuildRoots(): one slot per height up to the largest
+    // tree, each tree's root at its height, empty heights nullopt.
+    std::vector<std::pair<uint8_t, uint64_t>> old_trees;
+    for (uint64_t h = 64, start = 0; h-- > 0;) {
+        if ((leaves_before >> h) & 1) { old_trees.push_back({uint8_t(h), start}); start += (1ULL << h); }
+    }
+    state_->roots_.clear();
+    uint64_t position = 0;
+    for (int h = 63; h >= 0; h--) {
+        if (!((state_->numLeaves_ >> h) & 1)) continue;
+        const uint64_t tree_size = (1ULL << h);
+        std::optional<UtreexoHash> root;
+        bool reused = false;
+        for (const auto& [old_height, old_start] : old_trees) {
+            if (old_height == h && old_start == position && size_t(h) < roots_before.size()) {
+                root = roots_before[size_t(h)];
+                reused = true;
+                break;
+            }
+        }
+        if (!reused) root = computeSubtreeHash(position, tree_size);
+        while (state_->roots_.size() <= size_t(h)) state_->roots_.push_back(std::nullopt);
+        state_->roots_[size_t(h)] = root;
+        position += tree_size;
+    }
 }
 
 void UtreexoForest::rebuildRoots() {

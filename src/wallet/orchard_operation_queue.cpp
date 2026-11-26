@@ -1,6 +1,10 @@
 #include "wallet/orchard_operation_queue.h"
 #include <algorithm>
+#include <atomic>
+#include <deque>
+#include <mutex>
 #include <openssl/crypto.h>
+#include <openssl/evp.h>
 #include <set>
 namespace dinero::wallet {
 namespace {
@@ -22,6 +26,62 @@ Hash Bytes(const uint8_t (&v)[32]) {
   std::copy(std::begin(v), std::end(v), h.begin());
   return h;
 }
+// Restore() re-checks every retained entry's Orchard proof, and entries stay
+// for the life of the wallet. Every wallet.orchard.* read restores the account
+// at least twice while holding the wallet's only database lease, so the same
+// halo2 verification ran on every read and starved block delivery (owner's
+// Mac, v8.2.5: one delivered block per ~100 s at a 60 s block interval).
+//
+// Verification is a pure function of the domain, the exact transaction bytes,
+// the previous outputs it spends and the expected digest; the key below covers
+// every one of them. Only a successful check is remembered, so this changes
+// speed, never an outcome.
+std::atomic<uint64_t> g_proof_verifications{0};
+class VerifiedProofCache {
+public:
+  static VerifiedProofCache &Instance() {
+    static VerifiedProofCache cache;
+    return cache;
+  }
+  static Hash Key(const SigningDomain &domain, std::span<const uint8_t> tx,
+                  const std::vector<PreviousOutput> &coins, const Hash &message) {
+    std::vector<uint8_t> in;
+    const auto put = [&](std::span<const uint8_t> v) { in.insert(in.end(), v.begin(), v.end()); };
+    const auto num = [&](uint64_t v, size_t width) {
+      for (size_t i = 0; i < width; ++i) in.push_back(uint8_t(v >> (8 * i)));
+    };
+    static constexpr std::array<uint8_t, 8> tag{'D', 'N', 'O', 'P', 'V', 'C', '0', '1'};
+    put(tag);
+    num(domain.network_code, 1); put(domain.genesis_wire); num(domain.branch_id, 4);
+    put(message);
+    num(tx.size(), 8); put(tx);
+    num(coins.size(), 8);
+    for (const auto &c : coins) {
+      put(c.txid_wire); num(c.output_index, 4); num(c.amount_una, 8);
+      num(c.script_pub_key.size(), 8); put(c.script_pub_key);
+    }
+    Hash out{};
+    unsigned int len = 0;
+    Check(EVP_Digest(in.data(), in.size(), out.data(), &len, EVP_sha256(), nullptr) == 1 &&
+          len == out.size());
+    return out;
+  }
+  bool Contains(const Hash &key) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return keys_.contains(key);
+  }
+  void Insert(const Hash &key) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!keys_.insert(key).second) return;
+    order_.push_back(key);
+    if (order_.size() > kCapacity) { keys_.erase(order_.front()); order_.pop_front(); }
+  }
+private:
+  static constexpr size_t kCapacity = 4096;
+  std::mutex mutex_;
+  std::set<Hash> keys_;
+  std::deque<Hash> order_;
+};
 constexpr std::array<uint8_t, 8> magic{'D', 'N', 'O', 'R', 'O', 'P', '0', '1'};
 constexpr std::array<uint8_t, 8> request_magic{'D', 'N', 'O', 'R', 'O', 'P', '0', '2'};
 constexpr std::array<uint8_t, 8> shield_magic{'D', 'N', 'O', 'R', 'O', 'P', '0', '3'};
@@ -174,9 +234,18 @@ void OrchardOperationQueue::CheckEntry(const Entry &e, bool verify) const {
   Check(e.nullifiers.size() == facts.action_count);
   for (size_t i = 0; i < e.nullifiers.size(); ++i)
     Check(e.nullifiers[i] == Bytes(facts.nullifiers[i]));
-  if (verify)
+  if (verify) {
+    auto &cache = VerifiedProofCache::Instance();
+    const auto key = VerifiedProofCache::Key(domain_, e.transaction, coins, e.message);
+    if (cache.Contains(key)) return;
+    g_proof_verifications.fetch_add(1, std::memory_order_relaxed);
     Check(tx.VerifyAuthorization(domain_, coins).Orchard().SigningDigest() ==
           e.message);
+    cache.Insert(key);
+  }
+}
+uint64_t OrchardOperationQueue::ProofVerificationsRun() noexcept {
+  return g_proof_verifications.load(std::memory_order_relaxed);
 }
 void OrchardOperationQueue::CheckUniqueReservations() const {
   Check(entries_.size() <= kMaxPending);

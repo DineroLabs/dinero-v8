@@ -504,6 +504,13 @@ uint64_t SwapManager::CommittedDinUna(const Bytes32& store_key) {
 void SwapManager::RequireDinBalanceFor(uint64_t din_amount_una, const Bytes32& store_key) {
     const auto bal = din_("wallet.getbalance", Json::Value(Json::objectValue));
     if (!bal || !bal->isObject() || !(*bal)["spendable"].isNumeric()) {
+        // A locked wallet reports no spendable figure (wallet.getbalance says
+        // why in send_unavailable_code). That is not a failed read: say what
+        // to do about it.
+        if (bal && bal->isObject() && (*bal)["send_unavailable_code"].isString() &&
+            (*bal)["send_unavailable_code"].asString() == "wallet_locked") {
+            throw std::runtime_error("The wallet is locked. Unlock it, then make the offer again.");
+        }
         throw std::runtime_error("cannot read the wallet balance");
     }
     const double spendable_din = (*bal)["spendable"].asDouble();  // DIN, not una

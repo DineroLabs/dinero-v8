@@ -22,6 +22,8 @@
 #include <gtest/gtest.h>
 #include "consensus/utreexo_accumulator.h"
 #include "primitives/uint256.h"
+#include <algorithm>
+#include <chrono>
 #include <random>
 
 using namespace dinero;
@@ -622,6 +624,68 @@ TEST_F(ConsistencyRegressionTest, RemoveLastNLeaves_RejectsDeletedTail) {
     EXPECT_FALSE(forest.removeLastNLeaves(1));
     EXPECT_EQ(forest.getNumLeaves(), 4u);
     EXPECT_TRUE(hashesEqual(forest.getCommitment(), root_after_remove));
+}
+
+// removeLastNLeaves keeps the roots of trees the truncation did not touch and
+// hashes only the rest. Its roots must equal a full rebuildRoots() on every
+// shape: random sizes and counts, tombstones in the kept prefix, and borrows
+// across many bits (1026 -> 1023 rehashes nearly everything).
+TEST_F(ConsistencyRegressionTest, RemoveLastNLeaves_RootsMatchFullRebuild) {
+    std::mt19937_64 rng(20261124);
+    uint64_t next_id = 1;
+    const auto check = [&](uint64_t n, uint64_t k, unsigned deletions) {
+        UtreexoForest forest;
+        forest.setCanonicalEmptyRoots(true);
+        std::vector<UtreexoHash> leaves;
+        for (uint64_t i = 0; i < n; ++i) {
+            leaves.push_back(makeUTXOLeaf(next_id++, 1000 + i));
+            ASSERT_NE(forest.add(leaves.back()), UINT64_MAX);
+        }
+        for (unsigned d = 0; d < deletions && n > k; ++d) {
+            const uint64_t pos = rng() % (n - k);
+            if (forest.isDeleted(pos)) continue;
+            auto proof = forest.prove(pos);
+            ASSERT_TRUE(proof.has_value());
+            ASSERT_TRUE(forest.remove(leaves[pos], *proof));
+        }
+        ASSERT_TRUE(forest.removeLastNLeaves(k));
+        UtreexoForest reference = forest;
+        reference.rebuildRoots();
+        ASSERT_EQ(forest.getIndexedRoots(), reference.getIndexedRoots())
+            << "n=" << n << " k=" << k << " deletions=" << deletions;
+        ASSERT_TRUE(hashesEqual(forest.getCommitment(), reference.getCommitment()));
+    };
+    check(1026, 3, 0);
+    check(1026, 3, 40);
+    check(1024, 1, 10);
+    check(5, 5, 0);
+    for (int round = 0; round < 150; ++round) {
+        const uint64_t n = 1 + rng() % 700;
+        const uint64_t k = 1 + rng() % std::min<uint64_t>(n, 70);
+        check(n, k, unsigned(rng() % 30));
+    }
+}
+
+// Undoing one block's leaves must not rehash the whole forest: the Orchard tip
+// audit stages this undo several times per block under the chain lock, and a
+// full rebuild cost ~4 s each on mainnet (owner's Mac, 2026-11-24).
+TEST_F(ConsistencyRegressionTest, RemoveLastNLeaves_DoesNotRehashUntouchedTrees) {
+    UtreexoForest forest;
+    forest.setCanonicalEmptyRoots(true);
+    const uint64_t n = (1ULL << 17) + 7;  // big tree + small tail trees
+    for (uint64_t i = 0; i < n; ++i)
+        ASSERT_NE(forest.add(makeTestHash(i + 1)), UINT64_MAX);
+    using clock = std::chrono::steady_clock;
+    UtreexoForest full = forest;
+    const auto f0 = clock::now();
+    full.rebuildRoots();
+    const auto full_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - f0).count();
+    const auto t0 = clock::now();
+    ASSERT_TRUE(forest.removeLastNLeaves(2));
+    const auto truncate_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - t0).count();
+    // The untouched 2^17 tree is reused; only a handful of tail leaves are
+    // hashed. A full rebuild hashes all 131079.
+    EXPECT_LT(truncate_ns * 20, full_ns) << "truncate " << truncate_ns << " ns, full rebuild " << full_ns << " ns";
 }
 
 TEST_F(ConsistencyRegressionTest, DeserializeRejectsRootNodeMismatch) {

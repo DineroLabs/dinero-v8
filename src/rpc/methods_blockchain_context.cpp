@@ -29,6 +29,7 @@
 #include "daemon/services/p2p_service.h"
 #if DINERO_WALLET_RAW_ORCHARD
 #include "p2p/orchard_phone_history.h"
+#include "orchard_transaction.h"
 #endif
 #include "daemon/services/wallet_service.h"  // Phase W.1.1: For WalletService access
 #include "daemon/services/config_service.h"
@@ -2388,7 +2389,31 @@ static bool GetPrevoutInfo(
     int64_t& out_value,
     std::vector<uint8_t>& out_script)
 {
-    // Search through blocks to find the previous transaction
+    if (chainstate) {
+        // Through the transaction index, with the reader that knows every
+        // transaction format. The walk below reads each block as a historical
+        // block and skips the ones that do not read, so a coin created in a
+        // block that holds an Orchard transaction was never found.
+        const auto made = chainstate->getTransactionInclusion(prev_txid);
+        if (!made.ok()) return false;
+        if (made->body.IsOrchard()) {
+#if DINERO_WALLET_RAW_ORCHARD
+            const auto& outputs = made->body.Orchard().Outputs();
+            if (vout >= outputs.size()) return false;
+            out_value = static_cast<int64_t>(outputs[vout].amount_una);
+            out_script = outputs[vout].script_pub_key;
+            return true;
+#else
+            return false;  // a build without Orchard cannot read its outputs
+#endif
+        }
+        const auto& tx = made->body.Historical();
+        if (vout >= tx.vout.size()) return false;
+        out_value = tx.vout[vout].value.GetUna();
+        out_script = tx.vout[vout].scriptPubKey;
+        return true;
+    }
+    // Without a chainstate service (tools, some tests): walk the chain.
     for (int32_t height = current_height; height >= 0; --height) {
         std::string block_hash_str = dinero::storage::GetBlockHash(chain_db, height);
         if (block_hash_str.empty()) continue;
@@ -2440,6 +2465,8 @@ static bool GetPrevoutInfo(
  * - status: "confirmed" or "not_found"
  * - txid: Transaction ID
  */
+din::Json DescribeOrchardTransactionForRpc(const dinero::MempoolTransaction& body);  // wallet_raw_transaction_rpc.cpp
+
 din::Json rpc_context_gettransaction(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
 
@@ -2468,48 +2495,120 @@ din::Json rpc_context_gettransaction(const ExecutionContext& ctx, const din::Jso
     std::string txid_str = params[0].as<std::string>();
     uint256 target_txid = uint256::FromHexUnsafe(txid_str);
 
-    // Search through blocks to find the transaction
-    uint32_t current_height = chainstate->getBlockHeight();
-    bool found = false;
-    uint256 found_block_hash;
-    uint32_t found_block_height = 0;
-    dinero::Transaction found_tx;
-
-    // Search from newest to oldest (most recent transactions first)
-    for (int32_t height = current_height; height >= 0; --height) {
-        std::string block_hash_str = dinero::storage::GetBlockHash(chain_db, height);
-        if (block_hash_str.empty()) continue;
-
-        uint256 block_hash = uint256::FromHexUnsafe(block_hash_str);
-        auto block_result = ReadRpcBlock(
-            chainstate.get(),
-            chain_db,
-            ctx.daemon ? ctx.daemon->block_storage.get() : nullptr,
-            block_hash);
-        if (block_result.status() != dinero::Status::Ok) continue;
-
-        const dinero::Block& block = block_result.value();
-
-        // Check each transaction in the block
-        for (const auto& tx : block.vtx) {
-            if (tx.GetTxid().AsUint256() == target_txid) {  // Phase M.4: Unwrap TxId for comparison
-                found = true;
-                found_block_hash = block_hash;
-                found_block_height = height;
-                found_tx = tx;
-                break;
-            }
-        }
-
-        if (found) break;
-    }
-
-    if (!found) {
-        result["error"] = "Transaction not found in blockchain";
+    // Found through the transaction index and read with the reader that
+    // knows every transaction format (ChainstateService::getTransactionInclusion).
+    // This used to walk the whole chain block by block and read each one as a
+    // historical block, skipping any block that did not read: a block holding
+    // an Orchard transaction does not, so every transaction in such a block,
+    // its coinbase included, was reported as "not found".
+    const auto inclusion = chainstate->getTransactionInclusion(target_txid);
+    if (!inclusion.ok()) {
         result["txid"] = txid_str;
-        result["status"] = "not_found";
+        if (inclusion.status() == dinero::Status::NotFound) {
+            result["error"] = "Transaction not found in blockchain";
+            result["status"] = "not_found";
+        } else {
+            // It may well be on the chain: it could not be read. Never "not found".
+            result["error"] = "Transaction data unavailable";
+            result["status"] = "unavailable";
+            result["source_status"] = dinero::StatusToString(inclusion.status());
+        }
         return result;
     }
+    const uint32_t current_height = inclusion->tip_height;
+    const uint256 found_block_hash = inclusion->block_hash;
+    const uint32_t found_block_height = inclusion->height;
+
+    if (inclusion->body.IsOrchard()) {
+        // An Orchard transaction: its public side (transparent inputs and
+        // outputs, the fee) in this method's usual fields. What it moved into
+        // or out of the shielded pool is the difference, which is public too.
+        const din::Json described = DescribeOrchardTransactionForRpc(inclusion->body);
+        result["txid"] = txid_str;
+        result["blockhash"] = found_block_hash.GetHex();
+        result["blockheight"] = static_cast<int>(found_block_height);
+        result["confirmations"] = static_cast<int>(current_height - found_block_height + 1);
+        result["status"] = "confirmed";
+        result["format"] = "orchard";
+        result["classification"] = "orchard";
+        result["is_coinbase"] = false;
+        result["has_confidential_inputs"] = false;
+        result["has_confidential_outputs"] = false;
+        result["has_orchard_actions"] = true;
+        result["witness_version"] = "orchard";
+        result["locktime"] = described["locktime"];
+        result["size"] = described["size"];
+        result["vsize"] = described["vsize"];
+        const uint64_t fee = described["fee_una"].asUInt64();
+        result["fee_una"] = static_cast<double>(fee);
+        result["fee_din"] = formatDIN(fee);
+
+        din::Json inputs_array = din::arr();
+        uint64_t total_in = 0;
+        bool inputs_resolved = true;
+        for (const auto& vin : described["vin"]) {
+            din::Json input_obj;
+            input_obj["prevout_txid"] = vin["txid"];
+            input_obj["prevout_vout"] = vin["vout"];
+            input_obj["sequence"] = vin["sequence"];
+            int64_t prevout_value = 0;
+            std::vector<uint8_t> prevout_script;
+            const uint256 prev = uint256::FromHexUnsafe(vin["txid"].asString());
+            if (GetPrevoutInfo(chainstate.get(), chain_db, ctx.daemon ? ctx.daemon->block_storage.get() : nullptr,
+                               current_height, prev, vin["vout"].asUInt(), prevout_value, prevout_script) &&
+                prevout_value >= 0) {
+                input_obj["amount_hidden"] = false;
+                input_obj["is_confidential_prevout"] = false;
+                input_obj["value_una"] = static_cast<double>(prevout_value);
+                input_obj["value_din"] = formatDIN(static_cast<uint64_t>(prevout_value));
+                input_obj["display_amount"] = formatDIN(static_cast<uint64_t>(prevout_value));
+                input_obj["prevout_scriptPubKey"] = BytesToHex(prevout_script);
+                total_in += static_cast<uint64_t>(prevout_value);
+            } else {
+                inputs_resolved = false;
+            }
+            inputs_array.append(input_obj);
+        }
+        result["inputs"] = inputs_array;
+        result["input_count"] = static_cast<int>(inputs_array.size());
+
+        din::Json outputs_array = din::arr();
+        uint64_t total_out = 0;
+        int index = 0;
+        for (const auto& vout : described["vout"]) {
+            din::Json output_obj;
+            const uint64_t value = vout["value_una"].asUInt64();
+            output_obj["vout"] = index++;
+            output_obj["value_una"] = static_cast<double>(value);
+            output_obj["value_din"] = formatDIN(value);
+            output_obj["display_amount"] = formatDIN(value);
+            output_obj["is_confidential"] = false;
+            output_obj["amount_hidden"] = false;
+            const std::string kind = vout["scriptPubKey"]["type"].asString();
+            output_obj["type"] = kind == "witness_v1_taproot" ? "taproot"
+                               : (kind == "witness_v0_keyhash" || kind == "witness_v0_scripthash") ? "segwit_v0" : "legacy";
+            output_obj["scriptPubKey"] = vout["scriptPubKey"]["hex"];
+            total_out += value;
+            outputs_array.append(output_obj);
+        }
+        result["outputs"] = outputs_array;
+        result["output_count"] = static_cast<int>(outputs_array.size());
+        result["total_output_value_una"] = static_cast<double>(total_out);
+        result["total_output_value_din"] = formatDIN(total_out);
+        if (inputs_resolved) {
+            result["total_input_value_una"] = static_cast<double>(total_in);
+            result["total_input_value_din"] = formatDIN(total_in);
+            // Public arithmetic: what the transparent side gave up beyond its
+            // outputs and the fee went into the shielded pool; the reverse
+            // came out of it.
+            const int64_t shielded = static_cast<int64_t>(total_in) - static_cast<int64_t>(total_out) - static_cast<int64_t>(fee);
+            result["orchard_value_direction"] = shielded > 0 ? "into_orchard" : shielded < 0 ? "out_of_orchard" : "within_orchard";
+            result["orchard_value_una"] = static_cast<double>(shielded < 0 ? -shielded : shielded);
+            result["orchard_value_din"] = formatDIN(static_cast<uint64_t>(shielded < 0 ? -shielded : shielded));
+        }
+        return result;
+    }
+    const dinero::Transaction found_tx = inclusion->body.Historical();
 
     // Build detailed response
     result["txid"] = txid_str;
@@ -3159,7 +3258,7 @@ static din::Json rpc_context_getheaders(const ExecutionContext& ctx, const din::
  * Returns array of filter objects with block_hash, filter hex, element_count,
  * and filter_hash (SHA256d of filter data) for coinbase commitment verification.
  */
-static din::Json rpc_context_getblockfilters(const ExecutionContext& ctx, const din::Json& params) {
+din::Json rpc_context_getblockfilters(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
 
     if (!ctx.daemon || !ctx.daemon->chainstate) {
@@ -3216,6 +3315,7 @@ static din::Json rpc_context_getblockfilters(const ExecutionContext& ctx, const 
     }
 
     din::Json filters_array = din::arr();
+    din::Json unavailable_heights = din::arr();
     int fetched = 0;
 
     for (int h = from_height; h <= end_height; ++h) {
@@ -3229,6 +3329,11 @@ static din::Json rpc_context_getblockfilters(const ExecutionContext& ctx, const 
             ctx.daemon ? ctx.daemon->block_storage.get() : nullptr,
             block_hash);
         if (!block_result.ok() || block_result.value().vtx.empty()) {
+            // Not served is not the same as nothing there: say which heights
+            // are missing, so a light client does not take the gap for an
+            // empty block. (A block that holds an Orchard transaction is not
+            // read by this reader.)
+            unavailable_heights.append(h);
             continue;
         }
         const auto& block = block_result.value();
@@ -3345,7 +3450,10 @@ static din::Json rpc_context_getblockfilters(const ExecutionContext& ctx, const 
             filter_ready = rebuild_filter();
         }
 
-        if (!filter_ready || filter_obj.IsEmpty()) continue;
+        if (!filter_ready || filter_obj.IsEmpty()) {
+            unavailable_heights.append(h);
+            continue;
+        }
 
         uint256 filter_hash = filter_obj.GetHash();
 
@@ -3385,6 +3493,8 @@ static din::Json rpc_context_getblockfilters(const ExecutionContext& ctx, const 
     result["from_height"] = from_height;
     result["count"] = fetched;
     result["tip_height"] = tip_height;
+    // Heights in the requested range that have no entry in "filters".
+    result["unavailable_heights"] = unavailable_heights;
 
     return result;
 }

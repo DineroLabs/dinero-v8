@@ -1,3 +1,4 @@
+#include "daemon/services/retained_replay_policy.h"
 #include "storage/validated_tip_transition.h"
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 #include "daemon/services/chainstate_recovery_source.h"  // R1 adapter (Task 6.3)
@@ -2512,10 +2513,32 @@ bool ChainstateService::AuditHistoricalCompactTipUnderLock(const CBlockIndex& ti
 #endif
 }
 
+std::optional<ChainstateService::SelectedTipAuditPass> ChainstateService::CurrentSelectedTipAuditKeyUnderLock() const {
+    // Full storage only: the compact owner's state has no fingerprint here.
+    if(!active_tip_ || !chain_db_ || !consensus_utxo_set_ || compact_startup_ || safe_mode_active_ ||
+       GetConfig().utreexo_stateless)return {};
+    const auto fence=chain_db_->startupWriteFence();
+    if(!fence)return {};
+    SelectedTipAuditPass key;
+    const auto& tip=*active_tip_;
+    key.tip=active_tip_;key.hash=tip.hash;key.height=tip.height;
+    key.status=tip.status;key.file_number=tip.file_number;key.data_pos=tip.data_pos;key.data_size=tip.data_size;
+    key.undo_file=tip.undo_file;key.undo_pos=tip.undo_pos;key.undo_size=tip.undo_size;
+    key.store_fence=*fence;
+    key.utxo_best=consensus_utxo_set_->GetBestBlock();key.utxo_height=consensus_utxo_set_->GetHeight();
+    {
+        const auto forest_lock=consensus_utxo_set_->LockForestShared();
+        const auto& forest=consensus_utxo_set_->GetForest();
+        key.forest_leaves=forest.getNumLeaves();key.forest_roots=forest.getIndexedRoots();
+    }
+    return key;
+}
+
 bool ChainstateService::AuditSelectedOrchardTipUnderLock(std::string* reason) const {
     AssertActivationLockHeld("Orchard selected-tip alignment");
     const auto fail_orchard = [&](const char* message) {
         if (reason) *reason = message;
+        selected_tip_audit_pass_.reset();
         return false;
     };
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
@@ -2535,6 +2558,15 @@ bool ChainstateService::AuditSelectedOrchardTipUnderLock(std::string* reason) co
             (compact ? (!compact_startup_->owner || consensus_utxo_set_ || !GetConfig().utreexo_stateless || !header_chain_selector_)
                      : (!consensus_utxo_set_ || GetConfig().utreexo_stateless)))
             return fail_orchard("selected storage owner is unavailable");
+        // Nothing the audit reads has changed since it last passed: the same
+        // verdict, without staging the tip's disconnect again.
+        const auto audit_key=compact?std::optional<SelectedTipAuditPass>{}:CurrentSelectedTipAuditKeyUnderLock();
+        if(audit_key && selected_tip_audit_pass_ && *audit_key==*selected_tip_audit_pass_) {
+            ++selected_tip_audits_reused_;
+            return true;
+        }
+        selected_tip_audit_pass_.reset();
+        ++selected_tip_audits_run_;
         try {
             if(!compact)storage::RequireFullOrchardStorage(*chain_db_);
             const auto& tip = *active_tip_;
@@ -2595,6 +2627,12 @@ bool ChainstateService::AuditSelectedOrchardTipUnderLock(std::string* reason) co
                 const auto forest_lock = consensus_utxo_set_->LockForestShared();
                 consensus::AuditOrchardChainstateTipUnderLock(*chain_db_, token, *body->Context(),
                     *parent, consensus_utxo_set_->GetForest(), witness, true);
+            }
+            // Remember the pass only if the audit itself changed nothing it
+            // depends on (it must not; a difference means it is not reusable).
+            if(audit_key) {
+                const auto after=CurrentSelectedTipAuditKeyUnderLock();
+                if(after && *after==*audit_key)selected_tip_audit_pass_=*audit_key;
             }
             return true;
         } catch (const std::exception& error) {
@@ -3392,6 +3430,38 @@ bool ChainstateService::FullArchiveV2LegacySourceClass(const UTXOIndex& index) {
         orchard_snapshot_startup_ || GetSnapshotWalletRecoveryBaseHeight()!=0 ||
         index.GetMetadata("wallet_snapshot_recovery_base_height") ||
         chain_db_->getPreBaseCoinSetBase().status()!=Status::NotFound);
+}
+bool ChainstateService::NativeWalletServable(std::string* why) {
+    if(why)why->clear();
+    if(Params().orchard_activation_height==UINT32_MAX)return true;
+    try {
+        auto self=weak_from_this().lock();
+        if(!self)return true;
+        auto use=AcquireWalletIndexUse(self);
+        auto& index=use->Index();
+        if(index.IsFullArchiveV3MetadataOnly())return true;          // synced from the first block
+        std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+        if(!chain_db_ || GetConfig().utreexo_stateless || compact_startup_)return true;  // their own gates
+        if(orchard_snapshot_startup_)return true;                    // authenticated Orchard snapshot base
+        // A legacy index on a stateful node. Without snapshot markers it is a
+        // plain full archive (slow origin replay, but served, and upgradable).
+        const bool older_snapshot=assumeutxo_active_ || GetSnapshotWalletRecoveryBaseHeight()!=0 ||
+            index.GetMetadata("wallet_snapshot_recovery_base_height") ||
+            // The snapshot lifecycle's base stays in the wallet index after full
+            // validation and backfill (a real 52,287 desktop: fully_validated,
+            // base 52287, no recovery base). Independent of the pre-base coin
+            // set below, so losing either one alone does not lift the refusal.
+            index.GetMetadata(assumeutxo::kLcBaseHeightKey) ||
+            chain_db_->getPreBaseCoinSetBase().status()!=Status::NotFound;
+        if(!older_snapshot)return true;
+        if(why)*why="This node cannot show money in a new wallet: its data was started from an older snapshot, "
+            "and wallets created now need a node synced from the first block or started from a current snapshot. "
+            "No wallet was created. Create it in the Dinero phone app, or on a computer whose Dinero data was "
+            "synced from the beginning, and use the same recovery words anywhere later.";
+        return false;
+    } catch(const WalletIndexUnavailable&) {
+        return true;  // not this gate's refusal; the index's own owners report it
+    }
 }
 bool ChainstateService::RecoveredV3TransparentSendSourceReady() {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
@@ -7017,6 +7087,15 @@ ChainstateService::getOrchardAnnouncementSnapshot(const uint256& hash,uint32_t h
 }
 
 StatusOr<MempoolTransaction> ChainstateService::getTransactionBody(const uint256& txid) const {
+    auto found=getTransactionInclusion(txid);
+    if(!found.ok())return found.status();
+    return std::move(found->body);
+}
+
+// The transaction and where it is on the selected chain. One reader for every
+// transaction format: blocks from Orchard activation on are read as runtime
+// blocks, which hold historical and Orchard transactions side by side.
+StatusOr<ChainstateService::TransactionInclusion> ChainstateService::getTransactionInclusion(const uint256& txid) const {
     std::lock_guard<AnnotatedRecursiveMutex> guard(activation_mutex_);
     if (!chain_db_ || !consensus::OrchardProfileConfigurationValid(Params())) return Status::Internal;
     const auto location = chain_db_->getTxLocation(txid);
@@ -7043,8 +7122,9 @@ StatusOr<MempoolTransaction> ChainstateService::getTransactionBody(const uint256
         if (ordinal >= transactions.size()) return Status::Corruption;
         const auto& transaction = transactions[ordinal];
         if (transaction.GetTxid().AsUint256() != txid) return Status::Corruption;
-        return transaction.IsOrchard() ? MempoolTransaction::FromOrchard(transaction.Orchard())
-                                       : MempoolTransaction(transaction.Historical());
+        return TransactionInclusion{transaction.IsOrchard() ? MempoolTransaction::FromOrchard(transaction.Orchard())
+                                                            : MempoolTransaction(transaction.Historical()),
+            hash,static_cast<uint32_t>(*height),static_cast<uint32_t>(tip->height)};
 #else
         return Status::Internal;
 #endif
@@ -7053,7 +7133,8 @@ StatusOr<MempoolTransaction> ChainstateService::getTransactionBody(const uint256
     if (!block.ok()) return block.status()==Status::NotFound ? Status::Corruption : block.status();
     if (block->GetHash() != hash || ordinal >= block->vtx.size() ||
         block->vtx[ordinal].GetTxid().AsUint256() != txid) return Status::Corruption;
-    return MempoolTransaction(block->vtx[ordinal]);
+    return TransactionInclusion{MempoolTransaction(block->vtx[ordinal]),hash,
+        static_cast<uint32_t>(*height),static_cast<uint32_t>(tip->height)};
 }
 
 StatusOr<ChainstateService::BlockHeaderRpcSnapshot> ChainstateService::getBlockHeaderRpcSnapshot(
@@ -7684,6 +7765,15 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 auto lease=wallet.AcquireDatabaseLease();
                 if(!lease->NativeP2MRTargetMissing().empty())return Status::Invalid;
             }
+            // The coverage projection holds the retained account replay. It
+            // is released at the end of this block, BEFORE the Orchard
+            // delivery below reads the replay again: held across that read, a
+            // block arriving in between made the read rebuild the whole
+            // replay from the origin (the view cannot be extended while this
+            // thread itself still holds it).
+            std::optional<RuntimeIndexProgress> applied_at;
+            std::optional<RuntimeOutboxCursor> observed_head;
+            {
             const auto coverage=getRuntimeWalletCoverageV3(wallet,session,metadata_index,material_limit_bytes);
             if(!coverage.ok())return coverage.status();
             const auto& source=**coverage;
@@ -7713,8 +7803,14 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 else RuntimeOrdinaryDelivery::ReconcileLegacyTransparentCoverageV3(
                     wallet,metadata_index,source,fenced);
             }
-            const RuntimeIndexProgress applied{source.Head(),source.Origin().OriginHash(),
-                source.TipHash(),source.Origin().OriginHeight(),source.TipHeight()};
+            applied_at.emplace(RuntimeIndexProgress{source.Head(),source.Origin().OriginHash(),
+                source.TipHash(),source.Origin().OriginHeight(),source.TipHeight()});
+            observed_head=source.Head();
+            }
+            const RuntimeIndexProgress& applied=*applied_at;
+            // Test seam, never set in the daemon. No selected or wallet lock
+            // is held here, and the projection above has been released.
+            if(test_after_v3_pending_reconcile_)test_after_v3_pending_reconcile_();
             wallet.PublishRecoveredBlockchainHeight(wallet.getBlockchainHeight(),applied.tip_height,session);
             if(native) {
                 const auto orchard=resumeRuntimeOrchardDeliveryV3(
@@ -7727,7 +7823,7 @@ ChainstateService::resumeRuntimeWalletRecoveryV3IfNeeded(WalletManager& wallet,U
                 continue_restored_account0();
             }
             return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
-                RuntimeEnrolledWalletRecoveryResult{applied,{},source.Head(),std::nullopt});
+                RuntimeEnrolledWalletRecoveryResult{applied,{},*observed_head,std::nullopt});
         }
         if(state!=WalletManager::LegacyTransparentState::Complete)return Status::Invalid;
         const auto index_before=RuntimeIndexDelivery::ReadForWalletV3(wallet,metadata_index,session);
@@ -8244,6 +8340,20 @@ SignResult ChainstateService::signAndStageRuntimeWalletPayment(WalletManager& wa
     return refused;
 }
 
+namespace {
+thread_local uint32_t t_prefer_replay_retry=0;
+thread_local uint32_t t_reader_replay_retry=0;
+// Who is asking for the replay on this thread, for the log line of a full
+// rebuild. Most call sites do not say; the two that come back by themselves do.
+thread_local const char* t_replay_caller=nullptr;
+}
+ChainstateService::PreferReplayRetryScope::PreferReplayRetryScope():previous_caller_(t_replay_caller){
+    ++t_prefer_replay_retry;t_replay_caller="delivery worker";}
+ChainstateService::PreferReplayRetryScope::~PreferReplayRetryScope(){--t_prefer_replay_retry;t_replay_caller=previous_caller_;}
+ChainstateService::ReaderReplayRetryScope::ReaderReplayRetryScope():previous_caller_(t_replay_caller){
+    ++t_reader_replay_retry;t_replay_caller="wallet.orchard read";}
+ChainstateService::ReaderReplayRetryScope::~ReaderReplayRetryScope(){--t_reader_replay_retry;t_replay_caller=previous_caller_;}
+
 StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRuntimeAccountReplay() const {
     if(activation_mutex_.HeldByCurrentThread())return Status::Invalid;
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
@@ -8275,6 +8385,21 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
         // fixed-prefix reader rechecks continuity and the selected after-tip.
         std::unique_lock<std::mutex> full_retained(full_replay_mutex_,std::defer_lock);
         if(!orchard_phone_history_requested_.load())full_retained.lock();
+        // A full capture rebuilds the whole activation-origin replay (minutes on
+        // a long chain), and while it runs nothing is delivered to the wallet
+        // and every balance read is refused. It is said in the log with its
+        // reason, and the retained view is not given up for a reason that a
+        // moment's wait or a tail extension cures.
+        const auto replay_stamp=[]{
+            const std::time_t now=std::time(nullptr);std::tm local{};
+#ifdef _WIN32
+            localtime_s(&local,&now);
+#else
+            localtime_r(&now,&local);
+#endif
+            char text[16];std::strftime(text,sizeof(text),"%H:%M:%S",&local);return std::string(text);
+        };
+        const char* full_capture_reason="no retained view";
         if(full_retained.owns_lock()&&full_replay_){
             if(full_replay_->Head()==outbox_head){
                 const auto final=getRuntimeDeliveryPageAtPrefix(outbox_head,outbox_head,1,16*1024*1024);
@@ -8283,17 +8408,61 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
                 if((*final)->head!=outbox_head||(*final)->next!=outbox_head||!(*final)->events.empty()||
                    !(*final)->after_tip||(*final)->after_tip->first!=point.block_hash||
                    (*final)->after_tip->second!=point.height){
-                    full_replay_.reset();return Status::Invalid;
+                    full_replay_.reset();
+                    std::cerr<<"[RuntimeReplay] "<<replay_stamp()<<" retained full account replay dropped: "
+                                "it does not match the node's record at its own head"<<std::endl;
+                    return Status::Invalid;
                 }
                 return full_replay_;
             }
+            // The view can be extended only while nobody else holds it. Some
+            // twenty call sites take it, wallet requests among them, and most
+            // hold it for milliseconds: a reader on another thread that
+            // happens to hold it when a block arrives is waited for, briefly.
+            // (Without the wait that coincidence cost a full capture: ten
+            // minutes without a balance on a mainnet wallet.) A holder that
+            // does not let go in that time, including this thread's own
+            // caller, gets today's behaviour: a new full capture.
+            const auto held_since=std::chrono::steady_clock::now();
+            bool full_waited=false;
+            while(!RuntimeAccountReplay::SoleOwner(full_replay_)&&
+                  std::chrono::steady_clock::now()-held_since<kFullReplayHeldWait){
+                full_waited=true;std::this_thread::sleep_for(std::chrono::milliseconds(5));}
+            if(full_waited){
+                const auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-held_since).count();
+                const auto n=++full_replay_reader_waits_;
+                if(n<=20||n%100==0)
+                    std::cerr<<"[RuntimeReplay] "<<replay_stamp()<<" waited "<<ms<<" ms for a reader of the retained full account replay ("
+                             <<(RuntimeAccountReplay::SoleOwner(full_replay_)?"it let go":"still held")<<"; wait "<<n<<")"<<std::endl;
+            }
+            // The delivery worker comes back every second anyway: for it a
+            // view that is still held means "not this pass", not a capture.
+            // After a bounded number of passes a holder that never lets go
+            // still ends in a capture, which the log line below names.
+            if(!RuntimeAccountReplay::SoleOwner(full_replay_)&&t_prefer_replay_retry>0&&
+               full_replay_worker_refusals_.fetch_add(1)<kFullReplayWorkerRefusals)
+                return Status::Invalid;
+            // A wallet read is asked again too (ReaderReplayRetryScope), on
+            // its own allowance: it is told "not now" rather than rebuilding
+            // the replay under this lock while delivery waits behind it.
+            if(!RuntimeAccountReplay::SoleOwner(full_replay_)&&t_prefer_replay_retry==0&&t_reader_replay_retry>0&&
+               full_replay_reader_refusals_.fetch_add(1)<kFullReplayReaderRefusals)
+                return Status::Invalid;
             std::shared_ptr<const RuntimeAccountReplay> extended;
             try{extended=RuntimeAccountReplay::ExtendTail(std::move(full_replay_),read);}
             catch(const consensus::OrchardStateLookupError&){if(full_replay_)throw;captured_head.reset();}
-            catch(...){full_replay_.reset();captured_head.reset();}
-            if(extended){full_replay_=extended;++full_replay_extensions_;return extended;}
+            catch(...){full_replay_.reset();captured_head.reset();
+                full_capture_reason="extending the retained view failed";}
+            if(extended){full_replay_=extended;++full_replay_extensions_;
+                full_replay_worker_refusals_.store(0);full_replay_reader_refusals_.store(0);return extended;}
             // A concurrent reader still owns the old immutable view. A new
             // full capture keeps this call's semantics and becomes the cache.
+            if(full_replay_)full_capture_reason=t_prefer_replay_retry>0?
+                "the retained view stayed held by another reader for every delivery pass allowed":
+                t_reader_replay_retry>0?
+                "the retained view stayed held by another reader for every wallet read allowed":
+                "the retained view stayed held by another reader";
+            full_replay_worker_refusals_.store(0);full_replay_reader_refusals_.store(0);
             captured_head.reset();
         }
         // Phone activation-prefix material has its own retained view and
@@ -8317,8 +8486,10 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             static std::mutex said_mutex;static std::string said;
             const std::string line=std::string("wallet replay waits: ")+why+(detail.empty()?"":" ("+detail+")");
             std::lock_guard<std::mutex> lock(said_mutex);
-            static uint64_t refusals=0;++refusals;
-            if(said!=line){said=line;std::cerr<<"[OrchardHistory] "<<stamp()<<" "<<line<<" [refusal "<<refusals<<"]"<<std::endl;}
+            static uint64_t refusals=0;static uint64_t repeats=0;++refusals;
+            if(said!=line){said=line;repeats=0;std::cerr<<"[OrchardHistory] "<<stamp()<<" "<<line<<" [refusal "<<refusals<<"]"<<std::endl;}
+            else if(RepeatedRefusalIsLogged(++repeats))
+                std::cerr<<"[OrchardHistory] "<<stamp()<<" "<<line<<" [the same refusal "<<repeats<<" more times; refusal "<<refusals<<"]"<<std::endl;
             return Status::Invalid;
         };
         // The history was verified up to a checkpoint (`target`). It is
@@ -8354,7 +8525,9 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
                 return refuse("a block was delivered while the replay was read","replay head "+std::to_string(head.sequence));
             {static std::atomic<uint64_t> adopted{0};
              if(++adopted==1||adopted%500==0)std::cerr<<"[OrchardHistory] "<<stamp()<<" wallet replay adopted (checkpoint "<<target.height
-                 <<", replay to "<<point.height<<", times "<<adopted.load()<<")"<<std::endl;}
+                 <<", replay to "<<point.height<<", times "<<adopted.load()<<"; waited for a reader "<<phone_replay_reader_waits_.load()
+                 <<" times, kept a held replay "<<phone_replay_kept_.load()<<" times, full builds "<<phone_replay_full_builds_.load()
+                 <<", extensions "<<phone_replay_extensions_.load()<<")"<<std::endl;}
             return replay;
         };
         const auto phone=[&]()->std::optional<std::tuple<std::shared_ptr<ChainstateService>,p2p::OrchardPhoneHistoryTarget,
@@ -8378,6 +8551,23 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             const auto& [source,target,download,history]=*ready;
             const auto base=*phone_replay_base_;
             if(base.second==target.base&&base.first>=target.activation&&base.first<=target.height){
+                // Readers hold the view briefly; wait for one before deciding
+                // that it cannot be extended (as for the full view above).
+                const auto phone_held_since=std::chrono::steady_clock::now();
+                bool phone_waited=false;
+                while(!RuntimeAccountReplay::SoleOwner(phone_replay_)&&
+                      std::chrono::steady_clock::now()-phone_held_since<kFullReplayHeldWait){
+                    phone_waited=true;std::this_thread::sleep_for(std::chrono::milliseconds(5));}
+                if(phone_waited){
+                    // Said each time it happens: it is the only trace that a
+                    // reader held the view when this read arrived.
+                    const auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now()-phone_held_since).count();
+                    const auto n=++phone_replay_reader_waits_;
+                    if(n<=20||n%100==0)
+                        std::cerr<<"[OrchardHistory] "<<stamp()<<" wallet replay: waited "<<ms<<" ms for a reader of the retained replay ("
+                                 <<(RuntimeAccountReplay::SoleOwner(phone_replay_)?"it let go":"still held")<<"; wait "<<n<<")"<<std::endl;
+                }
                 std::shared_ptr<const RuntimeAccountReplay> extended;
                 try{extended=RuntimeAccountReplay::ExtendTail(std::move(phone_replay_),read);}
                 // Before ExtendTail takes the view only the first read can throw:
@@ -8386,15 +8576,30 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
                 catch(const consensus::OrchardStateLookupError&){if(phone_replay_)throw;phone_replay_base_.reset();}
                 catch(...){phone_replay_.reset();phone_replay_base_.reset();}
                 if(extended){
-                    phone_replay_=extended;++phone_replay_extensions_;
+                    phone_replay_=extended;++phone_replay_extensions_;phone_replay_held_refusals_.store(0);
                     return adopt(extended,source,target,download);
                 }
-                // Another holder is still reading the retained view: reuse it while
-                // current; otherwise rebuild below and retain the new view instead.
+                // Another holder is still reading the retained view, so it
+                // cannot be extended now. It is handed out while it is still
+                // at the head; behind the head it is KEPT and the caller
+                // retries (retained_replay_policy.h). It used to be dropped
+                // here and built again from the checkpoint, on every block
+                // that arrived while a reader held it.
                 if(phone_replay_){
                     auto current=adopt(phone_replay_,source,target,download);
-                    if(current.ok())return current;
-                    phone_replay_.reset();phone_replay_base_.reset();
+                    switch(WhenRetainedReplayIsHeld(current.ok(),phone_replay_held_refusals_.load())){
+                    case RetainedReplayAction::ReturnCurrent:
+                        phone_replay_held_refusals_.store(0);return current;
+                    case RetainedReplayAction::KeepAndRetry:
+                        ++phone_replay_held_refusals_;++phone_replay_kept_;
+                        return refuse("the retained replay is held by another reader and a block has arrived (kept, not rebuilt)");
+                    case RetainedReplayAction::DropAndRebuild:
+                        std::cerr<<"[OrchardHistory] "<<stamp()<<" wallet replay: the retained replay stayed held for "
+                                 <<phone_replay_held_refusals_.load()<<" attempts; rebuilding from the checkpoint"<<std::endl;
+                        phone_replay_held_refusals_.store(0);
+                        phone_replay_.reset();phone_replay_base_.reset();
+                        break;
+                    }
                 }
             }else{phone_replay_.reset();phone_replay_base_.reset();}
             captured_head.reset();
@@ -8429,8 +8634,15 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
                      <<(retained.owns_lock()?", kept for the next attempt)":", NOT kept)")<<std::endl;
             return adopt(replay,source,target,download);
         }
+        const auto full_capture_started=std::chrono::steady_clock::now();
         auto replay=RuntimeAccountReplay::Build(std::move(material));
-        if(full_retained.owns_lock()){full_replay_=replay;++full_replay_full_builds_;}
+        if(full_retained.owns_lock()){
+            full_replay_=replay;++full_replay_full_builds_;
+            const auto took=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now()-full_capture_started).count();
+            std::cerr<<"[RuntimeReplay] "<<replay_stamp()<<" full account replay built (full build "<<full_replay_full_builds_.load()
+                     <<", "<<took<<" s, reason: "<<full_capture_reason
+                     <<", caller: "<<(t_replay_caller?t_replay_caller:"not named")<<")"<<std::endl;
+        }
         return replay;
     } catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
       catch(...){return Status::Internal;}
@@ -9227,6 +9439,39 @@ ChainstateService::AuditUndoMetadataForRestamp(uint32_t max_blocks_back,
 
         auto block_result = ReadStoredBlock(entry.hash);
         entry.block_readable = block_result.status() == Status::Ok;
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        if (!entry.block_readable && consensus::OrchardActiveForHeight(Params(), current_height)) {
+            // A block that holds an Orchard transaction is not a historical
+            // block: the reader above answers "Serialization" for it, and this
+            // audit used to report the block as damaged. (Mainnet 165,213, the
+            // first shield: a recovery marker could then never be cleared.)
+            // Read it as what it is and check the same material: the typed
+            // body, the undo locator, the flatfile undo and the committed undo.
+            const auto typed = ReadRuntimeBlockUnderLock(*chain_db_, block_storage_.get(), entry.hash, current_height);
+            entry.block_readable = typed.ok() && typed->IsOrchardProfile();
+            if (!entry.block_readable) {
+                entry.reason = "typed block body unreadable";
+            } else if (!entry.has_undo_flag || metadata.undo_size == 0) {
+                entry.reason = "typed block has no undo locator";
+            } else {
+                const auto disk_undo = block_storage_->readUndo({metadata.undo_file, metadata.undo_pos, metadata.undo_size});
+                entry.undo_readable = disk_undo.ok();
+                const auto committed = chain_db_->getUndo(entry.hash);
+                entry.undo_decodable = disk_undo.ok() && committed.ok() && committed->Serialize() == *disk_undo;
+                entry.reason = !entry.undo_readable ? "typed block undo unreadable"
+                             : !entry.undo_decodable ? "typed block flatfile and committed undo disagree" : "ok";
+            }
+            if (entry.reason == "ok") {
+                if (include_ok) report.entries.push_back(std::move(entry));
+            } else {
+                report.entries.push_back(std::move(entry));
+                report.failed++;
+            }
+            current_height--;
+            report.scanned++;
+            continue;
+        }
+#endif
         if (!entry.block_readable) {
             entry.reason = "block body unreadable: " +
                            std::string(StatusToString(block_result.status()));
@@ -13082,11 +13327,21 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                 std::vector<std::string> missing_block_bodies;
                 missing_block_bodies.reserve(branch_path.size());
 
+                // A forward continuation connects contiguously from the active
+                // tip (branch_path ascends from the fork), so nothing above the
+                // first unavailable body can become a candidate this pass. Stop
+                // there and track only that next body: scanning the rest costs a
+                // body lookup per header on every applied block, which stalled a
+                // fast-synced phone ~14,600 headers behind. The scheduler owns
+                // fetching in both modes. A competing branch keeps the full walk.
+                const bool stop_at_first_gap = !importing_competing_branch;
+
                 for (const auto& entry : branch_path) {
                     CBlockIndex* idx = FindBlockIndex(entry.hash);
                     if (!idx) {
                         idx = AddBlockIndex(entry.header, entry.height);
                         if (!idx) {
+                            if (stop_at_first_gap) break;
                             continue;
                         }
                     }
@@ -13096,6 +13351,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                     // If body isn't stored yet, request it and continue.
                     if (!HasStoredBlockBody(entry.hash)) {
                         missing_block_bodies.push_back(entry.hash.GetHex());
+                        if (stop_at_first_gap) break;
                         continue;
                     }
 
@@ -13104,6 +13360,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                     // read — the scheduler-drain thread clears concurrently.
                     if (unreadable_blocks_.contains(entry.hash)) {
                         missing_block_bodies.push_back(entry.hash.GetHex());
+                        if (stop_at_first_gap) break;
                         continue;
                     }
 
@@ -13167,6 +13424,7 @@ void ChainstateService::ActivateBestChainPass(const ActivationParentPlan* prepar
                                                std::to_string(entry.height) +
                                                " awaits ordered proof validation");
                             }
+                            if (stop_at_first_gap) break;
                             continue;
                         }
                     }
@@ -17096,11 +17354,16 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(
         // check above), so the V3 boundary can be evaluated here rather than
         // deeper in, where a rejection would have to unwind work.
         // ═════════════════════════════════════════════════════════════════════
+        // v8.2.6: mainnet bootstraps only from Orchard (v6) snapshots. Other
+        // networks keep their historical fixtures. Wallet recovery reads its
+        // H149999 source through runtime_recovery_source, never this loader.
         switch (consensus::EvaluateSnapshotFormat(
                     header.version, header.block_height,
                     Params().shielded_activation_height,
                     Params().state_commitment_activation_height,
-                    Params().orchard_activation_height)) {
+                    Params().orchard_activation_height,
+                    Params().orchard_catalog_commitment_activation_height,
+                    Params().network_id == "main")) {
             case consensus::SnapshotFormatVerdict::RejectV2Deprecated:
                 result.error_message =
                     "Snapshot container v2 is no longer supported (deprecated). "
@@ -17150,6 +17413,15 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(
                     "Legacy snapshot container cannot bootstrap Orchard at height " +
                     std::to_string(header.block_height) +
                     "; authenticated v6 Orchard and catalog state is required";
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
+            case consensus::SnapshotFormatVerdict::RejectPreOrchardBootstrap:
+                result.error_message =
+                    "Pre-Orchard snapshot (v" + std::to_string(header.version) +
+                    " at height " + std::to_string(header.block_height) +
+                    ") is no longer accepted for mainnet bootstrap; use a v6 "
+                    "Orchard snapshot at or above height " +
+                    std::to_string(Params().orchard_activation_height);
                 logger_->error("[LoadSnapshot] " + result.error_message);
                 return result;
             case consensus::SnapshotFormatVerdict::Accept:

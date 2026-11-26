@@ -1,6 +1,8 @@
 #pragma once
 #include <fstream>
 #include <iterator>
+din::Json rpc_context_gettransaction(const ExecutionContext& ctx, const din::Json& params);  // methods_blockchain_context.cpp
+din::Json rpc_context_getblockfilters(const ExecutionContext& ctx, const din::Json& params);
 namespace dinero {
 class ChainDBTransactionReadTestPeer {
 public:
@@ -65,6 +67,12 @@ din::Json ReadTransactionRpc(DaemonContext& daemon,const std::string& id,bool ve
     ExecutionContext context;context.daemon=&daemon;din::Json request=din::arr();request.append(id);request.append(verbose);
     return ::rpc_context_wallet_getrawtransaction(context,request);
 }
+// The explorer's lookup (blockchain.gettransaction), as the desktop Chain
+// Explorer and the public block explorer call it.
+din::Json ExplorerTransactionRpc(DaemonContext& daemon,const std::string& id) {
+    ExecutionContext context;context.daemon=&daemon;din::Json request=din::arr();request.append(id);
+    return ::rpc_context_gettransaction(context,request);
+}
 din::Json DecodeTransactionRpc(const std::string& bytes) {
     ExecutionContext context;din::Json request=din::arr();request.append(bytes);
     return ::rpc_context_wallet_decoderawtransaction(context,request);
@@ -98,6 +106,166 @@ TEST(OrchardTransactionRpc, TypedPoolMinedReopenAndDisconnect) {
     EXPECT_EQ(ReadTransactionRpc(f.context,id.GetHex())["error"].asString(),"Transaction not found");
     EXPECT_EQ(captured->Serialize(),tx.Serialize(TxSerializationMode::WithWitness));
     EXPECT_EQ(pooled["hex"].asString(),expected);
+}
+// Mainnet block 165,213: the first block with an Orchard transaction. The
+// explorer answered "Transaction not found in blockchain" for both of its
+// transactions, the miner's reward included, because it read blocks with a
+// reader that cannot read such a block and took "unreadable" for "not here".
+TEST(OrchardTransactionRpc, ExplorerLookupFindsEveryTransactionOfABlockWithAnOrchardTransaction) {
+    CanonicalPoolFixture f;const auto block=f.Build();ASSERT_TRUE(block);ASSERT_TRUE(f.Submit(block->WireBytes()).accepted());
+    const auto hash=block->Header().GetHash().GetHex();
+    const auto tip=f.f.db.getTip();ASSERT_TRUE(tip.ok());
+    const auto& reward=block->Transactions()[0];const auto& shielded=block->Transactions()[1];
+    ASSERT_FALSE(reward.IsOrchard());ASSERT_TRUE(shielded.IsOrchard());
+
+    const auto first=ExplorerTransactionRpc(f.context,reward.GetTxid().AsUint256().GetHex());
+    ASSERT_FALSE(first.isMember("error"))<<first.toStyledString();
+    EXPECT_EQ(first["status"].asString(),"confirmed");EXPECT_EQ(first["blockhash"].asString(),hash);
+    EXPECT_EQ(first["blockheight"].asUInt(),tip->height);EXPECT_EQ(first["confirmations"].asInt(),1);
+    EXPECT_TRUE(first["is_coinbase"].asBool());
+
+    // The fixture's early blocks are not kept on disk; keep the one holding
+    // the coin this transaction spends, as a node does, so the input resolves.
+    const auto spent=ReadTransactionRpc(f.context,shielded.GetTxid().AsUint256().GetHex(),true)["vin"][0]["txid"].asString();
+    bool funded=false;
+    for(size_t height=0;height<f.f.blocks.size()&&!funded;++height) {
+        const auto& early=f.f.blocks[height];
+        for(size_t i=0;i<early.vtx.size();++i) {
+            if(early.vtx[i].GetTxid().AsUint256().GetHex()!=spent)continue;
+            ASSERT_EQ(f.f.db.putTxIndex(f.f.token,early.vtx[i].GetTxid().AsUint256(),early.GetHash(),uint32_t(i)),Status::Ok);
+            const auto location=f.files->writeBlock(early.GetHash(),early);ASSERT_TRUE(location.ok());
+            const auto work=f.f.db.getBlockWork(early.GetHash());ASSERT_TRUE(work.ok());
+            ChainDB::PersistedHeaderMetadata metadata;metadata.height=uint32_t(height);
+            metadata.parent_hash=early.header.prev_block_hash;metadata.chainwork=*work;
+            metadata.status_flags=BLOCK_HAVE_DATA|BLOCK_VALID_CHAIN|BLOCK_VALID_SCRIPTS;
+            metadata.file_number=location->file_number;metadata.data_pos=location->offset;metadata.data_size=location->size;
+            ASSERT_EQ(f.f.db.putHeaderMetadata(f.f.token,early.GetHash(),metadata),Status::Ok);
+            funded=true;break;
+        }
+    }
+    ASSERT_TRUE(funded);
+
+    const auto id=shielded.GetTxid().AsUint256();
+    const auto second=ExplorerTransactionRpc(f.context,id.GetHex());
+    ASSERT_FALSE(second.isMember("error"))<<second.toStyledString();
+    EXPECT_EQ(second["txid"].asString(),id.GetHex());EXPECT_EQ(second["status"].asString(),"confirmed");
+    EXPECT_EQ(second["blockhash"].asString(),hash);EXPECT_EQ(second["blockheight"].asUInt(),tip->height);
+    EXPECT_EQ(second["confirmations"].asInt(),1);EXPECT_EQ(second["classification"].asString(),"orchard");
+    EXPECT_FALSE(second["is_coinbase"].asBool());
+    EXPECT_EQ(second["fee_una"].asUInt64(),shielded.Orchard().ExplicitFee());
+    ASSERT_EQ(second["inputs"].size(),shielded.Orchard().Inputs().size());
+    ASSERT_EQ(second["outputs"].size(),shielded.Orchard().Outputs().size());
+    uint64_t out=0;
+    for(size_t i=0;i<shielded.Orchard().Outputs().size();++i) {
+        const auto& item=second["outputs"][Json::ArrayIndex(i)];
+        EXPECT_EQ(item["value_una"].asUInt64(),shielded.Orchard().Outputs()[i].amount_una);
+        EXPECT_EQ(item["scriptPubKey"].asString(),util::hex(shielded.Orchard().Outputs()[i].script_pub_key));
+        out+=shielded.Orchard().Outputs()[i].amount_una;
+    }
+    EXPECT_EQ(second["total_output_value_una"].asUInt64(),out);
+    // When its inputs resolve, what went into or came out of the shielded
+    // pool is the public difference, and the three parts must add up.
+    ASSERT_TRUE(second.isMember("total_input_value_una"))<<second.toStyledString();
+    {
+        const uint64_t in=second["total_input_value_una"].asUInt64(),moved=second["orchard_value_una"].asUInt64();
+        const auto way=second["orchard_value_direction"].asString();
+        if(way=="into_orchard")EXPECT_EQ(in,out+shielded.Orchard().ExplicitFee()+moved);
+        else if(way=="out_of_orchard")EXPECT_EQ(in+moved,out+shielded.Orchard().ExplicitFee());
+        else EXPECT_EQ(in,out+shielded.Orchard().ExplicitFee());
+    }
+
+    // Block filters: the block this reader cannot serve is named as missing,
+    // not left out as though the range had no such block.
+    {
+        ExecutionContext context;context.daemon=&f.context;din::Json request=din::arr();
+        request.append(static_cast<int>(tip->height));request.append(1);
+        const auto filters=::rpc_context_getblockfilters(context,request);
+        ASSERT_FALSE(filters.isMember("error"))<<filters.toStyledString();
+        ASSERT_TRUE(filters.isMember("unavailable_heights"))<<filters.toStyledString();
+        EXPECT_EQ(filters["filters"].size()+filters["unavailable_heights"].size(),1u)<<filters.toStyledString();
+        for(const auto& height:filters["unavailable_heights"])EXPECT_EQ(height.asUInt(),tip->height);
+    }
+
+    // A transaction that is on the chain but cannot be read is "unavailable",
+    // never "not found"; one that is not on the chain is "not found".
+    f.f.service->setBlockStorage(nullptr);
+    for(const auto* tx:{&reward,&shielded}) {
+        const auto refused=ExplorerTransactionRpc(f.context,tx->GetTxid().AsUint256().GetHex());
+        EXPECT_EQ(refused["error"].asString(),"Transaction data unavailable")<<refused.toStyledString();
+        EXPECT_EQ(refused["status"].asString(),"unavailable");
+    }
+    f.f.service->setBlockStorage(f.files);
+    EXPECT_EQ(ExplorerTransactionRpc(f.context,id.GetHex()),second);
+    const auto absent=ExplorerTransactionRpc(f.context,std::string(63,'0')+"7");
+    EXPECT_EQ(absent["error"].asString(),"Transaction not found in blockchain");EXPECT_EQ(absent["status"].asString(),"not_found");
+}
+// Measured on the v8.2.6 Mac pilot (2026-11-24): the selected-tip audit, which
+// stages and abandons a full disconnect of the tip on the live forest, ran
+// five times for every accepted block (about 4 s each, under the selected
+// lock) and once per mining template. A pass is now reused while nothing the
+// audit reads has changed, and only then.
+TEST(OrchardSelectedTipAudit, APassIsReusedOnlyWhileNothingItReadsHasChanged) {
+    CanonicalPoolFixture f;const auto block=f.Build();ASSERT_TRUE(block);
+    auto& service=*f.f.service;std::string why;
+    ASSERT_TRUE(f.Submit(block->WireBytes()).accepted());
+    ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    const auto first=service.SelectedTipAuditCounts();
+    // The same tip, no write, the same coin state: five more callers, no audit.
+    for(int i=0;i<5;++i)ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    auto counts=service.SelectedTipAuditCounts();
+    EXPECT_EQ(counts.first,first.first);EXPECT_EQ(counts.second,first.second+5);
+
+    // Any write to the store, even one the audit does not read, ends the reuse.
+    const auto id=block->Transactions()[1].GetTxid().AsUint256();const auto hash=block->Header().GetHash();
+    ASSERT_EQ(f.f.db.putTxIndex(f.f.token,id,hash,1),Status::Ok);
+    ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    counts=service.SelectedTipAuditCounts();
+    EXPECT_EQ(counts.first,first.first+1);
+    ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    EXPECT_EQ(service.SelectedTipAuditCounts().first,first.first+1);
+
+    // Damage is still found: the tip's durable locator no longer matches.
+    const auto metadata=f.f.db.getHeaderMetadata(hash);ASSERT_TRUE(metadata.ok());
+    auto damaged=*metadata;++damaged.undo_size;
+    ASSERT_EQ(f.f.db.putHeaderMetadata(f.f.token,hash,damaged),Status::Ok);
+    EXPECT_FALSE(service.IsCanonicalStateAligned(&why));
+    EXPECT_FALSE(service.IsCanonicalStateAligned(&why));  // a failure is never remembered as anything
+    const auto failed=service.SelectedTipAuditCounts();
+    EXPECT_EQ(failed.first,first.first+3);
+    ASSERT_EQ(f.f.db.putHeaderMetadata(f.f.token,hash,*metadata),Status::Ok);
+    ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    EXPECT_EQ(service.SelectedTipAuditCounts().first,first.first+4);
+    ASSERT_TRUE(service.IsCanonicalStateAligned(&why))<<why;
+    EXPECT_EQ(service.SelectedTipAuditCounts().first,first.first+4);
+}
+// Mainnet, 2026-11-24: on a node holding a chainstate_recovery.marker, the
+// undo-metadata audit reported block 165,213 (the first shield) as "block
+// body unreadable: Serialization", because it read every block as a
+// historical block. With one such block inside the last 1024, the marker
+// could never be cleared. The block is read as what it is and audited.
+TEST(OrchardTransactionRpc, UndoMetadataAuditReadsABlockWithAnOrchardTransaction) {
+    CanonicalPoolFixture f;const auto block=f.Build();ASSERT_TRUE(block);ASSERT_TRUE(f.Submit(block->WireBytes()).accepted());
+    const auto tip=f.f.db.getTip();ASSERT_TRUE(tip.ok());
+    ASSERT_TRUE(block->Transactions()[1].IsOrchard());
+    // The tip only: the fixture keeps no earlier bodies on disk.
+    const auto report=f.f.service->AuditUndoMetadataForRestamp(1,false,true);
+    EXPECT_EQ(report.scanned,1u);EXPECT_EQ(report.failed,0u);EXPECT_EQ(report.restampable,0u);
+    ASSERT_EQ(report.entries.size(),1u);
+    const auto& entry=report.entries.front();
+    EXPECT_EQ(entry.height,uint32_t(tip->height));EXPECT_EQ(entry.hash,block->Header().GetHash());
+    EXPECT_EQ(entry.reason,"ok");
+    EXPECT_TRUE(entry.block_readable);EXPECT_TRUE(entry.has_undo_flag);
+    EXPECT_TRUE(entry.undo_readable);EXPECT_TRUE(entry.undo_decodable);
+
+    // Real damage to that block's undo locator is still reported.
+    const auto metadata=f.f.db.getHeaderMetadata(block->Header().GetHash());ASSERT_TRUE(metadata.ok());
+    auto damaged=*metadata;damaged.undo_size=0;
+    ASSERT_EQ(f.f.db.putHeaderMetadata(f.f.token,block->Header().GetHash(),damaged),Status::Ok);
+    const auto broken=f.f.service->AuditUndoMetadataForRestamp(1,false,true);
+    EXPECT_EQ(broken.failed,1u);ASSERT_EQ(broken.entries.size(),1u);
+    EXPECT_EQ(broken.entries.front().reason,"typed block has no undo locator");
+    ASSERT_EQ(f.f.db.putHeaderMetadata(f.f.token,block->Header().GetHash(),*metadata),Status::Ok);
+    EXPECT_EQ(f.f.service->AuditUndoMetadataForRestamp(1,false,true).failed,0u);
 }
 TEST(OrchardTransactionRpc, IndexIdentityOrdinalAndUnavailableOwnersRefuse) {
     CanonicalPoolFixture f;const auto block=f.Build();ASSERT_TRUE(block);ASSERT_TRUE(f.Submit(block->WireBytes()).accepted());

@@ -340,6 +340,40 @@ public:
     // This as-of observation is not authority to commit later wallet effects.
     static CatalogEnrolled ReadCatalogForReplay(
         WalletManager&,uint64_t session,const RuntimeAccountReplay&);
+    // The same as-of observation for callers that only report it (the
+    // wallet.orchard.* read RPCs). Restoring a catalog is the expensive part
+    // of a read, and its result depends only on the wallet's captured bytes:
+    // while those are unchanged, the catalog restored for them is returned
+    // again. Capture and comparison run under the wallet lease; restoration
+    // never does, so a reader cannot keep delivery waiting for it. The result
+    // is immutable and shared; it is not authority for any wallet effect.
+    static std::shared_ptr<const CatalogEnrolled> ObserveCatalogForReplay(
+        WalletManager&,uint64_t session,const RuntimeAccountReplay&);
+    // Drops the remembered observation (wallet closed or locked; tests).
+    static void ForgetObservedCatalog();
+    // How many observations restored a catalog instead of reusing one.
+    static uint64_t ObservedCatalogRestores();
+    // Delivery carries its catalog from one event to the next. Every catalog
+    // recovery plan restores the wallet's captured bytes; that restore (the
+    // whole current+retained inventory, ~12 s per event on a mainnet wallet)
+    // is skipped when the fresh capture Rechecks equal to the bytes the last
+    // restore or delivery commit produced and every account's delivery point
+    // still resolves to its checkpoint in the caller's view. After a delivery
+    // pass, RememberCatalogRecovery records the committed catalog against a
+    // fresh capture, and publishes it to readers (ObserveCatalogForReplay).
+    // Any other byte change (a send, shield, restore, foreign write) misses
+    // and restores exactly as before. Cleared on lock and session change.
+    static void RememberCatalogRecovery(WalletManager&,uint64_t session,
+        const RuntimeAccountReplay&,const CatalogEnrolled&);
+    static void ForgetCatalogRecovery();
+    // Recovery plans that restored a catalog instead of reusing one.
+    static uint64_t CatalogRecoveryRestores();
+    // Moves on every ForgetCatalogRecovery (lock, auto-lock, session change).
+    static uint64_t CatalogRecoveryGeneration();
+    // Complete catalog captures taken by any path, since start.
+    static uint64_t CatalogCaptures() noexcept;
+    // Tests: on every reuse, also restore and require an identical catalog.
+    static void VerifyCatalogRecoveryReuseForTest(bool);
     // Same complete catalog/current/reached/retained validation inside the
     // caller's active wallet lease and SQLite transaction. Read-only: never
     // starts, commits or rolls back that transaction, including on refusal.

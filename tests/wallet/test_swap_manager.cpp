@@ -766,6 +766,42 @@ TEST(SwapManager, BobsSwapIsNotFinishedUntilHisDinIsSwept) {
     EXPECT_FALSE(bob2.Status(id).sweep_pending);
 }
 
+// Owner's Mac, 2026-11-24: the wallet auto-locked and the Swap tab said
+// "cannot read the wallet balance". A locked wallet reports no spendable
+// figure and says so; the refusal names the lock and what to do. A reply
+// with no figure and no such reason is still "cannot read".
+TEST(SwapManager, OfferFromALockedWalletSaysToUnlockIt) {
+    const auto with=[](const char* code) -> DinRpc {
+        return [code](const std::string& m, const Json::Value&) -> std::optional<Json::Value> {
+            if (m == "getblockcount") return Json::Value(1000);
+            if (m == "getblockchaininfo") return ChainInfo(true);
+            if (m == "wallet.getbalance") {
+                Json::Value b(Json::objectValue);
+                b["spendable"] = Json::Value(Json::nullValue);
+                if (code) b["send_unavailable_code"] = code;
+                return b;
+            }
+            return std::nullopt;
+        };
+    };
+    const auto refusal=[&](const char* dir, const char* code) {
+        TempDir d(dir);
+        FakeWallet w{0x52};
+        SwapManager m(Config(d.path), w.Deriver(), with(code), kNoBtc);
+        std::string said;
+        try { m.MakeOffer(Request(), kNow); ADD_FAILURE() << "an offer was accepted with no spendable figure"; }
+        catch (const std::exception& e) { said = e.what(); }
+        EXPECT_TRUE(m.List().empty()) << "nothing is written for a refused offer";
+        return said;
+    };
+    const auto locked = refusal("balance_locked", "wallet_locked");
+    EXPECT_NE(locked.find("locked"), std::string::npos) << locked;
+    EXPECT_NE(locked.find("Unlock"), std::string::npos) << locked;
+    EXPECT_EQ(locked.find("cannot read"), std::string::npos) << locked;
+    EXPECT_NE(refusal("balance_unknown", nullptr).find("cannot read the wallet balance"), std::string::npos);
+    EXPECT_NE(refusal("balance_other", "wallet_native_send_unavailable_on_v3").find("cannot read the wallet balance"), std::string::npos);
+}
+
 // An offer is refused unless the wallet can pay it: spendable DIN must cover
 // its amount plus the funding fee allowance, on top of what open offers and
 // unfunded swaps already promise. Request() offers 10 DIN.

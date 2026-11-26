@@ -2,6 +2,7 @@
 #include <QApplication>
 #include <QPushButton>
 #include <QImage>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QSettings>
@@ -59,6 +60,36 @@ private Q_SLOTS:
         QSettings().setValue("updates/check_enabled", false);
     }
     void init() { QSettings().remove("mining/outputFontPx"); }
+
+    // The status line is the tagline only, whatever the wallet's state: it
+    // used to read "Not-Mining - … - Post-Quantum Native | No wallet - enter
+    // address manually or create wallet", and kept that after an address was typed.
+    void statusLineIsTheTaglineInEveryWalletState() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        auto* status = window->findChild<QLabel*>("miningStatusLine");
+        QVERIFY(status);
+        const QString tagline = "Dinero: Real Money For Free People";
+        QCOMPARE(status->text(), tagline);
+
+        window->walletSwitchInFlight_ = false;
+        window->walletRescanning_ = false;
+        window->edtMiningAddress_->clear();
+        window->currentWalletName_.clear();  // no wallet
+        window->walletUnlocked_ = false;
+        window->updateWalletUIState();
+        QCOMPARE(status->text(), tagline);
+
+        window->currentWalletName_ = "Hotel";  // a wallet, locked
+        window->updateWalletUIState();
+        QCOMPARE(status->text(), tagline);
+
+        window->walletUnlocked_ = true;  // unlocked
+        window->updateWalletUIState();
+        QCOMPARE(status->text(), tagline);
+        // What the wallet's state means for the button is still said, on the button.
+        QVERIFY(!window->btnUseWalletAddr_->toolTip().isEmpty());
+    }
 
     void useWalletSelectsFirstTaprootAddressWithoutReceiveTab() {
         auto window = makeWindow();

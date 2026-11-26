@@ -23,6 +23,7 @@
 #include "miningsessionstatus.h"
 #include "peerheightsemantics.h"
 #include "responsiveuipolicy.h"
+#include "transactiontypedisplay.h"
 #include "walletbackuplock.h"
 #include "rpcclient.h"
 #include "rpcconnectionpolicy.h"
@@ -888,12 +889,18 @@ bool walletUnlockedFromRpc(const QJsonObject& obj) {
   return false;
 }
 
+// The Mining page's status line is the tagline and nothing else, on every
+// platform and in every wallet state (the owner's wording). Whether mining is
+// running is said by the Start/Stop button and the counters beside it; what a
+// missing or locked wallet means for "Use Wallet" is said by that button's
+// tooltip. Short-lived states (stopping, verifying a found block) still add
+// their own words after the tagline.
 QString miningStatusActiveText() {
-  return QStringLiteral("Dinero: Real Money For Free People - Post-Quantum Native");
+  return QStringLiteral("Dinero: Real Money For Free People");
 }
 
 QString miningStatusInactiveText() {
-  return QStringLiteral("Not-Mining - Dinero: Real Money For Free People - Post-Quantum Native");
+  return QStringLiteral("Dinero: Real Money For Free People");
 }
 
 QString chromePillStyle() {
@@ -2683,6 +2690,10 @@ void MainWindow::setupUI() {
     updateMiningFocusDimState();
     setMiningOutputCinematicEnabled(isMining_);
     const QString selectedTab = mainTabName(mainTabs_, index);
+#if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
+    // The Wallet page shows the Orchard balance and counts it in the total.
+    if (orchardWidget_) orchardWidget_->setBalanceWanted(selectedTab == QStringLiteral("Wallet"));
+#endif
     if (selectedTab == QStringLiteral("Receive"))
       rpc_->callNamed("wallet.listaddresses", QJsonObject{{"count", 200}});
     else if (selectedTab == QStringLiteral("Transactions"))
@@ -3471,10 +3482,20 @@ void MainWindow::setupUI() {
     publicGrid->setRowStretch(3, 1);
 
     auto [privateColumn, privateGrid] = makeColumn("walletPrivateColumn", "Shielded / private");
-    privateGrid->addWidget(new QLabel("Private:"), 1, 0);
-    lblShieldedBalance_ = amountLabel("lblShieldedBalance", "Confirmed shielded note balance");
-    privateGrid->addWidget(lblShieldedBalance_, 1, 1);
-    privateGrid->setRowStretch(2, 1);
+    // Orchard is the shielded pool in use. The pool it replaced is listed
+    // only for a wallet that still holds something in it.
+    privateGrid->addWidget(new QLabel("Orchard:"), 1, 0);
+    lblOrchardBalance_ = amountLabel("lblOrchardBalance", "Confirmed Orchard balance");
+    privateGrid->addWidget(lblOrchardBalance_, 1, 1);
+    lblRetiredPoolCaption_ = new QLabel("Retired pool:");
+    lblRetiredPoolCaption_->setObjectName("lblRetiredPoolCaption");
+    lblRetiredPoolCaption_->setToolTip("The shielded pool Orchard replaced. Funds still in it are listed here.");
+    privateGrid->addWidget(lblRetiredPoolCaption_, 2, 0);
+    lblShieldedBalance_ = amountLabel("lblShieldedBalance", "Balance left in the retired shielded pool");
+    privateGrid->addWidget(lblShieldedBalance_, 2, 1);
+    lblRetiredPoolCaption_->setVisible(false);
+    lblShieldedBalance_->setVisible(false);
+    privateGrid->setRowStretch(3, 1);
 
     breakdownRow->addWidget(publicColumn, 3);
     breakdownRow->addWidget(privateColumn, 2);
@@ -4227,10 +4248,13 @@ void MainWindow::setupUI() {
     cmbTxTypeFilter_->addItem("Mined", "mined");
     cmbTxTypeFilter_->addItem("Sent", "sent");
     cmbTxTypeFilter_->addItem("Received", "received");
+    cmbTxTypeFilter_->addItem("Shield (into Orchard)", "shield");
+    cmbTxTypeFilter_->addItem("Unshield (out of Orchard)", "unshield");
     cmbTxTypeFilter_->addItem("Contract", "contract");
+    cmbTxTypeFilter_->setObjectName("transactionTypeFilter");
     headerLayout->addWidget(cmbTxTypeFilter_);
     connect(cmbTxTypeFilter_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int) { loadTransactionHistory(); });
+            this, [this](int) { historyCount_ = 200; loadTransactionHistory(); });
     
     auto *btnRefreshTxs = new QPushButton("🔄 Refresh");
     btnRefreshTxs->setStyleSheet(chromeButtonStyle());
@@ -4248,6 +4272,7 @@ void MainWindow::setupUI() {
     
     // Transaction table
     tblTransactions_ = new QTableWidget(0, 7);
+    tblTransactions_->setObjectName("tblTransactions");
     tblTransactions_->setHorizontalHeaderLabels({"Date", "Time", "Type", "Amount (DIN)", "Address", "Confirmations", "TxID"});
     tblTransactions_->horizontalHeader()->setStretchLastSection(false);
     tblTransactions_->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch); // Address column
@@ -4258,6 +4283,25 @@ void MainWindow::setupUI() {
     tblTransactions_->setAlternatingRowColors(true);
     tblTransactions_->setStyleSheet(chromeTableStyle());
     layout->addWidget(tblTransactions_);
+
+    // The list holds the newest rows only. A miner adds one row a minute, so
+    // say how many are shown and offer the older ones.
+    auto *historyFooter = new QHBoxLayout;
+    lblTransactionFooter_ = new QLabel(transactions);
+    lblTransactionFooter_->setObjectName("transactionListFooter");
+    lblTransactionFooter_->setStyleSheet("QLabel { color: #9aa4b2; }");
+    historyFooter->addWidget(lblTransactionFooter_, 1);
+    btnShowOlderTxs_ = new QPushButton("Show older");
+    btnShowOlderTxs_->setObjectName("transactionsShowOlder");
+    btnShowOlderTxs_->setStyleSheet(chromeButtonStyle());
+    btnShowOlderTxs_->setToolTip("Load more of this wallet's earlier transactions.");
+    btnShowOlderTxs_->setVisible(false);
+    connect(btnShowOlderTxs_, &QPushButton::clicked, this, [this] {
+      historyCount_ = std::min(historyCount_ + 400, 5000);  // the node's own limit
+      loadTransactionHistory();
+    });
+    historyFooter->addWidget(btnShowOlderTxs_);
+    layout->addLayout(historyFooter);
     
     // Auto-load transaction history after 5 seconds
     QTimer::singleShot(5000, this, &MainWindow::loadTransactionHistory);
@@ -4426,6 +4470,7 @@ void MainWindow::setupUI() {
       auto* shieldedTabs = new QTabWidget(this);
       shieldedTabs->setObjectName("shieldedSubTabs");
       orchardWidget_ = new OrchardWidget(rpc_, this);
+      connect(orchardWidget_, &OrchardWidget::balanceChanged, this, &MainWindow::onOrchardBalanceChanged);
       shieldedTabs->addTab(makeScrollableTab(orchardWidget_), "Orchard");
       auto* legacyPage = makeScrollableTab(shieldedWidget_);
       const int legacyTab = shieldedTabs->addTab(legacyPage, "Retired pool");
@@ -5067,6 +5112,7 @@ void MainWindow::setupUI() {
     btnStopMining_->setVisible(false);  // Hidden - we use toggle button instead
 
     lblMiningStatus_ = new QLabel(miningStatusInactiveText());
+    lblMiningStatus_->setObjectName("miningStatusLine");
     QFont miningStatusFont = lblMiningStatus_->font();
     if (miningStatusFont.pointSizeF() > 0) {
       miningStatusFont.setPointSizeF(miningStatusFont.pointSizeF() * 0.9);
@@ -6911,7 +6957,15 @@ void MainWindow::updateWalletBalanceDisplay() {
   const double p2mr = std::clamp(cachedP2mrBalance_, 0.0, transparent);
   const double taproot = std::max(0.0, transparent - p2mr);
   const double shielded = std::max(0.0, cachedShieldedBalance_);
-  const double total = transparent + shielded;
+#if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
+  const bool orchardOffered = orchardWidget_ != nullptr;
+#else
+  const bool orchardOffered = false;
+#endif
+  const auto privateView = OrchardDisplay::walletPrivate(orchardOffered, cachedOrchard_, shielded, cachedShieldedRetired_);
+  // Shielding moves money, it does not remove it: the Orchard balance is part
+  // of the wallet's total as soon as the node has reported it.
+  const double total = transparent + shielded + privateView.countedDin;
   const QString lockedNote = cachedShieldedRetired_ && shielded > 0.0
       ? " (includes retired, locked shielded funds)" : QString();
   // Thousands separators, as on the Overview. onUseMaxAmount() strips them again.
@@ -6940,9 +6994,14 @@ void MainWindow::updateWalletBalanceDisplay() {
   if (lblTransparentP2mrBalance_) {
     lblTransparentP2mrBalance_->setText(din(p2mr));
   }
+  if (lblOrchardBalance_) {
+    lblOrchardBalance_->setText(privateView.orchardText);
+    lblOrchardBalance_->setToolTip(privateView.orchardTip);
+  }
   if (lblShieldedBalance_) {
-    lblShieldedBalance_->setText(din(shielded) + (cachedShieldedRetired_ && shielded > 0.0
-        ? " (retired, locked)" : QString()));
+    lblShieldedBalance_->setText(privateView.showRetired ? privateView.retiredText : din(0.0));
+    lblShieldedBalance_->setVisible(privateView.showRetired);
+    if (lblRetiredPoolCaption_) lblRetiredPoolCaption_->setVisible(privateView.showRetired);
   }
 
   auto lblUnconfirmed = findChild<QLabel*>("lblUnconfirmed");
@@ -7376,6 +7435,10 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       auto obj = result.toObject();
       updateStatus(obj);
       cachedHeight_ = obj["blocks"].toInt();
+#if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
+      // Orchard data changes with a block: the Orchard page reads on this.
+      if (orchardWidget_) orchardWidget_->setTipHeight(static_cast<quint64>(std::max(0, cachedHeight_)));
+#endif
       cachedHeaders_ = obj["headers"].toInt();
       evaluateUpgradeBanner();
       requestMiningRewards();
@@ -12593,6 +12656,12 @@ void MainWindow::parseMiningOutput(const QString& line) {
   }
 }
 
+void MainWindow::onOrchardBalanceChanged(bool known, quint64 confirmedUna, bool current, quint64 height) {
+  if (known) cachedOrchard_ = OrchardDisplay::KnownBalance{confirmedUna, height, true, current};
+  else cachedOrchard_.reset();
+  updateWalletBalanceDisplay();
+}
+
 void MainWindow::loadTransactionHistory() {
   QString txType = "all";
   if (cmbTxTypeFilter_) {
@@ -12607,11 +12676,15 @@ void MainWindow::loadTransactionHistory() {
   }
 
   QJsonObject params{
-    {"count", 200},
+    {"count", historyCount_},
     {"offset", 0},
     {"type", txType}
   };
 
+  if (lblTransactionFooter_) {  // what was asked for, for the footer and for tests
+    lblTransactionFooter_->setProperty("askedCount", historyCount_);
+    lblTransactionFooter_->setProperty("askedType", txType);
+  }
   qDebug() << "Loading transaction history with type filter:" << txType;
   rpc_->callNamed("wallet.listtransactions", params);
 }
@@ -12622,6 +12695,14 @@ void MainWindow::updateTransactionTable(const QJsonArray& transactions) {
   
   qDebug() << "Updating transaction table with" << transactions.size() << "transactions";
   const QString activeFilter = cmbTxTypeFilter_ ? cmbTxTypeFilter_->currentData().toString() : QStringLiteral("all");
+  if (lblTransactionFooter_) {
+    const int received = static_cast<int>(transactions.size());
+    const bool more = received >= historyCount_ && historyCount_ < 5000;
+    lblTransactionFooter_->setText(OrchardDisplay::historyFooter(
+        received, more ? received : received + 1,
+        cmbTxTypeFilter_ ? cmbTxTypeFilter_->currentText().section(" (", 0, 0) : QStringLiteral("All")));
+    if (btnShowOlderTxs_) btnShowOlderTxs_->setVisible(more);
+  }
   
   for (const QJsonValue& txVal : transactions) {
     if (!txVal.isObject()) continue;
@@ -12682,6 +12763,11 @@ void MainWindow::updateTransactionTable(const QJsonArray& transactions) {
       amountStr = QString("+%1").arg(qAbs(amount), 0, 'f', 8);
       amountColor = QColor("#339af0"); // Blue for mining
       uiTypeKey = "mined";
+    } else if (const QString privacyMove = dinero::qt::privacyMoveTypeLabel(type);
+               !privacyMove.isEmpty()) {
+      typeIcon = privacyMove;
+      amountStr = amountHidden && !displayAmount.isEmpty() ? displayAmount : QString::number(amount, 'f', 8);
+      amountColor = QColor("#b197fc"); // Violet for moves into/out of the private pool
     } else {
       typeIcon = "❓ " + type;
       amountStr = amountHidden && !displayAmount.isEmpty() ? displayAmount : QString::number(amount, 'f', 8);
@@ -15858,6 +15944,8 @@ void MainWindow::clearWalletScopedUiState() {
   cachedTransparentBalance_ = 0.0;
   cachedP2mrBalance_ = 0.0;
   cachedShieldedBalance_ = 0.0;
+  cachedOrchard_.reset();  // the previous wallet's Orchard money is never shown for this one
+  historyCount_ = 200;
   cachedPendingBalance_ = 0.0;
   cachedMiningBalance_ = 0.0;
   if (edtAddress_) {
@@ -16342,14 +16430,6 @@ void MainWindow::updateWalletUIState() {
     }
   }
 
-  // Mining status hint when wallet affects mining
-  if (lblMiningStatus_ && !canTransact && edtMiningAddress_ && edtMiningAddress_->text().isEmpty()) {
-    if (!hasWallet) {
-      lblMiningStatus_->setText(miningStatusInactiveText() + " | No wallet - enter address manually or create wallet");
-    } else if (!walletUnlocked_) {
-      lblMiningStatus_->setText(miningStatusInactiveText() + " | Unlock wallet to use 'Use Wallet' button");
-    }
-  }
 }
 
 void MainWindow::onEncryptWallet() {

@@ -107,6 +107,7 @@ enum class SnapshotFormatVerdict {
     RejectV3PostShieldedActivation,
     RejectV4PostStateCommitmentActivation,
     RejectLegacyPostOrchardActivation,
+    RejectPreOrchardBootstrap,
     RejectV6WithoutCatalogCommitment,
     RejectUnknownVersion,
 };
@@ -144,9 +145,17 @@ inline SnapshotFormatVerdict EvaluateSnapshotFormat(
         uint32_t shielded_activation_height,
         uint32_t state_commitment_activation_height,
         uint32_t orchard_activation_height = UINT32_MAX,
-        uint32_t orchard_catalog_commitment_activation_height = UINT32_MAX) {
+        uint32_t orchard_catalog_commitment_activation_height = UINT32_MAX,
+        bool require_orchard_base = false) {
     if (version == SNAPSHOT_VERSION_V2) {
         return SnapshotFormatVerdict::RejectV2Deprecated;
+    }
+    // Orchard-only bootstrap (mainnet from v8.2.6): no legacy container may
+    // seed a node, whatever its base. Legacy bases at/above Orchard keep their
+    // own diagnostic below; a dormant Orchard cannot satisfy the requirement.
+    if (require_orchard_base && version >= SNAPSHOT_VERSION_V3 && version <= SNAPSHOT_VERSION_V5 &&
+        (orchard_activation_height == UINT32_MAX || block_height < orchard_activation_height)) {
+        return SnapshotFormatVerdict::RejectPreOrchardBootstrap;
     }
     if(version==SNAPSHOT_VERSION_V6) {
         return orchard_activation_height!=UINT32_MAX&&orchard_activation_height>0&&

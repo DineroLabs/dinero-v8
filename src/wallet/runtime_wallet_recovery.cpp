@@ -4,7 +4,11 @@
 #include "wallet/runtime_origin_projection.h"
 #include "wallet/wallet_manager.h"
 #include <algorithm>
+#include <atomic>
+#include <iostream>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <sqlite3.h>
 
@@ -29,6 +33,43 @@ void CheckPosition(const RuntimeIndexProgress& progress, const RuntimeOutboxPage
     Require(page.after_tip.has_value() && page.after_tip->first==progress.tip_hash &&
         page.after_tip->second==progress.tip_height,"Wallet recovery source position mismatch");
 }
+// What a complete Orchard catalog pass proved, and the wallet database as it
+// stood inside that pass's last (read-only) recheck transaction. Own-connection
+// writes move total_changes; another connection's commits move data_version.
+struct IdleCatalogKey {
+    const WalletManager* wallet=nullptr;
+    std::shared_ptr<const void> instance;
+    // The counters below compare only on the connection that produced them.
+    const sqlite3* db=nullptr;
+    uint64_t session=0,generation=0;
+    RuntimeOutboxCursor head{};
+    decltype(wallet::OrchardAccountDelivery::RestorePoint::checkpoint) origin{};
+    sqlite3_int64 total_changes=0;int64_t data_version=0;
+    RuntimeOrchardCatalogRecoveryResult result{};
+    std::chrono::steady_clock::time_point full_at{};
+};
+struct IdleCatalogState {
+    std::mutex mutex;
+    std::optional<IdleCatalogKey> key;
+    std::atomic<uint64_t> skipped{0},misses{0};
+    std::atomic<int64_t> interval_ms{60000};
+};
+IdleCatalogState& IdleCatalog(){static IdleCatalogState value;return value;}
+int64_t DataVersion(sqlite3* db){
+    sqlite3_stmt* raw=nullptr;
+    Require(sqlite3_prepare_v2(db,"PRAGMA data_version",-1,&raw,nullptr)==SQLITE_OK,"Wallet data version unavailable");
+    std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> q(raw,sqlite3_finalize);
+    Require(sqlite3_step(raw)==SQLITE_ROW,"Wallet data version unavailable");
+    return sqlite3_column_int64(raw,0);
+}
+bool SameResult(const RuntimeOrchardCatalogRecoveryResult& a,const RuntimeOrchardCatalogRecoveryResult& b){
+    return a.applied==b.applied&&a.account_revisions==b.account_revisions&&a.catalog_revision==b.catalog_revision;
+}
+}
+uint64_t RuntimeWalletRecovery::IdleCatalogPassesSkipped() noexcept{return IdleCatalog().skipped.load();}
+uint64_t RuntimeWalletRecovery::IdleCatalogSkipMisses() noexcept{return IdleCatalog().misses.load();}
+void RuntimeWalletRecovery::SetIdleCatalogFullPassIntervalForTest(std::chrono::milliseconds value) noexcept{
+    IdleCatalog().interval_ms.store(value.count());
 }
 
 RuntimeTransparentRecoveryResult RuntimeWalletRecovery::Resume(
@@ -289,6 +330,38 @@ std::optional<RuntimeOrchardCatalogRecoveryResult> RuntimeWalletRecovery::Resume
         "Orchard recovery requires released caller lease");}
     const auto target=view.Head();Require(target.sequence,"Orchard recovery requires genuine first delivery");
     const auto first=view.Event(1);const auto origin=view.Point({}).checkpoint;
+    // An idle pass (the worker returns about every second) re-proved the same
+    // catalog at the same head: about six complete captures, ~1 s each on a
+    // mainnet wallet, holding the retained replay that wallet reads wait for.
+    // When nothing was written to the wallet database since the last complete
+    // pass proved every account at this head, return that pass's result. The
+    // source position is still proven below on every pass.
+    const auto generation=Account::CatalogRecoveryGeneration();
+    auto& idle=IdleCatalog();
+    std::optional<IdleCatalogKey> last;
+    {std::lock_guard<std::mutex> lock(idle.mutex);last=idle.key;}
+    bool unchanged=false;
+    if(last){
+        const auto lease=wallet.AcquireDatabaseLease();
+        unchanged=last->wallet==&wallet&&last->session==session&&lease->Session()==session&&
+            lease->InstanceToken()==last->instance&&lease->Database()&&lease->Database()==last->db&&
+            last->generation==generation&&
+            last->head==target&&last->origin==origin&&
+            sqlite3_total_changes64(lease->Database())==last->total_changes&&
+            DataVersion(lease->Database())==last->data_version;
+    }
+    const auto now=std::chrono::steady_clock::now();
+    if(unchanged&&now-last->full_at<std::chrono::milliseconds(idle.interval_ms.load())){
+        const auto final=source(target,1);const auto point=view.Point(target).checkpoint;
+        Require(final.after_tip&&final.after_tip->first==point.block_hash&&final.after_tip->second==point.height,
+            "Orchard recovery final source position mismatch");
+        auto result=last->result;result.observed_head=final.head;
+        if(const auto n=idle.skipped.fetch_add(1)+1;n==1||n%1000==0)
+            std::cerr<<"[OrchardDelivery] idle catalog passes skipped: "<<n<<std::endl;
+        return result;
+    }
+    std::optional<std::pair<sqlite3_int64,int64_t>> stamp;bool stamp_next=false;std::shared_ptr<const void> instance;
+    const sqlite3* stamp_db=nullptr;
     const auto cursor=[](const Account::Enrolled& entry){const auto& d=entry.state.account.Delivery();
         return RuntimeOutboxCursor{d.sequence,d.digest};};
     const auto equal=[&](const Account::CatalogEnrolled& a,const Account::CatalogEnrolled& b){
@@ -316,7 +389,12 @@ std::optional<RuntimeOrchardCatalogRecoveryResult> RuntimeWalletRecovery::Resume
         const auto lease=wallet.AcquireDatabaseLease();Require(lease->Session()==session,
             "Orchard recovery selection changed");
         CaptureTransaction tx(lease->Database());Account::RecheckCatalogRecoveryInTransaction(wallet,session,plan);
-        fence();tx.Commit();
+        fence();
+        // The final read-only recheck holds the write lock: nothing can land
+        // between what it proved and the database position recorded here.
+        if(stamp_next){stamp.emplace(sqlite3_total_changes64(lease->Database()),DataVersion(lease->Database()));
+            instance=lease->InstanceToken();stamp_db=lease->Database();}
+        tx.Commit();
     };
     const auto prepare=[&](Action action,uint64_t sequence){
         // Complete current/retained/pending/archive restoration and real event
@@ -356,6 +434,11 @@ std::optional<RuntimeOrchardCatalogRecoveryResult> RuntimeWalletRecovery::Resume
         // After this event's plan fully committed, under the same selected
         // fence, bound retained history (v8.2.4). Never inside the plan.
         bind([&](const auto& fence){(void)Account::BoundRetainedHistory(wallet,session,view);fence();});
+        // Carry the committed catalog into the next event instead of restoring
+        // the wallet's whole inventory again (~12 s per event on mainnet).
+        // Remembered only if the stored bytes are exactly this catalog.
+        try{Account::RememberCatalogRecovery(wallet,session,view,current);}
+        catch(const std::exception&){Account::ForgetCatalogRecovery();}
         ++advanced;
     }
     // Each applied event is a real, independently fenced durable account
@@ -373,14 +456,28 @@ std::optional<RuntimeOrchardCatalogRecoveryResult> RuntimeWalletRecovery::Resume
     const auto final=source(target,1);const auto point=view.Point(target).checkpoint;
     Require(final.after_tip&&final.after_tip->first==point.block_hash&&final.after_tip->second==point.height,
         "Orchard recovery final source position mismatch");
-    auto checked=prepare(Action::Observe,0);
+    stamp_next=true;auto checked=prepare(Action::Observe,0);stamp_next=false;
     Require(equal(current,checked.first),"Orchard recovery stores changed before return");
     std::vector<std::pair<uint32_t,uint64_t>> revisions;revisions.reserve(current.accounts.size());
     for(const auto& entry:current.accounts)revisions.emplace_back(entry.number,entry.state.revision);
     // No ReadStores/coverage/baseline adoption or transparent/index write occurs
     // on this distinct route. Even success is ONLY this captured Orchard prefix.
-    return RuntimeOrchardCatalogRecoveryResult{target,std::move(revisions),final.head,
+    RuntimeOrchardCatalogRecoveryResult result{target,std::move(revisions),final.head,
         current.catalog.revision};
+    // The forced complete pass is also the skip's check: had the key matched,
+    // this pass would have been skipped, so it must have found nothing new.
+    if(unchanged&&!SameResult(result,last->result)){
+        idle.misses.fetch_add(1);
+        std::cerr<<"[OrchardDelivery] an idle catalog pass that would have been skipped found a change; "
+                   "the wallet write that made it did not move the skip key"<<std::endl;
+    }
+    if(stamp){
+        IdleCatalogKey key;key.wallet=&wallet;key.instance=instance;key.db=stamp_db;key.session=session;key.generation=generation;
+        key.head=target;key.origin=origin;key.total_changes=stamp->first;key.data_version=stamp->second;
+        key.result=result;key.full_at=now;
+        std::lock_guard<std::mutex> lock(idle.mutex);idle.key=std::move(key);
+    }
+    return result;
 }
 
 // ---------------------------------------------------------------------------

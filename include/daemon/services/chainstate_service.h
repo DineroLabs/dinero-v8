@@ -208,6 +208,17 @@ public:
     // An incomplete legacy wallet on this class needs the offline v3 upgrade
     // (WalletManager::MarkFullArchiveV2LegacySource); never auto-migrated.
     bool FullArchiveV2LegacySourceClass(const UTXOIndex& index);
+    // Can a wallet created on this node now ever be credited by it? A wallet
+    // created by 8.2 is a native wallet: it is served through the v3 wallet
+    // index (a node synced from the first block), through an authenticated
+    // Orchard (v6) snapshot base, or by compact/stateless storage. A stateful
+    // node whose legacy (v2) wallet index still carries an older snapshot's
+    // markers is none of these: the v3 upgrade refuses it for good, and a
+    // native wallet created there replays the chain on every delivery pass
+    // and is never credited (mainnet, a Windows desktop started from a
+    // 52,287 snapshot: 1,100 DIN mined to a wallet that showed zero).
+    // False only for that class; `why` then holds what to tell the user.
+    bool NativeWalletServable(std::string* why);
     // Source-side capability hint for a current recovered transparent wallet.
     // Signing rechecks every condition and both wallet receipts under the
     // selected lock; this alone never authorizes a payment.
@@ -1098,6 +1109,16 @@ public:
     // Captures an indexed transaction from the selected canonical block under
     // the activation lock. Preserves its family and verifies ordinal and txid.
     StatusOr<MempoolTransaction> getTransactionBody(const uint256& txid) const;
+    // The same transaction with its block. NotFound means the transaction is
+    // not on the selected chain; any other failure means it could not be
+    // read, which a caller must report as such and never as "not found".
+    struct TransactionInclusion {
+        MempoolTransaction body;
+        uint256 block_hash;
+        uint32_t height;
+        uint32_t tip_height;
+    };
+    StatusOr<TransactionInclusion> getTransactionInclusion(const uint256& txid) const;
     struct BlockHeaderRpcSnapshot {
         BlockHeader header;
         uint32_t height;
@@ -1131,6 +1152,35 @@ public:
     uint64_t PhoneReplaySourceReads() const{return phone_replay_source_reads_.load();}
     // Full-archive replay uses the same immutable prefix/tail contract as the
     // phone reader. These counters expose full rebuilds versus tail extension.
+    // While one of these is alive on a thread, a read of the full account
+    // replay that finds the retained view held by another reader answers the
+    // retryable Status::Invalid instead of rebuilding the replay (bounded by
+    // kFullReplayWorkerRefusals). For callers that come back by themselves:
+    // the runtime delivery worker.
+    struct PreferReplayRetryScope {
+        PreferReplayRetryScope();~PreferReplayRetryScope();
+        PreferReplayRetryScope(const PreferReplayRetryScope&)=delete;
+        PreferReplayRetryScope& operator=(const PreferReplayRetryScope&)=delete;
+    private:
+        const char* previous_caller_;
+    };
+    // The same for a wallet read that is asked again by whoever asked it (the
+    // wallet.orchard.* reads: a page polls them). It has its own allowance
+    // (kFullReplayReaderRefusals), so a polling page cannot use up the
+    // delivery worker's passes and push the worker into a rebuild.
+    struct ReaderReplayRetryScope {
+        ReaderReplayRetryScope();~ReaderReplayRetryScope();
+        ReaderReplayRetryScope(const ReaderReplayRetryScope&)=delete;
+        ReaderReplayRetryScope& operator=(const ReaderReplayRetryScope&)=delete;
+    private:
+        const char* previous_caller_;
+    };
+    // Consecutive "not now" answers given while the retained view was held:
+    // {to the delivery worker, to wallet reads}. Both return to zero when the
+    // view is extended or rebuilt (diagnostics/tests).
+    std::pair<uint32_t,uint32_t> FullReplayHeldRefusals() const{
+        return {full_replay_worker_refusals_.load(),full_replay_reader_refusals_.load()};}
+    void SetV3PendingReconcileHookForTest(std::function<void()> hook){test_after_v3_pending_reconcile_=std::move(hook);}
     std::pair<uint64_t,uint64_t> FullReplayCaptureCounts() const{
         return {full_replay_full_builds_.load(),full_replay_extensions_.load()};
     }
@@ -1713,6 +1763,40 @@ private:
         const std::optional<RuntimeOutboxCursor>& captured_head,
         const RuntimeOutboxCursor& after,size_t maximum_events,size_t maximum_bytes) const;
     bool AuditSelectedOrchardTipUnderLock(std::string* reason) const;
+    // The audit above costs seconds (it stages and abandons a full disconnect
+    // of the tip on the live forest) and ran five times for every accepted
+    // block, under the selected lock. Its verdict depends only on the selected
+    // tip, the durable store and the restored coin state. A PASS is therefore
+    // remembered with everything that can change it, and the audit is skipped
+    // only while all of it is unchanged: the same tip entry and its index
+    // fields, the store's open generation and RocksDB write sequence (every
+    // write to any column advances it), the UTXO set's best block and height,
+    // the forest's leaf count and every root slot, and safe mode off. Any
+    // difference, any doubt (fence unavailable), a failed audit, compact
+    // storage and the snapshot-base audit all run the real audit. Nothing is
+    // remembered across a restart. Guarded by activation_mutex_.
+    struct SelectedTipAuditPass {
+        const CBlockIndex* tip=nullptr;
+        uint256 hash;
+        uint32_t height=0;
+        uint32_t status=0,file_number=0,data_pos=0,data_size=0,undo_file=0,undo_pos=0,undo_size=0;
+        std::pair<uint64_t,uint64_t> store_fence{0,0};
+        uint256 utxo_best;
+        uint32_t utxo_height=0;
+        uint64_t forest_leaves=0;
+        std::vector<std::optional<consensus::UtreexoHash>> forest_roots;
+        bool operator==(const SelectedTipAuditPass&) const=default;
+    };
+    std::optional<SelectedTipAuditPass> CurrentSelectedTipAuditKeyUnderLock() const;
+    mutable std::optional<SelectedTipAuditPass> selected_tip_audit_pass_;
+    mutable std::atomic<uint64_t> selected_tip_audits_run_{0};
+    mutable std::atomic<uint64_t> selected_tip_audits_reused_{0};
+public:
+    // How many selected-tip audits ran in full, and how many reused a pass.
+    std::pair<uint64_t,uint64_t> SelectedTipAuditCounts() const {
+        return {selected_tip_audits_run_.load(),selected_tip_audits_reused_.load()};
+    }
+private:
     // Recheck a reconstructed activation parent without publishing it.
     bool AuditCompactBoundaryUnderLock(const CBlockIndex&,std::string* reason) const;
     bool AuditHistoricalCompactTipUnderLock(const CBlockIndex&,std::string* reason) const;
@@ -2237,6 +2321,26 @@ private:
     // sole owner and otherwise falls back to a fresh verified capture.
     mutable std::mutex full_replay_mutex_;
     mutable std::shared_ptr<const RuntimeAccountReplay> full_replay_;
+    // How long a caller waits for another reader to let go of the retained
+    // full view before a full capture is paid for.
+    static constexpr std::chrono::milliseconds kFullReplayHeldWait{250};
+    // Delivery passes that may answer "not this pass" in a row while the
+    // retained view stays held, before one of them pays for a full capture.
+    static constexpr uint32_t kFullReplayWorkerRefusals=30;
+    mutable std::atomic<uint32_t> full_replay_worker_refusals_{0};
+    // Wallet reads that may be told "ask again" in a row for the same reason.
+    // A page asks every few seconds, so this is about a minute.
+    static constexpr uint32_t kFullReplayReaderRefusals=20;
+    mutable std::atomic<uint32_t> full_replay_reader_refusals_{0};
+    // Consecutive "kept, retry" answers for a held phone replay (retained_replay_policy.h).
+    mutable std::atomic<uint32_t> phone_replay_held_refusals_{0};
+    // Observational counters, for the log only: reads that waited for a
+    // reader of a retained replay, and held phone replays kept for a retry.
+    mutable std::atomic<uint64_t> phone_replay_reader_waits_{0},phone_replay_kept_{0},full_replay_reader_waits_{0};
+    // Test only, empty in the daemon: runs in the v3 Pending branch between
+    // the transparent reconcile and the Orchard delivery read, so a test can
+    // land a block there.
+    std::function<void()> test_after_v3_pending_reconcile_;
     mutable std::atomic<uint64_t> full_replay_full_builds_{0},full_replay_extensions_{0};
     // Outbox head whose material needs the phone activation prefix while no
     // verified history is available. Until the head changes or history is

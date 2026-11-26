@@ -13,10 +13,13 @@
 #include <set>
 #include <list>
 #include <mutex>
+#include <shared_mutex>
+#include <unordered_map>
 
 namespace dinero {
 namespace {
 using namespace consensus;
+std::atomic<uint64_t> g_replay_node_reads{0};
 using Point=wallet::OrchardAccountDelivery::RestorePoint;
 void Require(bool value) { if(!value) throw OrchardStateLookupError(Status::Corruption); }
 uint256 Hash(const orchard::Hash& bytes) { uint256 h;std::copy(bytes.begin(),bytes.end(),h.begin());return h; }
@@ -106,7 +109,11 @@ struct RuntimeAccountReplay::Data {
     };
     RuntimeOutboxCursor head;uint32_t activation=0;orchard::SigningDomain domain;
     uint256 origin;uint32_t prefix_height=0;
-    wallet::detail::RuntimeReplaySpool spool;
+    // Lookups (Point/State/Authorizations through the index) run thousands of
+    // times per wallet read. Keep their three statements prepared rather than
+    // re-parsing SQL on every Get: on the owner's Mac sqlite3Prepare was about
+    // a third of every lookup. Bounded: three statements, under 64 KiB.
+    wallet::detail::RuntimeReplaySpool spool{{},true};
     wallet::detail::RuntimeReplayStateRetention states;
     wallet::detail::RuntimeReplayAuthorizationRetention authorizations;
     wallet::detail::RuntimeReplayDiskMembership membership{spool};
@@ -193,6 +200,7 @@ struct RuntimeAccountReplay::Data {
     static IndexKey NodeKey(const uint256& hash){IndexKey key{'n'};std::copy(hash.begin(),hash.end(),key.begin()+1);return key;}
     static IndexKey PositionKey(uint64_t sequence){IndexKey key{'p'};for(unsigned i=0;i<8;++i)key[i+1]=uint8_t(sequence>>(8*i));return key;}
     std::optional<Node> Find(const uint256& hash) const {
+        g_replay_node_reads.fetch_add(1,std::memory_order_relaxed);
         const auto bytes=index.Get(NodeKey(hash));if(!bytes)return std::nullopt;
         wallet::detail::replay_spool_codec::Reader r{*bytes};Require(r.Number(1)==2);
         Node n;n.height=r.Number(4);n.parent=r.Hash();n.event_sequence=r.Number(8);
@@ -217,8 +225,26 @@ struct RuntimeAccountReplay::Data {
         uint256 hash;std::copy(bytes->begin(),bytes->end(),hash.begin());return hash;
     }
     void Position(uint64_t sequence,const uint256& hash){index.Set(PositionKey(sequence),{hash.data,32});}
+    // A wallet restore asks for the ancestor of each retained revision's tip
+    // at many heights, so the same parent links were read from the store
+    // once per block per lookup (on the owner's Mac, nearly all of a cold
+    // restore after a restart). A block's height and parent are fixed by its
+    // header, so the walk keeps them in memory; only the target node is read
+    // in full. A boundary placeholder (null parent) is never kept: a later
+    // event may record its real parent.
+    mutable std::shared_mutex link_mutex;
+    mutable std::unordered_map<uint256,std::pair<uint32_t,uint256>> links;
+    static constexpr size_t MaximumLinks=1u<<20;
+    std::pair<uint32_t,uint256> Link(const uint256& hash) const {
+        {std::shared_lock<std::shared_mutex> lock(link_mutex);
+         if(const auto found=links.find(hash);found!=links.end())return found->second;}
+        const auto n=At(hash);std::pair<uint32_t,uint256> link{n.height,n.parent};
+        if(!n.parent.IsNull()){std::unique_lock<std::shared_mutex> lock(link_mutex);
+            if(links.size()<MaximumLinks)links.emplace(hash,link);}
+        return link;
+    }
     Node Ancestor(uint256 tip,uint32_t height,const uint256& hash) const {
-        for(;;){const auto& n=At(tip);Require(n.height>=height);if(n.height==height){Require(tip==hash);return n;}tip=n.parent;}
+        for(;;){const auto [h,parent]=Link(tip);Require(h>=height);if(h==height){Require(tip==hash);return At(tip);}tip=parent;}
     }
     static wallet::detail::RuntimeReplayDiskMembership::Key MembershipKey(const uint256& hash) {
         wallet::detail::RuntimeReplayDiskMembership::Key key;
@@ -445,6 +471,8 @@ std::shared_ptr<const RuntimeAccountReplay> RuntimeAccountReplay::ExtendTail(
     return BuildTail(std::move(data),old.sequence+1);
 }
 RuntimeOutboxCursor RuntimeAccountReplay::Head() const{return data_->head;}
+uint64_t RuntimeAccountReplay::SpoolStatementsPrepared() const{return data_->spool.StatementsPrepared();}
+uint64_t RuntimeAccountReplay::NodeReads() noexcept{return g_replay_node_reads.load();}
 RuntimeAccountReplay::ProfileFacts RuntimeAccountReplay::Profile()const{return {data_->domain,data_->activation};}
 RuntimeAccountReplay::EventHandle RuntimeAccountReplay::Event(uint64_t sequence) const{
     return data_->ReadEvent(sequence);

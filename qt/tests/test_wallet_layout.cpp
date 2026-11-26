@@ -1,5 +1,8 @@
 #include <QtTest/QtTest>
 #include <QGroupBox>
+#include <QTableWidget>
+#include <QJsonArray>
+#include <QComboBox>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
@@ -23,6 +26,7 @@
 #include "rpcclient.h"
 #if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
 #include "orchardwidget.h"
+#include "walletcreaterefusal.h"
 #endif
 
 // The Wallet tab must never start or clean up daemon processes.
@@ -92,6 +96,29 @@ class WalletLayoutTest : public QObject {
     }
 
 private Q_SLOTS:
+    // A node that can never credit a new wallet says so in its own words;
+    // the wizard shows that sentence as it is, calmly, and offers no Retry
+    // (waiting does not help). Mainnet 2026-11-24: 1,100 DIN mined to a
+    // wallet a Windows node had created and could never show.
+    void creationRefusalWordingFollowsTheNodesReason() {
+        const QString why = "This node cannot show money in a new wallet: its data was started from an older snapshot. "
+                            "No wallet was created.";
+        const auto never = WalletCreateRefusal::shown("native_wallet_unservable", why, QString());
+        QCOMPARE(never.text, why);
+        QVERIFY(!never.retry);
+        QVERIFY(never.calm);
+        QVERIFY(!never.text.contains("Error generating seed"));
+        const auto later = WalletCreateRefusal::shown("snapshot_bootstrap_pending", "x", QString());
+        QVERIFY(later.retry && later.calm);
+        QVERIFY(later.text.contains("No wallet was created"));
+        const auto orchard = WalletCreateRefusal::shown("orchard_history_pending", "x", QString());
+        QVERIFY(orchard.retry && orchard.calm);
+        const auto broke = WalletCreateRefusal::shown("", "disk full", "could not reopen");
+        QVERIFY(!broke.retry && !broke.calm);
+        QVERIFY(broke.text.contains("disk full") && broke.text.contains("could not reopen"));
+        // A refusal code with no sentence must not leave an empty box.
+        QVERIFY(!WalletCreateRefusal::shown("native_wallet_unservable", " ", QString()).text.trimmed().isEmpty());
+    }
     void initTestCase() {
         QVERIFY(dir_.isValid());
         QVERIFY(endpoint_.listen(QHostAddress::LocalHost));
@@ -601,6 +628,95 @@ private Q_SLOTS:
         // Amounts line up on the right edge of their column.
         QVERIFY(named<QLabel>(*window, "lblTransparentTaprootBalance")->alignment() & Qt::AlignRight);
         QVERIFY(named<QLabel>(*window, "lblShieldedBalance")->alignment() & Qt::AlignRight);
+    }
+
+    // Owner, 2026-11-23: after shielding 25 DIN the Wallet page said
+    // "Private: 0.00000000" and the total dropped by 25. That line read the
+    // retired pool; Orchard money was not on the page at all.
+    void orchardMoneyIsShownAndCountedOnTheWalletPage() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        feedBalance(*window);  // 636,799.99999731 public
+        auto* orchard = named<QLabel>(*window, "lblOrchardBalance");
+        auto* total = named<QLabel>(*window, "walletTotalBalance");
+        auto* retired = named<QLabel>(*window, "lblShieldedBalance");
+        auto* retiredCaption = named<QLabel>(*window, "lblRetiredPoolCaption");
+        QVERIFY(orchard && total && retired && retiredCaption);
+        QVERIFY(named<QWidget>(*window, "walletPrivateColumn")->isAncestorOf(orchard));
+        if (!window->findChild<OrchardWidget*>()) QSKIP("built without the Orchard page");
+        // Not reported yet: said so, and not counted.
+        QCOMPARE(orchard->text(), QString::fromUtf8("Reading…"));
+        QCOMPARE(total->text(), QString("636,799.99999731 DIN"));
+        // The retired pool is not listed for a wallet that holds nothing in it.
+        QVERIFY(retired->isHidden() && retiredCaption->isHidden());
+
+        QVERIFY(QMetaObject::invokeMethod(window.get(), "onOrchardBalanceChanged", Qt::DirectConnection,
+            Q_ARG(bool, true), Q_ARG(quint64, quint64(2500000000)), Q_ARG(bool, true), Q_ARG(quint64, quint64(165213))));
+        QCOMPARE(orchard->text(), QString("25.00000000 DIN"));
+        QCOMPARE(total->text(), QString("636,824.99999731 DIN"));
+        QVERIFY(orchard->alignment() & Qt::AlignRight);
+
+        // The node is busy: the figure stays, with its block, and stays counted.
+        QVERIFY(QMetaObject::invokeMethod(window.get(), "onOrchardBalanceChanged", Qt::DirectConnection,
+            Q_ARG(bool, true), Q_ARG(quint64, quint64(2500000000)), Q_ARG(bool, false), Q_ARG(quint64, quint64(165213))));
+        QCOMPARE(orchard->text(), QString("25.00000000 DIN (block 165213)"));
+        QCOMPARE(total->text(), QString("636,824.99999731 DIN"));
+
+        // Another wallet / nothing known: never the previous figure.
+        QVERIFY(QMetaObject::invokeMethod(window.get(), "onOrchardBalanceChanged", Qt::DirectConnection,
+            Q_ARG(bool, false), Q_ARG(quint64, quint64(0)), Q_ARG(bool, false), Q_ARG(quint64, quint64(0))));
+        QCOMPARE(orchard->text(), QString::fromUtf8("Reading…"));
+        QCOMPARE(total->text(), QString("636,799.99999731 DIN"));
+    }
+
+    // Owner, 2026-11-23: the shield row "showed once" and was gone. The page
+    // asked for the newest 200 rows only, a miner adds a row a minute, and
+    // there was no filter for shields and no way to older rows.
+    void historyOffersShieldFiltersAndOlderRows() {
+        auto window = makeWindow();
+        QVERIFY(window);
+        auto* rpc = window->findChild<RpcClient*>();
+        auto* filter = named<QComboBox>(*window, "transactionTypeFilter");
+        auto* older = named<QPushButton>(*window, "transactionsShowOlder");
+        auto* footer = named<QLabel>(*window, "transactionListFooter");
+        QVERIFY(rpc && filter && older && footer);
+        QVERIFY(filter->findData("shield") >= 0);
+        QVERIFY(filter->findData("unshield") >= 0);
+
+        const auto rows = [](int n) {
+            QJsonArray a;
+            for (int i = 0; i < n; ++i)
+                a.append(QJsonObject{{"txid", QString("%1").arg(i, 64, 16, QChar('0'))}, {"type", "generate"}, {"amount", 100.0},
+                                     {"confirmations", i + 1}, {"time", 1795473738 - i * 60}, {"address", "din1ptest"}});
+            return a;
+        };
+        // A full page: older rows may exist.
+        Q_EMIT rpc->rpcResult("wallet.listtransactions", rows(200));
+        QCoreApplication::processEvents();
+        QVERIFY(!older->isHidden());
+        QVERIFY2(footer->text().contains("newest 200"), qPrintable(footer->text()));
+
+        older->click();
+        QCOMPARE(footer->property("askedCount").toInt(), 600);
+        // Fewer rows than asked for: that is everything.
+        Q_EMIT rpc->rpcResult("wallet.listtransactions", rows(281));
+        QCoreApplication::processEvents();
+        QVERIFY(older->isHidden());
+        QVERIFY2(footer->text().contains("all 281"), qPrintable(footer->text()));
+
+        // The shield filter asks the node for shields, from the newest again.
+        filter->setCurrentIndex(filter->findData("shield"));
+        QCOMPARE(footer->property("askedType").toString(), QString("shield"));
+        QCOMPARE(footer->property("askedCount").toInt(), 200);
+        Q_EMIT rpc->rpcResult("wallet.listtransactions", QJsonArray{QJsonObject{
+            {"txid", QString(64, 'a')}, {"type", "shield"}, {"amount", -25.0001}, {"confirmations", 280},
+            {"time", 1795473738}, {"address", "dinorch1test"}}});
+        QCoreApplication::processEvents();
+        auto* table = named<QTableWidget>(*window, "tblTransactions");
+        QVERIFY(table);
+        QCOMPARE(table->rowCount(), 1);
+        QVERIFY2(table->item(0, 2)->text().contains("Shield"), qPrintable(table->item(0, 2)->text()));
+        QVERIFY2(footer->text().contains("all 1 shield"), qPrintable(footer->text()));
     }
 
     void quantumSafeShareIsANudgeNotAnAlarm() {

@@ -1,6 +1,7 @@
 #pragma once
 #include "wallet/runtime_index_delivery.h"
 #include "wallet/runtime_account_replay.h"
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <optional>
@@ -91,6 +92,14 @@ public:
     static std::optional<RuntimeOrchardCatalogRecoveryResult> AdvancePreparedOrchardCatalogStores(
         const RuntimeAccountReplay&,const wallet::IRuntimeRecoverySource&,
         WalletManager&,uint64_t expected_session,const OrchardSourceOwner&,size_t max_events);
+    // A pass whose accounts already stand at the captured head, with no write
+    // to the wallet database since the previous complete pass proved them
+    // there, returns that pass's result without capturing the catalog again.
+    // A complete pass is still forced at least once per interval; when that
+    // pass finds a change the skip would have hidden, it says so in the log.
+    static uint64_t IdleCatalogPassesSkipped() noexcept;
+    static uint64_t IdleCatalogSkipMisses() noexcept;
+    static void SetIdleCatalogFullPassIntervalForTest(std::chrono::milliseconds) noexcept;
 private:
     friend struct RuntimeCatalogRecoveryTestAccess;
     friend struct RuntimeWalletRecoveryTestAccess;
