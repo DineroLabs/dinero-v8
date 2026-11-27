@@ -1,16 +1,25 @@
 {
   "schema": "dinero.desktop-snapshot-inputs.v1",
-  "purpose": "H167856 full-v6 desktop primary with exact prior lifecycle bases",
+  "purpose": "H169068 full-v6 desktop primary with exact prior lifecycle bases",
   "primary": {
-    "filename": "dinero-assumeutxo-167856-v6-full.dat",
-    "height": 167856,
+    "filename": "dinero-assumeutxo-169068-v6-full.dat",
+    "height": 169068,
     "format_version": 6,
     "snapshot_profile": "full",
-    "block_hash": "0000002353381dcf1e743ddc42926a6b2a9d2749ad4fa9d229a56468de404e30",
-    "bytes": 153017699,
-    "sha256": "902cc41720652b0a2ddef5e7b317c7265cf1c888629ffb884c88ff6541200df2"
+    "block_hash": "0000001ce0d0785e142b8f72872423ba92922057ce1c2ffd38cf163d0d322818",
+    "bytes": 153854814,
+    "sha256": "4b8e2e3e6976a286b42ca1a08a67c102a063c9e65baa7e7fef2e6e60bfbd2133"
   },
   "fallbacks": [
+    {
+      "filename": "dinero-assumeutxo-167856-v6-full.dat",
+      "height": 167856,
+      "format_version": 6,
+      "snapshot_profile": "full",
+      "block_hash": "0000002353381dcf1e743ddc42926a6b2a9d2749ad4fa9d229a56468de404e30",
+      "bytes": 153017699,
+      "sha256": "902cc41720652b0a2ddef5e7b317c7265cf1c888629ffb884c88ff6541200df2"
+    },
     {
       "filename": "dinero-assumeutxo-163965-v6-full.dat",
       "height": 163965,

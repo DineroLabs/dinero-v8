@@ -129,7 +129,7 @@ if ((-not $SnapshotFileName -or -not $SnapshotRecentFallbackFileName -or -not $S
             $m = Select-String -Path $qtMain -Pattern 'kBundledSnapshotOldestFallback\[\]\s*=\s*"([^"]+)"' | Select-Object -First 1
             if ($m) { $SnapshotOldestFallbackFileName = $m.Matches[0].Groups[1].Value }
         }
-        Write-Host "Bundled snapshot names: primary=$SnapshotFileName fallbacks=H163965,H155650,H153578,$SnapshotRecentFallbackFileName,$SnapshotFallbackFileName,$SnapshotLegacyFallbackFileName,$SnapshotOldestFallbackFileName"
+        Write-Host "Bundled snapshot names: primary=$SnapshotFileName fallbacks=H167856,H163965,H155650,H153578,$SnapshotRecentFallbackFileName,$SnapshotFallbackFileName,$SnapshotLegacyFallbackFileName,$SnapshotOldestFallbackFileName"
     }
 }
 
@@ -412,7 +412,7 @@ try {
     $ErrorActionPreference = $oldEAP
 }
 
-# Bundle the full-v6 primary and seven prior exact lifecycle bases. The old
+# Bundle the full-v6 primary and eight prior exact lifecycle bases. The old
 # files allow interrupted imports to restart after Program Files is replaced.
 $snap = Resolve-BundledSnapshot $SnapshotFileName $SnapshotPath $SnapshotReleaseTag 'primary'
 if ($snap) {
@@ -432,6 +432,23 @@ if ($snap) {
     }
 } elseif (-not $NoSnapshot) {
     throw 'Required primary snapshot missing; refusing to produce an installer that silently syncs from genesis.'
+}
+$previousReleaseName = 'dinero-assumeutxo-167856-v6-full.dat'
+$previousReleaseTag = 'v8.2.6'
+$previousReleaseRole = 'H167856 fallback'
+$previousReleaseSnap = Resolve-BundledSnapshot $previousReleaseName '' $previousReleaseTag $previousReleaseRole
+if ($previousReleaseSnap) {
+    $previousReleaseManifest = Resolve-BundledSnapshotManifest $previousReleaseName $previousReleaseSnap '' $previousReleaseTag $previousReleaseRole
+    if (-not $previousReleaseManifest) { throw 'Required H167856 snapshot fallback manifest missing.' }
+    Assert-SnapshotManifest $previousReleaseSnap $previousReleaseManifest $previousReleaseName $previousReleaseRole
+    $previousReleasePublisherManifest = Resolve-PrimaryPublisherAsset $previousReleaseSnap "$previousReleaseName.publisher.manifest.json" $previousReleaseTag
+    $previousReleasePublisherSignature = Resolve-PrimaryPublisherAsset $previousReleaseSnap "$previousReleaseName.publisher.manifest.sig" $previousReleaseTag
+    & python (Join-Path $ProjectRoot 'packaging\snapshot\check_desktop_primary.py') --recent-fallback --payload $previousReleaseSnap --manifest $previousReleaseManifest --expected-name $previousReleaseName --publisher-manifest $previousReleasePublisherManifest --publisher-signature $previousReleasePublisherSignature
+    if ($LASTEXITCODE -ne 0) { throw 'H167856 fallback is not the signed pinned full-v6 input.' }
+    Copy-Item $previousReleaseSnap (Join-Path $Stage $previousReleaseName)
+    Copy-Item $previousReleaseManifest (Join-Path $Stage "$previousReleaseName.manifest.json")
+} elseif (-not $NoSnapshot) {
+    throw 'Required H167856 exact-lifecycle snapshot fallback missing.'
 }
 $immediateName = 'dinero-assumeutxo-163965-v6-full.dat'
 $immediateRelease = 'v8.2.5'

@@ -129,7 +129,8 @@ QStringList currentBootstrapAddnodes() {
 // All remain armed on every start. The daemon treats them as inert on an
 // ordinary synced datadir, but an interrupted first sync needs the exact old
 // artifact even after the app bundle has been upgraded.
-constexpr char kBundledSnapshotPrimary[] = "dinero-assumeutxo-167856-v6-full.dat";
+constexpr char kBundledSnapshotPrimary[] = "dinero-assumeutxo-169068-v6-full.dat";
+constexpr char kBundledSnapshotPreviousRelease[] = "dinero-assumeutxo-167856-v6-full.dat";
 constexpr char kBundledSnapshotImmediatePrevious[] = "dinero-assumeutxo-163965-v6-full.dat";
 constexpr char kBundledSnapshotPreviousPrimary[] = "dinero-assumeutxo-155650-v6-full.dat";
 constexpr char kBundledSnapshotPriorFullV6[] = "dinero-assumeutxo-153578-v6-full.dat";
@@ -164,6 +165,7 @@ void appendAssumeUtxoSnapshotArgs(QStringList& args, const QString& datadir) {
 
     const auto selected = dinero::qt::SelectBundledSnapshots({
         findBundledSnapshot(kBundledSnapshotPrimary).toStdString(),
+        findBundledSnapshot(kBundledSnapshotPreviousRelease).toStdString(),
         findBundledSnapshot(kBundledSnapshotImmediatePrevious).toStdString(),
         findBundledSnapshot(kBundledSnapshotPreviousPrimary).toStdString(),
         findBundledSnapshot(kBundledSnapshotPriorFullV6).toStdString(),

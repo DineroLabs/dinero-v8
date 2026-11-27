@@ -20,4 +20,4 @@
 
 ## Snapshot
 
-The bundled primary snapshot starts at block 167,856. The release also includes the earlier recovery snapshots for installations that used those bases.
+The bundled primary snapshot starts at block 169,068. The release also includes the earlier recovery snapshots for installations that used those bases.
