@@ -475,6 +475,7 @@ bool WalletIndexHasImportedSnapshotMarkerReadOnly(
     Statement q(source.db,R"(
         SELECT 1 FROM utxo_metadata WHERE
             key='wallet_snapshot_recovery_base_height' OR
+            key='assumeutxo_lc_base_height' OR
             (key='assumeutxo_lifecycle_state' AND value='snapshot_loaded') OR
             (key='assumeutxo_active' AND value NOT IN ('0','false',''))
         LIMIT 1

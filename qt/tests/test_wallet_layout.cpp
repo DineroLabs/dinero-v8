@@ -119,6 +119,12 @@ private Q_SLOTS:
         QVERIFY(broke.text.contains("disk full") && broke.text.contains("could not reopen"));
         // A refusal code with no sentence must not leave an empty box.
         QVERIFY(!WalletCreateRefusal::shown("native_wallet_unservable", " ", QString()).text.trimmed().isEmpty());
+        const auto transport = WalletCreateRefusal::shownFromTransportError(
+            "This node cannot show money in a new wallet: its data was started from an older snapshot. "
+            "No wallet was created.", QString());
+        QCOMPARE(transport.text, why);
+        QVERIFY(transport.calm && !transport.retry);
+        QVERIFY(!transport.text.contains("ensure daemon is running", Qt::CaseInsensitive));
     }
     void initTestCase() {
         QVERIFY(dir_.isValid());

@@ -90,6 +90,29 @@ TEST(RpcOrchardErrorEnvelope, FeeBelowMinimumCarriesRequiredFeeAndSize) {
     r=HttpRpcRequestTestAccess::Dispatch(server,"wallet.orchard.queuespend");c=Client(r);Failure(r,c);
     EXPECT_FALSE(c["data"]["orchard"].isMember("required_fee_una")) << "only a fee refusal carries a fee";
 }
+TEST(RpcOrchardErrorEnvelope, WalletCreationRefusalKeepsOnlyTypedRetryState) {
+    RpcRegistry registry;HttpRpcServer server("127.0.0.1",0);server.set_rpc_registry(&registry);
+    Json::Value body;body["error"]="Orchard history is not ready; wallet was not created.";
+    body["error_code"]="orchard_history_pending";body["retryable"]=true;
+    body["mnemonic"]="must not escape";body["wallet_name"]="private name";
+    ASSERT_TRUE(registry.registerHandler("wallet.createhd",[&](const ExecutionContext&,const Json::Value&){return body;},"test"));
+    const auto response=HttpRpcRequestTestAccess::Dispatch(server,"wallet.createhd");
+    const auto client=Client(response);Failure(response,client);
+    EXPECT_EQ(client["data"]["wallet_creation"]["error_code"].asString(),"orchard_history_pending");
+    EXPECT_TRUE(client["data"]["wallet_creation"]["retryable"].asBool());
+    EXPECT_EQ(client["data"]["wallet_creation"].size(),2u);
+    EXPECT_FALSE(client["data"].isMember("mnemonic"));
+    EXPECT_FALSE(client["data"].isMember("wallet_name"));
+
+    body["error_code"]="native_wallet_unservable";body["retryable"]=false;
+    const auto permanent=Client(HttpRpcRequestTestAccess::Dispatch(server,"wallet.createhd"));
+    EXPECT_EQ(permanent["data"]["wallet_creation"]["error_code"].asString(),"native_wallet_unservable");
+    EXPECT_FALSE(permanent["data"]["wallet_creation"]["retryable"].asBool());
+
+    body["retryable"]="true";
+    const auto malformed=Client(HttpRpcRequestTestAccess::Dispatch(server,"wallet.createhd"));
+    EXPECT_FALSE(malformed.isMember("data")) << "a malformed retry flag must not be promoted";
+}
 TEST(RpcOrchardErrorEnvelope, ExistingStructuredErrorsAndNullSuccessRemainCompatible) {
     RpcRegistry registry;HttpRpcServer server("127.0.0.1",0);server.set_rpc_registry(&registry);Json::Value body;
     body["error"]["code"]=-123;body["error"]["message"]="existing";body["error"]["data"]["reason"]="old";

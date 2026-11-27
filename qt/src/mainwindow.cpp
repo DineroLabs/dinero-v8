@@ -43,6 +43,8 @@
 #include "cmdkpanel.h"
 #include "overviewconnectivitycard.h"
 #include "scrollsupport.h"
+#include "i18n.h"
+#include "apprestart.h"
 // AI panel uses ClaudeProcess (no more AiTools)
 #include "aistatusstrip.h"
 #include <solo_miner/chain_identity.h>
@@ -217,8 +219,17 @@ QString fullySyncedBadgeText() {
 // A main tab's real name. Narrow windows show icon-only tabs (empty text, name
 // in the tooltip), so look tabs up through this, never through tabText().
 QString mainTabName(const QTabWidget* tabs, int index) {
+  if (index < 0 || index >= tabs->count()) return {};
+  const QString key = tabs->widget(index)->property("dineroMainTabKey").toString();
+  if (!key.isEmpty()) return key;
   const QString stored = tabs->tabBar()->tabData(index).toString();
   return stored.isEmpty() ? tabs->tabText(index) : stored;
+}
+
+int addNamedMainTab(QTabWidget* tabs, QWidget* page, const QIcon& icon,
+                    const QString& label, const char* key) {
+  page->setProperty("dineroMainTabKey", QString::fromLatin1(key));
+  return tabs->addTab(page, icon, label);
 }
 
 // CPU mining threads shown when the app starts (the user can change it per session).
@@ -2161,7 +2172,7 @@ MainWindow::MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
     , txtMiningInfo_(nullptr)
 {
   
-  setWindowTitle("Dinero Cryptocurrency Wallet - Real Money For Free People");
+  setWindowTitle(tr("Dinero Cryptocurrency Wallet - Real Money For Free People"));
   const QString dineroIconPath = resolveBundledAssetPath(QStringLiteral("Dinero-Coin.png"));
   setWindowIcon(QIcon(dineroIconPath));
 #if defined(Q_OS_MAC)
@@ -2249,7 +2260,7 @@ MainWindow::MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
     auto* box = new QDialog(this);
     box->setAttribute(Qt::WA_DeleteOnClose);
     box->setModal(false);
-    box->setWindowTitle("Starting Dinero.");
+    box->setWindowTitle(tr("Starting Dinero."));
 
     auto* layout = new QVBoxLayout(box);
     auto* titleLabel = new QLabel(box);
@@ -2330,17 +2341,17 @@ MainWindow::MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
 
   connect(rpc_, &RpcClient::rpcError, this, &MainWindow::onRpcError);
   connect(rpc_, &RpcClient::serverChanged, this, [this](const QString& newServer) {
-    lblConnectionStatus_->setText("Connected");
+    lblConnectionStatus_->setText(tr("Connected"));
     lblConnectionStatus_->setStyleSheet(headerPillStyle());
     lblConnectionStatus_->setToolTip(newServer);
   });
   connect(rpc_, &RpcClient::connectionOk, this, [this]() {
-    lblConnectionStatus_->setText("Connected");
+    lblConnectionStatus_->setText(tr("Connected"));
     lblConnectionStatus_->setStyleSheet(headerPillStyle());
     lblConnectionStatus_->setToolTip(rpc_->currentServer());
   });
   connect(rpc_, &RpcClient::connectionFailed, this, [this](const QString& reason) {
-    lblConnectionStatus_->setText("Connection issue");
+    lblConnectionStatus_->setText(tr("Connection issue"));
     lblConnectionStatus_->setStyleSheet(headerPillStyle());
     lblConnectionStatus_->setToolTip(reason);
   });
@@ -2356,7 +2367,7 @@ MainWindow::MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
       return;
     }
     if (lblSyncProgress_) {
-      lblSyncProgress_->setText("🔄 Retrying blockchain scan...");
+      lblSyncProgress_->setText(tr("🔄 Retrying blockchain scan..."));
     }
     rpc_->call("wallet.rescanblockchain", QJsonArray());
   });
@@ -2432,7 +2443,7 @@ MainWindow::MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
   // Initial state before auto-start logic settles.
   btnStartDaemon_->setVisible(true);
   btnStopDaemon_->setVisible(false);
-  lblConnectionStatus_->setText("Daemon stopped");
+  lblConnectionStatus_->setText(tr("Daemon stopped"));
   lblConnectionStatus_->setStyleSheet(headerPillStyle());
 }
 
@@ -2597,13 +2608,13 @@ void MainWindow::setupUI() {
   central->setStyleSheet(appPageStyle());
   
   // Wallet name indicator kept for internal status updates only.
-  lblWalletName_ = new QLabel("Wallet: none");
+  lblWalletName_ = new QLabel(tr("Wallet: none"));
   lblWalletName_->setStyleSheet(headerPillStyle());
   lblWalletName_->setMinimumWidth(0);
   lblWalletName_->setMaximumWidth(190);
   lblWalletName_->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
   lblWalletName_->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
-  lblWalletName_->setToolTip("No wallet loaded. Create or restore a wallet to get started.");
+  lblWalletName_->setToolTip(tr("No wallet loaded. Create or restore a wallet to get started."));
   lblWalletName_->setVisible(false);
 
   cmbWalletSelector_ = new QComboBox;
@@ -2614,14 +2625,14 @@ void MainWindow::setupUI() {
     "QComboBox { background: #1f2328; color: #d7dde5; border: 1px solid #353b44; "
     "border-radius: 8px; padding: 0 8px; font-size: 12px; } "
     "QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right; width: 22px; border-left: 1px solid #353b44; background: #21262c; border-top-right-radius: 8px; border-bottom-right-radius: 8px; } QComboBox::down-arrow { width: 0; height: 0; margin-right: 7px; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid #c4cdd9; } QComboBox::down-arrow:disabled { border-top: 6px solid #5b6470; }");
-  cmbWalletSelector_->setToolTip("Select a wallet to load");
+  cmbWalletSelector_->setToolTip(tr("Select a wallet to load"));
   cmbWalletSelector_->setEnabled(false);
   cmbWalletSelector_->setVisible(!singleWalletMode_);
 
-  btnLoadWallet_ = new QPushButton("Load Wallet");
+  btnLoadWallet_ = new QPushButton(tr("Load Wallet"));
   btnLoadWallet_->setStyleSheet(chromeButtonStyle());
   btnLoadWallet_->setFixedWidth(128);
-  btnLoadWallet_->setToolTip("Load selected wallet");
+  btnLoadWallet_->setToolTip(tr("Load selected wallet"));
   btnLoadWallet_->setEnabled(false);
   btnLoadWallet_->setVisible(!singleWalletMode_);
   connect(btnLoadWallet_, &QPushButton::clicked, this, &MainWindow::onLoadSelectedWallet);
@@ -2630,15 +2641,15 @@ void MainWindow::setupUI() {
   });
 
   // Single toggle button for wallet lock/unlock (status shown in button text)
-  btnWalletLock_ = new QPushButton("Locked | Unlock");
+  btnWalletLock_ = new QPushButton(tr("Locked | Unlock"));
   btnWalletLock_->setStyleSheet(chromeButtonStyle());
   btnWalletLock_->setMinimumWidth(0);
   btnWalletLock_->setMaximumWidth(205);
   btnWalletLock_->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
-  btnWalletLock_->setToolTip("Unlock wallet to enable Taproot signing and transactions");
+  btnWalletLock_->setToolTip(tr("Unlock wallet to enable Taproot signing and transactions"));
   connect(btnWalletLock_, &QPushButton::clicked, this, &MainWindow::onWalletLockToggle);
 
-  btnEncryptWallet_ = new QPushButton("Encrypt Wallet");
+  btnEncryptWallet_ = new QPushButton(tr("Encrypt Wallet"));
   btnEncryptWallet_->setStyleSheet(chromeButtonStyle());
   btnEncryptWallet_->setFixedWidth(122);
   connect(btnEncryptWallet_, &QPushButton::clicked, this, [this]() { onEncryptWallet(); });
@@ -2782,7 +2793,7 @@ void MainWindow::setupUI() {
     topRow->setSpacing(kOverviewGutter);
     topRow->setSpacing(12);
     
-    auto *infoGroup = new QGroupBox("Network Info");
+    auto *infoGroup = new QGroupBox(tr("Network Info"));
     auto *infoLayout = new QVBoxLayout(infoGroup);
     infoGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     
@@ -2818,7 +2829,7 @@ void MainWindow::setupUI() {
     // 🛡️ V7 CONSENSUS HEALTH
     // ═══════════════════════════════════════════════════════════════════
     {
-      auto *v7Group = new QGroupBox("v7 Consensus Health");
+      auto *v7Group = new QGroupBox(tr("v7 Consensus Health"));
       auto *v7Column = new QVBoxLayout;
       v7Column->setContentsMargins(10, 12, 10, 10);
       v7Column->setSpacing(8);
@@ -2827,19 +2838,19 @@ void MainWindow::setupUI() {
 
       // Utreexo validation mode. Values come from one guarded accumulator
       // snapshot via blockchain.getutreexocommitment.
-      auto *utreexoBox = new QGroupBox("Utreexo Validation");
+      auto *utreexoBox = new QGroupBox(tr("Utreexo Validation"));
       auto *utreexoLay = new QVBoxLayout(utreexoBox);
       utreexoLay->setContentsMargins(10, 12, 10, 10);
       utreexoLay->setSpacing(4);
       utreexoBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
       utreexoBox->setMaximumHeight(132);
-      lblUtreexoHealth_ = new QLabel("Health: --");
+      lblUtreexoHealth_ = new QLabel(tr("Health: --"));
       lblUtreexoHealth_->setStyleSheet("QLabel { font-size: 12px; font-weight: bold; color: #2d8a4e; }");
-      lblUtreexoRole_ = new QLabel("Role: --");
+      lblUtreexoRole_ = new QLabel(tr("Role: --"));
       lblUtreexoRole_->setStyleSheet("QLabel { font-size: 11px; color: #c5ced8; }");
-      lblUtreexoState_ = new QLabel("State: --");
+      lblUtreexoState_ = new QLabel(tr("State: --"));
       lblUtreexoState_->setStyleSheet("QLabel { font-size: 11px; color: #c5ced8; }");
-      lblUtreexoStorage_ = new QLabel("Storage: --");
+      lblUtreexoStorage_ = new QLabel(tr("Storage: --"));
       lblUtreexoStorage_->setStyleSheet("QLabel { font-size: 10px; color: #868e96; }");
       utreexoLay->addWidget(lblUtreexoHealth_);
       utreexoLay->addWidget(lblUtreexoRole_);
@@ -2848,17 +2859,17 @@ void MainWindow::setupUI() {
       v7Column->addWidget(utreexoBox);
 
       // PQ Status box
-      auto *pqBox = new QGroupBox("Post-Quantum");
+      auto *pqBox = new QGroupBox(tr("Post-Quantum"));
       auto *pqLay = new QVBoxLayout(pqBox);
       pqLay->setContentsMargins(10, 12, 10, 10);
       pqLay->setSpacing(4);
       pqBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
       pqBox->setMaximumHeight(105);
-      lblPqOverviewRatio_ = new QLabel("PQ Ratio: --");
+      lblPqOverviewRatio_ = new QLabel(tr("PQ Ratio: --"));
       lblPqOverviewRatio_->setStyleSheet("QLabel { font-size: 12px; font-weight: bold; color: #d6dde6; }");
-      lblPqOverviewUtxos_ = new QLabel("P2MR UTXOs: --");
+      lblPqOverviewUtxos_ = new QLabel(tr("P2MR UTXOs: --"));
       lblPqOverviewUtxos_->setStyleSheet("QLabel { font-size: 11px; color: #c5ced8; }");
-      lblPqOverviewScheme_ = new QLabel("Active: ML-DSA-65");
+      lblPqOverviewScheme_ = new QLabel(tr("Active: ML-DSA-65"));
       lblPqOverviewScheme_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
       pqLay->addWidget(lblPqOverviewRatio_);
       pqLay->addWidget(lblPqOverviewUtxos_);
@@ -2882,7 +2893,7 @@ void MainWindow::setupUI() {
     chainActivityRow->setSpacing(kOverviewGutter);
     chainActivityRow->setSpacing(12);
     {
-      auto* blocksCard = new QGroupBox("Latest Blocks");
+      auto* blocksCard = new QGroupBox(tr("Latest Blocks"));
       // Hug the content. Without this the card absorbs the slack created by
       // overview->setMinimumHeight() and renders as a mostly-empty box.
       blocksCard->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
@@ -2891,15 +2902,15 @@ void MainWindow::setupUI() {
       cardLayout->setSpacing(6);
 
       auto* header = new QHBoxLayout();
-      auto* hint = new QLabel("Newest blocks from your node. Double-click one to open it in the explorer.");
+      auto* hint = new QLabel(tr("Newest blocks from your node. Double-click one to open it in the explorer."));
       // Transparent: the surrounding page styles bare QLabels with a filled
       // background, which made this read as a disabled text input.
       hint->setStyleSheet("QLabel { color: #9fb3c8; background: transparent; padding: 0; }");
       hint->setWordWrap(true);
       header->addWidget(hint, 1);
-      auto* btnOpenExplorer = new QPushButton("Open Explorer");
+      auto* btnOpenExplorer = new QPushButton(tr("Open Explorer"));
       btnOpenExplorer->setStyleSheet(chromeButtonStyle());
-      btnOpenExplorer->setToolTip("Search blocks, transactions and addresses in a separate window.");
+      btnOpenExplorer->setToolTip(tr("Search blocks, transactions and addresses in a separate window."));
       connect(btnOpenExplorer, &QPushButton::clicked, this, &MainWindow::showExplorerWindow);
       header->addWidget(btnOpenExplorer, 0);
       cardLayout->addLayout(header);
@@ -2920,7 +2931,7 @@ void MainWindow::setupUI() {
     auto *monitoringColumns = new QHBoxLayout;
     monitoringColumns->setContentsMargins(0, 0, 0, 0);
     monitoringColumns->setSpacing(kOverviewGutter);
-    auto *nodeOperationBox = new QGroupBox("Node operation");
+    auto *nodeOperationBox = new QGroupBox(tr("Node operation"));
     auto *networkColumn = new QVBoxLayout(nodeOperationBox);
     networkColumn->setContentsMargins(10, 12, 10, 10);
     networkColumn->setSpacing(10);
@@ -2985,7 +2996,7 @@ void MainWindow::setupUI() {
     connectivityBox->setMaximumHeight(235);
     networkColumn->addWidget(connectivityBox);
 
-    auto *cpuBox = new QGroupBox("Resources & mining");
+    auto *cpuBox = new QGroupBox(tr("Resources & mining"));
     auto *cpuLayout = new QVBoxLayout(cpuBox);
     cpuLayout->setContentsMargins(10, 10, 10, 8);
     cpuLayout->setSpacing(3);
@@ -3000,8 +3011,8 @@ void MainWindow::setupUI() {
     cpuProgressBar_->setTextVisible(false);
     cpuProgressBar_->setFixedHeight(18);
     cpuProgressBar_->setStyleSheet(chromeProgressBarStyle());
-    lblCpuTemp_ = new QLabel("Temp: --");
-    lblPowerStatus_ = new QLabel("Power: --");
+    lblCpuTemp_ = new QLabel(tr("Temp: --"));
+    lblPowerStatus_ = new QLabel(tr("Power: --"));
     lblCpuTemp_->setStyleSheet("QLabel { font-size: 11px; color: #c5ced8; }");
     lblPowerStatus_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
     auto* cpuHeader = new QHBoxLayout;
@@ -3012,18 +3023,18 @@ void MainWindow::setupUI() {
     cpuLayout->addWidget(cpuProgressBar_);
     cpuLayout->addWidget(lblCpuTemp_);
     cpuLayout->addWidget(lblPowerStatus_);
-    lblLocalHashrate_ = new QLabel("Local: 0 H/s");
-    lblNetworkHashrate_ = new QLabel("Network: 0 H/s");
+    lblLocalHashrate_ = new QLabel(tr("Local: 0 H/s"));
+    lblNetworkHashrate_ = new QLabel(tr("Network: 0 H/s"));
     lblLocalHashrate_->setStyleSheet("QLabel { font-size: 12px; }");
     lblNetworkHashrate_->setStyleSheet("QLabel { font-size: 12px; color: #868e96; }");
     cpuLayout->addWidget(lblLocalHashrate_);
     cpuLayout->addWidget(lblNetworkHashrate_);
-    lblMinerModeOverview_ = new QLabel("Miner: Idle");
-    lblGpuBackendOverview_ = new QLabel("Mining: --");
-    lblGpuDeviceOverview_ = new QLabel("GPU: --");
-    lblGpuLoadOverview_ = new QLabel("GPU Load: --");
-    lblGpuMemoryOverview_ = new QLabel("GPU Mem: --");
-    lblGpuThermalsOverview_ = new QLabel("GPU Temp/Fan: --");
+    lblMinerModeOverview_ = new QLabel(tr("Miner: Idle"));
+    lblGpuBackendOverview_ = new QLabel(tr("Mining: --"));
+    lblGpuDeviceOverview_ = new QLabel(tr("GPU: --"));
+    lblGpuLoadOverview_ = new QLabel(tr("GPU Load: --"));
+    lblGpuMemoryOverview_ = new QLabel(tr("GPU Mem: --"));
+    lblGpuThermalsOverview_ = new QLabel(tr("GPU Temp/Fan: --"));
     lblMinerModeOverview_->setStyleSheet("QLabel { font-size: 12px; }");
     lblGpuBackendOverview_->setStyleSheet("QLabel { font-size: 11px; color: #c5ced8; }");
     lblGpuDeviceOverview_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
@@ -3081,7 +3092,7 @@ void MainWindow::setupUI() {
     mempoolTile(1, "Size", lblMempoolBytes_, nullptr);
     mempoolTile(2, "Fee rate", lblMempoolFeeRate_, &lblMempoolFeeRange_);
     mempoolTile(3, "Oldest", lblMempoolOldest_, nullptr);
-    lblMempoolSize_->setText("Loading…");
+    lblMempoolSize_->setText(tr("Loading…"));
     mempoolLayout->addLayout(mempoolTiles);
     tblMempoolOverview_ = new QTableWidget(0, 4);
     tblMempoolOverview_->setObjectName("overviewMempoolTable");
@@ -3106,10 +3117,10 @@ void MainWindow::setupUI() {
     tblMempoolOverview_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tblMempoolOverview_->setSelectionBehavior(QAbstractItemView::SelectRows);
     tblMempoolOverview_->setMinimumHeight(70);
-    tblMempoolOverview_->setToolTip("Transactions currently held by this local node");
+    tblMempoolOverview_->setToolTip(tr("Transactions currently held by this local node"));
     mempoolLayout->addWidget(tblMempoolOverview_);
     // Empty state: a quiet line instead of an otherwise empty table.
-    lblMempoolEmpty_ = new QLabel("No pending transactions in this local node");
+    lblMempoolEmpty_ = new QLabel(tr("No pending transactions in this local node"));
     lblMempoolEmpty_->setObjectName("overviewMempoolEmpty");
     lblMempoolEmpty_->setAlignment(Qt::AlignCenter);
     lblMempoolEmpty_->setStyleSheet("QLabel { color: #8f9aa6; padding: 10px 0; }");
@@ -3120,12 +3131,12 @@ void MainWindow::setupUI() {
     chainActivityRow->addWidget(cpuBox, kOverviewRightStretch);
     
     // Peers Summary + compact connected peers table
-    auto *peersBox = new QGroupBox("🌐 Peers");
+    auto *peersBox = new QGroupBox(tr("🌐 Peers"));
     auto *peersLayout = new QVBoxLayout(peersBox);
-    lblPeersCount_ = new QLabel("0 peers");
+    lblPeersCount_ = new QLabel(tr("0 peers"));
     lblPeersCount_->setObjectName("overviewPeersCount");
     lblPeersCount_->setStyleSheet("QLabel { font-size: 18px; font-weight: bold; color: #d6dde6; }");
-    lblPeersStatus_ = new QLabel("Disconnected");
+    lblPeersStatus_ = new QLabel(tr("Disconnected"));
     lblPeersStatus_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
     auto* peersSummary = new QHBoxLayout;
     peersSummary->setSpacing(10);
@@ -3143,16 +3154,16 @@ void MainWindow::setupUI() {
         {"Location", "Activity", "Last Seen", "Blocks Adv.", "Headers Adv.", "Validated", "Client"});
     for (int column : {3, 4}) {
       if (auto* seenHeader = tblPeersOverview_->horizontalHeaderItem(column)) {
-        seenHeader->setToolTip(
+        seenHeader->setToolTip(tr(
             "Observed through this local node's P2P connection.\n"
             "This is not the remote node's active validated tip.\n"
-            "Validation requires that node's authenticated blockchain RPC.");
+            "Validation requires that node's authenticated blockchain RPC."));
       }
     }
     if (auto* validatedHeader = tblPeersOverview_->horizontalHeaderItem(5)) {
-      validatedHeader->setToolTip(
+      validatedHeader->setToolTip(tr(
           "Validated chain height self-reported by the peer (extended ping).\n"
-          "Shows — for peers on older builds that do not report it.");
+          "Shows — for peers on older builds that do not report it."));
     }
     tblPeersOverview_->horizontalHeader()->setStretchLastSection(true);
     tblPeersOverview_->verticalHeader()->setVisible(false);
@@ -3172,11 +3183,11 @@ void MainWindow::setupUI() {
     // My mining rewards: this wallet's mined blocks, coins still maturing and
     // when the next ones unlock. It stretches so the right column ends level
     // with Node operation.
-    auto* rewardsBox = new QGroupBox("My mining rewards");
+    auto* rewardsBox = new QGroupBox(tr("My mining rewards"));
     auto* rewardsLayout = new QVBoxLayout(rewardsBox);
     rewardsLayout->setContentsMargins(10, 10, 10, 8);
     rewardsLayout->setSpacing(3);
-    lblRewardsHeadline_ = new QLabel("Loading…");
+    lblRewardsHeadline_ = new QLabel(tr("Loading…"));
     lblRewardsHeadline_->setObjectName("miningRewardsHeadline");
     lblRewardsHeadline_->setStyleSheet("QLabel { font-size: 15px; font-weight: bold; }");
     lblRewardsPeriod_ = new QLabel(" ");
@@ -3213,7 +3224,7 @@ void MainWindow::setupUI() {
     layout->addLayout(chainActivityRow);
 
     // Row 3: Alerts (last 5 events)
-    auto *alertsBox = new QGroupBox("⚠️ Recent Alerts");
+    auto *alertsBox = new QGroupBox(tr("⚠️ Recent Alerts"));
     alertsBox->setObjectName("overviewAlertsBox");
     auto *alertsLayout = new QVBoxLayout(alertsBox);
     txtAlerts_ = new QTextEdit;
@@ -3222,10 +3233,10 @@ void MainWindow::setupUI() {
     txtAlerts_->setStyleSheet(
       "QTextEdit { background: #1d2126; border: 1px solid #373d46; color: #cfd7df; font-family: monospace; font-size: 11px; }"
     );
-    txtAlerts_->setPlaceholderText("No recent alerts");
+    txtAlerts_->setPlaceholderText(tr("No recent alerts"));
     // Compact when empty: one muted line instead of an empty box. With alerts,
     // the list sizes itself to its content (up to about six lines, then scrolls).
-    auto* lblNoAlerts = new QLabel("No recent alerts");
+    auto* lblNoAlerts = new QLabel(tr("No recent alerts"));
     lblNoAlerts->setStyleSheet("QLabel { color: #868e96; font-size: 11px; background: transparent; }");
     alertsLayout->addWidget(lblNoAlerts);
     alertsLayout->addWidget(txtAlerts_);
@@ -3247,7 +3258,7 @@ void MainWindow::setupUI() {
     // Row 5: Export Button
     auto *exportLayout = new QHBoxLayout;
     exportLayout->addStretch();
-    auto *btnExportMetrics = new QPushButton("📊 Export Metrics (JSON/CSV)");
+    auto *btnExportMetrics = new QPushButton(tr("📊 Export Metrics (JSON/CSV)"));
     btnExportMetrics->setStyleSheet(chromeButtonStyle());
     connect(btnExportMetrics, &QPushButton::clicked, this, &MainWindow::onExportMetrics);
     exportLayout->addWidget(btnExportMetrics);
@@ -3278,7 +3289,7 @@ void MainWindow::setupUI() {
         "QGroupBox::title { color: #ccd3dc; } "
         "QTableWidget, QTableView { color: #ccd3dc; } "
         "QHeaderView::section { color: #ccd3dc; font-weight: 600; }"));
-    tabs->addTab(makeScrollableTab(overview), navigationIcon(NavigationGlyph::Dashboard), "Overview");
+    addNamedMainTab(tabs, makeScrollableTab(overview), navigationIcon(NavigationGlyph::Dashboard), tr("Overview"), "Overview");
   }
 
   // === Wallet Tab ===
@@ -3304,9 +3315,9 @@ void MainWindow::setupUI() {
       : "🆕 Create/Restore Wallet");
     btnCreateWallet->setStyleSheet(chromeButtonStyle());
     connect(btnCreateWallet, &QPushButton::clicked, this, &MainWindow::onCreateWallet);
-    btnRescanWallet_ = new QPushButton("🔄 Rescan Wallet");
+    btnRescanWallet_ = new QPushButton(tr("🔄 Rescan Wallet"));
     btnRescanWallet_->setStyleSheet(chromeButtonStyle());
-    btnRescanWallet_->setToolTip("If balance/history looks wrong, rescan blockchain for this wallet.");
+    btnRescanWallet_->setToolTip(tr("If balance/history looks wrong, rescan blockchain for this wallet."));
     connect(btnRescanWallet_, &QPushButton::clicked, this, &MainWindow::onRescanWallet);
     walletIntroLayout->addWidget(lblWalletInfo, 1);
     walletSetupLayout->addLayout(walletIntroLayout);
@@ -3316,7 +3327,7 @@ void MainWindow::setupUI() {
     auto *walletControlLayout = new QHBoxLayout;
     walletControlLayout->setContentsMargins(0, 0, 0, 0);
     walletControlLayout->setSpacing(8);
-    auto *lblWalletSelector = new QLabel("Wallet:");
+    auto *lblWalletSelector = new QLabel(tr("Wallet:"));
     lblWalletSelector->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
     lblWalletSelector->setStyleSheet("QLabel { background: transparent; }");
     lblWalletSelector->setVisible(!singleWalletMode_);
@@ -3356,24 +3367,24 @@ void MainWindow::setupUI() {
     layout->addWidget(walletSetupGroup);
     
     // Cross-Platform Compatibility Banner
-    auto *compatGroup = new QGroupBox("📱 Seed & Address Compatibility");
+    auto *compatGroup = new QGroupBox(tr("📱 Seed & Address Compatibility"));
     auto *compatLayout = new QVBoxLayout(compatGroup);
     compatGroup->setStyleSheet("QGroupBox { background: #20252c; border: 1px solid #343b45; border-radius: 10px; }");
     
     auto *compatSummaryRow = new QHBoxLayout;
-    auto *lblCompatSummary = new QLabel(
+    auto *lblCompatSummary = new QLabel(tr(
         "<b>Back up both key types:</b> your BIP39 seed restores Taproot addresses, "
-        "but P2MR keys need a separate wallet backup.");
+        "but P2MR keys need a separate wallet backup."));
     lblCompatSummary->setWordWrap(true);
     compatSummaryRow->addWidget(lblCompatSummary, 1);
-    auto *btnSeedAbout = new QPushButton("About seed compatibility");
+    auto *btnSeedAbout = new QPushButton(tr("About seed compatibility"));
     btnSeedAbout->setObjectName("walletSeedAbout");
     btnSeedAbout->setStyleSheet(chromeButtonStyle());
     compatSummaryRow->addWidget(btnSeedAbout);
     compatLayout->addLayout(compatSummaryRow);
 
     // The full explanation is useful once; it no longer pushes the balance down.
-    auto *lblCompat = new QLabel(
+    auto *lblCompat = new QLabel(tr(
         "<b>Keep a backup of your wallet and seed phrase.</b><br><br>"
         "<b>BIP39 seed phrase</b> restores BIP86 Taproot addresses (<code>din1p...</code>) "
         "on supported desktop and mobile wallets. "
@@ -3382,7 +3393,7 @@ void MainWindow::setupUI() {
         "preserve a separate wallet backup before receiving to P2MR addresses.<br><br>"
         "✅ Desktop (Qt Wallet) - full node, mining, Taproot, P2MR quantum-safe receive/spend<br>"
         "✅ Mobile - seed-compatible Taproot payments on supported apps"
-    );
+    ));
     lblCompat->setWordWrap(true);
     lblCompat->setObjectName("walletSeedDetails");
     lblCompat->setVisible(false);
@@ -3391,9 +3402,9 @@ void MainWindow::setupUI() {
     });
     compatLayout->addWidget(lblCompat);
     
-    auto *btnExportSeed = new QPushButton("🧾 Seed Backup / Mobile Restore");
+    auto *btnExportSeed = new QPushButton(tr("🧾 Seed Backup / Mobile Restore"));
     btnExportSeed->setStyleSheet(chromeButtonStyle());
-    btnExportSeed->setToolTip("Show seed-backup guidance. Hardened wallets may not allow seed phrase re-export after setup.");
+    btnExportSeed->setToolTip(tr("Show seed-backup guidance. Hardened wallets may not allow seed phrase re-export after setup."));
     connect(btnExportSeed, &QPushButton::clicked, this, &MainWindow::onExportSeed);
     compatLayout->addWidget(btnExportSeed);
     
@@ -3405,10 +3416,10 @@ void MainWindow::setupUI() {
     auto *balanceLayout = new QVBoxLayout(balanceGroup);
 
     // Main balance includes public funds and shielded funds, including covenant-locked notes.
-    lblBalance_ = new QLabel("0.00 DIN");
+    lblBalance_ = new QLabel(tr("0.00 DIN"));
     lblBalance_->setStyleSheet("QLabel { font-size: 32px; font-weight: bold; color: #e6ecf2; }");
     lblBalance_->setAlignment(Qt::AlignCenter);
-    lblBalance_->setToolTip("Total wallet balance: public and shielded funds, including covenant-locked value. See Shielded for funds available for ordinary private payments.");
+    lblBalance_->setToolTip(tr("Total wallet balance: public and shielded funds, including covenant-locked value. See Shielded for funds available for ordinary private payments."));
     balanceLayout->addWidget(lblBalance_);
 
     lblBalanceScope_ = new QLabel;
@@ -3420,7 +3431,7 @@ void MainWindow::setupUI() {
     balanceLayout->addWidget(lblBalanceScope_);
 
     // Total label (used for combined balance updates)
-    lblTotalWalletBalance_ = new QLabel("0.00000000 DIN");
+    lblTotalWalletBalance_ = new QLabel(tr("0.00000000 DIN"));
     lblTotalWalletBalance_->setObjectName("lblTotalWalletBalance");
     lblTotalWalletBalance_->setVisible(false); // hidden, used for data only
 
@@ -3447,7 +3458,7 @@ void MainWindow::setupUI() {
       return std::make_pair(column, grid);
     };
     auto amountLabel = [](const char* objectName, const QString& tip) {
-      auto *value = new QLabel("0.00000000 DIN");
+      auto *value = new QLabel(tr("0.00000000 DIN"));
       value->setObjectName(objectName);
       value->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
       value->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -3456,11 +3467,11 @@ void MainWindow::setupUI() {
     };
 
     auto [publicColumn, publicGrid] = makeColumn("walletPublicColumn", "Transparent / public");
-    publicGrid->addWidget(new QLabel("Taproot:"), 1, 0);
+    publicGrid->addWidget(new QLabel(tr("Taproot:")), 1, 0);
     lblTransparentTaprootBalance_ = amountLabel("lblTransparentTaprootBalance", "Public Taproot spendable balance");
     publicGrid->addWidget(lblTransparentTaprootBalance_, 1, 1);
 
-    publicGrid->addWidget(new QLabel("P2MR quantum-safe:"), 2, 0);
+    publicGrid->addWidget(new QLabel(tr("P2MR quantum-safe:")), 2, 0);
     auto *pqRow = new QHBoxLayout;
     pqRow->setContentsMargins(0, 0, 0, 0);
     barPqRatio_ = new QProgressBar;
@@ -3470,7 +3481,7 @@ void MainWindow::setupUI() {
     barPqRatio_->setMaximumHeight(16);
     barPqRatio_->setMaximumWidth(120);
     barPqRatio_->setFormat("%p%");
-    barPqRatio_->setToolTip("Share of public spendable funds held in quantum-safe P2MR outputs");
+    barPqRatio_->setToolTip(tr("Share of public spendable funds held in quantum-safe P2MR outputs"));
     pqRow->addWidget(barPqRatio_);
     pqRow->addStretch();
     lblPqRatio_ = amountLabel("lblTransparentP2mrBalance", QString());
@@ -3484,12 +3495,12 @@ void MainWindow::setupUI() {
     auto [privateColumn, privateGrid] = makeColumn("walletPrivateColumn", "Shielded / private");
     // Orchard is the shielded pool in use. The pool it replaced is listed
     // only for a wallet that still holds something in it.
-    privateGrid->addWidget(new QLabel("Orchard:"), 1, 0);
+    privateGrid->addWidget(new QLabel(tr("Orchard:")), 1, 0);
     lblOrchardBalance_ = amountLabel("lblOrchardBalance", "Confirmed Orchard balance");
     privateGrid->addWidget(lblOrchardBalance_, 1, 1);
-    lblRetiredPoolCaption_ = new QLabel("Retired pool:");
+    lblRetiredPoolCaption_ = new QLabel(tr("Retired pool:"));
     lblRetiredPoolCaption_->setObjectName("lblRetiredPoolCaption");
-    lblRetiredPoolCaption_->setToolTip("The shielded pool Orchard replaced. Funds still in it are listed here.");
+    lblRetiredPoolCaption_->setToolTip(tr("The shielded pool Orchard replaced. Funds still in it are listed here."));
     privateGrid->addWidget(lblRetiredPoolCaption_, 2, 0);
     lblShieldedBalance_ = amountLabel("lblShieldedBalance", "Balance left in the retired shielded pool");
     privateGrid->addWidget(lblShieldedBalance_, 2, 1);
@@ -3506,14 +3517,14 @@ void MainWindow::setupUI() {
     auto *pendingRow = new QHBoxLayout(notYetSpendable);
     pendingRow->setContentsMargins(8, 6, 8, 0);
     pendingRow->setSpacing(8);
-    auto *lblNotYet = new QLabel("Not yet spendable:");
+    auto *lblNotYet = new QLabel(tr("Not yet spendable:"));
     lblNotYet->setStyleSheet("QLabel { font-weight: 600; color: #d6dde6; }");
     pendingRow->addWidget(lblNotYet);
-    pendingRow->addWidget(new QLabel("Pending"));
+    pendingRow->addWidget(new QLabel(tr("Pending")));
     auto *lblUnconfirmed = amountLabel("lblUnconfirmed", "Incoming payments waiting for confirmation");
     pendingRow->addWidget(lblUnconfirmed);
     pendingRow->addSpacing(16);
-    pendingRow->addWidget(new QLabel("Mining (maturing)"));
+    pendingRow->addWidget(new QLabel(tr("Mining (maturing)")));
     auto *lblImmature = amountLabel("lblImmature", "Recently mined coins (available after 100 confirmations)");
     pendingRow->addWidget(lblImmature);
     pendingRow->addStretch();
@@ -3548,9 +3559,9 @@ void MainWindow::setupUI() {
     // implicit routing decisions inside the wallet engine.
     // Consolidate button - shown when UTXO count > 50
     // Consolidate button — created here but added to receive tab button row below
-    btnConsolidate_ = new QPushButton("Consolidate");
+    btnConsolidate_ = new QPushButton(tr("Consolidate"));
     btnConsolidate_->setStyleSheet(chromeButtonStyle());
-    btnConsolidate_->setToolTip("Combine many small UTXOs into fewer larger ones to reduce fees and improve performance");
+    btnConsolidate_->setToolTip(tr("Combine many small UTXOs into fewer larger ones to reduce fees and improve performance"));
     btnConsolidate_->setVisible(true);  // Always visible in receive tab
     connect(btnConsolidate_, &QPushButton::clicked, this, &MainWindow::onConsolidateUTXOs);
 
@@ -3559,19 +3570,19 @@ void MainWindow::setupUI() {
     lblAssets->setObjectName("lblAssets");
     lblAssets->setWordWrap(true);
     lblAssets->setStyleSheet("QLabel { color: #666; font-size: 11px; margin-top: 5px; }");
-    lblAssets->setToolTip("Taproot assets held in this wallet");
+    lblAssets->setToolTip(tr("Taproot assets held in this wallet"));
     lblAssets->setVisible(false);  // shown only when the wallet holds assets
     balanceLayout->addWidget(lblAssets);
 
     layout->addWidget(balanceGroup);
     
-    auto *addressGroup = new QGroupBox("Receive Address");
+    auto *addressGroup = new QGroupBox(tr("Receive Address"));
     auto *addressLayout = new QVBoxLayout(addressGroup);
 
     auto *addressModeRow = new QHBoxLayout;
     addressModeRow->setContentsMargins(0, 0, 0, 0);
     addressModeRow->setSpacing(8);
-    addressModeRow->addWidget(new QLabel("Mode:"));
+    addressModeRow->addWidget(new QLabel(tr("Mode:")));
     cmbWalletAddressMode_ = new QComboBox;
     cmbWalletAddressMode_->addItem(QString::fromUtf8("\xF0\x9F\x8C\x90 Taproot"), "standard");
     cmbWalletAddressMode_->addItem(QString::fromUtf8("\xF0\x9F\x94\x92 Quantum-Safe (P2MR)"), "p2mr");
@@ -3579,11 +3590,11 @@ void MainWindow::setupUI() {
     // NOTE: "Private" is NOT an address type — it's a send mode.
     // Privacy is selected on the Send tab, not here. Both Taproot and
     // P2MR addresses can receive funds transparently or privately.
-    cmbWalletAddressMode_->setToolTip(
+    cmbWalletAddressMode_->setToolTip(tr(
         "Taproot: fast, small signatures (secp256k1)\n"
         "Quantum-Safe: ML-DSA-65 post-quantum signatures\n\n"
         "Privacy is a send mode, not an address type.\n"
-        "Select private/transparent on the Send tab.");
+        "Select private/transparent on the Send tab."));
     addressModeRow->addWidget(cmbWalletAddressMode_);
     lblReceivePathHint_ = new QLabel;
     lblReceivePathHint_->setFixedHeight(28);
@@ -3597,13 +3608,13 @@ void MainWindow::setupUI() {
     addressLayout->addLayout(addressModeRow);
     
     edtAddress_ = new QLineEdit;
-    edtAddress_->setPlaceholderText("din1...");
+    edtAddress_->setPlaceholderText(tr("din1..."));
     edtAddress_->setReadOnly(true);
     
     auto *btnRow = new QHBoxLayout;
-    btnNewAddress_ = new QPushButton("Generate Public Address");
-    btnValidate_ = new QPushButton("Validate");
-    btnCopy_ = new QPushButton("Copy");
+    btnNewAddress_ = new QPushButton(tr("Generate Public Address"));
+    btnValidate_ = new QPushButton(tr("Validate"));
+    btnCopy_ = new QPushButton(tr("Copy"));
     
     btnRow->addWidget(btnNewAddress_);
     btnRow->addWidget(btnValidate_);
@@ -3633,7 +3644,7 @@ void MainWindow::setupUI() {
             this, [this](int) { updateWalletAddressModeUi(); });
     updateWalletAddressModeUi();
     
-    tabs->addTab(makeScrollableTab(wallet), navigationIcon(NavigationGlyph::Wallet), "Wallet");
+    addNamedMainTab(tabs, makeScrollableTab(wallet), navigationIcon(NavigationGlyph::Wallet), tr("Wallet"), "Wallet");
   }
 
   // === Contracts Tab (Phase 4) ===
@@ -3650,7 +3661,7 @@ void MainWindow::setupUI() {
     constexpr int kFormStretch = 3;
     constexpr int kReviewStretch = 2;
     constexpr int kGutter = 12;
-    covenantReviewBox_ = new QGroupBox("Review");
+    covenantReviewBox_ = new QGroupBox(tr("Review"));
     covenantReviewBox_->setObjectName("covenantReview");
     auto* reviewGrid = new QGridLayout(covenantReviewBox_);
     reviewGrid->setHorizontalSpacing(12);
@@ -3700,10 +3711,10 @@ void MainWindow::setupUI() {
     privateCovenantWidget_->hide();
     layout->addWidget(privateCovenantWidget_);
     // Header with summary
-    auto *headerGroup = new QGroupBox("Public Contracts");
+    auto *headerGroup = new QGroupBox(tr("Public Contracts"));
     auto *headerLayout = new QVBoxLayout(headerGroup);
 
-    lblContractsSummary_ = new QLabel("Loading...");
+    lblContractsSummary_ = new QLabel(tr("Loading..."));
     lblContractsSummary_->setWordWrap(true);
     headerLayout->addWidget(lblContractsSummary_);
 
@@ -3735,16 +3746,16 @@ void MainWindow::setupUI() {
 
     // Action buttons at bottom
     auto *btnRow = new QHBoxLayout;
-    auto *btnRefreshContracts = new QPushButton("Refresh");
+    auto *btnRefreshContracts = new QPushButton(tr("Refresh"));
     btnRefreshContracts->setStyleSheet(chromeButtonStyle());
     connect(btnRefreshContracts, &QPushButton::clicked, this, [this]() {
         refreshContractsList();
     });
     btnRow->addWidget(btnRefreshContracts);
 
-    auto *btnNewContract = new QPushButton("+ New Contract");
+    auto *btnNewContract = new QPushButton(tr("+ New Contract"));
     btnNewContract->setStyleSheet(chromeButtonStyle());
-    btnNewContract->setToolTip("Create and fund a covenant here");
+    btnNewContract->setToolTip(tr("Create and fund a covenant here"));
     connect(btnNewContract, &QPushButton::clicked, this, [this]() {
         if (sendComposer_) sendComposer_->setFocus();
         if (edtRecipient_) edtRecipient_->setFocus();
@@ -3754,12 +3765,12 @@ void MainWindow::setupUI() {
     layout->addLayout(btnRow);
 
     // Info label at bottom
-    auto *lblInfo = new QLabel(
+    auto *lblInfo = new QLabel(tr(
         "Contracts are programmable spending rules attached to your funds. "
         "Vaults lock funds to a specific template. Timelocks release after a duration. "
         "Create, fund, track and spend public covenants here. "
         "Public covenants require a matching recovery descriptor. Private covenants recover from encrypted funding notes and require separate network activation."
-    );
+    ));
     lblInfo->setWordWrap(true);
     lblInfo->setStyleSheet("color: #888; font-size: 11px; padding: 8px;");
     layout->addWidget(lblInfo);
@@ -3778,23 +3789,23 @@ void MainWindow::setupUI() {
     sendComposerHome_->setContentsMargins(0, 0, 0, 0);
     sendComposerHome_->addWidget(send);
     
-    auto *sendGroup = new QGroupBox("📤 Send / Convert");
+    auto *sendGroup = new QGroupBox(tr("📤 Send / Convert"));
     sendFormGroup_ = sendGroup;
     auto *sendLayout = new QGridLayout(sendGroup);
 
     // Pick the spend source explicitly. Taproot and P2MR are public
     // transparent sends; shielded notes use the private RPC surface.
-    sendLayout->addWidget(new QLabel("Mode:"), 0, 0);
+    sendLayout->addWidget(new QLabel(tr("Mode:")), 0, 0);
     cmbSendAction_ = new QComboBox;
     cmbSendAction_->addItem("Send publicly", "public_transfer");
     // Use the journal-backed shielded composer for private operations.
     cmbSendAction_->addItem("Send privately / convert…", "private_composer");
     cmbSendAction_->addItem("Create public covenant", "public_contract");
     cmbSendAction_->addItem("Private covenants", "private_contract");
-    cmbSendAction_->setToolTip(
+    cmbSendAction_->setToolTip(tr(
         "Public payments use transparent funds. Private payments and conversions open "
         "the Shielded composer, subject to network activation. Covenants currently use "
-        "public or private funds through their respective covenant controls.");
+        "public or private funds through their respective covenant controls."));
     cmbSendAction_->setObjectName("sendMode");
     // On Covenants the composer chooses only public vs private covenant; the
     // payment menu stays on Send.
@@ -3803,12 +3814,12 @@ void MainWindow::setupUI() {
     modeRow->addWidget(cmbSendAction_, 1);
     const QString kindStyle = chromeButtonStyle() +
         " QPushButton:checked { background: #2f5d8f; border: 1px solid #4a86c5; color: #ffffff; }";
-    covenantKindPublic_ = new QPushButton("Public covenant");
+    covenantKindPublic_ = new QPushButton(tr("Public covenant"));
     covenantKindPublic_->setObjectName("covenantKindPublic");
-    covenantKindPublic_->setToolTip("Amounts and recipients are visible on-chain");
-    covenantKindPrivate_ = new QPushButton("Private covenant");
+    covenantKindPublic_->setToolTip(tr("Amounts and recipients are visible on-chain"));
+    covenantKindPrivate_ = new QPushButton(tr("Private covenant"));
     covenantKindPrivate_->setObjectName("covenantKindPrivate");
-    covenantKindPrivate_->setToolTip("Funded from shielded notes; requires network activation");
+    covenantKindPrivate_->setToolTip(tr("Funded from shielded notes; requires network activation"));
     auto* kindGroup = new QButtonGroup(this);
     kindGroup->setExclusive(true);
     for (auto* kind : {covenantKindPublic_, covenantKindPrivate_}) {
@@ -3854,14 +3865,14 @@ void MainWindow::setupUI() {
     recomputeMode();
     
     // Recipient address
-    sendLayout->addWidget(new QLabel("Recipient:"), 1, 0);
+    sendLayout->addWidget(new QLabel(tr("Recipient:")), 1, 0);
     edtRecipient_ = new QLineEdit;
     edtRecipient_->setObjectName("sendRecipient");
-    edtRecipient_->setPlaceholderText("din1p... (Taproot) or din1r... (Quantum-Safe)");
+    edtRecipient_->setPlaceholderText(tr("din1p... (Taproot) or din1r... (Quantum-Safe)"));
     sendLayout->addWidget(edtRecipient_, 1, 1);
     
     // Amount
-    sendLayout->addWidget(new QLabel("Amount (DIN):"), 2, 0);
+    sendLayout->addWidget(new QLabel(tr("Amount (DIN):")), 2, 0);
     auto *amountLayout = new QHBoxLayout;
     edtAmount_ = new QLineEdit;
     edtAmount_->setObjectName("sendAmount");
@@ -3874,7 +3885,7 @@ void MainWindow::setupUI() {
         this));
     amountLayout->addWidget(edtAmount_);
     
-    btnUseMax_ = new QPushButton("Max");
+    btnUseMax_ = new QPushButton(tr("Max"));
     btnUseMax_->setObjectName("sendMax");
     btnUseMax_->setStyleSheet("QPushButton { padding: 5px; }");
     connect(btnUseMax_, &QPushButton::clicked, this, &MainWindow::onUseMaxAmount);
@@ -3882,7 +3893,7 @@ void MainWindow::setupUI() {
     sendLayout->addLayout(amountLayout, 2, 1);
     
     // Fee priority selector (Phase 35)
-    sendLayout->addWidget(new QLabel("Fee Priority:"), 3, 0);
+    sendLayout->addWidget(new QLabel(tr("Fee Priority:")), 3, 0);
     auto *feeLayout = new QHBoxLayout;
     cmbFeePreset_ = new QComboBox;
     cmbFeePreset_->addItem("Low (25+ blocks)", 25);      // ~25 blocks to confirm
@@ -3890,7 +3901,7 @@ void MainWindow::setupUI() {
     cmbFeePreset_->addItem("High (2 blocks)", 2);        // ~2 blocks to confirm
     cmbFeePreset_->addItem("Custom", -1);                // Manual fee entry
     cmbFeePreset_->setCurrentIndex(1);  // Default to Normal
-    cmbFeePreset_->setToolTip("Select transaction priority (confirmation target)");
+    cmbFeePreset_->setToolTip(tr("Select transaction priority (confirmation target)"));
     connect(cmbFeePreset_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onFeePresetChanged);
     feeLayout->addWidget(cmbFeePreset_);
@@ -3902,14 +3913,14 @@ void MainWindow::setupUI() {
 
     // Custom fee input (hidden by default)
     edtFee_ = new QLineEdit;
-    edtFee_->setPlaceholderText("una/vB");
+    edtFee_->setPlaceholderText(tr("una/vB"));
     edtFee_->setValidator(new QDoubleValidator(1.0, 10000.0, 2, this));
     edtFee_->setMaximumWidth(100);
     edtFee_->setVisible(false);  // Show only when "Custom" is selected
     feeLayout->addWidget(edtFee_);
 
     // Estimated fee display
-    lblEstimatedFee_ = new QLabel("Est: ~0.00001 DIN");
+    lblEstimatedFee_ = new QLabel(tr("Est: ~0.00001 DIN"));
     lblEstimatedFee_->setStyleSheet("QLabel { color: #666; font-size: 11px; }");
     feeLayout->addWidget(lblEstimatedFee_);
     feeLayout->addStretch();
@@ -3920,7 +3931,7 @@ void MainWindow::setupUI() {
     auto *contractLayout = new QVBoxLayout(contractGroup_);
 
     auto *templateRow = new QHBoxLayout;
-    templateRow->addWidget(new QLabel("Template:"));
+    templateRow->addWidget(new QLabel(tr("Template:")));
     cmbContractTemplate_ = new QComboBox;
     cmbContractTemplate_->setObjectName("contractTemplate");
     cmbContractTemplate_->addItem("Simple Lock", "vault");
@@ -3941,9 +3952,9 @@ void MainWindow::setupUI() {
         }
       }
     }
-    cmbContractTemplate_->setToolTip("Simple Lock: funds locked to one withdrawal address (CTV)\n"
+    cmbContractTemplate_->setToolTip(tr("Simple Lock: funds locked to one withdrawal address (CTV)\n"
                                      "Batch Payment: payment to multiple recipients (CTV)\n"
-                                     "Recovery key, time lock and custom scripts are coming soon");
+                                     "Recovery key, time lock and custom scripts are coming soon"));
     templateRow->addWidget(cmbContractTemplate_);
     templateRow->addStretch();
     contractLayout->addLayout(templateRow);
@@ -3955,8 +3966,8 @@ void MainWindow::setupUI() {
     // Page 0: Vault — no extra fields
     contractVaultPage_ = new QWidget;
     auto *vaultPageLayout = new QVBoxLayout(contractVaultPage_);
-    auto *vaultInfo = new QLabel("Your funds will be locked to a specific withdrawal destination.\n"
-                                 "Only the preset recipient can receive them.");
+    auto *vaultInfo = new QLabel(tr("Your funds will be locked to a specific withdrawal destination.\n"
+                                 "Only the preset recipient can receive them."));
     vaultInfo->setWordWrap(true);
     vaultInfo->setStyleSheet("QLabel { color: #9fb3c8; padding: 4px; }");
     vaultPageLayout->addWidget(vaultInfo);
@@ -3965,17 +3976,17 @@ void MainWindow::setupUI() {
     // Page 1: Conditional Vault (CTV + CHECKSIG recovery)
     contractConditionalPage_ = new QWidget;
     auto *condPageLayout = new QVBoxLayout(contractConditionalPage_);
-    auto *condInfo = new QLabel(
+    auto *condInfo = new QLabel(tr(
         "Unavailable in this build. Recovery contracts require a descriptor-backed\n"
-        "multi-path Taproot profile. The former prototype was not safe for funds.");
+        "multi-path Taproot profile. The former prototype was not safe for funds."));
     condInfo->setWordWrap(true);
     condInfo->setStyleSheet("QLabel { color: #9fb3c8; padding: 4px; }");
     condPageLayout->addWidget(condInfo);
 
     auto *recoveryRow = new QHBoxLayout;
-    recoveryRow->addWidget(new QLabel("Recovery key:"));
+    recoveryRow->addWidget(new QLabel(tr("Recovery key:")));
     edtRecoveryPubkey_ = new QLineEdit;
-    edtRecoveryPubkey_->setPlaceholderText("Paste your recovery key here (64 characters)");
+    edtRecoveryPubkey_->setPlaceholderText(tr("Paste your recovery key here (64 characters)"));
     edtRecoveryPubkey_->setMaxLength(64);
     edtRecoveryPubkey_->setStyleSheet("QLineEdit { font-family: monospace; font-size: 11px; }");
     edtRecoveryPubkey_->setEnabled(false);
@@ -3987,7 +3998,7 @@ void MainWindow::setupUI() {
     // Page 2: Timelock
     contractTimelockPage_ = new QWidget;
     auto *timelockPageLayout = new QHBoxLayout(contractTimelockPage_);
-    timelockPageLayout->addWidget(new QLabel("Lock duration:"));
+    timelockPageLayout->addWidget(new QLabel(tr("Lock duration:")));
     spnTimelockDuration_ = new QSpinBox;
     spnTimelockDuration_->setMinimum(1);
     spnTimelockDuration_->setMaximum(100000);
@@ -3997,7 +4008,7 @@ void MainWindow::setupUI() {
     cmbTimelockUnit_->addItem("blocks", "blocks");
     cmbTimelockUnit_->addItem("hours (estimated)", "hours");
     cmbTimelockUnit_->addItem("days (estimated)", "days");
-    cmbTimelockUnit_->setToolTip("Estimated from the network's current block time. The lock starts at funding confirmation and is enforced in blocks, not wall-clock time.");
+    cmbTimelockUnit_->setToolTip(tr("Estimated from the network's current block time. The lock starts at funding confirmation and is enforced in blocks, not wall-clock time."));
     timelockPageLayout->addWidget(cmbTimelockUnit_);
     timelockPageLayout->addStretch();
     contractTemplateStack_->addWidget(contractTimelockPage_);
@@ -4006,10 +4017,10 @@ void MainWindow::setupUI() {
     contractPayrollPage_ = new QWidget;
     auto *payrollPageLayout = new QVBoxLayout(contractPayrollPage_);
 
-    auto *payrollInfo = new QLabel(
+    auto *payrollInfo = new QLabel(tr(
         "Payroll: batch payment locked to multiple recipients.\n"
         "The CTV template commits to the exact output set.\n"
-        "Amounts and recipients are public. Choose Private covenants for payments to one or two fixed shielded recipients.");
+        "Amounts and recipients are public. Choose Private covenants for payments to one or two fixed shielded recipients."));
     payrollInfo->setWordWrap(true);
     payrollInfo->setStyleSheet("QLabel { color: #9fb3c8; padding: 4px; }");
     payrollPageLayout->addWidget(payrollInfo);
@@ -4029,7 +4040,7 @@ void MainWindow::setupUI() {
 
     // Add/Remove row buttons
     auto *payrollBtnRow = new QHBoxLayout;
-    auto *btnAddRecipient = new QPushButton("+ Add Recipient");
+    auto *btnAddRecipient = new QPushButton(tr("+ Add Recipient"));
     connect(btnAddRecipient, &QPushButton::clicked, this, [this]() {
         int row = tblPayrollRecipients_->rowCount();
         tblPayrollRecipients_->insertRow(row);
@@ -4038,14 +4049,14 @@ void MainWindow::setupUI() {
     });
     payrollBtnRow->addWidget(btnAddRecipient);
 
-    auto *btnRemoveRecipient = new QPushButton("- Remove Last");
+    auto *btnRemoveRecipient = new QPushButton(tr("- Remove Last"));
     connect(btnRemoveRecipient, &QPushButton::clicked, this, [this]() {
         int rows = tblPayrollRecipients_->rowCount();
         if (rows > 1) tblPayrollRecipients_->removeRow(rows - 1);
     });
     payrollBtnRow->addWidget(btnRemoveRecipient);
 
-    lblPayrollTotal_ = new QLabel("Total: 0.00000000 DIN");
+    lblPayrollTotal_ = new QLabel(tr("Total: 0.00000000 DIN"));
     lblPayrollTotal_->setStyleSheet("QLabel { font-weight: bold; }");
     payrollBtnRow->addWidget(lblPayrollTotal_);
     payrollBtnRow->addStretch();
@@ -4080,7 +4091,7 @@ void MainWindow::setupUI() {
     lblCustomScriptWarning_->setStyleSheet("QLabel { color: #ffa94d; padding: 4px; font-weight: bold; }");
     customPageLayout->addWidget(lblCustomScriptWarning_);
     edtCustomScript_ = new QLineEdit;
-    edtCustomScript_->setPlaceholderText("Enter Tapscript hex...");
+    edtCustomScript_->setPlaceholderText(tr("Enter Tapscript hex..."));
     edtCustomScript_->setStyleSheet("QLineEdit { font-family: monospace; }");
     edtCustomScript_->setEnabled(false);
     customPageLayout->addWidget(edtCustomScript_);
@@ -4108,15 +4119,15 @@ void MainWindow::setupUI() {
     // Send buttons row
     auto *sendBtnLayout = new QHBoxLayout;
 
-    btnSend_ = new QPushButton("📤 Send Transaction");
+    btnSend_ = new QPushButton(tr("📤 Send Transaction"));
     btnSend_->setObjectName("walletSendButton");
     btnSend_->setStyleSheet(chromeButtonStyle());
-    btnSend_->setToolTip("Sign and broadcast with software wallet");
+    btnSend_->setToolTip(tr("Sign and broadcast with software wallet"));
     connect(btnSend_, &QPushButton::clicked, this, &MainWindow::onSendTransaction);
     sendBtnLayout->addWidget(btnSend_);
 
     // Create PSBT for hardware wallet
-    btnHardwareWalletSend_ = new QPushButton("🔐 Hardware Wallet PSBT");
+    btnHardwareWalletSend_ = new QPushButton(tr("🔐 Hardware Wallet PSBT"));
     btnHardwareWalletSend_->setStyleSheet(chromeButtonStyle());
     btnHardwareWalletSend_->setToolTip(hardwareWalletPsbtTooltip());
     connect(btnHardwareWalletSend_, &QPushButton::clicked, this, &MainWindow::onCreatePSBT);
@@ -4142,12 +4153,12 @@ void MainWindow::setupUI() {
     layout->addWidget(lblSendStatus_);
     
     // Result display
-    auto *resultGroup = new QGroupBox("Transaction Result");
+    auto *resultGroup = new QGroupBox(tr("Transaction Result"));
     auto *resultLayout = new QVBoxLayout(resultGroup);
     txtSendResult_ = new QTextEdit;
     txtSendResult_->setReadOnly(true);
     txtSendResult_->setMaximumHeight(150);
-    txtSendResult_->setPlaceholderText("Transaction details will appear here after sending...");
+    txtSendResult_->setPlaceholderText(tr("Transaction details will appear here after sending..."));
     resultLayout->addWidget(txtSendResult_);
     resultGroup->setVisible(false);
     connect(txtSendResult_, &QTextEdit::textChanged, resultGroup, [this, resultGroup]() {
@@ -4157,7 +4168,7 @@ void MainWindow::setupUI() {
     
     layout->addStretch();
     
-    tabs->addTab(makeScrollableTab(sendPage), navigationIcon(NavigationGlyph::Send), "Send");
+    addNamedMainTab(tabs, makeScrollableTab(sendPage), navigationIcon(NavigationGlyph::Send), tr("Send"), "Send");
   }
   
   // === Receive Tab (HD Address List) ===
@@ -4166,7 +4177,7 @@ void MainWindow::setupUI() {
     auto *layout = new QVBoxLayout(receive);
     
     auto *headerLayout = new QHBoxLayout;
-    auto *lblHeader = new QLabel("📥 Receive");
+    auto *lblHeader = new QLabel(tr("📥 Receive"));
     lblHeader->setStyleSheet(chromeSectionLabelStyle());
     headerLayout->addWidget(lblHeader);
     headerLayout->addStretch();
@@ -4184,7 +4195,7 @@ void MainWindow::setupUI() {
 
     btnDeriveAddress_ = new QPushButton(QString::fromUtf8("\xF0\x9F\x86\x95 New Address"));
     btnDeriveAddress_->setStyleSheet(chromeButtonStyle());
-    btnDeriveAddress_->setToolTip("Derive a new address of the currently selected type");
+    btnDeriveAddress_->setToolTip(tr("Derive a new address of the currently selected type"));
     connect(btnDeriveAddress_, &QPushButton::clicked, this, &MainWindow::onDeriveNewAddress);
     headerLayout->addWidget(btnDeriveAddress_);
     headerLayout->addWidget(btnConsolidate_);
@@ -4219,14 +4230,14 @@ void MainWindow::setupUI() {
 
     layout->addWidget(tblAddresses_, 1);
 
-    btnLoadAllAddresses_ = new QPushButton("📋 Reload");
+    btnLoadAllAddresses_ = new QPushButton(tr("📋 Reload"));
     btnLoadAllAddresses_->setStyleSheet(chromeButtonStyle());
     connect(btnLoadAllAddresses_, &QPushButton::clicked, [this]() {
       rpc_->callNamed("wallet.listaddresses", QJsonObject{{"count", 200}});
     });
     layout->addWidget(btnLoadAllAddresses_);
 
-    tabs->addTab(makeScrollableTab(receive), navigationIcon(NavigationGlyph::Receive), "Receive");
+    addNamedMainTab(tabs, makeScrollableTab(receive), navigationIcon(NavigationGlyph::Receive), tr("Receive"), "Receive");
   }
   
   // === Transactions Tab (History) ===
@@ -4235,12 +4246,12 @@ void MainWindow::setupUI() {
     auto *layout = new QVBoxLayout(transactions);
     
     auto *headerLayout = new QHBoxLayout;
-    auto *lblHeader = new QLabel("📜 Transaction History");
+    auto *lblHeader = new QLabel(tr("📜 Transaction History"));
     lblHeader->setStyleSheet(chromeSectionLabelStyle());
     headerLayout->addWidget(lblHeader);
     headerLayout->addStretch();
 
-    auto *lblTypeFilter = new QLabel("View:");
+    auto *lblTypeFilter = new QLabel(tr("View:"));
     headerLayout->addWidget(lblTypeFilter);
 
     cmbTxTypeFilter_ = new QComboBox;
@@ -4256,7 +4267,7 @@ void MainWindow::setupUI() {
     connect(cmbTxTypeFilter_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) { historyCount_ = 200; loadTransactionHistory(); });
     
-    auto *btnRefreshTxs = new QPushButton("🔄 Refresh");
+    auto *btnRefreshTxs = new QPushButton(tr("🔄 Refresh"));
     btnRefreshTxs->setStyleSheet(chromeButtonStyle());
     connect(btnRefreshTxs, &QPushButton::clicked, this, &MainWindow::loadTransactionHistory);
     headerLayout->addWidget(btnRefreshTxs);
@@ -4291,10 +4302,10 @@ void MainWindow::setupUI() {
     lblTransactionFooter_->setObjectName("transactionListFooter");
     lblTransactionFooter_->setStyleSheet("QLabel { color: #9aa4b2; }");
     historyFooter->addWidget(lblTransactionFooter_, 1);
-    btnShowOlderTxs_ = new QPushButton("Show older");
+    btnShowOlderTxs_ = new QPushButton(tr("Show older"));
     btnShowOlderTxs_->setObjectName("transactionsShowOlder");
     btnShowOlderTxs_->setStyleSheet(chromeButtonStyle());
-    btnShowOlderTxs_->setToolTip("Load more of this wallet's earlier transactions.");
+    btnShowOlderTxs_->setToolTip(tr("Load more of this wallet's earlier transactions."));
     btnShowOlderTxs_->setVisible(false);
     connect(btnShowOlderTxs_, &QPushButton::clicked, this, [this] {
       historyCount_ = std::min(historyCount_ + 400, 5000);  // the node's own limit
@@ -4306,7 +4317,7 @@ void MainWindow::setupUI() {
     // Auto-load transaction history after 5 seconds
     QTimer::singleShot(5000, this, &MainWindow::loadTransactionHistory);
     
-    tabs->addTab(transactions, navigationIcon(NavigationGlyph::Transactions), "Transactions");
+    addNamedMainTab(tabs, transactions, navigationIcon(NavigationGlyph::Transactions), tr("Transactions"), "Transactions");
   }
   
   // === UTXOs Tab (Advanced) ===
@@ -4316,12 +4327,12 @@ void MainWindow::setupUI() {
     auto *layout = new QVBoxLayout(utxos);
     
     auto *headerLayout = new QHBoxLayout;
-    auto *lblHeader = new QLabel("🔗 Unspent Outputs (UTXOs)");
+    auto *lblHeader = new QLabel(tr("🔗 Unspent Outputs (UTXOs)"));
     lblHeader->setStyleSheet(chromeSectionLabelStyle());
     headerLayout->addWidget(lblHeader);
     headerLayout->addStretch();
     
-    auto *btnRefreshUTXOs = new QPushButton("🔄 Refresh");
+    auto *btnRefreshUTXOs = new QPushButton(tr("🔄 Refresh"));
     btnRefreshUTXOs->setStyleSheet(chromeButtonStyle());
     connect(btnRefreshUTXOs, &QPushButton::clicked, this,
             [this]() { requestUtxoRefresh(true); });
@@ -4342,9 +4353,9 @@ void MainWindow::setupUI() {
     layout->addWidget(tblUTXOs_);
 
     auto* pageLayout = new QHBoxLayout;
-    lblUtxoPage_ = new QLabel("Open this tab to load unspent outputs.");
-    btnPrevUtxoPage_ = new QPushButton("Previous");
-    btnNextUtxoPage_ = new QPushButton("Next");
+    lblUtxoPage_ = new QLabel(tr("Open this tab to load unspent outputs."));
+    btnPrevUtxoPage_ = new QPushButton(tr("Previous"));
+    btnNextUtxoPage_ = new QPushButton(tr("Next"));
     btnPrevUtxoPage_->setEnabled(false);
     btnNextUtxoPage_->setEnabled(false);
     connect(btnPrevUtxoPage_, &QPushButton::clicked, this, [this]() {
@@ -4372,13 +4383,13 @@ void MainWindow::setupUI() {
             this, &MainWindow::handleHardwareWalletBroadcast);
     // Scrollable like the other tall pages: its content must never force the
     // whole window taller than the screen.
-    tabs->addTab(makeScrollableTab(hardwareWalletWidget_), navigationIcon(NavigationGlyph::Hardware), "Hardware");  // short: every name fits at 1440 px
+    addNamedMainTab(tabs, makeScrollableTab(hardwareWalletWidget_), navigationIcon(NavigationGlyph::Hardware), tr("Hardware"), "Hardware");  // short: every name fits at 1440 px
   }
 
   // === DPI Pay/Collect Tab ===
   {
     dpiWidget_ = new DpiWidget(rpc_, this);
-    tabs->addTab(dpiWidget_, navigationIcon(NavigationGlyph::Card), "Pay/Collect");
+    addNamedMainTab(tabs, dpiWidget_, navigationIcon(NavigationGlyph::Card), tr("Pay/Collect"), "Pay/Collect");
     // Payment links and plain addresses are paid through Send, which owns fee
     // choice, confirmation and the wallet checks.
     connect(dpiWidget_, &DpiWidget::payToAddressRequested, this,
@@ -4432,7 +4443,7 @@ void MainWindow::setupUI() {
   // === Swap Tab: DIN <-> BTC atomic swaps via the local node's swap.* RPCs ===
   // Off in release builds until the swap code has had external review.
   {
-    tabs->addTab(makeScrollableTab(new SwapWidget(rpc_, this)), navigationIcon(NavigationGlyph::Swap), "Swap");
+    addNamedMainTab(tabs, makeScrollableTab(new SwapWidget(rpc_, this)), navigationIcon(NavigationGlyph::Swap), tr("Swap"), "Swap");
   }
 #endif
 
@@ -4451,7 +4462,7 @@ void MainWindow::setupUI() {
   // and contributor table together exceed a laptop viewport.
   {
     poolPanel_ = new PoolPanel(rpc_, this);
-    tabs->addTab(makeScrollableTab(poolPanel_), navigationIcon(NavigationGlyph::Pool), "Pool");
+    addNamedMainTab(tabs, makeScrollableTab(poolPanel_), navigationIcon(NavigationGlyph::Pool), tr("Pool"), "Pool");
   }
 
   // === Shielded Tab (Phase 5 — daemon shielded pool, gated by
@@ -4486,10 +4497,10 @@ void MainWindow::setupUI() {
                 shieldedTabs->setTabVisible(index, visible);
                 shieldedTabs->tabBar()->setVisible(visible);
               });
-      tabs->addTab(shieldedTabs, navigationIcon(NavigationGlyph::Shield), "Shielded");
+      addNamedMainTab(tabs, shieldedTabs, navigationIcon(NavigationGlyph::Shield), tr("Shielded"), "Shielded");
     }
 #else
-    tabs->addTab(shieldedWidget_, navigationIcon(NavigationGlyph::Shield), "Shielded");
+    addNamedMainTab(tabs, shieldedWidget_, navigationIcon(NavigationGlyph::Shield), tr("Shielded"), "Shielded");
 #endif
   }
 
@@ -4544,21 +4555,21 @@ void MainWindow::setupUI() {
       return box;
     };
 
-    auto *searchGroup = new QGroupBox("Chain Explorer");
+    auto *searchGroup = new QGroupBox(tr("Chain Explorer"));
     auto *searchLayout = new QVBoxLayout(searchGroup);
 
     auto *searchRow = new QHBoxLayout;
     edtBlockHash_ = new QLineEdit;
-    edtBlockHash_->setPlaceholderText("Search block height, transaction hash, block hash, or din1/tdin1/rdin1 address...");
+    edtBlockHash_->setPlaceholderText(tr("Search block height, transaction hash, block hash, or din1/tdin1/rdin1 address..."));
     edtBlockHash_->setMinimumHeight(34);
-    btnGetBlock_ = new QPushButton("Search");
+    btnGetBlock_ = new QPushButton(tr("Search"));
     btnGetBlock_->setMinimumHeight(34);
 
     searchRow->addWidget(edtBlockHash_, 1);
     searchRow->addWidget(btnGetBlock_);
     searchLayout->addLayout(searchRow);
 
-    lblExplorerStatus_ = new QLabel("Search a block, transaction, or address. Latest blocks load from the connected daemon.");
+    lblExplorerStatus_ = new QLabel(tr("Search a block, transaction, or address. Latest blocks load from the connected daemon."));
     lblExplorerStatus_->setWordWrap(true);
     lblExplorerStatus_->setStyleSheet(
         "QLabel { color: #aab4c2; background: #20252b; border: 1px solid #333a43; "
@@ -4574,7 +4585,7 @@ void MainWindow::setupUI() {
     statsGrid->addWidget(makeExplorerStat("Money Supply", &lblExplorerSupply_), 0, 3);
     searchLayout->addLayout(statsGrid);
 
-    lblBestBlock_ = new QLabel("Best Block: -");
+    lblBestBlock_ = new QLabel(tr("Best Block: -"));
     lblBestBlock_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     lblBestBlock_->setStyleSheet("QLabel { color: #9da8b6; font-family: monospace; padding-top: 2px; }");
     searchLayout->addWidget(lblBestBlock_);
@@ -4613,7 +4624,7 @@ void MainWindow::setupUI() {
     // into a column of mostly empty space.
     tblRecentBlocks_->horizontalHeader()->setStretchLastSection(false);
     tblRecentBlocks_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-    tblRecentBlocks_->setToolTip("Double-click a row to open block detail in the explorer.");
+    tblRecentBlocks_->setToolTip(tr("Double-click a row to open block detail in the explorer."));
     if (overviewBlocksLayout_) {
       overviewBlocksLayout_->addWidget(tblRecentBlocks_);
     }
@@ -4636,7 +4647,7 @@ void MainWindow::setupUI() {
           showExplorerWindow();
         });
 
-    auto *detailGroup = new QGroupBox("Explorer Detail");
+    auto *detailGroup = new QGroupBox(tr("Explorer Detail"));
     auto *detailLayout = new QVBoxLayout(detailGroup);
 
     lblExplorerSummary_ = new QLabel;
@@ -4742,7 +4753,7 @@ void MainWindow::setupUI() {
     explorerWindow_ = makeScrollableTab(explorer);
     explorerWindow_->setParent(this);
     explorerWindow_->setWindowFlags(Qt::Window);
-    explorerWindow_->setWindowTitle("Dinero Chain Explorer");
+    explorerWindow_->setWindowTitle(tr("Dinero Chain Explorer"));
     explorerWindow_->resize(1100, 820);
     explorerWindow_->hide();
   }
@@ -4798,27 +4809,27 @@ void MainWindow::setupUI() {
             throw std::runtime_error("QML failed to load");
         }
         
-        tabs->addTab(miningWidget_, navigationIcon(NavigationGlyph::Mining), "Mining");
+        addNamedMainTab(tabs, miningWidget_, navigationIcon(NavigationGlyph::Mining), tr("Mining"), "Mining");
         miningTabWidget_ = miningWidget_;
     } catch (...) {
         // Fallback to simple message if QML fails
         qWarning() << "QML mining tab failed, using fallback";
         auto *mining = new QWidget;
         auto *layout = new QVBoxLayout(mining);
-        auto *label = new QLabel(
+        auto *label = new QLabel(tr(
           "<h2>⛏️ Mining</h2>"
           "<p><b>Use command-line miner:</b></p>"
           "<p>1. Generate address in Wallet tab</p>"
           "<p>2. Run in terminal:</p>"
           "<pre>./build/dinero-miner --rpc http://127.0.0.1:20998/ \\\n"
           "  --address YOUR_ADDRESS --threads 8</pre>"
-        );
+        ));
         label->setWordWrap(true);
         label->setTextFormat(Qt::RichText);
         layout->addWidget(label);
         layout->addStretch();
         auto* miningPage = makeScrollableTab(mining);
-        tabs->addTab(miningPage, navigationIcon(NavigationGlyph::Mining), "Mining");
+        addNamedMainTab(tabs, miningPage, navigationIcon(NavigationGlyph::Mining), tr("Mining"), "Mining");
         miningTabWidget_ = miningPage;
     }
 #else
@@ -4844,7 +4855,7 @@ void MainWindow::setupUI() {
     // Row 0: Mining mode selection (solo default, pool optional)
     auto *modeRow = new QHBoxLayout;
     modeRow->setSpacing(6);
-    modeRow->addWidget(new QLabel("Mode:"));
+    modeRow->addWidget(new QLabel(tr("Mode:")));
     cmbMiningMode_ = new QComboBox;
     cmbMiningMode_->addItem("Solo Mining (Default)", "solo");
     cmbMiningMode_->addItem("Pool Mining (Stratum V1)", "pool");
@@ -4852,14 +4863,14 @@ void MainWindow::setupUI() {
     cmbMiningMode_->setCurrentIndex(0);
     cmbMiningMode_->setFixedHeight(30);
     cmbMiningMode_->setStyleSheet(miningComboStyle());
-    cmbMiningMode_->setToolTip(
+    cmbMiningMode_->setToolTip(tr(
       "Solo = mine directly with your node.\n"
       "Pool (Stratum V1) = submit shares to a V1 pool (legacy, cleartext).\n"
       "Pool (SV2) = Noise-encrypted pool mining. Choose Shared rewards\n"
-      "for PPLNS payouts or Solo rewards for a miner-owned coinbase.");
+      "for PPLNS payouts or Solo rewards for a miner-owned coinbase."));
     modeRow->addWidget(cmbMiningMode_);
 
-    lblStratumEndpoint_ = new QLabel("Pool Endpoint:");
+    lblStratumEndpoint_ = new QLabel(tr("Pool Endpoint:"));
     lblStratumEndpoint_->setVisible(false);
     modeRow->addWidget(lblStratumEndpoint_);
 
@@ -4873,8 +4884,8 @@ void MainWindow::setupUI() {
       edtStratumEndpoint_->setText(savedOrEnvEndpoint);
     }
     if (qEnvironmentVariableIsSet("DINERO_STRATUM_ENDPOINT")) {
-      edtStratumEndpoint_->setToolTip(
-        "Endpoint currently overridden by DINERO_STRATUM_ENDPOINT environment variable.");
+      edtStratumEndpoint_->setToolTip(tr(
+        "Endpoint currently overridden by DINERO_STRATUM_ENDPOINT environment variable."));
     }
     connect(edtStratumEndpoint_, &QLineEdit::editingFinished, this, [this]() {
       if (!edtStratumEndpoint_) {
@@ -4886,18 +4897,18 @@ void MainWindow::setupUI() {
     });
     modeRow->addWidget(edtStratumEndpoint_, 2);
 
-    btnLocalStratum_ = new QPushButton("Start Local");
+    btnLocalStratum_ = new QPushButton(tr("Start Local"));
     btnLocalStratum_->setStyleSheet(miningButtonStyle());
     btnLocalStratum_->setFixedSize(104, 30);
     btnLocalStratum_->setVisible(false);
-    btnLocalStratum_->setToolTip(
-      "Start a localhost dinero-stratum server and use it as this pool endpoint.");
+    btnLocalStratum_->setToolTip(tr(
+      "Start a localhost dinero-stratum server and use it as this pool endpoint."));
     connect(btnLocalStratum_, &QPushButton::clicked,
             this, &MainWindow::onToggleLocalStratumServer);
     modeRow->addWidget(btnLocalStratum_);
 
     // ── SV2 pool endpoint (separate from V1, own settings keys) ──
-    lblSv2Endpoint_ = new QLabel("SV2 Pool:");
+    lblSv2Endpoint_ = new QLabel(tr("SV2 Pool:"));
     lblSv2Endpoint_->setVisible(false);
     modeRow->addWidget(lblSv2Endpoint_);
 
@@ -4908,8 +4919,8 @@ void MainWindow::setupUI() {
     edtSv2Endpoint_->setVisible(false);
     edtSv2Endpoint_->setText(sv2PoolEndpoint());
     if (qEnvironmentVariableIsSet("DINERO_SV2_POOL")) {
-      edtSv2Endpoint_->setToolTip(
-        "SV2 endpoint currently overridden by DINERO_SV2_POOL environment variable.");
+      edtSv2Endpoint_->setToolTip(tr(
+        "SV2 endpoint currently overridden by DINERO_SV2_POOL environment variable."));
     }
     connect(edtSv2Endpoint_, &QLineEdit::editingFinished, this, [this]() {
       if (!edtSv2Endpoint_) return;
@@ -4921,7 +4932,7 @@ void MainWindow::setupUI() {
     // SV2 noise pubkey lives on its own row to avoid crowding the endpoint row.
     auto *sv2PubkeyRow = new QHBoxLayout;
     sv2PubkeyRow->setSpacing(6);
-    lblSv2Pubkey_ = new QLabel("SV2 Pubkey:");
+    lblSv2Pubkey_ = new QLabel(tr("SV2 Pubkey:"));
     lblSv2Pubkey_->setVisible(false);
     sv2PubkeyRow->addWidget(lblSv2Pubkey_);
 
@@ -4931,9 +4942,9 @@ void MainWindow::setupUI() {
     edtSv2Pubkey_->setFixedHeight(30);
     edtSv2Pubkey_->setVisible(false);
     edtSv2Pubkey_->setText(sv2PoolServerPubkey());
-    edtSv2Pubkey_->setToolTip(
+    edtSv2Pubkey_->setToolTip(tr(
       "64-hex-char static public key of the SV2 pool. Pinned on connect — "
-      "leave blank only for first-contact TOFU (not recommended).");
+      "leave blank only for first-contact TOFU (not recommended)."));
     if (qEnvironmentVariableIsSet("DINERO_SV2_SERVER_PUBKEY")) {
       edtSv2Pubkey_->setToolTip(edtSv2Pubkey_->toolTip() +
         "\nCurrently overridden by DINERO_SV2_SERVER_PUBKEY environment variable.");
@@ -4945,7 +4956,7 @@ void MainWindow::setupUI() {
     sv2PubkeyRow->addWidget(edtSv2Pubkey_, 2);
 
     // Backend: CPU multi-thread or GPU (Metal on Apple Silicon).
-    lblSv2Backend_ = new QLabel("Backend:");
+    lblSv2Backend_ = new QLabel(tr("Backend:"));
     lblSv2Backend_->setVisible(false);
     sv2PubkeyRow->addWidget(lblSv2Backend_);
 
@@ -4962,9 +4973,9 @@ void MainWindow::setupUI() {
     }
     cmbSv2Backend_->setFixedHeight(30);
     cmbSv2Backend_->setStyleSheet(miningComboStyle());
-    cmbSv2Backend_->setToolTip(
+    cmbSv2Backend_->setToolTip(tr(
       "CPU = dinero-sv2-miner (all cores hashing).\n"
-      "GPU (Metal) = dinero-sv2-gpu-miner (Apple Silicon, ~500 MH/s).");
+      "GPU (Metal) = dinero-sv2-gpu-miner (Apple Silicon, ~500 MH/s)."));
     cmbSv2Backend_->setVisible(false);
     connect(cmbSv2Backend_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) {
@@ -4976,7 +4987,7 @@ void MainWindow::setupUI() {
     });
     sv2PubkeyRow->addWidget(cmbSv2Backend_);
 
-    lblSv2RewardMode_ = new QLabel("Rewards:");
+    lblSv2RewardMode_ = new QLabel(tr("Rewards:"));
     lblSv2RewardMode_->setVisible(false);
     sv2PubkeyRow->addWidget(lblSv2RewardMode_);
 
@@ -4991,9 +5002,9 @@ void MainWindow::setupUI() {
     }
     cmbSv2RewardMode_->setFixedHeight(30);
     cmbSv2RewardMode_->setStyleSheet(cmbSv2Backend_->styleSheet());
-    cmbSv2RewardMode_->setToolTip(
+    cmbSv2RewardMode_->setToolTip(tr(
       "Pool Shared = each accepted share contributes to the pool's PPLNS window.\n"
-      "Pool Solo = the miner owns the block coinbase, but receives nothing unless it finds a block.");
+      "Pool Solo = the miner owns the block coinbase, but receives nothing unless it finds a block."));
     cmbSv2RewardMode_->setVisible(false);
     connect(cmbSv2RewardMode_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) {
@@ -5008,7 +5019,7 @@ void MainWindow::setupUI() {
     // Row 1: Solo miner engine, or pool worker binary when Pool mode is selected.
     auto *row0 = new QHBoxLayout;
     row0->setSpacing(6);
-    lblMinerType_ = new QLabel("Miner:");
+    lblMinerType_ = new QLabel(tr("Miner:"));
     row0->addWidget(lblMinerType_);
     cmbMinerType_ = new QComboBox;
     cmbMinerType_->addItem("Solo CPU", "internal");
@@ -5032,23 +5043,23 @@ void MainWindow::setupUI() {
     cmbMinerType_->setCurrentIndex(0); // Default to internal
     cmbMinerType_->setFixedHeight(30);
     cmbMinerType_->setStyleSheet(miningComboStyle());
-    cmbMinerType_->setToolTip("Choose the solo mining engine");
+    cmbMinerType_->setToolTip(tr("Choose the solo mining engine"));
     connect(cmbMinerType_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onMinerTypeChanged);
     row0->addWidget(cmbMinerType_);
 
-    lblMinerPath_ = new QLabel("Worker:");
+    lblMinerPath_ = new QLabel(tr("Worker:"));
     lblMinerPath_->setVisible(false);
     row0->addWidget(lblMinerPath_);
 
     edtMinerPath_ = new QLineEdit;
-    edtMinerPath_->setPlaceholderText("Path to dinero-stratum-worker binary...");
+    edtMinerPath_->setPlaceholderText(tr("Path to dinero-stratum-worker binary..."));
     edtMinerPath_->setStyleSheet(miningControlFieldStyle());
     edtMinerPath_->setFixedHeight(30);
     edtMinerPath_->setVisible(false); // Hidden by default (solo built-in miner)
     row0->addWidget(edtMinerPath_, 2);
 
-    btnBrowseMiner_ = new QPushButton("Browse...");
+    btnBrowseMiner_ = new QPushButton(tr("Browse..."));
     btnBrowseMiner_->setStyleSheet(miningButtonStyle());
     btnBrowseMiner_->setFixedSize(84, 30);
     btnBrowseMiner_->setVisible(false); // Hidden by default
@@ -5059,19 +5070,19 @@ void MainWindow::setupUI() {
     // Row 1: Address and threads
     auto *row1 = new QHBoxLayout;
     row1->setSpacing(6);
-    row1->addWidget(new QLabel("Address:"));
+    row1->addWidget(new QLabel(tr("Address:")));
     edtMiningAddress_ = new QLineEdit;
-    edtMiningAddress_->setPlaceholderText("din1p... (Taproot only)");
+    edtMiningAddress_->setPlaceholderText(tr("din1p... (Taproot only)"));
     edtMiningAddress_->setStyleSheet(miningControlFieldStyle());
     edtMiningAddress_->setFixedHeight(30);
     row1->addWidget(edtMiningAddress_, 2);
-    btnUseWalletAddr_ = new QPushButton("Use Wallet");
+    btnUseWalletAddr_ = new QPushButton(tr("Use Wallet"));
     btnUseWalletAddr_->setStyleSheet(miningButtonStyle());
     btnUseWalletAddr_->setFixedSize(100, 30);
-    btnUseWalletAddr_->setToolTip("Use your wallet's first Taproot receive address (requires unlock)");
+    btnUseWalletAddr_->setToolTip(tr("Use your wallet's first Taproot receive address (requires unlock)"));
     connect(btnUseWalletAddr_, &QPushButton::clicked, this, &MainWindow::onSetMiningAddress);
     row1->addWidget(btnUseWalletAddr_);
-    row1->addWidget(new QLabel("Threads:"));
+    row1->addWidget(new QLabel(tr("Threads:")));
     auto* threadsEdit = new ScoreboardNumberEdit(QString::number(kDefaultMiningThreads));
     edtMiningThreads_ = threadsEdit;
     edtMiningThreads_->setObjectName("miningThreads");
@@ -5096,11 +5107,11 @@ void MainWindow::setupUI() {
     auto *row2 = new QHBoxLayout;
     row2->setSpacing(3);
     // v0.14.0.4: Single toggle button for Start/Stop mining
-    btnStartMining_ = new QPushButton("Start Mining");
+    btnStartMining_ = new QPushButton(tr("Start Mining"));
     btnStartMining_->setStyleSheet(miningButtonStyle());
     // CRITICAL: Start disabled - will be enabled when daemon connects
     btnStartMining_->setEnabled(false);
-    btnStartMining_->setToolTip("Start daemon first to enable mining");
+    btnStartMining_->setToolTip(tr("Start daemon first to enable mining"));
     const int miningControlHeight = 30;
     btnStartMining_->setFixedHeight(miningControlHeight);
     btnStartMining_->setMinimumWidth(125);
@@ -5108,7 +5119,7 @@ void MainWindow::setupUI() {
     connect(btnStartMining_, &QPushButton::clicked, this, &MainWindow::onToggleMining);
     row2->addWidget(btnStartMining_);
     // Legacy stop button - hidden but kept for internal use
-    btnStopMining_ = new QPushButton("Stop");
+    btnStopMining_ = new QPushButton(tr("Stop"));
     btnStopMining_->setVisible(false);  // Hidden - we use toggle button instead
 
     lblMiningStatus_ = new QLabel(miningStatusInactiveText());
@@ -5135,12 +5146,12 @@ void MainWindow::setupUI() {
     blocksScoreboard->setFitToWidth(true);
     lblBlocksFound_ = blocksScoreboard;
     lblBlocksFound_->setStyleSheet(miningStatStyle("#bec8d0", true));
-    auto* lblBlocksCaption = new QLabel("Blocks:");
+    auto* lblBlocksCaption = new QLabel(tr("Blocks:"));
     lblBlocksCaption->setStyleSheet(miningStatStyle());
     row2->addWidget(lblBlocksCaption);
     row2->addWidget(lblBlocksFound_);
 
-    auto* lblHeightCaption = new QLabel("Height:");
+    auto* lblHeightCaption = new QLabel(tr("Height:"));
     lblHeightCaption->setStyleSheet(miningStatStyle());
     row2->addWidget(lblHeightCaption);
     auto* heightScoreboard = new MiningScoreboardLabel("-");
@@ -5149,10 +5160,10 @@ void MainWindow::setupUI() {
     lblMiningHeight_->setStyleSheet(miningStatStyle("#bec8d0", true));
     row2->addWidget(lblMiningHeight_);
 
-    auto* lblTargetBitsCaption = new QLabel("Target:");
+    auto* lblTargetBitsCaption = new QLabel(tr("Target:"));
     lblTargetBitsCaption->setStyleSheet(miningStatStyle());
-    lblTargetBitsCaption->setToolTip(
-      "Compact proof-of-work target (nBits); this can stay at the network's easiest allowed target.");
+    lblTargetBitsCaption->setToolTip(tr(
+      "Compact proof-of-work target (nBits); this can stay at the network's easiest allowed target."));
     row2->addWidget(lblTargetBitsCaption);
     constexpr qreal kTargetMiningStatScale = 0.7;
     constexpr qreal kSecondaryMiningStatScale = 0.75;
@@ -5168,7 +5179,7 @@ void MainWindow::setupUI() {
     hashRateScoreboard->setFitToWidth(true);
     lblCurrentHash_ = hashRateScoreboard;
     lblCurrentHash_->setStyleSheet(miningStatStyle("#bec8d0", true));
-    auto* lblHashrateCaption = new QLabel("MH/s:");
+    auto* lblHashrateCaption = new QLabel(tr("MH/s:"));
     lblHashrateCaption->setStyleSheet(miningStatStyle());
     row2->addWidget(lblHashrateCaption);
     row2->addWidget(lblCurrentHash_);
@@ -5178,13 +5189,13 @@ void MainWindow::setupUI() {
     runtimeScoreboard->setFitToWidth(true);
     lblMiningUptime_ = runtimeScoreboard;
     lblMiningUptime_->setStyleSheet(miningStatStyle("#bec8d0", true));
-    lblMiningUptimeCaption_ = new QLabel("Run:");
+    lblMiningUptimeCaption_ = new QLabel(tr("Run:"));
     lblMiningUptimeCaption_->setStyleSheet(miningStatStyle());
     row2->addWidget(lblMiningUptimeCaption_);
     row2->addWidget(lblMiningUptime_);
 
     btnMiningSessionFinds_ = new SessionFindsButton;
-    btnMiningSessionFinds_->setToolTip("Blocks found this mining session");
+    btnMiningSessionFinds_->setToolTip(tr("Blocks found this mining session"));
     btnMiningSessionFinds_->setAccessibleName("Session");
     btnMiningSessionFinds_->setStyleSheet(miningButtonStyle());
     btnMiningSessionFinds_->setFixedHeight(miningControlHeight);
@@ -5224,7 +5235,7 @@ void MainWindow::setupUI() {
 
       auto* dialog = new QDialog(this);
       dialog->setAttribute(Qt::WA_DeleteOnClose);
-      dialog->setWindowTitle("Blocks Found This Session");
+      dialog->setWindowTitle(tr("Blocks Found This Session"));
       auto* dialogLayout = new QVBoxLayout(dialog);
       auto* table = new QTableWidget(miningSessionFinds_.size(), 6, dialog);
       table->setHorizontalHeaderLabels(
@@ -5267,7 +5278,7 @@ void MainWindow::setupUI() {
 
     // SV2-only: live share counter. Updated in place so we never spam
     // the mining-output panel with one line per accept.
-    lblSv2Shares_ = new QLabel("Shares: 0");
+    lblSv2Shares_ = new QLabel(tr("Shares: 0"));
     lblSv2Shares_->setStyleSheet(miningStatStyle("#bec8d0", true));
     lblSv2Shares_->setVisible(false);
     row2->addWidget(lblSv2Shares_);
@@ -5305,7 +5316,7 @@ void MainWindow::setupUI() {
     miningOutputViewport->setPalette(miningOutputPalette);
     txtMiningOutput_->viewport()->setAutoFillBackground(true);
     txtMiningOutput_->viewport()->setBackgroundRole(QPalette::Base);
-    txtMiningOutput_->setPlaceholderText("Mining output will appear here when you start mining...");
+    txtMiningOutput_->setPlaceholderText(tr("Mining output will appear here when you start mining..."));
     // QTextEdit's styled document paints above its viewport palette on macOS.
     // Keep a dedicated transparent paint layer for the live Hash Engine so
     // candidate rows remain visible without replacing the preserved log.
@@ -5455,7 +5466,7 @@ void MainWindow::setupUI() {
     miningPage->setPalette(miningPagePalette);
     miningPage->viewport()->setPalette(miningPagePalette);
     miningPage->viewport()->setAutoFillBackground(true);
-    tabs->addTab(miningPage, navigationIcon(NavigationGlyph::Mining), "Mining");
+    addNamedMainTab(tabs, miningPage, navigationIcon(NavigationGlyph::Mining), tr("Mining"), "Mining");
     miningTabWidget_ = miningPage;
 
     // Create embedded miner controller (in-process via dinero-solo-miner library)
@@ -5634,9 +5645,9 @@ void MainWindow::setupUI() {
             }
             updateMiningRuntimeLabel();
             if (btnStartMining_) {
-                btnStartMining_->setText("Stop Mining");
+                btnStartMining_->setText(tr("Stop Mining"));
                 btnStartMining_->setStyleSheet(miningButtonStyle());
-                btnStartMining_->setToolTip("Click to stop mining");
+                btnStartMining_->setToolTip(tr("Click to stop mining"));
             }
             if (lblMiningStatus_) {
                 lblMiningStatus_->setText(miningStatusActiveText());
@@ -5645,9 +5656,9 @@ void MainWindow::setupUI() {
             updateOverviewHardwareTelemetry();
         } else {
             if (btnStartMining_) {
-                btnStartMining_->setText("Start Mining");
+                btnStartMining_->setText(tr("Start Mining"));
                 btnStartMining_->setStyleSheet(miningButtonStyle());
-                btnStartMining_->setToolTip("Click to start mining");
+                btnStartMining_->setToolTip(tr("Click to start mining"));
             }
             if (lblMiningStatus_) {
                 lblMiningStatus_->setText(miningStatusInactiveText());
@@ -5679,19 +5690,19 @@ void MainWindow::setupUI() {
     layout->setSpacing(12);
     layout->setContentsMargins(20, 20, 20, 20);
 
-    auto *lblHeader = new QLabel("Utreexo Proof Service");
+    auto *lblHeader = new QLabel(tr("Utreexo Proof Service"));
     lblHeader->setStyleSheet("QLabel { font-size: 16px; font-weight: bold; color: #d6dde6; }");
     layout->addWidget(lblHeader);
 
-    auto *lblDesc = new QLabel(
+    auto *lblDesc = new QLabel(tr(
         "Live daemon diagnostics for Utreexo proof caching and proof serving. "
         "This is not the asset bridge; it shows whether this node can serve "
-        "compact proof data to stateless/mobile peers.");
+        "compact proof data to stateless/mobile peers."));
     lblDesc->setWordWrap(true);
     lblDesc->setStyleSheet("QLabel { color: #868e96; font-size: 12px; margin-bottom: 8px; }");
     layout->addWidget(lblDesc);
 
-    lblBridgeSummary_ = new QLabel("Waiting for Utreexo proof metrics...");
+    lblBridgeSummary_ = new QLabel(tr("Waiting for Utreexo proof metrics..."));
     lblBridgeSummary_->setWordWrap(true);
     lblBridgeSummary_->setStyleSheet(
         "QLabel { background: #232930; color: #cdd6e0; border: 1px solid #353c46; "
@@ -5713,52 +5724,52 @@ void MainWindow::setupUI() {
 
     lblBridgeStatus_ = new QLabel("--");
     lblBridgeStatus_->setStyleSheet("QLabel { font-size: 13px; font-weight: bold; }");
-    grid->addRow(new QLabel("Status:"), lblBridgeStatus_);
+    grid->addRow(new QLabel(tr("Status:")), lblBridgeStatus_);
 
     lblBridgeRequests_ = makeValueLabel();
-    grid->addRow(new QLabel("Requests:"), lblBridgeRequests_);
+    grid->addRow(new QLabel(tr("Requests:")), lblBridgeRequests_);
 
     lblBridgeQueue_ = makeValueLabel();
-    grid->addRow(new QLabel("Queue:"), lblBridgeQueue_);
+    grid->addRow(new QLabel(tr("Queue:")), lblBridgeQueue_);
 
     lblBridgeCacheHits_ = makeValueLabel();
-    grid->addRow(new QLabel("Cache Hits:"), lblBridgeCacheHits_);
+    grid->addRow(new QLabel(tr("Cache Hits:")), lblBridgeCacheHits_);
 
     lblBridgeCacheMisses_ = makeValueLabel();
-    grid->addRow(new QLabel("Cache Misses:"), lblBridgeCacheMisses_);
+    grid->addRow(new QLabel(tr("Cache Misses:")), lblBridgeCacheMisses_);
 
     lblBridgeHitRate_ = makeValueLabel();
-    grid->addRow(new QLabel("Hit Rate:"), lblBridgeHitRate_);
+    grid->addRow(new QLabel(tr("Hit Rate:")), lblBridgeHitRate_);
 
     lblBridgeBlockEntries_ = makeValueLabel();
-    grid->addRow(new QLabel("Block Cache:"), lblBridgeBlockEntries_);
+    grid->addRow(new QLabel(tr("Block Cache:")), lblBridgeBlockEntries_);
 
     lblBridgeTxEntries_ = makeValueLabel();
-    grid->addRow(new QLabel("Tx Cache:"), lblBridgeTxEntries_);
+    grid->addRow(new QLabel(tr("Tx Cache:")), lblBridgeTxEntries_);
 
     lblBridgeIndexed_ = makeValueLabel();
-    grid->addRow(new QLabel("Indexed History:"), lblBridgeIndexed_);
+    grid->addRow(new QLabel(tr("Indexed History:")), lblBridgeIndexed_);
 
     lblBridgeEvictions_ = makeValueLabel();
-    grid->addRow(new QLabel("Evictions / TTL:"), lblBridgeEvictions_);
+    grid->addRow(new QLabel(tr("Evictions / TTL:")), lblBridgeEvictions_);
 
     lblBridgeWorkers_ = makeValueLabel();
-    grid->addRow(new QLabel("Proof Workers:"), lblBridgeWorkers_);
+    grid->addRow(new QLabel(tr("Proof Workers:")), lblBridgeWorkers_);
 
     lblBridgeActiveGens_ = makeValueLabel();
-    grid->addRow(new QLabel("Active Generations:"), lblBridgeActiveGens_);
+    grid->addRow(new QLabel(tr("Active Generations:")), lblBridgeActiveGens_);
 
     lblBridgeLatency_ = makeValueLabel();
-    grid->addRow(new QLabel("Proof Latency:"), lblBridgeLatency_);
+    grid->addRow(new QLabel(tr("Proof Latency:")), lblBridgeLatency_);
 
     lblBridgeQueueWait_ = makeValueLabel();
-    grid->addRow(new QLabel("Queue Wait:"), lblBridgeQueueWait_);
+    grid->addRow(new QLabel(tr("Queue Wait:")), lblBridgeQueueWait_);
 
     lblBridgePriority_ = makeValueLabel();
-    grid->addRow(new QLabel("Priority Routing:"), lblBridgePriority_);
+    grid->addRow(new QLabel(tr("Priority Routing:")), lblBridgePriority_);
 
     lblBridgeTasks_ = makeValueLabel();
-    grid->addRow(new QLabel("Tasks:"), lblBridgeTasks_);
+    grid->addRow(new QLabel(tr("Tasks:")), lblBridgeTasks_);
 
     // Style the row labels
     for (int i = 0; i < grid->rowCount(); ++i) {
@@ -5782,13 +5793,13 @@ void MainWindow::setupUI() {
 
     // Header with refresh button
     auto *headerLayout = new QHBoxLayout;
-    auto *lblHeader = new QLabel("🌐 Connected Peers");
+    auto *lblHeader = new QLabel(tr("🌐 Connected Peers"));
     lblHeader->setStyleSheet("QLabel { font-size: 16px; font-weight: bold; }");
     headerLayout->addWidget(lblHeader);
     headerLayout->addStretch();
 
-    btnRefreshPeers_ = new QPushButton("🔄 Refresh");
-    btnRefreshPeers_->setToolTip("Refresh peer list from daemon");
+    btnRefreshPeers_ = new QPushButton(tr("🔄 Refresh"));
+    btnRefreshPeers_->setToolTip(tr("Refresh peer list from daemon"));
     connect(btnRefreshPeers_, &QPushButton::clicked, [this]() {
       rpc_->call("getpeerinfo", QJsonArray{});
       rpc_->call("getnetworkinfo", QJsonArray{});
@@ -5796,14 +5807,14 @@ void MainWindow::setupUI() {
     headerLayout->addWidget(btnRefreshPeers_);
     layout->addLayout(headerLayout);
 
-    auto *statusGroup = new QGroupBox("Network Status");
+    auto *statusGroup = new QGroupBox(tr("Network Status"));
     auto *statusGrid = new QGridLayout(statusGroup);
-    lblPeerSummary_ = new QLabel("Connections: -");
-    lblPeerReachability_ = new QLabel("Listening: -");
-    lblPeerPortMapping_ = new QLabel("Port mapping: -");
-    lblPeerRelay_ = new QLabel("Relay: -");
-    lblPeerAdvertised_ = new QLabel("Advertised: -");
-    lblPeerReachabilityAdvice_ = new QLabel("Reachability: checking");
+    lblPeerSummary_ = new QLabel(tr("Connections: -"));
+    lblPeerReachability_ = new QLabel(tr("Listening: -"));
+    lblPeerPortMapping_ = new QLabel(tr("Port mapping: -"));
+    lblPeerRelay_ = new QLabel(tr("Relay: -"));
+    lblPeerAdvertised_ = new QLabel(tr("Advertised: -"));
+    lblPeerReachabilityAdvice_ = new QLabel(tr("Reachability: checking"));
     lblPeerReachabilityAdvice_->setWordWrap(true);
     lblPeerReachabilityAdvice_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     lblPeerReachabilityAdvice_->setStyleSheet("QLabel { color: #aeb8c2; font-size: 12px; }");
@@ -5827,16 +5838,16 @@ void MainWindow::setupUI() {
         {"ID", "Location", "Type", "Client", "Blocks Adv.", "Headers Adv.", "Validated", "Direction"});
     for (int column : {4, 5}) {
       if (auto* seenHeader = tblPeers_->horizontalHeaderItem(column)) {
-        seenHeader->setToolTip(
+        seenHeader->setToolTip(tr(
             "Observed through this local node's P2P connection.\n"
             "This is not the remote node's active validated tip.\n"
-            "Validation requires that node's authenticated blockchain RPC.");
+            "Validation requires that node's authenticated blockchain RPC."));
       }
     }
     if (auto* validatedHeader = tblPeers_->horizontalHeaderItem(6)) {
-      validatedHeader->setToolTip(
+      validatedHeader->setToolTip(tr(
           "Validated chain height self-reported by the peer (extended ping).\n"
-          "Shows — for peers on older builds that do not report it.");
+          "Shows — for peers on older builds that do not report it."));
     }
     tblPeers_->horizontalHeader()->setStretchLastSection(true);
     tblPeers_->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -5846,25 +5857,25 @@ void MainWindow::setupUI() {
 
     // Action buttons
     auto *btnLayout = new QHBoxLayout;
-    btnDisconnectPeer_ = new QPushButton("❌ Disconnect");
-    btnDisconnectPeer_->setToolTip("Disconnect from selected peer");
+    btnDisconnectPeer_ = new QPushButton(tr("❌ Disconnect"));
+    btnDisconnectPeer_->setToolTip(tr("Disconnect from selected peer"));
     connect(btnDisconnectPeer_, &QPushButton::clicked, this, &MainWindow::onDisconnectPeer);
     btnLayout->addWidget(btnDisconnectPeer_);
 
-    btnBanPeer_ = new QPushButton("🚫 Ban");
-    btnBanPeer_->setToolTip("Ban selected peer (blocks reconnection)");
+    btnBanPeer_ = new QPushButton(tr("🚫 Ban"));
+    btnBanPeer_->setToolTip(tr("Ban selected peer (blocks reconnection)"));
     btnBanPeer_->setStyleSheet(chromeButtonStyle());
     connect(btnBanPeer_, &QPushButton::clicked, this, &MainWindow::onBanPeer);
     btnLayout->addWidget(btnBanPeer_);
 
-    btnReconnectAllPeers_ = new QPushButton("🔄 Reconnect All");
-    btnReconnectAllPeers_->setToolTip("Disconnect and reconnect all peers (refreshes peer heights)");
+    btnReconnectAllPeers_ = new QPushButton(tr("🔄 Reconnect All"));
+    btnReconnectAllPeers_->setToolTip(tr("Disconnect and reconnect all peers (refreshes peer heights)"));
     btnReconnectAllPeers_->setStyleSheet(chromeButtonStyle());
     connect(btnReconnectAllPeers_, &QPushButton::clicked, this, &MainWindow::onReconnectAllPeers);
     btnLayout->addWidget(btnReconnectAllPeers_);
 
-    btnCopyNetworkDiagnostics_ = new QPushButton("📋 Copy Diagnostics");
-    btnCopyNetworkDiagnostics_->setToolTip("Copy P2P status, port mapping, advertised addresses, and peers");
+    btnCopyNetworkDiagnostics_ = new QPushButton(tr("📋 Copy Diagnostics"));
+    btnCopyNetworkDiagnostics_->setToolTip(tr("Copy P2P status, port mapping, advertised addresses, and peers"));
     btnCopyNetworkDiagnostics_->setStyleSheet(chromeButtonStyle());
     connect(btnCopyNetworkDiagnostics_, &QPushButton::clicked, this, &MainWindow::onCopyNetworkDiagnostics);
     btnLayout->addWidget(btnCopyNetworkDiagnostics_);
@@ -5883,38 +5894,38 @@ void MainWindow::setupUI() {
 
     // Header with stats
     auto *headerLayout = new QHBoxLayout;
-    auto *lblHeader = new QLabel("📋 Block Template");
+    auto *lblHeader = new QLabel(tr("📋 Block Template"));
     lblHeader->setStyleSheet("QLabel { font-size: 16px; font-weight: bold; }");
     headerLayout->addWidget(lblHeader);
     headerLayout->addStretch();
 
-    btnRefreshTemplate_ = new QPushButton("🔄 Refresh");
-    btnRefreshTemplate_->setToolTip("Fetch latest block template from daemon");
+    btnRefreshTemplate_ = new QPushButton(tr("🔄 Refresh"));
+    btnRefreshTemplate_->setToolTip(tr("Fetch latest block template from daemon"));
     connect(btnRefreshTemplate_, &QPushButton::clicked, this, &MainWindow::onRefreshTemplate);
     headerLayout->addWidget(btnRefreshTemplate_);
     layout->addLayout(headerLayout);
 
     // Template stats
-    auto *statsGroup = new QGroupBox("Template Stats");
+    auto *statsGroup = new QGroupBox(tr("Template Stats"));
     auto *statsLayout = new QGridLayout(statsGroup);
 
-    statsLayout->addWidget(new QLabel("Height:"), 0, 0);
+    statsLayout->addWidget(new QLabel(tr("Height:")), 0, 0);
     lblTemplateHeight_ = new QLabel("-");
     lblTemplateHeight_->setStyleSheet("QLabel { font-weight: bold; }");
     statsLayout->addWidget(lblTemplateHeight_, 0, 1);
 
-    statsLayout->addWidget(new QLabel("Transactions:"), 0, 2);
+    statsLayout->addWidget(new QLabel(tr("Transactions:")), 0, 2);
     lblTemplateTxCount_ = new QLabel("-");
     lblTemplateTxCount_->setStyleSheet("QLabel { font-weight: bold; }");
     statsLayout->addWidget(lblTemplateTxCount_, 0, 3);
 
-    statsLayout->addWidget(new QLabel("Total Fees:"), 1, 0);
+    statsLayout->addWidget(new QLabel(tr("Total Fees:")), 1, 0);
     lblTemplateFees_ = new QLabel("-");
     lblTemplateFees_->setStyleSheet("QLabel { font-weight: bold; color: #d6dde6; }");
     statsLayout->addWidget(lblTemplateFees_, 1, 1);
 
-    auto *lblTemplateTargetBits = new QLabel("Target bits:");
-    lblTemplateTargetBits->setToolTip("Compact proof-of-work target (nBits).");
+    auto *lblTemplateTargetBits = new QLabel(tr("Target bits:"));
+    lblTemplateTargetBits->setToolTip(tr("Compact proof-of-work target (nBits)."));
     statsLayout->addWidget(lblTemplateTargetBits, 1, 2);
     lblTemplateDifficulty_ = new QLabel("-");
     lblTemplateDifficulty_->setStyleSheet("QLabel { font-weight: bold; }");
@@ -5925,12 +5936,12 @@ void MainWindow::setupUI() {
     layout->addWidget(statsGroup);
 
     // Template JSON display
-    auto *jsonGroup = new QGroupBox("Raw Template (JSON)");
+    auto *jsonGroup = new QGroupBox(tr("Raw Template (JSON)"));
     auto *jsonLayout = new QVBoxLayout(jsonGroup);
     txtBlockTemplate_ = new QTextEdit;
     txtBlockTemplate_->setReadOnly(true);
     txtBlockTemplate_->setFont(QFont("Courier", 10));
-    txtBlockTemplate_->setPlaceholderText("Click 'Refresh' to fetch block template...");
+    txtBlockTemplate_->setPlaceholderText(tr("Click 'Refresh' to fetch block template..."));
     jsonLayout->addWidget(txtBlockTemplate_);
     layout->addWidget(jsonGroup);
 
@@ -5943,6 +5954,54 @@ void MainWindow::setupUI() {
     auto *settings = new QWidget;
     auto *layout = new QVBoxLayout(settings);
     layout->setSpacing(12);
+
+    auto *languageGroup = new QGroupBox(tr("Language"));
+    auto *languageLayout = new QVBoxLayout(languageGroup);
+    auto *languageForm = new QFormLayout;
+    auto *languageCombo = new QComboBox;
+    languageCombo->setIconSize(QSize(24, 18));
+    for (const auto &language : dinero::qt::i18n::AvailableLanguages()) {
+      languageCombo->addItem(QIcon(language.flagIconPath), language.nativeName,
+                             language.code);
+    }
+    const int storedLanguage =
+        languageCombo->findData(dinero::qt::i18n::CurrentLanguageCode());
+    if (storedLanguage >= 0) languageCombo->setCurrentIndex(storedLanguage);
+    languageForm->addRow(new QLabel(tr("Interface language:")), languageCombo);
+    languageLayout->addLayout(languageForm);
+
+    auto *languageNote = new QLabel(
+        tr("Untranslated text stays in English. Amounts always use a dot decimal separator, in every language."));
+    languageNote->setWordWrap(true);
+    languageLayout->addWidget(languageNote);
+    auto *languageRestartHint = new QLabel;
+    languageRestartHint->setWordWrap(true);
+    languageRestartHint->hide();
+    languageLayout->addWidget(languageRestartHint);
+    auto *languageRestartButton = new QPushButton(tr("Restart Dinero Now"));
+    languageRestartButton->hide();
+    languageLayout->addWidget(languageRestartButton);
+    connect(languageCombo, &QComboBox::currentIndexChanged, this,
+            [languageCombo, languageRestartHint, languageRestartButton](int index) {
+      if (index < 0) return;
+      dinero::qt::i18n::SetLanguageCode(languageCombo->itemData(index).toString());
+      languageRestartHint->setText(tr("Language saved. Restart Dinero to apply it."));
+      languageRestartHint->show();
+      languageRestartButton->show();
+    });
+    connect(languageRestartButton, &QPushButton::clicked, this, [this]() {
+      QMessageBox confirm(this);
+      confirm.setIcon(QMessageBox::Question);
+      confirm.setWindowTitle(tr("Restart Dinero"));
+      confirm.setText(tr("Restart Dinero now to apply the new language?"));
+      confirm.setInformativeText(tr("The wallet and its built-in node shut down cleanly and start again. Any sync or mining in progress pauses until Dinero is back up."));
+      QPushButton *restart = confirm.addButton(tr("Restart Now"), QMessageBox::AcceptRole);
+      confirm.addButton(tr("Later"), QMessageBox::RejectRole);
+      confirm.setDefaultButton(restart);
+      confirm.exec();
+      if (confirm.clickedButton() == restart) dinero::qt::apprestart::RequestRestart();
+    });
+    layout->addWidget(languageGroup);
 
     auto actualDataDir = [this]() {
       QString dataDir = rpc_ ? rpc_->datadir() : QString();
@@ -6009,14 +6068,14 @@ void MainWindow::setupUI() {
 
     // Header
     auto *headerLayout = new QHBoxLayout;
-    auto *lblHeader = new QLabel("⚙️ Settings & Backup");
+    auto *lblHeader = new QLabel(tr("⚙️ Settings & Backup"));
     lblHeader->setStyleSheet("QLabel { font-size: 16px; font-weight: bold; }");
     headerLayout->addWidget(lblHeader);
     headerLayout->addStretch();
     layout->addLayout(headerLayout);
 
     // Node runtime section
-    auto *runtimeGroup = new QGroupBox("📁 Node Runtime");
+    auto *runtimeGroup = new QGroupBox(tr("📁 Node Runtime"));
     auto *runtimeLayout = new QGridLayout(runtimeGroup);
     runtimeLayout->setColumnStretch(1, 1);
     runtimeLayout->setHorizontalSpacing(10);
@@ -6041,49 +6100,49 @@ void MainWindow::setupUI() {
       ? QStringLiteral("Bundled dinerod (inside app)")
       : savedDaemonPath;
 
-    btnStartDaemon_ = new QPushButton("Start Daemon");
+    btnStartDaemon_ = new QPushButton(tr("Start Daemon"));
     btnStartDaemon_->setStyleSheet(chromeButtonStyle());
     btnStartDaemon_->setFixedWidth(136);
-    btnStartDaemon_->setToolTip("Start local dinerod daemon");
+    btnStartDaemon_->setToolTip(tr("Start local dinerod daemon"));
     connect(btnStartDaemon_, &QPushButton::clicked, this, &MainWindow::onStartDaemon);
 
-    btnStopDaemon_ = new QPushButton("Stop Daemon");
+    btnStopDaemon_ = new QPushButton(tr("Stop Daemon"));
     btnStopDaemon_->setStyleSheet(chromeButtonStyle());
     btnStopDaemon_->setFixedWidth(136);
-    btnStopDaemon_->setToolTip("Stop local dinerod daemon");
+    btnStopDaemon_->setToolTip(tr("Stop local dinerod daemon"));
     btnStopDaemon_->setVisible(false);
     connect(btnStopDaemon_, &QPushButton::clicked, this, &MainWindow::onStopDaemon);
 
     edtDaemonPath_ = new QLineEdit(settings);
-    edtDaemonPath_->setPlaceholderText("dinerod path (optional)...");
+    edtDaemonPath_->setPlaceholderText(tr("dinerod path (optional)..."));
     edtDaemonPath_->setStyleSheet(
       "QLineEdit { background: #1f2328; color: #d7dde5; border: 1px solid #353b44; "
       "border-radius: 8px; padding: 0 10px; font-size: 12px; }");
-    edtDaemonPath_->setToolTip("Custom path to dinerod binary (optional)");
+    edtDaemonPath_->setToolTip(tr("Custom path to dinerod binary (optional)"));
     edtDaemonPath_->setVisible(false);
 
-    btnBrowseDaemon_ = new QPushButton("Browse Daemon…");
+    btnBrowseDaemon_ = new QPushButton(tr("Browse Daemon…"));
     btnBrowseDaemon_->setStyleSheet(chromeButtonStyle());
     btnBrowseDaemon_->setFixedWidth(148);
-    btnBrowseDaemon_->setToolTip("Select a custom dinerod binary");
+    btnBrowseDaemon_->setToolTip(tr("Select a custom dinerod binary"));
     connect(btnBrowseDaemon_, &QPushButton::clicked, this, &MainWindow::onBrowseDaemonBinary);
 
-    lblConnectionStatus_ = new QLabel("Disconnected");
+    lblConnectionStatus_ = new QLabel(tr("Disconnected"));
     lblConnectionStatus_->setStyleSheet(headerPillStyle());
     lblConnectionStatus_->setMinimumWidth(120);
     lblConnectionStatus_->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
 
-    lblNetworkInfo_ = new QLabel("Network: -");
+    lblNetworkInfo_ = new QLabel(tr("Network: -"));
     lblNetworkInfo_->setStyleSheet(headerPillStyle());
     lblNetworkInfo_->setMinimumWidth(210);
     lblNetworkInfo_->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
 
-    lblDaemonVersion_ = new QLabel("Core: -");
+    lblDaemonVersion_ = new QLabel(tr("Core: -"));
     lblDaemonVersion_->setStyleSheet(headerPillStyle());
     lblDaemonVersion_->setMinimumWidth(110);
     lblDaemonVersion_->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
 
-    lblDbHealth_ = new QLabel("DB: -");
+    lblDbHealth_ = new QLabel(tr("DB: -"));
     lblDbHealth_->setStyleSheet(headerPillStyle());
     lblDbHealth_->setMinimumWidth(150);
     lblDbHealth_->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
@@ -6116,14 +6175,14 @@ void MainWindow::setupUI() {
     addRuntimeRow(2, "Daemon binary", daemonText);
 
     auto *runtimeButtons = new QHBoxLayout;
-    auto *btnOpenDataDir = new QPushButton("📂 Open Data Directory");
+    auto *btnOpenDataDir = new QPushButton(tr("📂 Open Data Directory"));
     btnOpenDataDir->setStyleSheet(chromeButtonStyle());
     connect(btnOpenDataDir, &QPushButton::clicked, [actualDataDir]() {
       QDesktopServices::openUrl(QUrl::fromLocalFile(actualDataDir()));
     });
     runtimeButtons->addWidget(btnOpenDataDir);
 
-    auto *btnOpenChainDir = new QPushButton("⛓️ Open Chain Database");
+    auto *btnOpenChainDir = new QPushButton(tr("⛓️ Open Chain Database"));
     btnOpenChainDir->setStyleSheet(chromeButtonStyle());
     connect(btnOpenChainDir, &QPushButton::clicked, [actualDataDir]() {
       QDesktopServices::openUrl(QUrl::fromLocalFile(QDir(actualDataDir()).filePath("blockchain/chaindb")));
@@ -6131,13 +6190,13 @@ void MainWindow::setupUI() {
     runtimeButtons->addWidget(btnOpenChainDir);
 
     if (!savedDaemonPath.isEmpty() && !savedDaemonIsBundled) {
-      auto *btnClearDaemonPath = new QPushButton("Reset Daemon Path");
+      auto *btnClearDaemonPath = new QPushButton(tr("Reset Daemon Path"));
       btnClearDaemonPath->setStyleSheet(chromeButtonStyle());
-      btnClearDaemonPath->setToolTip("Return to the bundled or system dinerod on the next daemon start.");
+      btnClearDaemonPath->setToolTip(tr("Return to the bundled or system dinerod on the next daemon start."));
       connect(btnClearDaemonPath, &QPushButton::clicked, [this]() {
         QSettings().remove("daemon/custom_path");
-        QMessageBox::information(this, "Daemon Path Reset",
-          "Dinero-Qt will use the bundled or system dinerod the next time the daemon is started.");
+        QMessageBox::information(this, tr("Daemon Path Reset"),
+          tr("Dinero-Qt will use the bundled or system dinerod the next time the daemon is started."));
       });
       runtimeButtons->addWidget(btnClearDaemonPath);
     }
@@ -6146,7 +6205,7 @@ void MainWindow::setupUI() {
     runtimeLayout->addLayout(runtimeButtons, 3, 0, 1, 2);
     layout->addWidget(runtimeGroup);
 
-    auto* networkPrivacyGroup = new QGroupBox("Network & Privacy");
+    auto* networkPrivacyGroup = new QGroupBox(tr("Network & Privacy"));
     auto* networkPrivacyLayout = new QVBoxLayout(networkPrivacyGroup);
     networkPrivacyLayout->setSpacing(8);
     auto* networkPrivacySummary = new QLabel(
@@ -6167,14 +6226,14 @@ void MainWindow::setupUI() {
     });
     layout->addWidget(networkPrivacyGroup);
 
-    auto *developerGroup = new QGroupBox("🧪 Developer Menu");
+    auto *developerGroup = new QGroupBox(tr("🧪 Developer Menu"));
     auto *developerLayout = new QVBoxLayout(developerGroup);
     developerLayout->setSpacing(10);
 
-    auto *developerSummary = new QLabel(
+    auto *developerSummary = new QLabel(tr(
       "Advanced local daemon controls, reconnect tools, and runtime diagnostics. "
       "Hidden by default so the main wallet stays calm."
-    );
+    ));
     developerSummary->setWordWrap(true);
     developerSummary->setStyleSheet(backupPanelStyle());
     developerLayout->addWidget(developerSummary);
@@ -6199,12 +6258,12 @@ void MainWindow::setupUI() {
     developerActions->addWidget(btnStopDaemon_);
     developerActions->addWidget(btnBrowseDaemon_);
 
-    auto *btnReconnect = new QPushButton("Reconnect");
-    btnReconnect->setToolTip("Force reconnection (reload cookie & retry)");
+    auto *btnReconnect = new QPushButton(tr("Reconnect"));
+    btnReconnect->setToolTip(tr("Force reconnection (reload cookie & retry)"));
     btnReconnect->setFixedWidth(108);
     btnReconnect->setStyleSheet(chromeButtonStyle());
     connect(btnReconnect, &QPushButton::clicked, this, [this]() {
-      lblConnectionStatus_->setText("Reconnecting...");
+      lblConnectionStatus_->setText(tr("Reconnecting..."));
       lblConnectionStatus_->setStyleSheet(headerPillStyle());
       rpc_->reconnect();
       QTimer::singleShot(2000, this, &MainWindow::refresh);
@@ -6235,9 +6294,9 @@ void MainWindow::setupUI() {
       });
     }
 
-    auto *developerNote = new QLabel(
+    auto *developerNote = new QLabel(tr(
       "Use these controls when testing daemon startup, connection recovery, or local runtime health."
-    );
+    ));
     developerNote->setWordWrap(true);
     developerNote->setStyleSheet(mutedLabelStyle());
     developerPanelLayout->addWidget(developerNote);
@@ -6260,16 +6319,75 @@ void MainWindow::setupUI() {
     developerLayout->addWidget(developerPanel);
     layout->addWidget(developerGroup);
 
+    // An old-snapshot user can return to the preserved wallet files without
+    // finding hidden folders or editing the app's settings database. Switching
+    // takes effect only after the current daemon has stopped with the app.
+    const QString newProfile = QSettings()
+        .value("data/active_dir_after_legacy_snapshot_v1").toString();
+    const QString preservedProfile = QDir::cleanPath(defaultDineroDataDir());
+    const QString currentProfile = actualDataDir();
+    if (!newProfile.isEmpty() &&
+        (currentProfile == preservedProfile || currentProfile == QDir::cleanPath(newProfile))) {
+      auto* profileGroup = new QGroupBox("Wallet data folders");
+      auto* profileLayout = new QVBoxLayout(profileGroup);
+      const bool usingPreserved = currentProfile == preservedProfile;
+      auto* profileNote = new QLabel(usingPreserved
+          ? QStringLiteral("This app is using your preserved older wallet data. "
+                           "A separate new wallet is available in another folder.")
+          : QStringLiteral("This app is using a separate new wallet. "
+                           "Your older wallet files remain in their original folder; "
+                           "their coins were not transferred."));
+      profileNote->setWordWrap(true);
+      profileNote->setStyleSheet(backupPanelStyle());
+      profileLayout->addWidget(profileNote);
+      auto* switchProfile = new QPushButton(usingPreserved
+          ? QStringLiteral("Use separate new wallet after restart")
+          : QStringLiteral("Open preserved older wallet after restart"));
+      switchProfile->setStyleSheet(chromeButtonStyle());
+      profileLayout->addWidget(switchProfile);
+      connect(switchProfile, &QPushButton::clicked, this,
+              [this, usingPreserved, newProfile, preservedProfile]() {
+        const QString destination = usingPreserved ? newProfile : preservedProfile;
+        if (!QFileInfo(destination).isDir()) {
+          QMessageBox::warning(this, "Wallet data folder missing",
+              QString("The wallet data folder is missing:\n%1\n\nNo change was made.")
+                  .arg(QDir::toNativeSeparators(destination)));
+          return;
+        }
+        const QString destinationName = usingPreserved
+            ? QStringLiteral("the separate new wallet")
+            : QStringLiteral("the preserved older wallet");
+        if (QMessageBox::question(this, "Switch wallet data after restart",
+                QString("After you quit and reopen Dinero, it will use %1. "
+                        "The current wallet stays open until you quit. "
+                        "Wallet files and coins are not moved between folders.\n\nContinue?")
+                    .arg(destinationName),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+          return;
+        QSettings settings;
+        settings.setValue("data/use_preserved_legacy_dir_v1", !usingPreserved);
+        settings.sync();
+        if (settings.status() != QSettings::NoError) {
+          QMessageBox::warning(this, "Could not save wallet selection",
+              "Dinero could not save the folder selection. No wallet files were moved.");
+          return;
+        }
+        QMessageBox::information(this, "Wallet data selection saved",
+            QString("Quit and reopen Dinero to use %1.").arg(destinationName));
+      });
+      layout->addWidget(profileGroup);
+    }
+
     // Backup section
-    auto *backupGroup = new QGroupBox("💾 Backup");
+    auto *backupGroup = new QGroupBox(tr("💾 Backup"));
     auto *backupLayout = new QVBoxLayout(backupGroup);
     backupLayout->setSpacing(10);
 
-    auto *backupInfoLabel = new QLabel(
+    auto *backupInfoLabel = new QLabel(tr(
       "<b>Wallet backup:</b> stop the daemon first, then copy wallet databases, HD wallet state, and wallet registry. "
       "A seed phrase alone does not restore P2MR keys. "
       "<b>Chain backup:</b> optional; it can be large and can always be rebuilt by syncing again."
-    );
+    ));
     backupInfoLabel->setWordWrap(true);
     backupInfoLabel->setStyleSheet(backupPanelStyle());
     backupLayout->addWidget(backupInfoLabel);
@@ -6279,16 +6397,16 @@ void MainWindow::setupUI() {
     backupGrid->setHorizontalSpacing(12);
     backupGrid->setVerticalSpacing(10);
 
-    auto *btnBackupWallet = new QPushButton("💼 Backup Wallet Data");
+    auto *btnBackupWallet = new QPushButton(tr("💼 Backup Wallet Data"));
     btnBackupWallet->setStyleSheet(chromeButtonStyle());
-    btnBackupWallet->setToolTip("Stop the daemon, then back up wallets/, hd_wallet/, and wallet_registry.db from its data directory.");
+    btnBackupWallet->setToolTip(tr("Stop the daemon, then back up wallets/, hd_wallet/, and wallet_registry.db from its data directory."));
     connect(btnBackupWallet, &QPushButton::clicked,
             [this, actualDataDir, copyFileIntoBackup, copyDirectoryIntoBackup]() {
       if ((daemonProcess_ && daemonProcess_->state() != QProcess::NotRunning) ||
           (connectionMgr_ && connectionMgr_->isConnected())) {
-        QMessageBox::warning(this, "Stop Daemon Before Backup",
-          "Wallet databases can change while the daemon is running. Use Stop Daemon, "
-          "wait for it to finish, then run Backup Wallet Data again.");
+        QMessageBox::warning(this, tr("Stop Daemon Before Backup"),
+          tr("Wallet databases can change while the daemon is running. Use Stop Daemon, "
+          "wait for it to finish, then run Backup Wallet Data again."));
         return;
       }
       const QString backupDir = QFileDialog::getExistingDirectory(this, "Select Wallet Backup Location");
@@ -6298,7 +6416,7 @@ void MainWindow::setupUI() {
       const QString sourceRoot = QFileInfo(dataDir).canonicalFilePath();
       const QString destinationRoot = QFileInfo(backupDir).canonicalFilePath();
       if (sourceRoot.isEmpty() || destinationRoot.isEmpty()) {
-        QMessageBox::warning(this, "Backup Failed", "Could not resolve the wallet or backup directory.");
+        QMessageBox::warning(this, tr("Backup Failed"), tr("Could not resolve the wallet or backup directory."));
         return;
       }
 #ifdef Q_OS_WIN
@@ -6308,33 +6426,33 @@ void MainWindow::setupUI() {
 #endif
       if (destinationRoot.compare(sourceRoot, pathComparison) == 0 ||
           destinationRoot.startsWith(sourceRoot + QLatin1Char('/'), pathComparison)) {
-        QMessageBox::warning(this, "Choose Another Backup Location",
-          "Save the backup outside the daemon's data directory.");
+        QMessageBox::warning(this, tr("Choose Another Backup Location"),
+          tr("Save the backup outside the daemon's data directory."));
         return;
       }
       const QDir walletsDir(QDir(dataDir).filePath("wallets"));
       if (walletsDir.entryList(QStringList{QStringLiteral("wallet_*.db")}, QDir::Files).isEmpty()) {
-        QMessageBox::warning(this, "Backup Failed",
+        QMessageBox::warning(this, tr("Backup Failed"),
           QString("No wallet database was found in %1. Nothing was backed up.")
             .arg(walletsDir.path()));
         return;
       }
       if (!QFile::exists(QDir(dataDir).filePath("wallet_registry.db"))) {
-        QMessageBox::warning(this, "Backup Failed",
-          "The wallet registry is missing. No complete wallet backup can be made.");
+        QMessageBox::warning(this, tr("Backup Failed"),
+          tr("The wallet registry is missing. No complete wallet backup can be made."));
         return;
       }
       WalletBackupDatadirLock datadirLock(dataDir);
       if (!datadirLock.held()) {
-        QMessageBox::warning(this, "Stop Daemon Before Backup",
-          "The selected data directory is in use or cannot be locked. "
-          "Stop every daemon using it, then retry the backup.");
+        QMessageBox::warning(this, tr("Stop Daemon Before Backup"),
+          tr("The selected data directory is in use or cannot be locked. "
+          "Stop every daemon using it, then retry the backup."));
         return;
       }
       const QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
       const QString backupPath = QDir(backupDir).filePath("dinero_wallet_backup_" + timestamp);
       if (!QDir().mkpath(backupPath)) {
-        QMessageBox::warning(this, "Backup Failed", QString("Could not create:\n%1").arg(backupPath));
+        QMessageBox::warning(this, tr("Backup Failed"), QString("Could not create:\n%1").arg(backupPath));
         return;
       }
 
@@ -6363,32 +6481,32 @@ void MainWindow::setupUI() {
         QString message = QString("Wallet backup complete.\n\nItems copied: %1\nLocation: %2")
           .arg(copiedCount)
           .arg(backupPath);
-        QMessageBox::information(this, "Backup Complete", message);
+        QMessageBox::information(this, tr("Backup Complete"), message);
       } else if (!errors.isEmpty()) {
-        QMessageBox::warning(this, "Backup Incomplete",
+        QMessageBox::warning(this, tr("Backup Incomplete"),
           QString("Some wallet files could not be copied to %1. Do not rely on this backup.\n\n%2")
             .arg(backupPath, errors.join("\n")));
       } else {
-        QMessageBox::warning(this, "Backup Failed",
+        QMessageBox::warning(this, tr("Backup Failed"),
           QString("No wallet data was found in:\n%1").arg(dataDir));
       }
     });
     backupGrid->addWidget(btnBackupWallet, 0, 0);
 
-    auto *lblWalletBackup = new QLabel("After stopping the daemon, copies wallets/, hd_wallet/, wallet registry, and the local SV2 pool key.");
+    auto *lblWalletBackup = new QLabel(tr("After stopping the daemon, copies wallets/, hd_wallet/, wallet registry, and the local SV2 pool key."));
     lblWalletBackup->setWordWrap(true);
     lblWalletBackup->setStyleSheet(mutedLabelStyle());
     backupGrid->addWidget(lblWalletBackup, 0, 1);
 
-    auto *btnBackupChain = new QPushButton("⛓️ Backup Chain Data");
+    auto *btnBackupChain = new QPushButton(tr("⛓️ Backup Chain Data"));
     btnBackupChain->setStyleSheet(chromeButtonStyle());
-    btnBackupChain->setToolTip("Backup blockchain/, blocks/, and headers/ from the daemon data directory.");
+    btnBackupChain->setToolTip(tr("Backup blockchain/, blocks/, and headers/ from the daemon data directory."));
     connect(btnBackupChain, &QPushButton::clicked,
             [this, actualDataDir, copyDirectoryIntoBackup]() {
-      const auto reply = QMessageBox::question(this, "Backup Chain Data",
-        "Chain data can be large and may take several minutes to copy.\n\n"
+      const auto reply = QMessageBox::question(this, tr("Backup Chain Data"),
+        tr("Chain data can be large and may take several minutes to copy.\n\n"
         "This is optional because the node can resync from the network.\n\n"
-        "Continue?",
+        "Continue?"),
         QMessageBox::Yes | QMessageBox::No);
       if (reply != QMessageBox::Yes) return;
 
@@ -6399,7 +6517,7 @@ void MainWindow::setupUI() {
       const QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
       const QString backupPath = QDir(backupDir).filePath("dinero_chain_backup_" + timestamp);
       if (!QDir().mkpath(backupPath)) {
-        QMessageBox::warning(this, "Backup Failed", QString("Could not create:\n%1").arg(backupPath));
+        QMessageBox::warning(this, tr("Backup Failed"), QString("Could not create:\n%1").arg(backupPath));
         return;
       }
 
@@ -6420,15 +6538,15 @@ void MainWindow::setupUI() {
         if (!errors.isEmpty()) {
           message += QString("\n\nSkipped: %1 item(s)").arg(errors.size());
         }
-        QMessageBox::information(this, "Backup Complete", message);
+        QMessageBox::information(this, tr("Backup Complete"), message);
       } else {
-        QMessageBox::warning(this, "Backup Failed",
+        QMessageBox::warning(this, tr("Backup Failed"),
           QString("No chain data was found in:\n%1").arg(dataDir));
       }
     });
     backupGrid->addWidget(btnBackupChain, 1, 0);
 
-    auto *lblChainBackup = new QLabel("Copies blockchain/, blocks/, and headers/. Wallet backup is the critical one.");
+    auto *lblChainBackup = new QLabel(tr("Copies blockchain/, blocks/, and headers/. Wallet backup is the critical one."));
     lblChainBackup->setWordWrap(true);
     lblChainBackup->setStyleSheet(mutedLabelStyle());
     backupGrid->addWidget(lblChainBackup, 1, 1);
@@ -6436,30 +6554,30 @@ void MainWindow::setupUI() {
     backupLayout->addLayout(backupGrid);
     layout->addWidget(backupGroup);
 
-    auto *note = new QLabel(
+    auto *note = new QLabel(tr(
       "Backups are created as timestamped folders. For the cleanest filesystem snapshot, stop mining first and avoid closing the app during the copy."
-    );
+    ));
     note->setWordWrap(true);
     note->setStyleSheet(backupPanelStyle());
     layout->addWidget(note);
 
-    auto *updatesGroup = new QGroupBox("Updates");
+    auto *updatesGroup = new QGroupBox(tr("Updates"));
     auto *updatesLayout = new QVBoxLayout(updatesGroup);
-    auto *chkCheckUpdates = new QCheckBox("Check for updates and network upgrades");
+    auto *chkCheckUpdates = new QCheckBox(tr("Check for updates and network upgrades"));
     chkCheckUpdates->setChecked(QSettings().value("updates/check_enabled", true).toBool());
     connect(chkCheckUpdates, &QCheckBox::toggled, this, [this](bool on) {
       QSettings().setValue("updates/check_enabled", on);
       if (on && updateChecker_) updateChecker_->checkNow();
     });
     updatesLayout->addWidget(chkCheckUpdates);
-    auto *lblUpdatesNote = new QLabel("Asks GitHub for the latest Dinero release and any scheduled network upgrade. Nothing about you or your wallet is sent.");
+    auto *lblUpdatesNote = new QLabel(tr("Asks GitHub for the latest Dinero release and any scheduled network upgrade. Nothing about you or your wallet is sent."));
     lblUpdatesNote->setWordWrap(true);
     lblUpdatesNote->setStyleSheet(mutedLabelStyle());
     updatesLayout->addWidget(lblUpdatesNote);
     layout->addWidget(updatesGroup);
 
     layout->addStretch();
-    tabs->addTab(makeScrollableTab(settings), navigationIcon(NavigationGlyph::Settings), "Settings");
+    addNamedMainTab(tabs, makeScrollableTab(settings), navigationIcon(NavigationGlyph::Settings), tr("Settings"), "Settings");
   }
 
   // === Error Message Bar (at very bottom) ===
@@ -6629,15 +6747,15 @@ void MainWindow::updateWalletAddressModeUi() {
   }
   if (lblReceivePathHint_) {
     if (p2mrMode) {
-      lblReceivePathHint_->setText("Path: m/88'/1448'/0'/0/i | din1r");
-      lblReceivePathHint_->setToolTip(
+      lblReceivePathHint_->setText(tr("Path: m/88'/1448'/0'/0/i | din1r"));
+      lblReceivePathHint_->setToolTip(tr(
           "Purpose 88 P2MR lane.\n"
-          "Quantum-safe ML-DSA-65 receive addresses derive from the same BIP39 seed.");
+          "Quantum-safe ML-DSA-65 receive addresses derive from the same BIP39 seed."));
     } else {
-      lblReceivePathHint_->setText("Path: m/86'/1448'/0'/0/i | din1p");
-      lblReceivePathHint_->setToolTip(
+      lblReceivePathHint_->setText(tr("Path: m/86'/1448'/0'/0/i | din1p"));
+      lblReceivePathHint_->setToolTip(tr(
           "BIP86 Taproot lane.\n"
-          "Mobile-friendly receive addresses derive from the same BIP39 seed.");
+          "Mobile-friendly receive addresses derive from the same BIP39 seed."));
     }
   }
   if (btnNewAddress_) {
@@ -6678,12 +6796,12 @@ void MainWindow::updateReceiveModeUi() {
   const QString mode = currentReceiveMode();  // "all" | "taproot" | "p2mr"
   if (btnDeriveAddress_) {
     if (mode == "p2mr") {
-      btnDeriveAddress_->setText("New P2MR Address");
-      btnDeriveAddress_->setToolTip("Generate a quantum-safe ML-DSA-65 receive address (din1r...)");
+      btnDeriveAddress_->setText(tr("New P2MR Address"));
+      btnDeriveAddress_->setToolTip(tr("Generate a quantum-safe ML-DSA-65 receive address (din1r...)"));
     } else {
       // "all" and "taproot" both default-derive to Taproot
-      btnDeriveAddress_->setText("New Taproot Address");
-      btnDeriveAddress_->setToolTip("Generate a new Taproot receive address (din1p...)");
+      btnDeriveAddress_->setText(tr("New Taproot Address"));
+      btnDeriveAddress_->setToolTip(tr("Generate a new Taproot receive address (din1p...)"));
     }
   }
   applyPrimaryAddressesToReceiveTab();
@@ -6750,37 +6868,37 @@ void MainWindow::updateSendModeUi() {
   if (edtRecipient_) {
     edtRecipient_->setEnabled(inputsEnabled && !unshieldMode && !batch);
     if (publicMode) {
-      edtRecipient_->setPlaceholderText("din1p... (Taproot) or din1r... (P2MR public)");
+      edtRecipient_->setPlaceholderText(tr("din1p... (Taproot) or din1r... (P2MR public)"));
     } else if (privateMode) {
-      edtRecipient_->setPlaceholderText("dins1... (shielded)");
+      edtRecipient_->setPlaceholderText(tr("dins1... (shielded)"));
     } else if (shieldToMode) {
-      edtRecipient_->setPlaceholderText("dins1... (shielded destination)");
+      edtRecipient_->setPlaceholderText(tr("dins1... (shielded destination)"));
     } else if (unshieldMode) {
-      edtRecipient_->setPlaceholderText("Fresh wallet Taproot address will be generated");
+      edtRecipient_->setPlaceholderText(tr("Fresh wallet Taproot address will be generated"));
     } else {
-      edtRecipient_->setPlaceholderText("din1p... or din1r...");
+      edtRecipient_->setPlaceholderText(tr("din1p... or din1r..."));
     }
   }
 
   if (btnSend_) {
     if (privateComposer) {
-      btnSend_->setText("Open private send / convert");
-      btnSend_->setToolTip("Continue in Shielded. Availability depends on network activation.");
+      btnSend_->setText(tr("Open private send / convert"));
+      btnSend_->setToolTip(tr("Continue in Shielded. Availability depends on network activation."));
     } else if (contractMode) {
-      btnSend_->setText("Create Contract");
-      btnSend_->setToolTip("Create an on-chain contract lock with spending rules");
+      btnSend_->setText(tr("Create Contract"));
+      btnSend_->setToolTip(tr("Create an on-chain contract lock with spending rules"));
     } else if (privateMode) {
-      btnSend_->setText("Send Privately");
-      btnSend_->setToolTip("Spend shielded notes to a shielded address");
+      btnSend_->setText(tr("Send Privately"));
+      btnSend_->setToolTip(tr("Spend shielded notes to a shielded address"));
     } else if (shieldToMode) {
-      btnSend_->setText("Send to Shielded");
-      btnSend_->setToolTip("Fund a shielded dins1 address from your transparent balance");
+      btnSend_->setText(tr("Send to Shielded"));
+      btnSend_->setToolTip(tr("Fund a shielded dins1 address from your transparent balance"));
     } else if (unshieldMode) {
-      btnSend_->setText("Convert to Public");
-      btnSend_->setToolTip("Unshield selected private value to a fresh wallet Taproot address");
+      btnSend_->setText(tr("Convert to Public"));
+      btnSend_->setToolTip(tr("Unshield selected private value to a fresh wallet Taproot address"));
     } else {
-      btnSend_->setText("Send");
-      btnSend_->setToolTip("Send DIN transparently from public Taproot/P2MR funds");
+      btnSend_->setText(tr("Send"));
+      btnSend_->setToolTip(tr("Send DIN transparently from public Taproot/P2MR funds"));
     }
   }
 
@@ -6810,28 +6928,28 @@ void MainWindow::updateSendModeUi() {
       status.startsWith("From Pay: ");
     if (isModeHint) {
       if (privateComposer) {
-        lblSendStatus_->setText("Open Shielded to send privately or convert funds. The daemon reports activation availability. Use Covenants for private contract controls when activated.");
+        lblSendStatus_->setText(tr("Open Shielded to send privately or convert funds. The daemon reports activation availability. Use Covenants for private contract controls when activated."));
       } else if (contractMode) {
-        lblSendStatus_->setText("Create an on-chain contract with spending rules.");
+        lblSendStatus_->setText(tr("Create an on-chain contract with spending rules."));
       } else if (privateMode) {
-        lblSendStatus_->setText(
-          "Spend shielded balance privately. Recipient must be a dins1 shielded address.");
+        lblSendStatus_->setText(tr(
+          "Spend shielded balance privately. Recipient must be a dins1 shielded address."));
       } else if (shieldToMode) {
-        lblSendStatus_->setText(
-          "Send transparent balance into a shielded address. Recipient must be a dins1 shielded address.");
+        lblSendStatus_->setText(tr(
+          "Send transparent balance into a shielded address. Recipient must be a dins1 shielded address."));
       } else if (unshieldMode) {
-        lblSendStatus_->setText(
-          "Convert shielded balance to public Taproot. The daemon sends it to a fresh wallet address.");
+        lblSendStatus_->setText(tr(
+          "Convert shielded balance to public Taproot. The daemon sends it to a fresh wallet address."));
       } else {
-        lblSendStatus_->setText("Send DIN publicly from transparent Taproot/P2MR funds.");
+        lblSendStatus_->setText(tr("Send DIN publicly from transparent Taproot/P2MR funds."));
       }
       lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
     }
   }
   if (walletTransparentV3SendReady_ && mode != "public_transfer") {
-    btnSend_->setToolTip("This recovered wallet supports public transfers only");
+    btnSend_->setToolTip(tr("This recovered wallet supports public transfers only"));
     if (lblSendStatus_)
-      lblSendStatus_->setText("This recovered wallet supports public transfers only.");
+      lblSendStatus_->setText(tr("This recovered wallet supports public transfers only."));
   }
   if (!walletSendReady_) {
     btnSend_->setEnabled(false);
@@ -6887,11 +7005,11 @@ void MainWindow::updateCovenantReview() {
   lblReviewTotal_->setText(review.lockedUna > 0 && feeUna > 0 ? "~" + din(review.lockedUna + feeUna) : none);
 
   if (batch) {
-    lblReviewRule_->setText("Funds can only go to the listed recipients, in exactly these amounts. "
-                            "Everything is visible on-chain.");
+    lblReviewRule_->setText(tr("Funds can only go to the listed recipients, in exactly these amounts. "
+                            "Everything is visible on-chain."));
   } else if (key == "timelock") {
-    lblReviewRule_->setText("Only the address above can receive these funds, after the lock period. "
-                            "Everything is visible on-chain.");
+    lblReviewRule_->setText(tr("Only the address above can receive these funds, after the lock period. "
+                            "Everything is visible on-chain."));
   } else {
     lblReviewRule_->setText("Only the address above can ever receive these funds, minus the " +
                             din(CovenantFormPolicy::spendFeeUna) + " withdrawal fee. "
@@ -6908,7 +7026,7 @@ void MainWindow::updateCovenantReview() {
   else if (sendSubmissionPending_) blockers << "Wait for the previous transaction to be sent";
   if (!review.blocker.isEmpty()) blockers << review.blocker;
   if (blockers.isEmpty()) {
-    lblReviewStatus_->setText("Ready. Create Contract shows a final confirmation before anything is sent.");
+    lblReviewStatus_->setText(tr("Ready. Create Contract shows a final confirmation before anything is sent."));
     lblReviewStatus_->setStyleSheet("QLabel { color: #2ecc71; padding: 8px; background: #1f2a22; border-radius: 6px; }");
   } else {
     lblReviewStatus_->setText("To continue: " + blockers.join(QString::fromUtf8(" \xC2\xB7 ")));
@@ -6928,8 +7046,8 @@ void MainWindow::updateWalletBalanceDisplay() {
       lblBalanceScope_->setText(QString("Last verified %1 · waiting for current wallet balance · Sending paused")
                                     .arg(verifiedAt));
     } else if (walletTransparentV3SendReady_) {
-      lblBalanceScope_->setText(
-          "Recovered transparent balance · Public sends supported · Orchard/private actions unavailable");
+      lblBalanceScope_->setText(tr(
+          "Recovered transparent balance · Public sends supported · Orchard/private actions unavailable"));
     } else if (limited) {
       lblBalanceScope_->setText("Balance observed · Sending paused: " + walletSendUnavailableReason_);
     }
@@ -7010,7 +7128,7 @@ void MainWindow::updateWalletBalanceDisplay() {
   auto lblUnconfirmed = findChild<QLabel*>("lblUnconfirmed");
   if (lblUnconfirmed) {
     if (cachedPendingBalance_ == 0.0) {
-      lblUnconfirmed->setText("0.00000000 DIN");
+      lblUnconfirmed->setText(tr("0.00000000 DIN"));
     } else {
       const QString prefix = cachedPendingBalance_ > 0 ? "+" : "";
       lblUnconfirmed->setText(prefix + din(cachedPendingBalance_));
@@ -7133,15 +7251,15 @@ void MainWindow::refreshConfidentialWalletState() {
 
 void MainWindow::onNewAddress() {
   if (walletTransparentV3SendReady_) {
-    if (txtValidation_) txtValidation_->setText(
-        "This recovered wallet uses its existing addresses until Orchard enrollment is complete.");
+    if (txtValidation_) txtValidation_->setText(tr(
+        "This recovered wallet uses its existing addresses until Orchard enrollment is complete."));
     return;
   }
 
   // Disable button to prevent double-clicks
   if (btnNewAddress_) {
     btnNewAddress_->setEnabled(false);
-    btnNewAddress_->setText("Generating...");
+    btnNewAddress_->setText(tr("Generating..."));
   }
 
   // P2MR mode: use the direct RPC path with positional params (matches
@@ -7179,7 +7297,7 @@ void MainWindow::onNewAddress() {
       
       if (!address.isEmpty()) {
         edtAddress_->setText(address);
-        txtValidation_->setText("✅ New address generated successfully!");
+        txtValidation_->setText(tr("✅ New address generated successfully!"));
         txtValidation_->setStyleSheet("QTextEdit { color: #d6dde6; }");
         qDebug() << "MainWindow: Generated new address:" << address;
         
@@ -7192,7 +7310,7 @@ void MainWindow::onNewAddress() {
           qDebug() << "MainWindow: Set mining address to new address:" << address;
         }
       } else {
-        txtValidation_->setText("⚠️ Address generation returned empty result");
+        txtValidation_->setText(tr("⚠️ Address generation returned empty result"));
         txtValidation_->setStyleSheet("QTextEdit { color: #f59f00; }");
       }
       
@@ -7223,7 +7341,7 @@ void MainWindow::onNewAddress() {
 void MainWindow::onValidateAddress() {
   if (currentWalletAddressMode() == "confidential") {
     if (txtValidation_) {
-      txtValidation_->setText("🕶️ Private receive addresses are wallet-generated private addresses. Copy the address directly or view its underlying Taproot details above.");
+      txtValidation_->setText(tr("🕶️ Private receive addresses are wallet-generated private addresses. Copy the address directly or view its underlying Taproot details above."));
     }
     return;
   }
@@ -7235,7 +7353,7 @@ void MainWindow::onValidateAddress() {
 void MainWindow::onCopyAddress() {
   if (!edtAddress_->text().isEmpty()) {
     QApplication::clipboard()->setText(edtAddress_->text());
-    txtValidation_->setText("Address copied to clipboard!");
+    txtValidation_->setText(tr("Address copied to clipboard!"));
   }
 }
 
@@ -7317,7 +7435,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
     if (!result.isArray()) {
       const QString detail = result.isObject()
           ? result.toObject().value("error").toString() : QString();
-      QMessageBox::warning(this, "Mining Address Unavailable",
+      QMessageBox::warning(this, tr("Mining Address Unavailable"),
           detail.isEmpty() ? "Could not read your wallet's addresses. Please try again."
                            : detail);
       return;
@@ -7346,9 +7464,9 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
     }
 
     if (firstTaprootAddress.isEmpty()) {
-      QMessageBox::warning(this, "No Taproot Wallet Address",
-          "The wallet's first Taproot receive address is unavailable. "
-          "Check the Receive tab before using this wallet for mining.");
+      QMessageBox::warning(this, tr("No Taproot Wallet Address"),
+          tr("The wallet's first Taproot receive address is unavailable. "
+          "Check the Receive tab before using this wallet for mining."));
       return;
     }
     // A user may have pasted a different address while the RPC was in flight.
@@ -7463,10 +7581,10 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         int tipHeight = obj["tip_height"].toInt();
         lblDbHealth_->setText(QString("DB healthy | H:%1").arg(tipHeight));
         lblDbHealth_->setStyleSheet(headerPillStyle());
-        lblDbHealth_->setToolTip("Database is healthy.");
+        lblDbHealth_->setToolTip(tr("Database is healthy."));
       } else {
         QString error = obj["error"].toString();
-        lblDbHealth_->setText("DB issue");
+        lblDbHealth_->setText(tr("DB issue"));
         lblDbHealth_->setStyleSheet(headerPillStyle());
         lblDbHealth_->setToolTip(error);
       }
@@ -7583,7 +7701,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         }
       } else {
         qWarning() << "getsupply missing issued supply fields";
-        lblSupply_->setText("Supply: unavailable");
+        lblSupply_->setText(tr("Supply: unavailable"));
       }
     }
   } else if (method == "wallet.getnewaddress") {
@@ -7643,7 +7761,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       }
       if (recoveringFromLockedWallet && lblConnectionStatus_ &&
           lblConnectionStatus_->text().startsWith("Wallet selected;"))
-        lblConnectionStatus_->setText("Wallet selected; balance current");
+        lblConnectionStatus_->setText(tr("Wallet selected; balance current"));
       double confirmed = obj["confirmed"].toDouble();
       double unconfirmed = obj["unconfirmed"].toDouble();
       double immature = obj["immature"].toDouble();
@@ -7757,7 +7875,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         walletRescanning_ = false;
         updateWalletUIState();
         if (lblSyncProgress_) {
-          lblSyncProgress_->setText("✅ Wallet scan complete");
+          lblSyncProgress_->setText(tr("✅ Wallet scan complete"));
         }
         rpc_->getBalance();
         rpc_->callNamed("wallet.listaddresses", QJsonObject{{"count", 200}});
@@ -7773,7 +7891,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         clearSafeModeRescanRetry();
         walletRescanning_ = false;
         updateWalletUIState();
-        QMessageBox::warning(this, "Wallet Scan Failed",
+        QMessageBox::warning(this, tr("Wallet Scan Failed"),
           QString("Wallet restore succeeded, but blockchain scan failed:\n\n%1\n\n"
                   "You can retry with RPC method wallet.rescanblockchain.")
             .arg(error));
@@ -7795,7 +7913,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       
       if (btnSend_) {
         btnSend_->setEnabled(true);
-        btnSend_->setText("📤 Send Transaction");
+        btnSend_->setText(tr("📤 Send Transaction"));
         updateSendModeUi();
       }
       
@@ -7864,7 +7982,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
           txTracker_->trackSend(tracked);
         }
 
-        lblSendStatus_->setText("✅ Transaction sent successfully!");
+        lblSendStatus_->setText(tr("✅ Transaction sent successfully!"));
         lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; font-weight: 600; }");
 
         if (txtSendResult_) {
@@ -7888,7 +8006,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         refresh();
       } else if (!txHex.isEmpty()) {
         // Legacy daemon path: created transaction and requires explicit broadcast.
-        lblSendStatus_->setText("✅ Transaction created and signed! Broadcasting...");
+        lblSendStatus_->setText(tr("✅ Transaction created and signed! Broadcasting..."));
         lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
         
         // Broadcast the transaction
@@ -7976,7 +8094,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
           lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
         }
       } else if (!txid.isEmpty()) {
-        lblSendStatus_->setText("✅ Transaction sent successfully!");
+        lblSendStatus_->setText(tr("✅ Transaction sent successfully!"));
         lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; font-weight: 600; }");
         
         if (txtSendResult_) {
@@ -8109,7 +8227,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
     }
     updateExplorerRecentBlocks(height);
     // Update connection status to green when we get a successful response
-    lblConnectionStatus_->setText("Connected");
+    lblConnectionStatus_->setText(tr("Connected"));
     lblConnectionStatus_->setStyleSheet(headerPillStyle());
   } else if (method == "blockchain.getmininginfo") {
     if (result.isObject()) {
@@ -8432,13 +8550,13 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
           isMining_ = is_mining;
           if (btnStartMining_) {
             if (is_mining) {
-              btnStartMining_->setText("Stop Mining");
+              btnStartMining_->setText(tr("Stop Mining"));
               btnStartMining_->setStyleSheet(miningButtonStyle());
-              btnStartMining_->setToolTip("Click to stop mining");
+              btnStartMining_->setToolTip(tr("Click to stop mining"));
             } else {
-              btnStartMining_->setText("Start Mining");
+              btnStartMining_->setText(tr("Start Mining"));
               btnStartMining_->setStyleSheet(miningButtonStyle());
-              btnStartMining_->setToolTip("Click to start mining");
+              btnStartMining_->setToolTip(tr("Click to start mining"));
             }
           }
         }
@@ -8495,7 +8613,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         }
         if (lblMempoolFeeRate_) {
           lblMempoolFeeRate_->setText(size > 0 && avgFeeRate > 0 ? QString::number(avgFeeRate, 'f', 1) : QString("—"));
-          lblMempoolFeeRate_->setToolTip("Average fee rate, una per virtual byte");
+          lblMempoolFeeRate_->setToolTip(tr("Average fee rate, una per virtual byte"));
         }
         if (lblMempoolFeeRange_) {
           lblMempoolFeeRange_->setText(size > 0 && maxFeeRate > 0
@@ -8504,19 +8622,19 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         if (lblMempoolOldest_) lblMempoolOldest_->setText(size > 0 && oldestTxAge > 0 ? shortAge(oldestTxAge) : QString("—"));
       } else {
         qWarning() << "getmempoolinfo missing required fields";
-        lblMempool_->setText("Mempool: N/A");
+        lblMempool_->setText(tr("Mempool: N/A"));
       }
     }
   } else if (method == "mempool.getrawmempool") {
     if (!result.isObject() || !tblMempoolOverview_) {
-      if (lblMempoolSize_) lblMempoolSize_->setText("Mempool unavailable");
-      if (lblMempoolBytes_) lblMempoolBytes_->setText("Local node returned an invalid response");
+      if (lblMempoolSize_) lblMempoolSize_->setText(tr("Mempool unavailable"));
+      if (lblMempoolBytes_) lblMempoolBytes_->setText(tr("Local node returned an invalid response"));
       return;
     }
 
     const QJsonObject entries = result.toObject();
     if (entries.contains("error")) {
-      if (lblMempoolSize_) lblMempoolSize_->setText("Mempool unavailable");
+      if (lblMempoolSize_) lblMempoolSize_->setText(tr("Mempool unavailable"));
       if (lblMempoolBytes_) lblMempoolBytes_->setText(entries.value("error").toString());
       overviewMempoolInitialized_ = false;
       return;
@@ -8652,13 +8770,13 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
     }
     if (lblPeersStatus_) {
       if (peerCount == 0) {
-        lblPeersStatus_->setText("Disconnected");
+        lblPeersStatus_->setText(tr("Disconnected"));
         lblPeersStatus_->setStyleSheet("QLabel { font-size: 11px; color: #a9b2bc; }");
       } else if (peerCount < 3) {
-        lblPeersStatus_->setText("Poor connectivity");
+        lblPeersStatus_->setText(tr("Poor connectivity"));
         lblPeersStatus_->setStyleSheet("QLabel { font-size: 11px; color: #b8c0ca; }");
       } else {
-        lblPeersStatus_->setText("Good connectivity");
+        lblPeersStatus_->setText(tr("Good connectivity"));
         lblPeersStatus_->setStyleSheet("QLabel { font-size: 11px; color: #d0d7df; }");
       }
     }
@@ -8698,8 +8816,8 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
           activity = "Quiet";
         }
         auto* activityItem = new QTableWidgetItem(activity);
-        activityItem->setToolTip(
-            "Dinero Core currently reports peer activity timestamps, not per-peer ping latency.");
+        activityItem->setToolTip(tr(
+            "Dinero Core currently reports peer activity timestamps, not per-peer ping latency."));
         tblPeersOverview_->setItem(row, 1, activityItem);
 
         // Last Seen: time since last message from this peer.
@@ -8823,9 +8941,9 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       
       // Avoid auto-launching restore/create flow; keep wallet actions explicit.
       if (!hdEnabled && lblConnectionStatus_) {
-        lblConnectionStatus_->setText("No wallet loaded");
+        lblConnectionStatus_->setText(tr("No wallet loaded"));
         lblConnectionStatus_->setStyleSheet(headerPillStyle());
-        lblConnectionStatus_->setToolTip("No active wallet is loaded.");
+        lblConnectionStatus_->setToolTip(tr("No active wallet is loaded."));
       }
       
       // Keep connection pill stable; expose wallet state in tooltip only.
@@ -8945,7 +9063,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
           lblErrorMessage_->setVisible(false);
         }
 
-        lblConnectionStatus_->setText("Switching wallet");
+        lblConnectionStatus_->setText(tr("Switching wallet"));
         lblConnectionStatus_->setStyleSheet(headerPillStyle());
         lblConnectionStatus_->setToolTip(QString("Binding active wallet: %1").arg(openedWalletName));
 
@@ -8975,7 +9093,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       rpc_->call("wallet.listunspent", QJsonArray());
       loadTransactionHistory();
     }
-    QMessageBox::warning(this, "Wallet Load Failed",
+    QMessageBox::warning(this, tr("Wallet Load Failed"),
       QString("Could not load selected wallet.\n\n%1").arg(errorText));
   } else if (method == "wallet.unload") {
     QString errorText;
@@ -9009,9 +9127,9 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         changeAddrMgr_->setWalletIdentityKey(QString());
       }
       if (lblWalletName_) {
-        lblWalletName_->setText("Wallet: none");
+        lblWalletName_->setText(tr("Wallet: none"));
         lblWalletName_->setStyleSheet(headerPillStyle());
-        lblWalletName_->setToolTip("No wallet loaded. Create or restore a wallet to get started.");
+        lblWalletName_->setToolTip(tr("No wallet loaded. Create or restore a wallet to get started."));
       }
 
       clearWalletScopedUiState();
@@ -9022,13 +9140,13 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       if (lblErrorMessage_) {
         lblErrorMessage_->setVisible(false);
       }
-      lblConnectionStatus_->setText("No wallet loaded");
+      lblConnectionStatus_->setText(tr("No wallet loaded"));
       lblConnectionStatus_->setStyleSheet(headerPillStyle());
-      lblConnectionStatus_->setToolTip("No active wallet is loaded.");
+      lblConnectionStatus_->setToolTip(tr("No active wallet is loaded."));
       return;
     }
 
-    lblConnectionStatus_->setText("Wallet unload failed");
+    lblConnectionStatus_->setText(tr("Wallet unload failed"));
     lblConnectionStatus_->setStyleSheet(headerPillStyle());
     lblConnectionStatus_->setToolTip(errorText);
   } else if (method == "wallet.covenant.ctvfund") {
@@ -9101,14 +9219,14 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         walletSendReady_ && !walletTransparentV3SendReady_ &&
         dinero::qt::shouldEnableConsolidation(cachedUtxoCount_, consolidationInFlight_));
       // Daemon found nothing eligible to consolidate.
-      QMessageBox::information(this, "Consolidation",
-        "Nothing to consolidate — no eligible UTXOs.");
+      QMessageBox::information(this, tr("Consolidation"),
+        tr("Nothing to consolidate — no eligible UTXOs."));
     } else if (isPreview) {
       // Dry-run plan accepted: confirm the real numbers, then broadcast.
       const double fee = obj.value("estimated_fee").toDouble();
       const double out = obj.value("output_value").toDouble();
       QMessageBox box(this);
-      box.setWindowTitle("Confirm Consolidation");
+      box.setWindowTitle(tr("Confirm Consolidation"));
       box.setText(QString("Consolidate %1 UTXOs into one output.").arg(sel));
       box.setInformativeText(QString("Estimated fee: %1 DIN\nResulting output: %2 DIN")
                                .arg(fee, 0, 'f', 8).arg(out, 0, 'f', 8));
@@ -9139,14 +9257,14 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         walletSendReady_ && !walletTransparentV3SendReady_ &&
         dinero::qt::shouldEnableConsolidation(cachedUtxoCount_, consolidationInFlight_));
       // Fee gate or execution error — surface the daemon's reason.
-      QMessageBox::warning(this, "Consolidation Failed",
+      QMessageBox::warning(this, tr("Consolidation Failed"),
         obj.value("reason").toString(obj.value("error").toString("Consolidation could not be completed.")));
     } else {
       consolidationInFlight_ = false;
       pendingConsolidateParams_ = {};
       // Executed + broadcast.
       const QString txid = obj.value("txid").toString();
-      QMessageBox::information(this, "Consolidation Complete",
+      QMessageBox::information(this, tr("Consolidation Complete"),
         txid.isEmpty() ? QString("Consolidation submitted.")
                        : QString("Consolidation broadcast.\nTXID: %1").arg(txid));
       refresh();
@@ -9158,10 +9276,10 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
   } else if (method == "wallet.covenant.inspect") {
     const QJsonObject obj = result.toObject();
     if (!obj.value("success").toBool(false)) {
-      QMessageBox::warning(this, "Contract Inspection",
+      QMessageBox::warning(this, tr("Contract Inspection"),
         obj.value("error").toString("Unable to inspect descriptor."));
     } else {
-      QMessageBox::information(this, "Verified Contract Descriptor",
+      QMessageBox::information(this, tr("Verified Contract Descriptor"),
         QString("<b>Profile:</b> %1<br><b>Descriptor ID:</b><br><span style='font-family:monospace'>%2</span><br><br>"
                 "<b>Template hash:</b><br><span style='font-family:monospace'>%3</span><br><br>"
                 "The descriptor checksum and Taproot artifacts were re-derived successfully.")
@@ -9176,7 +9294,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
     } else {
       qWarning() << "listtransactions returned non-array result";
       if (lblTransactionListStatus_) {
-        lblTransactionListStatus_->setText("Transaction history is unavailable. Refresh to try again.");
+        lblTransactionListStatus_->setText(tr("Transaction history is unavailable. Refresh to try again."));
         lblTransactionListStatus_->setVisible(true);
       }
     }
@@ -9201,7 +9319,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         item->setTextAlignment(Qt::AlignCenter);
         tblUTXOs->setItem(0, 0, item);
         tblUTXOs->setSpan(0, 0, 1, 7);
-        if (lblUtxoPage_) lblUtxoPage_->setText("UTXOs unavailable");
+        if (lblUtxoPage_) lblUtxoPage_->setText(tr("UTXOs unavailable"));
         if (btnConsolidate_) btnConsolidate_->setVisible(false);
       }
     }
@@ -9288,8 +9406,8 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         auto *labelItem = new QTableWidgetItem(label);
         labelItem->setForeground(label.isEmpty() ? QBrush(QColor("#868e96")) : QBrush(QColor("#c6ced8")));
         if (label.isEmpty()) {
-          labelItem->setText("(no label)");
-          labelItem->setToolTip("Double-click to add a label");
+          labelItem->setText(tr("(no label)"));
+          labelItem->setToolTip(tr("Double-click to add a label"));
         }
         tblAddresses_->setItem(row, 2, labelItem);
 
@@ -9312,7 +9430,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         tblAddresses_->setItem(row, 4, pathItem);
 
         // Column 5: Copy button
-        auto *btnCopy = new QPushButton("📋 Copy");
+        auto *btnCopy = new QPushButton(tr("📋 Copy"));
         connect(btnCopy, &QPushButton::clicked, [address]() {
           QApplication::clipboard()->setText(address);
         });
@@ -9331,7 +9449,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         qDebug() << "Loaded" << addresses.size() << "addresses";
       }
     } else if (lblAddressListStatus_) {
-      lblAddressListStatus_->setText("Addresses are unavailable. Reload to try again.");
+      lblAddressListStatus_->setText(tr("Addresses are unavailable. Reload to try again."));
       lblAddressListStatus_->setVisible(true);
     }
   } else if (method == "wallet.listaddresseswithbalances") {
@@ -9387,8 +9505,8 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         auto *labelItem = new QTableWidgetItem(label);
         labelItem->setForeground(label.isEmpty() ? QBrush(QColor("#868e96")) : QBrush(QColor("#c6ced8")));
         if (label.isEmpty()) {
-          labelItem->setText("(no label)");
-          labelItem->setToolTip("Double-click to add a label");
+          labelItem->setText(tr("(no label)"));
+          labelItem->setToolTip(tr("Double-click to add a label"));
         }
         tblAddresses_->setItem(row, 2, labelItem);
 
@@ -9411,7 +9529,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         tblAddresses_->setItem(row, 4, pathItem);
 
         // Column 5: Copy button
-        auto *btnCopy = new QPushButton("📋 Copy");
+        auto *btnCopy = new QPushButton(tr("📋 Copy"));
         connect(btnCopy, &QPushButton::clicked, [address]() {
           QApplication::clipboard()->setText(address);
         });
@@ -9444,7 +9562,7 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
     miningWalletAddressRequestWallet_.clear();
     updateWalletUIState();
     if (!walletSwitchInFlight_ && walletUnlocked_ && currentWalletName_ == requestedWallet)
-      QMessageBox::warning(this, "Mining Address Unavailable",
+      QMessageBox::warning(this, tr("Mining Address Unavailable"),
           "Could not read your wallet's addresses: " + message);
     return;
   }
@@ -9518,7 +9636,7 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
       item->setTextAlignment(Qt::AlignCenter);
       tblUTXOs_->setItem(0, 0, item);
       tblUTXOs_->setSpan(0, 0, 1, 7);
-      if (lblUtxoPage_) lblUtxoPage_->setText("UTXOs unavailable");
+      if (lblUtxoPage_) lblUtxoPage_->setText(tr("UTXOs unavailable"));
     }
     if (code == -32603 && isWalletBalancePendingRefusal(message)) return;
   }
@@ -9526,14 +9644,14 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
   if (code == -32603 && isWalletBalancePendingRefusal(message)) {
     if (method == "wallet.listaddresses") {
       if (lblAddressListStatus_) {
-        lblAddressListStatus_->setText("Wallet is catching up. Addresses will refresh automatically.");
+        lblAddressListStatus_->setText(tr("Wallet is catching up. Addresses will refresh automatically."));
         lblAddressListStatus_->setVisible(true);
       }
       return;
     }
     if (method == "wallet.listtransactions") {
       if (lblTransactionListStatus_) {
-        lblTransactionListStatus_->setText("Wallet is catching up. Transaction history will refresh automatically.");
+        lblTransactionListStatus_->setText(tr("Wallet is catching up. Transaction history will refresh automatically."));
         lblTransactionListStatus_->setVisible(true);
       }
       return;
@@ -9563,9 +9681,9 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
   qDebug() << "🔴 RPC Error:" << method << "Code:" << code << "Message:" << message;
 
   if (method == "mempool.getinfo" || method == "mempool.getrawmempool") {
-    if (lblMempool_) lblMempool_->setText("Mempool: unavailable");
-    if (lblMempoolSize_) lblMempoolSize_->setText("Unavailable");
-    if (lblMempoolBytes_) lblMempoolBytes_->setText("Local node did not answer");
+    if (lblMempool_) lblMempool_->setText(tr("Mempool: unavailable"));
+    if (lblMempoolSize_) lblMempoolSize_->setText(tr("Unavailable"));
+    if (lblMempoolBytes_) lblMempoolBytes_->setText(tr("Local node did not answer"));
     if (tblMempoolOverview_) {
       tblMempoolOverview_->setRowCount(1);
       auto* item = new QTableWidgetItem(message.isEmpty() ? "Mempool data unavailable" : message);
@@ -9605,7 +9723,7 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
   if (method == "wallet.getinfo" && code == -32603 && isNativeWalletUnsupportedRefusal(message)) {
     walletRecoveryUnlockNeeded_ = false;
     if (lblConnectionStatus_) {
-      lblConnectionStatus_->setText("Wallet not supported on this node yet");
+      lblConnectionStatus_->setText(tr("Wallet not supported on this node yet"));
       lblConnectionStatus_->setStyleSheet(headerPillStyle());
       lblConnectionStatus_->setToolTip(message);
     }
@@ -9623,9 +9741,9 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
       // "Unlocked" state from an earlier wallet or session (#939).
       walletUnlocked_ = false;
       walletRecoveryUnlockNeeded_ = true;
-      if (btnWalletLock_) btnWalletLock_->setText("Locked | Unlock");
+      if (btnWalletLock_) btnWalletLock_->setText(tr("Locked | Unlock"));
       if (lblConnectionStatus_) {
-        lblConnectionStatus_->setText("Unlock wallet to finish setup");
+        lblConnectionStatus_->setText(tr("Unlock wallet to finish setup"));
         lblConnectionStatus_->setStyleSheet(headerPillStyle());
         lblConnectionStatus_->setToolTip(message);
       }
@@ -9682,7 +9800,7 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
         btnConsolidate_->setText(QString("\xF0\x9F\xA7\xB9 Consolidate (%1 UTXOs)").arg(cachedUtxoCount_));
       }
     }
-    QMessageBox::warning(this, "Consolidation Failed",
+    QMessageBox::warning(this, tr("Consolidation Failed"),
       QString("Could not consolidate UTXOs.\n\n%1").arg(message));
     return;
   }
@@ -9698,7 +9816,7 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
     if (methodMissing && !pendingWalletOpenName_.isEmpty()) {
       const QString walletName = pendingWalletOpenName_;
       qWarning() << "wallet.open unavailable, retrying wallet.load for" << walletName;
-      lblConnectionStatus_->setText("Retrying wallet load");
+      lblConnectionStatus_->setText(tr("Retrying wallet load"));
       lblConnectionStatus_->setStyleSheet(headerPillStyle());
       lblConnectionStatus_->setToolTip(QString("Retrying wallet: %1").arg(walletName));
       rpc_->callNamed("wallet.load", QJsonObject{{"name", walletName}});
@@ -9719,7 +9837,7 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
       rpc_->call("wallet.listunspent", QJsonArray());
       loadTransactionHistory();
     }
-    QMessageBox::warning(this, "Wallet Load Failed",
+    QMessageBox::warning(this, tr("Wallet Load Failed"),
       QString("Could not load selected wallet.\n\n%1").arg(message));
     return;
   }
@@ -9747,7 +9865,7 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
        message.contains("Taproot", Qt::CaseInsensitive) ||
        message.contains("P2TR", Qt::CaseInsensitive) ||
        code == -5)) {
-    QMessageBox::warning(this, "Mining Address Not Eligible",
+    QMessageBox::warning(this, tr("Mining Address Not Eligible"),
       QString("<h3>Mining Requires a Taproot or P2MR Address</h3>"
               "<p>%1</p>"
               "<hr>"
@@ -9766,9 +9884,9 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
     if (btnStartMining_) btnStartMining_->setEnabled(true);
     if (btnStopMining_) btnStopMining_->setEnabled(false);
     if (btnStartMining_) {
-      btnStartMining_->setText("Start Mining");
+      btnStartMining_->setText(tr("Start Mining"));
       btnStartMining_->setStyleSheet(miningButtonStyle());
-      btnStartMining_->setToolTip("Click to start mining");
+      btnStartMining_->setToolTip(tr("Click to start mining"));
     }
     if (lblMiningStatus_) {
       lblMiningStatus_->setText(miningStatusInactiveText() + " | Taproot address required");
@@ -9797,9 +9915,9 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
 
     // Show friendly first-run dialog
     QMessageBox msgBox(this);
-    msgBox.setWindowTitle("Welcome to Dinero");
+    msgBox.setWindowTitle(tr("Welcome to Dinero"));
     msgBox.setIcon(QMessageBox::Information);
-    msgBox.setText("<h2>🚀 Welcome to Dinero!</h2>");
+    msgBox.setText(tr("<h2>🚀 Welcome to Dinero!</h2>"));
     msgBox.setInformativeText(
       "<p>The Dinero daemon (dinerod) is not running yet.</p>"
       "<p><b>Would you like to start it now?</b></p>"
@@ -9887,7 +10005,7 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
         QString outputError;
         if (!dinero::qt::configureDaemonOutput(daemonProcess_, datadir, &outputError)) {
           qWarning() << "Cannot configure daemon output:" << outputError;
-          lblConnectionStatus_->setText("Daemon start failed");
+          lblConnectionStatus_->setText(tr("Daemon start failed"));
           lblConnectionStatus_->setStyleSheet(headerPillStyle());
           delete daemonProcess_;
           daemonProcess_ = nullptr;
@@ -9907,7 +10025,7 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
 
         connect(daemonProcess_, &QProcess::errorOccurred, [this](QProcess::ProcessError error) {
           qWarning() << "❌ Daemon process error:" << error;
-          lblConnectionStatus_->setText("Daemon start failed");
+          lblConnectionStatus_->setText(tr("Daemon start failed"));
           lblConnectionStatus_->setStyleSheet(headerPillStyle());
           // Don't show dialog - would create nested dialog crash
         });
@@ -9916,7 +10034,7 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
 
         if (!daemonProcess_->waitForStarted(5000)) {
           qWarning() << "❌ Daemon failed to start!";
-          lblConnectionStatus_->setText("Daemon start failed");
+          lblConnectionStatus_->setText(tr("Daemon start failed"));
           lblConnectionStatus_->setStyleSheet(headerPillStyle());
           // Don't show dialog - would create nested dialog crash
           // Error is visible in status bar and user can see terminal output
@@ -9926,7 +10044,7 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
 
         qDebug() << "✅ Daemon process started successfully, PID:" << daemonProcess_->processId();
 
-        lblConnectionStatus_->setText("Starting daemon...");
+        lblConnectionStatus_->setText(tr("Starting daemon..."));
         lblConnectionStatus_->setStyleSheet(headerPillStyle());
 
         // Give daemon time to start and write cookie, then try connecting
@@ -9934,22 +10052,22 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
           qDebug() << "⏰ Attempting to load cookie and connect...";
           rpc_->loadCookie();
           refresh();
-          lblConnectionStatus_->setText("Connecting...");
+          lblConnectionStatus_->setText(tr("Connecting..."));
         });
       } else {
         QString appDir = QCoreApplication::applicationDirPath();
-        QMessageBox::warning(this, "Daemon Not Found",
+        QMessageBox::warning(this, tr("Daemon Not Found"),
           QString("Could not find dinerod.\n\n"
                   "Searched locations:\n"
                   "• %1\n"
                   "• System PATH\n\n"
                   "Please start the daemon manually or install it to your system PATH.\n\n"
                   "You can set DINERO_DAEMON_PATH environment variable to specify the location.").arg(daemonPath));
-        lblConnectionStatus_->setText("Daemon not found");
+        lblConnectionStatus_->setText(tr("Daemon not found"));
         lblConnectionStatus_->setStyleSheet(headerPillStyle());
       }
     } else {
-      lblConnectionStatus_->setText("Daemon not running");
+      lblConnectionStatus_->setText(tr("Daemon not running"));
       lblConnectionStatus_->setStyleSheet(headerPillStyle());
     }
     showingDialog = false; // Reset flag before returning
@@ -9963,9 +10081,9 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
 }
 
 void MainWindow::updateStatus(const QJsonObject& info) {
-  lblConnectionStatus_->setText("Connected");
+  lblConnectionStatus_->setText(tr("Connected"));
   lblConnectionStatus_->setStyleSheet(headerPillStyle());
-  lblConnectionStatus_->setToolTip("Connected to local daemon.");
+  lblConnectionStatus_->setToolTip(tr("Connected to local daemon."));
 
   // Clear any previous error messages on successful update
   lblErrorMessage_->setVisible(false);
@@ -10297,19 +10415,19 @@ void MainWindow::updateBridgeTab(const QJsonObject& stats) {
 
   if (lblBridgeStatus_) {
     if (!active) {
-      lblBridgeStatus_->setText("Disabled");
+      lblBridgeStatus_->setText(tr("Disabled"));
       lblBridgeStatus_->setStyleSheet("QLabel { color: #868e96; font-size: 13px; font-weight: bold; }");
     } else if (backpressure) {
-      lblBridgeStatus_->setText("Enabled / Backpressure");
+      lblBridgeStatus_->setText(tr("Enabled / Backpressure"));
       lblBridgeStatus_->setStyleSheet("QLabel { color: #ff922b; font-size: 13px; font-weight: bold; }");
     } else if (busy) {
-      lblBridgeStatus_->setText("Enabled / Serving");
+      lblBridgeStatus_->setText(tr("Enabled / Serving"));
       lblBridgeStatus_->setStyleSheet("QLabel { color: #51cf66; font-size: 13px; font-weight: bold; }");
     } else if (hasTraffic) {
-      lblBridgeStatus_->setText("Enabled / Warm");
+      lblBridgeStatus_->setText(tr("Enabled / Warm"));
       lblBridgeStatus_->setStyleSheet("QLabel { color: #74c0fc; font-size: 13px; font-weight: bold; }");
     } else {
-      lblBridgeStatus_->setText("Enabled / Idle");
+      lblBridgeStatus_->setText(tr("Enabled / Idle"));
       lblBridgeStatus_->setStyleSheet("QLabel { color: #74c0fc; font-size: 13px; font-weight: bold; }");
     }
   }
@@ -10411,7 +10529,7 @@ void MainWindow::updateBridgeTab(const QJsonObject& stats) {
 
 void MainWindow::updateWallet(const QString& address) {
   edtAddress_->setText(address);
-  txtValidation_->setText("New address generated!");
+  txtValidation_->setText(tr("New address generated!"));
 }
 
 void MainWindow::setExplorerStatus(const QString& text, bool warning) {
@@ -11032,7 +11150,7 @@ void MainWindow::updateOverviewCpuTelemetry(const QJsonObject& cpuStats) {
     }
     lblCpuTemp_->setText(tempText);
   } else {
-    lblCpuTemp_->setText("Temp: unavailable");
+    lblCpuTemp_->setText(tr("Temp: unavailable"));
     lblCpuTemp_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
   }
 
@@ -11086,17 +11204,17 @@ void MainWindow::updateOverviewGpuTelemetry(const QJsonObject& gpuStats) {
         .arg(overviewGpuDeviceUtilization_, 0, 'f', 0)
         .arg(overviewGpuRendererUtilization_, 0, 'f', 0)
         .arg(overviewGpuTilerUtilization_, 0, 'f', 0));
-    lblGpuLoadOverview_->setToolTip("System-wide GPU telemetry. It may be active even when the selected miner is CPU.");
+    lblGpuLoadOverview_->setToolTip(tr("System-wide GPU telemetry. It may be active even when the selected miner is CPU."));
 
     QString memoryText = QString("GPU Mem: %1 in use").arg(formatBytesText(overviewGpuMemoryInUse_));
     if (overviewGpuMemoryAllocated_ > 0) {
       memoryText += QString(" / %1 alloc").arg(formatBytesText(overviewGpuMemoryAllocated_));
     }
     lblGpuMemoryOverview_->setText(memoryText);
-    lblGpuMemoryOverview_->setToolTip("System-wide GPU memory from macOS AGX PerformanceStatistics");
+    lblGpuMemoryOverview_->setToolTip(tr("System-wide GPU memory from macOS AGX PerformanceStatistics"));
   } else {
-    lblGpuLoadOverview_->setText("GPU Load: unavailable");
-    lblGpuMemoryOverview_->setText("GPU Mem: unavailable");
+    lblGpuLoadOverview_->setText(tr("GPU Load: unavailable"));
+    lblGpuMemoryOverview_->setText(tr("GPU Mem: unavailable"));
     const QString reason = gpuStats.value("reason").toString();
     lblGpuLoadOverview_->setToolTip(reason);
     lblGpuMemoryOverview_->setToolTip(reason);
@@ -11111,7 +11229,7 @@ void MainWindow::updateOverviewGpuTelemetry(const QJsonObject& gpuStats) {
       parts << QString("GPU Fan %1 RPM").arg(overviewGpuFanRpm_);
     }
     lblGpuThermalsOverview_->setText(parts.join(" • "));
-    lblGpuThermalsOverview_->setToolTip("GPU thermal telemetry");
+    lblGpuThermalsOverview_->setToolTip(tr("GPU thermal telemetry"));
   } else {
     QString thermalSummary = "GPU Temp/Fan: unavailable";
     if (overviewGpuThermalReason_.contains("not GPU temperature or fan RPM", Qt::CaseInsensitive) ||
@@ -11220,15 +11338,15 @@ void MainWindow::resetOverviewMiningTelemetry() {
   overviewGpuTelemetrySeen_ = false;
   setOverviewLocalHashrate(0.0, "Local miner/session hashrate");
   if (lblGpuLoadOverview_) {
-    lblGpuLoadOverview_->setText("GPU Load: --");
+    lblGpuLoadOverview_->setText(tr("GPU Load: --"));
     lblGpuLoadOverview_->setToolTip({});
   }
   if (lblGpuMemoryOverview_) {
-    lblGpuMemoryOverview_->setText("GPU Mem: --");
+    lblGpuMemoryOverview_->setText(tr("GPU Mem: --"));
     lblGpuMemoryOverview_->setToolTip({});
   }
   if (lblGpuThermalsOverview_) {
-    lblGpuThermalsOverview_->setText("GPU Temp/Fan: --");
+    lblGpuThermalsOverview_->setText(tr("GPU Temp/Fan: --"));
     lblGpuThermalsOverview_->setToolTip({});
   }
   updateOverviewHardwareTelemetry();
@@ -11299,9 +11417,9 @@ void MainWindow::updateMiningStats(const QJsonObject& miningInfo) {
       setMiningModeControlsLocked(true);
     }
     if (btnStartMining_) {
-      btnStartMining_->setText("Stop Mining");
+      btnStartMining_->setText(tr("Stop Mining"));
       btnStartMining_->setStyleSheet(miningButtonStyle());
-      btnStartMining_->setToolTip("Click to stop mining");
+      btnStartMining_->setToolTip(tr("Click to stop mining"));
     }
   } else {
     lblMiningStatus_->setText(miningStatusInactiveText());
@@ -11311,9 +11429,9 @@ void MainWindow::updateMiningStats(const QJsonObject& miningInfo) {
       activeMinerType_ = "none";
       setMiningModeControlsLocked(false);
       if (btnStartMining_) {
-        btnStartMining_->setText("Start Mining");
+        btnStartMining_->setText(tr("Start Mining"));
         btnStartMining_->setStyleSheet(miningButtonStyle());
-        btnStartMining_->setToolTip("Click to start mining");
+        btnStartMining_->setToolTip(tr("Click to start mining"));
       }
     }
   }
@@ -11383,9 +11501,9 @@ void MainWindow::onSetMiningAddress() {
   // Check wallet state first
   if (!walletUnlocked_) {
     QMessageBox::StandardButton reply = QMessageBox::warning(this,
-      "Wallet Locked",
-      "Your wallet must be unlocked to use wallet addresses for mining.\n\n"
-      "Would you like to unlock your wallet now?",
+      tr("Wallet Locked"),
+      tr("Your wallet must be unlocked to use wallet addresses for mining.\n\n"
+      "Would you like to unlock your wallet now?"),
       QMessageBox::Yes | QMessageBox::No,
       QMessageBox::Yes);
 
@@ -11479,7 +11597,7 @@ void MainWindow::onBrowseMinerBinary() {
 
   if (!path.isEmpty()) {
     if (poolSv2 && !sv2PathMatchesBackend(path, sv2UseGpu)) {
-      QMessageBox::warning(this, "Wrong SV2 Miner",
+      QMessageBox::warning(this, tr("Wrong SV2 Miner"),
         QString("The selected file does not match the current backend.\n\n"
                 "Backend: %1\nExpected binary: %2\nSelected: %3")
           .arg(sv2UseGpu ? "GPU (Metal)" : "CPU",
@@ -11519,8 +11637,8 @@ void MainWindow::onToggleLocalStratumServer() {
   }
 
   if (!rpc_ || !rpc_->isConnected()) {
-    QMessageBox::warning(this, "Daemon Required",
-      "Start and connect the daemon before starting the local Stratum server.");
+    QMessageBox::warning(this, tr("Daemon Required"),
+      tr("Start and connect the daemon before starting the local Stratum server."));
     return;
   }
 
@@ -11532,8 +11650,8 @@ void MainWindow::onToggleLocalStratumServer() {
                       payoutAddress.startsWith("tdin1r") ||
                       payoutAddress.startsWith("rdin1r");
   if (!isTaproot && !isP2mr) {
-    QMessageBox::warning(this, "Mining Address Required",
-      "Set a Taproot or P2MR mining address before starting the local Stratum server.");
+    QMessageBox::warning(this, tr("Mining Address Required"),
+      tr("Set a Taproot or P2MR mining address before starting the local Stratum server."));
     return;
   }
 
@@ -11541,16 +11659,16 @@ void MainWindow::onToggleLocalStratumServer() {
   const QString dataDir = rpc_->datadir();
   const QString cookiePath = QDir(dataDir).filePath(".cookie");
   if (!QFile::exists(cookiePath)) {
-    QMessageBox::warning(this, "RPC Cookie Missing",
+    QMessageBox::warning(this, tr("RPC Cookie Missing"),
       "Could not find the daemon RPC cookie at:\n\n" + cookiePath);
     return;
   }
 
   const QString stratumPath = findLocalStratumServerBinary();
   if (stratumPath.isEmpty()) {
-    QMessageBox::critical(this, "Stratum Server Not Found",
-      "Could not find dinero-stratum.\n\n"
-      "Build the Stratum server or set DINERO_STRATUM_PATH.");
+    QMessageBox::critical(this, tr("Stratum Server Not Found"),
+      tr("Could not find dinero-stratum.\n\n"
+      "Build the Stratum server or set DINERO_STRATUM_PATH."));
     return;
   }
 
@@ -11572,15 +11690,15 @@ void MainWindow::onToggleLocalStratumServer() {
     connect(localStratumProcess_, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [this](int exitCode, QProcess::ExitStatus) {
       if (btnLocalStratum_) {
-        btnLocalStratum_->setText("Start Local");
-        btnLocalStratum_->setToolTip(
-          "Start a localhost dinero-stratum server and use it as this pool endpoint.");
+        btnLocalStratum_->setText(tr("Start Local"));
+        btnLocalStratum_->setToolTip(tr(
+          "Start a localhost dinero-stratum server and use it as this pool endpoint."));
       }
       if (txtMiningOutput_ && !shuttingDown_) {
         txtMiningOutput_->append(QString("[Local Stratum] stopped (exit=%1)").arg(exitCode));
       }
       if (lblMiningStatus_ && !isMining_ && currentMiningMode() == "pool") {
-        lblMiningStatus_->setText("Pool mode ready (Stratum stopped)");
+        lblMiningStatus_->setText(tr("Pool mode ready (Stratum stopped)"));
         lblMiningStatus_->setStyleSheet(miningStatusStyle());
       }
     });
@@ -11623,17 +11741,17 @@ void MainWindow::onToggleLocalStratumServer() {
 
   localStratumProcess_->start(stratumPath, args);
   if (!localStratumProcess_->waitForStarted(3000)) {
-    QMessageBox::critical(this, "Stratum Server Failed",
+    QMessageBox::critical(this, tr("Stratum Server Failed"),
       "Failed to start dinero-stratum:\n\n" + localStratumProcess_->errorString());
     return;
   }
 
   if (btnLocalStratum_) {
-    btnLocalStratum_->setText("Stop Local");
-    btnLocalStratum_->setToolTip("Stop the localhost Stratum server.");
+    btnLocalStratum_->setText(tr("Stop Local"));
+    btnLocalStratum_->setToolTip(tr("Stop the localhost Stratum server."));
   }
   if (lblMiningStatus_) {
-    lblMiningStatus_->setText("Local Stratum ready");
+    lblMiningStatus_->setText(tr("Local Stratum ready"));
     lblMiningStatus_->setStyleSheet(miningStatusStyle());
   }
   updateStratumIdentityLabel();
@@ -11656,12 +11774,12 @@ void MainWindow::stopLocalStratumServer() {
   }
 
   if (btnLocalStratum_) {
-    btnLocalStratum_->setText("Start Local");
-    btnLocalStratum_->setToolTip(
-      "Start a localhost dinero-stratum server and use it as this pool endpoint.");
+    btnLocalStratum_->setText(tr("Start Local"));
+    btnLocalStratum_->setToolTip(tr(
+      "Start a localhost dinero-stratum server and use it as this pool endpoint."));
   }
   if (lblMiningStatus_ && !isMining_ && currentMiningMode() == "pool") {
-    lblMiningStatus_->setText("Pool mode ready (Stratum stopped)");
+    lblMiningStatus_->setText(tr("Pool mode ready (Stratum stopped)"));
     lblMiningStatus_->setStyleSheet(miningStatusStyle());
   }
 }
@@ -12570,7 +12688,7 @@ void MainWindow::handleExternalMinerStats(const QJsonObject& stats) {
       lblBlocksFound_->setStyleSheet(miningStatStyle());
     }
   } else {
-    lblBlocksFound_->setText("No block submissions yet");
+    lblBlocksFound_->setText(tr("No block submissions yet"));
     lblBlocksFound_->setStyleSheet(miningStatStyle("#868e96", false, true));
   }
 
@@ -12647,7 +12765,7 @@ void MainWindow::parseMiningOutput(const QString& line) {
     mining_stats_.current_hashrate = parseHashrateToHps(match.captured(1), match.captured(2));
     // Display miner-reported hashrate (clearly labeled as miner output)
     lblCurrentHash_->setText(hashStr);
-    lblCurrentHash_->setToolTip("Hashrate reported by external miner (self-reported)");
+    lblCurrentHash_->setToolTip(tr("Hashrate reported by external miner (self-reported)"));
     setOverviewLocalHashrate(mining_stats_.current_hashrate,
                              "Local hashrate reported by the active miner process");
   }
@@ -13017,9 +13135,9 @@ void MainWindow::updateUTXOTable(const QJsonArray& utxos) {
         .arg(chainTiming_.approxDuration(maturityRemaining)));
     } else if (isCoinbase && isMature) {
       maturityItem->setForeground(QBrush(QColor("#51cf66"))); // Green for mature
-      maturityItem->setToolTip("Coinbase output is fully mature and spendable");
+      maturityItem->setToolTip(tr("Coinbase output is fully mature and spendable"));
     } else {
-      maturityItem->setToolTip("Regular transaction (not coinbase)");
+      maturityItem->setToolTip(tr("Regular transaction (not coinbase)"));
     }
     tblUTXOs->setItem(row, 4, maturityItem);
 
@@ -13108,10 +13226,10 @@ void MainWindow::updateContractsTable(const QJsonValue& txList) {
       tblContracts_->setItem(row, 3, new QTableWidgetItem(
         created > 0 ? QDateTime::fromSecsSinceEpoch(created).toString(Qt::ISODate) : "Unknown"));
       auto *status = new QTableWidgetItem("Tracked");
-      status->setToolTip("Recovery descriptor and watch script are persisted in the active wallet.");
+      status->setToolTip(tr("Recovery descriptor and watch script are persisted in the active wallet."));
       status->setForeground(QColor("#2ecc71"));
       tblContracts_->setItem(row, 4, status);
-      auto *inspect = new QPushButton("Inspect");
+      auto *inspect = new QPushButton(tr("Inspect"));
       inspect->setStyleSheet(chromeButtonStyle());
       const QString recovery = descriptor.value("recovery_descriptor").toString();
       connect(inspect, &QPushButton::clicked, this, [this, recovery]() {
@@ -13206,9 +13324,9 @@ void MainWindow::updateContractsTable(const QJsonValue& txList) {
 
     // Actions column — Withdraw button for active contracts
     if (status == "Active") {
-      auto *btnWithdraw = new QPushButton("Withdraw");
+      auto *btnWithdraw = new QPushButton(tr("Withdraw"));
       btnWithdraw->setStyleSheet(chromeButtonStyle());
-      btnWithdraw->setToolTip("Spend from this contract (requires satisfying the covenant conditions)");
+      btnWithdraw->setToolTip(tr("Spend from this contract (requires satisfying the covenant conditions)"));
       QString txid = tx.value("txid").toString();
       int txVersion = version;
       double contractAmount = qAbs(amount);
@@ -13223,7 +13341,7 @@ void MainWindow::updateContractsTable(const QJsonValue& txList) {
         if (!ok || dest.trimmed().isEmpty()) return;
 
         QMessageBox confirmBox(this);
-        confirmBox.setWindowTitle("Confirm Contract Spend");
+        confirmBox.setWindowTitle(tr("Confirm Contract Spend"));
         confirmBox.setText(QString(
           "<b>Spend Contract</b><br><br>"
           "<b>Contract UTXO:</b> %1:%2<br>"
@@ -13239,10 +13357,10 @@ void MainWindow::updateContractsTable(const QJsonValue& txList) {
         confirmBox.exec();
         if (confirmBox.clickedButton() != confirmBtn) return;
 
-        QMessageBox::warning(this, "Legacy Contract Record",
-          "This transaction-history record has no recovery descriptor. "
+        QMessageBox::warning(this, tr("Legacy Contract Record"),
+          tr("This transaction-history record has no recovery descriptor. "
           "The wallet will not guess its spending conditions. Import the "
-          "original descriptor before attempting a spend.");
+          "original descriptor before attempting a spend."));
       });
       tblContracts_->setCellWidget(row, 5, btnWithdraw);
 
@@ -13281,25 +13399,25 @@ void MainWindow::onStartMining() {
   // Local solo miners need the daemon RPC connection. Remote pool miners do
   // not, and should keep working through daemon reconnects or wallet changes.
   if (miningModeNeedsDaemon(mode) && (!connectionMgr_ || !connectionMgr_->isConnected())) {
-    QMessageBox::warning(this, "Daemon Not Connected",
-      "Cannot start mining - daemon is not connected!\n\n"
+    QMessageBox::warning(this, tr("Daemon Not Connected"),
+      tr("Cannot start mining - daemon is not connected!\n\n"
       "Please start the daemon first:\n"
       "1. Click 'Start Daemon' button\n"
       "2. Wait for connection to establish\n"
-      "3. Then try starting the miner again.");
+      "3. Then try starting the miner again."));
     return;
   }
 
   QString addr = edtMiningAddress_->text().trimmed();
   if (addr.isEmpty()) {
-    QMessageBox::warning(this, "No Mining Address",
-      "Please set a mining address first!\n\n"
+    QMessageBox::warning(this, tr("No Mining Address"),
+      tr("Please set a mining address first!\n\n"
       "Steps to set up mining:\n"
       "1. Go to the Receive tab\n"
       "2. Unlock your wallet (if encrypted)\n"
       "3. Click 'New Transparent Address' to generate a Taproot address\n"
       "4. Return here and click 'Use Wallet'\n\n"
-      "Mining rewards will be sent to your wallet's Taproot address.");
+      "Mining rewards will be sent to your wallet's Taproot address."));
     return;
   }
 
@@ -13319,7 +13437,7 @@ void MainWindow::onStartMining() {
       currentType = "P2PKH (Legacy)";
     }
 
-    QMessageBox::warning(this, "Address Not Eligible for Mining",
+    QMessageBox::warning(this, tr("Address Not Eligible for Mining"),
       QString("<h3>Mining Requires a Taproot or P2MR Address</h3>"
       "<p>v7 accepts Taproot (din1p...) or P2MR (din1r...) coinbase outputs.</p>"
       "<p><b>Your address:</b> %1</p>"
@@ -13393,7 +13511,7 @@ void MainWindow::startInternalMiner(bool useGpu) {
   mining_stats_.total_hashes = 0;
   mining_stats_.hashrate_samples.clear();
   if (lblBlocksFound_) lblBlocksFound_->setText("0");
-  if (lblCurrentHash_) lblCurrentHash_->setText("0.00 MH/s");
+  if (lblCurrentHash_) lblCurrentHash_->setText(tr("0.00 MH/s"));
   updateMiningRuntimeLabel();
 
   // Use MinerController (in-process mining via dinero-solo-miner library)
@@ -13418,7 +13536,7 @@ void MainWindow::startGPUMiner() {
   QString addr = edtMiningAddress_->text().trimmed();
 
   if (miningProcess_ && miningProcess_->state() == QProcess::Running) {
-    QMessageBox::information(this, "Already Mining", "GPU mining is already running!");
+    QMessageBox::information(this, tr("Already Mining"), tr("GPU mining is already running!"));
     return;
   }
 
@@ -13457,7 +13575,7 @@ void MainWindow::startGPUMiner() {
   }
 
   if (gpuMinerPath.isEmpty()) {
-    QMessageBox::critical(this, "GPU Miner Not Found",
+    QMessageBox::critical(this, tr("GPU Miner Not Found"),
 #if defined(Q_OS_WIN)
       "Could not find CUDA-capable dinero-miner.exe.\n\n"
       "Build it with:\n"
@@ -13481,9 +13599,9 @@ void MainWindow::startGPUMiner() {
   // Update UI
   lblBlocksFound_->setText("0");
   updateMiningRuntimeLabel();
-  lblCurrentHash_->setText("0.00 MH/s");
-  lblTotalHashes_->setText("0 hashes");
-  lblHashrate_->setText("⛏️ GPU Initializing...");
+  lblCurrentHash_->setText(tr("0.00 MH/s"));
+  lblTotalHashes_->setText(tr("0 hashes"));
+  lblHashrate_->setText(tr("⛏️ GPU Initializing..."));
 
   // Create process if needed (reuses same miningProcess_ as external miner)
   if (!miningProcess_) {
@@ -13529,9 +13647,9 @@ void MainWindow::startGPUMiner() {
       activeMinerType_ = "none";
       setMiningModeControlsLocked(false);
       setMiningOutputCinematicEnabled(false);
-      btnStartMining_->setText("Start Mining");
+      btnStartMining_->setText(tr("Start Mining"));
       btnStartMining_->setStyleSheet(miningButtonStyle());
-      btnStartMining_->setToolTip("Click to start mining");
+      btnStartMining_->setToolTip(tr("Click to start mining"));
       lblMiningStatus_->setText(miningStatusInactiveText());
       lblMiningStatus_->setStyleSheet(miningStatusStyle());
       txtMiningOutput_->append("\n=== GPU Mining stopped ===\n");
@@ -13555,10 +13673,10 @@ void MainWindow::startGPUMiner() {
   }
 
   if (stratumEndpoint.isEmpty()) {
-    QMessageBox::warning(this, "Pool Endpoint Required",
-      "CUDA GPU mining on Windows uses the Stratum miner.\n\n"
+    QMessageBox::warning(this, tr("Pool Endpoint Required"),
+      tr("CUDA GPU mining on Windows uses the Stratum miner.\n\n"
       "Set the Pool Endpoint in the Mining tab, for example:\n"
-      "127.0.0.1:3333");
+      "127.0.0.1:3333"));
     return;
   }
 
@@ -13591,19 +13709,19 @@ void MainWindow::startGPUMiner() {
 
   miningProcess_->start(gpuMinerPath, args);
   if (!miningProcess_->waitForStarted(5000)) {
-    QMessageBox::critical(this, "GPU Miner Failed",
+    QMessageBox::critical(this, tr("GPU Miner Failed"),
       QString("Failed to start GPU miner:\n%1").arg(miningProcess_->errorString()));
     return;
   }
 
   isMining_ = true;
   activeMinerType_ = "gpu";
-  btnStartMining_->setText("Stop Mining");
+  btnStartMining_->setText(tr("Stop Mining"));
   btnStartMining_->setStyleSheet(miningButtonStyle());
 #if defined(Q_OS_WIN)
-  lblMiningStatus_->setText("CUDA Mining Active");
+  lblMiningStatus_->setText(tr("CUDA Mining Active"));
 #else
-  lblMiningStatus_->setText("GPU Mining Active");
+  lblMiningStatus_->setText(tr("GPU Mining Active"));
 #endif
   lblMiningStatus_->setStyleSheet(miningStatusStyle());
   setMiningModeControlsLocked(true);
@@ -13625,7 +13743,7 @@ void MainWindow::startExternalMiner() {
 
   // External miner process (reactivated from preserved code)
   if (miningProcess_ && miningProcess_->state() == QProcess::Running) {
-    QMessageBox::information(this, "Already Mining", "Mining is already running!");
+    QMessageBox::information(this, tr("Already Mining"), tr("Mining is already running!"));
     return;
   }
 
@@ -13709,7 +13827,7 @@ void MainWindow::startExternalMiner() {
     notFoundMessage += QString("\nYou can also set %1 environment variable.\n\n").arg(envVar);
     notFoundMessage += QStringLiteral("To build the miner:\n");
     notFoundMessage += QString("cmake --build build --target %1").arg(displayName);
-    QMessageBox::critical(this, "Miner Not Found", notFoundMessage);
+    QMessageBox::critical(this, tr("Miner Not Found"), notFoundMessage);
     return;
   }
   
@@ -13723,9 +13841,9 @@ void MainWindow::startExternalMiner() {
   // Update UI
   lblBlocksFound_->setText("0");
   updateMiningRuntimeLabel();
-  lblCurrentHash_->setText("0.00 MH/s");
-  lblTotalHashes_->setText("0 hashes");
-  lblHashrate_->setText("⛏️ Initializing...");
+  lblCurrentHash_->setText(tr("0.00 MH/s"));
+  lblTotalHashes_->setText(tr("0 hashes"));
+  lblHashrate_->setText(tr("⛏️ Initializing..."));
   
   // Create process if needed
   if (!miningProcess_) {
@@ -13787,9 +13905,9 @@ void MainWindow::startExternalMiner() {
       activeMinerType_ = "none";
       setMiningModeControlsLocked(false);
       setMiningOutputCinematicEnabled(false);
-      btnStartMining_->setText("Start Mining");
+      btnStartMining_->setText(tr("Start Mining"));
       btnStartMining_->setStyleSheet(miningButtonStyle());
-      btnStartMining_->setToolTip("Click to start mining");
+      btnStartMining_->setToolTip(tr("Click to start mining"));
 
       lblMiningStatus_->setText(miningStatusInactiveText());
       lblMiningStatus_->setStyleSheet(miningStatusStyle());
@@ -13829,17 +13947,17 @@ void MainWindow::startExternalMiner() {
   }
 
   if (poolMode && stratumEndpoint.isEmpty()) {
-    QMessageBox::warning(this, "Pool Endpoint Required",
-      "Pool mode requires a Stratum endpoint.\n\n"
+    QMessageBox::warning(this, tr("Pool Endpoint Required"),
+      tr("Pool mode requires a Stratum endpoint.\n\n"
       "Set it in the Mining tab (Pool Endpoint), for example:\n"
-      "127.0.0.1:3333");
+      "127.0.0.1:3333"));
     setMiningModeControlsLocked(false);
     setMiningOutputCinematicEnabled(false);
     if (miningStatsTimer_) {
       miningStatsTimer_->stop();
     }
     if (lblMiningStatus_) {
-      lblMiningStatus_->setText("Pool mode ready (set endpoint)");
+      lblMiningStatus_->setText(tr("Pool mode ready (set endpoint)"));
       lblMiningStatus_->setStyleSheet(miningStatusStyle());
     }
     return;
@@ -13962,9 +14080,9 @@ void MainWindow::startExternalMiner() {
 
     // v0.14.0.4: Set mining state and update toggle button
     isMining_ = true;
-    btnStartMining_->setText("Stop Mining");
+    btnStartMining_->setText(tr("Stop Mining"));
     btnStartMining_->setStyleSheet(miningButtonStyle());
-    btnStartMining_->setToolTip("Click to stop mining");
+    btnStartMining_->setToolTip(tr("Click to stop mining"));
 
     lblMiningStatus_->setText(poolMode ? "Pool Mining Active" : miningStatusActiveText());
     lblMiningStatus_->setStyleSheet(miningStatusStyle());
@@ -14010,7 +14128,7 @@ void MainWindow::startExternalMiner() {
     if (!poolMode && detectedProfile == "stratum") {
       detail += "\n\nThis miner appears Stratum-oriented; switch to Pool mode for Stratum mining.";
     }
-    QMessageBox::critical(this, "Failed to Start",
+    QMessageBox::critical(this, tr("Failed to Start"),
       QString("Could not start external miner in %1 mode.\n\n")
         .arg(poolMode ? "Pool/Stratum" : "Solo/RPC") +
       "Details:\n" + detail);
@@ -14041,17 +14159,17 @@ void MainWindow::onStopMining() {
 void MainWindow::startSv2Miner() {
   const QString addr = edtMiningAddress_->text().trimmed();
   if (miningProcess_ && miningProcess_->state() == QProcess::Running) {
-    QMessageBox::information(this, "Already Mining", "Mining is already running!");
+    QMessageBox::information(this, tr("Already Mining"), tr("Mining is already running!"));
     return;
   }
 
   const QString payoutScript = addressToScriptPubKeyHex(addr);
   if (payoutScript.isEmpty()) {
-    QMessageBox::warning(this, "Address Not Decodable",
-      "Could not convert mining address to a scriptPubKey.\n\n"
+    QMessageBox::warning(this, tr("Address Not Decodable"),
+      tr("Could not convert mining address to a scriptPubKey.\n\n"
       "SV2 pool mining requires a Taproot (din1p…) or P2MR (din1r…) "
       "bech32m address. Generate one in the Receive tab, then click "
-      "'Use Wallet'.");
+      "'Use Wallet'."));
     return;
   }
 
@@ -14061,10 +14179,10 @@ void MainWindow::startSv2Miner() {
   if (rewardMode == QStringLiteral("shared") &&
       (payoutScript.size() != 68 ||
        !payoutScript.startsWith(QStringLiteral("5120"), Qt::CaseInsensitive))) {
-    QMessageBox::warning(this, "Taproot Address Required",
-      "Pool Shared credits its PPLNS ledger to a Taproot (din1p...) address.\n\n"
+    QMessageBox::warning(this, tr("Taproot Address Required"),
+      tr("Pool Shared credits its PPLNS ledger to a Taproot (din1p...) address.\n\n"
       "Select a Taproot mining address, or choose Pool Solo to keep using "
-      "this address.");
+      "this address."));
     return;
   }
 
@@ -14342,7 +14460,7 @@ void MainWindow::startSv2Miner() {
       lblMiningStatus_->setText(miningStatusInactiveText());
       lblMiningStatus_->setStyleSheet(miningStatusStyle());
     }
-    if (btnStartMining_) btnStartMining_->setText("Start Mining");
+    if (btnStartMining_) btnStartMining_->setText(tr("Start Mining"));
   });
 
   if (txtMiningOutput_) {
@@ -14373,7 +14491,7 @@ void MainWindow::startSv2Miner() {
   externalMinerStopRequested_ = false;
   miningProcess_->start(minerPath, args);
   if (!miningProcess_->waitForStarted(5000)) {
-    QMessageBox::critical(this, "SV2 Miner Failed to Start",
+    QMessageBox::critical(this, tr("SV2 Miner Failed to Start"),
       QString("dinero-sv2-miner did not start:\n%1").arg(miningProcess_->errorString()));
     miningProcess_->deleteLater();
     miningProcess_ = nullptr;
@@ -14392,13 +14510,13 @@ void MainWindow::startSv2Miner() {
   if (lblCurrentHash_) lblCurrentHash_->setText("0.00");
   if (lblBlocksFound_) lblBlocksFound_->setText("0");
   updateMiningRuntimeLabel();
-  if (lblSv2Shares_) lblSv2Shares_->setText("Shares: 0");
+  if (lblSv2Shares_) lblSv2Shares_->setText(tr("Shares: 0"));
   setMiningModeControlsLocked(true);
   updateMiningStats();
   if (miningStatsTimer_) {
     miningStatsTimer_->start(1000);
   }
-  if (btnStartMining_) btnStartMining_->setText("Stop Mining");
+  if (btnStartMining_) btnStartMining_->setText(tr("Stop Mining"));
   if (lblMiningStatus_) {
     lblMiningStatus_->setText(rewardMode == QStringLiteral("shared")
       ? "Mining (SV2 Pool Shared)"
@@ -14474,15 +14592,15 @@ void MainWindow::stopExternalMiner() {
   setMiningModeControlsLocked(false);
   setMiningOutputCinematicEnabled(false);
   resetOverviewMiningTelemetry();
-  btnStartMining_->setText("Start Mining");
+  btnStartMining_->setText(tr("Start Mining"));
   btnStartMining_->setStyleSheet(miningButtonStyle());
-  btnStartMining_->setToolTip("Click to start mining");
+  btnStartMining_->setToolTip(tr("Click to start mining"));
 
   // Update status label
   lblMiningStatus_->setText(miningStatusInactiveText());
   lblMiningStatus_->setStyleSheet(miningStatusStyle());
   if (lblHashrate_) {
-    lblHashrate_->setText("0.00 MH/s");
+    lblHashrate_->setText(tr("0.00 MH/s"));
   }
   if (lblMiningUptime_) {
     lblMiningUptime_->setText("-");
@@ -14493,20 +14611,20 @@ void MainWindow::stopExternalMiner() {
 
 void MainWindow::onCreateWallet() {
   if (walletSwitchInFlight_) {
-    QMessageBox::information(this, "Wallet Switch In Progress",
-      "Wait for the current wallet switch to finish before creating or restoring another wallet.");
+    QMessageBox::information(this, tr("Wallet Switch In Progress"),
+      tr("Wait for the current wallet switch to finish before creating or restoring another wallet."));
     return;
   }
 
   if (!activeReservationId_.isEmpty() || sendSubmissionPending_ || (privateCovenantWidget_ && privateCovenantWidget_->submissionPending())) {
-    QMessageBox::warning(this, "Send In Progress",
-      "A send is in progress. Wait for it to finish before creating or restoring another wallet.");
+    QMessageBox::warning(this, tr("Send In Progress"),
+      tr("A send is in progress. Wait for it to finish before creating or restoring another wallet."));
     return;
   }
 
   if (walletRescanning_) {
-    QMessageBox::warning(this, "Wallet Scan In Progress",
-      "Wait for the current wallet scan to finish before creating or restoring another wallet.");
+    QMessageBox::warning(this, tr("Wallet Scan In Progress"),
+      tr("Wait for the current wallet scan to finish before creating or restoring another wallet."));
     return;
   }
 
@@ -14555,7 +14673,7 @@ void MainWindow::onCreateWallet() {
     if (changeAddrMgr_) {
       changeAddrMgr_->setWalletIdentityKey(QString());
     }
-    lblConnectionStatus_->setText("Reloading previous wallet");
+    lblConnectionStatus_->setText(tr("Reloading previous wallet"));
     lblConnectionStatus_->setStyleSheet(headerPillStyle());
     lblConnectionStatus_->setToolTip(QString("Reloading wallet: %1").arg(previousWallet));
     rpc_->call("wallet.open", QJsonArray{previousWallet});
@@ -14568,8 +14686,8 @@ void MainWindow::onCreateWallet() {
 
 void MainWindow::startWalletRescan(const QString& statusText) {
   if (walletRescanning_) {
-    QMessageBox::information(this, "Rescan in Progress",
-      "Wallet blockchain scan is already running.");
+    QMessageBox::information(this, tr("Rescan in Progress"),
+      tr("Wallet blockchain scan is already running."));
     return;
   }
 
@@ -14586,17 +14704,17 @@ void MainWindow::startWalletRescan(const QString& statusText) {
 
 void MainWindow::onRescanWallet() {
   if (currentWalletName_.isEmpty()) {
-    QMessageBox::warning(this, "No Wallet Loaded",
-      "Load or create your wallet first, then run rescan.");
+    QMessageBox::warning(this, tr("No Wallet Loaded"),
+      tr("Load or create your wallet first, then run rescan."));
     return;
   }
 
   const auto reply = QMessageBox::question(
     this,
-    "Rescan Wallet",
-    "Rescan blockchain for wallet balances and transaction history?\n\n"
+    tr("Rescan Wallet"),
+    tr("Rescan blockchain for wallet balances and transaction history?\n\n"
     "Use this when balance/history appears missing.\n"
-    "This can take time and lock some wallet actions until complete.",
+    "This can take time and lock some wallet actions until complete."),
     QMessageBox::Yes | QMessageBox::Cancel,
     QMessageBox::Cancel);
   if (reply != QMessageBox::Yes) {
@@ -14680,7 +14798,7 @@ bool MainWindow::isInputUtxoMissingError(const QString& errorText) const {
 
 void MainWindow::handleSpendInputMissing(const QString& errorText) {
   if (lblSendStatus_) {
-    lblSendStatus_->setText("❌ Wallet out of sync with chain: selected inputs are not in active UTXO set. Rescan wallet and retry.");
+    lblSendStatus_->setText(tr("❌ Wallet out of sync with chain: selected inputs are not in active UTXO set. Rescan wallet and retry."));
     lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; font-weight: 600; }");
   }
 
@@ -14695,9 +14813,9 @@ void MainWindow::handleSpendInputMissing(const QString& errorText) {
 
   const auto reply = QMessageBox::question(
     this,
-    "Wallet Out Of Sync",
-    "This send failed because selected inputs are not present in the node's current UTXO set.\n\n"
-    "Run wallet rescan now?",
+    tr("Wallet Out Of Sync"),
+    tr("This send failed because selected inputs are not present in the node's current UTXO set.\n\n"
+    "Run wallet rescan now?"),
     QMessageBox::Yes | QMessageBox::No,
     QMessageBox::Yes);
   if (reply == QMessageBox::Yes) {
@@ -14712,7 +14830,7 @@ void MainWindow::scheduleSafeModeRescanRetry(const QString& errorText) {
     clearSafeModeRescanRetry();
     walletRescanning_ = false;
     updateWalletUIState();
-    QMessageBox::warning(this, "Wallet Scan Deferred",
+    QMessageBox::warning(this, tr("Wallet Scan Deferred"),
       QString("Wallet restore succeeded, but scan is still blocked by node safe mode:\n\n%1\n\n"
               "Try Sync Recovery:\n"
               "1. Settings -> Sync Settings -> Reindex Chainstate\n"
@@ -14757,18 +14875,18 @@ void MainWindow::onExportSeed() {
   if (currentWalletName_.isEmpty()) {
     QMessageBox::information(
       this,
-      "Seed Backup",
-      "No wallet is loaded.\n\n"
-      "Create or restore a wallet first. The BIP39 seed phrase is shown during setup and should be written down offline.");
+      tr("Seed Backup"),
+      tr("No wallet is loaded.\n\n"
+      "Create or restore a wallet first. The BIP39 seed phrase is shown during setup and should be written down offline."));
     return;
   }
 
   if (walletUnlocked_ == false) {
     QMessageBox::information(
       this,
-      "Seed Backup",
-      "Wallet seed export, when supported by the daemon, requires the wallet to be unlocked first.\n\n"
-      "Unlock the wallet, then open Seed Backup / Mobile Restore again.");
+      tr("Seed Backup"),
+      tr("Wallet seed export, when supported by the daemon, requires the wallet to be unlocked first.\n\n"
+      "Unlock the wallet, then open Seed Backup / Mobile Restore again."));
     return;
   }
 
@@ -14777,7 +14895,7 @@ void MainWindow::onExportSeed() {
 
   auto showBackupUnavailable = [this](const QString& detail, const QString& suggestion) {
     QDialog* dialog = new QDialog(this);
-    dialog->setWindowTitle("Seed Backup / Mobile Restore");
+    dialog->setWindowTitle(tr("Seed Backup / Mobile Restore"));
     dialog->resize(620, 360);
     dialog->setStyleSheet(
       "QDialog { background: #1d2229; color: #dbe3ec; }"
@@ -14788,23 +14906,23 @@ void MainWindow::onExportSeed() {
     auto* layout = new QVBoxLayout(dialog);
     layout->setSpacing(10);
 
-    auto* title = new QLabel("Seed phrase re-export is not available for this wallet.");
+    auto* title = new QLabel(tr("Seed phrase re-export is not available for this wallet."));
     title->setStyleSheet("QLabel { font-size: 16px; font-weight: 700; color: #eef3f8; }");
     title->setWordWrap(true);
     layout->addWidget(title);
 
-    auto* body = new QLabel(
+    auto* body = new QLabel(tr(
       "Dinero can restore from the BIP39 phrase you wrote down during setup, but this wallet storage cannot reconstruct those words later. "
-      "The original phrase is converted into wallet seed material, and that conversion is one-way unless a future daemon explicitly stores an encrypted mnemonic backup.");
+      "The original phrase is converted into wallet seed material, and that conversion is one-way unless a future daemon explicitly stores an encrypted mnemonic backup."));
     body->setWordWrap(true);
     layout->addWidget(body);
 
-    auto* restoreGroup = new QGroupBox("Restore Paths");
+    auto* restoreGroup = new QGroupBox(tr("Restore Paths"));
     auto* restoreLayout = new QVBoxLayout(restoreGroup);
-    auto* restoreText = new QLabel(
+    auto* restoreText = new QLabel(tr(
       "Use the original paper seed backup for mobile restore.\n\n"
       "Taproot payments: m/86'/1448'/0'/0/i, din1p...\n"
-      "Quantum-safe P2MR: m/88'/1448'/0'/0/i, din1r...");
+      "Quantum-safe P2MR: m/88'/1448'/0'/0/i, din1r..."));
     restoreText->setWordWrap(true);
     restoreLayout->addWidget(restoreText);
     layout->addWidget(restoreGroup);
@@ -14827,7 +14945,7 @@ void MainWindow::onExportSeed() {
 
     auto* buttonRow = new QHBoxLayout;
     buttonRow->addStretch();
-    auto* btnClose = new QPushButton("OK");
+    auto* btnClose = new QPushButton(tr("OK"));
     btnClose->setStyleSheet(chromeButtonStyle());
     connect(btnClose, &QPushButton::clicked, dialog, &QDialog::accept);
     buttonRow->addWidget(btnClose);
@@ -14840,10 +14958,10 @@ void MainWindow::onExportSeed() {
   auto showSeedPhrase = [this](const QString& seedPhrase, const QJsonObject& obj) {
     QMessageBox::StandardButton reply = QMessageBox::warning(
       this,
-      "Critical Security Warning",
-      "You are about to view your seed phrase.\n\n"
+      tr("Critical Security Warning"),
+      tr("You are about to view your seed phrase.\n\n"
       "Anyone with this phrase can access your funds.\n\n"
-      "Write it down on paper, store it offline, and never share it.",
+      "Write it down on paper, store it offline, and never share it."),
       QMessageBox::Yes | QMessageBox::No,
       QMessageBox::No);
 
@@ -14854,21 +14972,21 @@ void MainWindow::onExportSeed() {
     QStringList words = seedPhrase.simplified().split(' ', Qt::SkipEmptyParts);
 
     QDialog* dialog = new QDialog(this);
-    dialog->setWindowTitle("Seed Phrase");
+    dialog->setWindowTitle(tr("Seed Phrase"));
     dialog->resize(640, 460);
 
     auto* layout = new QVBoxLayout(dialog);
 
-    auto* warningLabel = new QLabel(
+    auto* warningLabel = new QLabel(tr(
       "<b>Write this phrase down on paper.</b><br>"
-      "Do not screenshot it, upload it, paste it into chat, or store it in cloud notes.");
+      "Do not screenshot it, upload it, paste it into chat, or store it in cloud notes."));
     warningLabel->setWordWrap(true);
     warningLabel->setStyleSheet(
       "QLabel { background: #2c3036; color: #e6ecf2; padding: 10px; "
       "border: 1px solid #3d434d; border-radius: 6px; }");
     layout->addWidget(warningLabel);
 
-    auto* phraseGroup = new QGroupBox("BIP39 Recovery Phrase");
+    auto* phraseGroup = new QGroupBox(tr("BIP39 Recovery Phrase"));
     auto* phraseGrid = new QGridLayout(phraseGroup);
     phraseGrid->setHorizontalSpacing(16);
     phraseGrid->setVerticalSpacing(6);
@@ -14887,10 +15005,10 @@ void MainWindow::onExportSeed() {
     }
     layout->addWidget(phraseGroup);
 
-    auto* compat = new QLabel(
+    auto* compat = new QLabel(tr(
       "Restore path notes:\n"
       "• Taproot payments: m/86'/1448'/0'/0/i, din1p...\n"
-      "• Quantum-safe P2MR: m/88'/1448'/0'/0/i, din1r...\n");
+      "• Quantum-safe P2MR: m/88'/1448'/0'/0/i, din1r...\n"));
     compat->setWordWrap(true);
     layout->addWidget(compat);
 
@@ -14918,7 +15036,7 @@ void MainWindow::onExportSeed() {
           const QJsonObject response = result.toObject();
           if (!RecoveryWordsPolicy::confirmationRecorded(response, walletName)) {
             btnConfirm->setEnabled(true);
-            QMessageBox::warning(dialog, "Recovery Words Not Confirmed",
+            QMessageBox::warning(dialog, tr("Recovery Words Not Confirmed"),
                 response.value("error").toString("The wallet did not record your backup. Please try again."));
             return;
           }
@@ -14929,7 +15047,7 @@ void MainWindow::onExportSeed() {
                 [dialog, btnConfirm, replyAlias](const QString& method, int, const QString& message) {
           if (method != replyAlias) return;
           btnConfirm->setEnabled(true);
-          QMessageBox::warning(dialog, "Recovery Words Not Confirmed", message);
+          QMessageBox::warning(dialog, tr("Recovery Words Not Confirmed"), message);
         });
         rpc_->callAs("wallet.acknowledgeseedbackup",
                      RecoveryWordsPolicy::confirmParams(seedPhrase, obj), replyAlias);
@@ -14937,7 +15055,7 @@ void MainWindow::onExportSeed() {
       layout->addWidget(btnConfirm);
     }
 
-    auto* btnClose = new QPushButton("Close");
+    auto* btnClose = new QPushButton(tr("Close"));
     btnClose->setStyleSheet(chromeButtonStyle());
     connect(btnClose, &QPushButton::clicked, dialog, &QDialog::accept);
     layout->addWidget(btnClose);
@@ -14993,7 +15111,7 @@ void MainWindow::onExportSeed() {
     QObject::disconnect(*exportSeedResultConn);
     QObject::disconnect(*exportSeedErrorConn);
 
-    QMessageBox::critical(this, "Error",
+    QMessageBox::critical(this, tr("Error"),
       "Seed backup request failed:\n\n" + message + "\n\n"
       "If this daemon does not support encrypted mnemonic export, use the original paper seed backup from wallet setup.");
   });
@@ -15061,8 +15179,8 @@ void MainWindow::onStartupWatchdogTimeout() {
   box->setAttribute(Qt::WA_DeleteOnClose);
   box->setModal(false);
   box->setIcon(QMessageBox::Information);
-  box->setWindowTitle("Node Still Starting");
-  box->setText("Dinero has not connected to its local node after five minutes.");
+  box->setWindowTitle(tr("Node Still Starting"));
+  box->setText(tr("Dinero has not connected to its local node after five minutes."));
   box->setInformativeText(
     "A large database may still be checking saved chain data. If the node "
     "stopped or could not open its port, Show Log provides the cause. "
@@ -15126,7 +15244,7 @@ bool MainWindow::maybeShowP2PNetworkNotice() {
 
   QMessageBox box(this);
   box.setIcon(QMessageBox::Information);
-  box.setWindowTitle("Dinero P2P Networking");
+  box.setWindowTitle(tr("Dinero P2P Networking"));
   box.setText(QStringLiteral("Dinero is enabling automatic router port mapping."));
   box.setInformativeText(
       QStringLiteral("Dinero will ask your home router (UPnP / NAT-PMP) to open TCP %1 so "
@@ -15153,7 +15271,7 @@ void killStaleDinerodByPort();
 bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
   if (daemonProcess_ && daemonProcess_->state() == QProcess::Running) {
     if (showFeedback) {
-      QMessageBox::information(this, "Daemon Running", "Daemon is already running!");
+      QMessageBox::information(this, tr("Daemon Running"), tr("Daemon is already running!"));
     }
     return true;
   }
@@ -15169,7 +15287,7 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
     if (QFile::exists(dinerodPath)) {
       qDebug() << "Using custom daemon path:" << dinerodPath;
     } else if (showFeedback) {
-      QMessageBox::critical(this, "Invalid Daemon Path",
+      QMessageBox::critical(this, tr("Invalid Daemon Path"),
         QString("Custom daemon path not found:\n%1\n\n"
                 "Please verify the path or use Browse button.").arg(dinerodPath));
       suppressErrorDialogs_ = false;
@@ -15229,7 +15347,7 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
 
     if (dinerodPath.isEmpty()) {
       if (showFeedback) {
-        QMessageBox::critical(this, "Daemon Not Found",
+        QMessageBox::critical(this, tr("Daemon Not Found"),
           "Could not find dinerod binary.\n\n"
           "Please use the 'Browse...' button to locate dinerod.\n\n"
           "Searched in:\n" + searchPaths.join("\n"));
@@ -15252,9 +15370,9 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
     if (portInUse && showFeedback) {
       QMessageBox box(this);
       box.setIcon(QMessageBox::Warning);
-      box.setWindowTitle("Port Already in Use");
-      box.setText("Port 20998 is already in use — another Dinero process "
-                  "may be running.");
+      box.setWindowTitle(tr("Port Already in Use"));
+      box.setText(tr("Port 20998 is already in use — another Dinero process "
+                  "may be running."));
       box.setInformativeText(
         "If an existing Dinero daemon is running, the wallet can connect to "
         "it directly instead of starting a new one. If the port is held by a "
@@ -15319,7 +15437,7 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
         // healthy daemon to adopt); clear it so the retry below can actually bind.
         killStaleDinerodByPort();
         if (lblConnectionStatus_) {
-          lblConnectionStatus_->setText("Starting daemon… (retry)");
+          lblConnectionStatus_->setText(tr("Starting daemon… (retry)"));
           lblConnectionStatus_->setStyleSheet(headerPillStyle());
         }
         QTimer::singleShot(2500, this, [this]() {
@@ -15347,7 +15465,7 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
                  << "(retries exhausted; ConnectionManager keeps trying, "
                     "watchdog will surface a persistent failure)";
       if (lblConnectionStatus_) {
-        lblConnectionStatus_->setText("Starting daemon…");
+        lblConnectionStatus_->setText(tr("Starting daemon…"));
         lblConnectionStatus_->setStyleSheet(headerPillStyle());
       }
       btnStartDaemon_->setVisible(true);
@@ -15381,7 +15499,7 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
     suppressErrorDialogs_ = false;
     qWarning() << "Cannot configure daemon output:" << outputError;
     if (showFeedback) {
-      QMessageBox::critical(this, "Start Failed", outputError);
+      QMessageBox::critical(this, tr("Start Failed"), outputError);
     }
     return false;
   }
@@ -15392,7 +15510,7 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
     suppressErrorDialogs_ = false;
     qWarning() << "Failed to start daemon:" << daemonProcess_->errorString();
     if (showFeedback) {
-      QMessageBox::critical(this, "Start Failed",
+      QMessageBox::critical(this, tr("Start Failed"),
         "Failed to start daemon:\n\n" + daemonProcess_->errorString());
     }
     return false;
@@ -15400,7 +15518,7 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
 
   btnStartDaemon_->setVisible(false);
   btnStopDaemon_->setVisible(true);
-  lblConnectionStatus_->setText("Starting daemon...");
+  lblConnectionStatus_->setText(tr("Starting daemon..."));
   lblConnectionStatus_->setStyleSheet(headerPillStyle());
 
   if (openLogWindow) {
@@ -15422,7 +15540,7 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
                        "Waiting for RPC to become available...")
       : QStringLiteral("Dinerod daemon started successfully!\n\n"
                        "Waiting for RPC to become available...");
-    QMessageBox::information(this, "Daemon Started", startedMessage);
+    QMessageBox::information(this, tr("Daemon Started"), startedMessage);
   }
 
   // Wait longer for daemon to create cookie and start RPC server
@@ -15446,13 +15564,13 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
     } else {
       qWarning() << "⚠️ Cookie file not created yet after 5 seconds";
       if (lblConnectionStatus_) {
-        lblConnectionStatus_->setText("Daemon started, waiting for RPC");
+        lblConnectionStatus_->setText(tr("Daemon started, waiting for RPC"));
         lblConnectionStatus_->setStyleSheet(headerPillStyle());
       }
       if (showFeedback) {
-        QMessageBox::warning(this, "Daemon Started",
-          "Daemon started but RPC not ready yet.\n\n"
-          "Wait a few more seconds and click 'Reconnect' if needed.");
+        QMessageBox::warning(this, tr("Daemon Started"),
+          tr("Daemon started but RPC not ready yet.\n\n"
+          "Wait a few more seconds and click 'Reconnect' if needed."));
       }
     }
 
@@ -15476,13 +15594,13 @@ void MainWindow::onStartDaemon() {
 }
 
 void MainWindow::onStopDaemon() {
-  auto reply = QMessageBox::question(this, "Stop Daemon",
-    "Are you sure you want to stop the daemon?\n\n"
+  auto reply = QMessageBox::question(this, tr("Stop Daemon"),
+    tr("Are you sure you want to stop the daemon?\n\n"
     "This will:\n"
     "• Request the local dinerod for this wallet datadir to stop\n"
     "• Unlock database files\n"
     "• Disconnect GUI from blockchain\n\n"
-    "Continue?",
+    "Continue?"),
     QMessageBox::Yes | QMessageBox::No);
 
   if (reply != QMessageBox::Yes) {
@@ -15552,13 +15670,13 @@ void MainWindow::onStopDaemon() {
   // Update GUI state
   btnStartDaemon_->setVisible(true);
   btnStopDaemon_->setVisible(false);
-  lblConnectionStatus_->setText("Daemon stopped");
+  lblConnectionStatus_->setText(tr("Daemon stopped"));
   lblConnectionStatus_->setStyleSheet(headerPillStyle());
 
-  QMessageBox::information(this, "Daemon Stopped", 
-    "✅ All daemon processes stopped\n\n"
+  QMessageBox::information(this, tr("Daemon Stopped"),
+    tr("✅ All daemon processes stopped\n\n"
     "Database files unlocked.\n"
-    "Click 'Start Daemon' when ready to restart.");
+    "Click 'Start Daemon' when ready to restart."));
 }
 
 void MainWindow::detectExistingDaemon() {
@@ -15613,13 +15731,13 @@ void MainWindow::detectExistingDaemon() {
       // Daemon is already running - show Stop button
       btnStartDaemon_->setVisible(false);
       btnStopDaemon_->setVisible(true);
-      lblConnectionStatus_->setText("Daemon running");
+      lblConnectionStatus_->setText(tr("Daemon running"));
       lblConnectionStatus_->setStyleSheet(headerPillStyle());
     } else {
       // Daemon is not running - show Start button
       btnStartDaemon_->setVisible(true);
       btnStopDaemon_->setVisible(false);
-      lblConnectionStatus_->setText("Daemon not running");
+      lblConnectionStatus_->setText(tr("Daemon not running"));
       lblConnectionStatus_->setStyleSheet(headerPillStyle());
     }
     
@@ -15676,7 +15794,7 @@ void MainWindow::onUnlockWallet() {
 
     // Show unlocking spinner state
     btnWalletLock_->setEnabled(false);
-    btnWalletLock_->setText("Unlocking...");
+    btnWalletLock_->setText(tr("Unlocking..."));
     btnWalletLock_->setStyleSheet(chromeButtonStyle());
 
     auto resultConn = std::make_shared<QMetaObject::Connection>();
@@ -15708,20 +15826,20 @@ void MainWindow::onUnlockWallet() {
             walletUnlocked_ = true;
             unlockSecondsRemaining_ = 0;
             unlockCountdownTimer_->stop();
-            btnWalletLock_->setText("Unlocked | Lock");
+            btnWalletLock_->setText(tr("Unlocked | Lock"));
             btnWalletLock_->setStyleSheet(chromeButtonStyle());
-            btnWalletLock_->setToolTip("Wallet is not encrypted. Encrypt wallet for stronger security.");
+            btnWalletLock_->setToolTip(tr("Wallet is not encrypted. Encrypt wallet for stronger security."));
             updateWalletUIState();
-            QMessageBox::information(this, "Wallet Unencrypted",
-              "ℹ️ Wallet is not encrypted.\n\n"
+            QMessageBox::information(this, tr("Wallet Unencrypted"),
+              tr("ℹ️ Wallet is not encrypted.\n\n"
               "No unlock is required.\n"
-              "Use Encrypt Wallet to protect private keys.");
+              "Use Encrypt Wallet to protect private keys."));
           } else {
-            QMessageBox::critical(this, "Unlock Failed", buildUnlockErrorMessage(error));
+            QMessageBox::critical(this, tr("Unlock Failed"), buildUnlockErrorMessage(error));
 
             // Reset to locked state UI
             walletUnlocked_ = false;
-            btnWalletLock_->setText("Locked | Unlock");
+            btnWalletLock_->setText(tr("Locked | Unlock"));
             btnWalletLock_->setStyleSheet(chromeButtonStyle());
           }
 
@@ -15730,7 +15848,7 @@ void MainWindow::onUnlockWallet() {
           walletUnlocked_ = true;
           const bool restoringHistory = walletRecoveryUnlockNeeded_;
           if (restoringHistory) {
-            lblConnectionStatus_->setText("Wallet selected; history recovering");
+            lblConnectionStatus_->setText(tr("Wallet selected; history recovering"));
             showWalletBalanceUnavailable();
           }
 
@@ -15745,12 +15863,12 @@ void MainWindow::onUnlockWallet() {
             .arg(mins, 2, 10, QChar('0'))
             .arg(secs, 2, 10, QChar('0')));
           btnWalletLock_->setStyleSheet(chromeButtonStyle());
-          btnWalletLock_->setToolTip("Wallet unlocked. Click to lock and secure private keys.");
+          btnWalletLock_->setToolTip(tr("Wallet unlocked. Click to lock and secure private keys."));
 
           // Update all wallet-dependent UI
           updateWalletUIState();
 
-          QMessageBox::information(this, "Success", restoringHistory
+          QMessageBox::information(this, tr("Success"), restoringHistory
             ? "Wallet unlocked. History recovery is continuing. Sending will resume when the balance is current."
             : "✅ Wallet unlocked successfully!\n\n"
               "• Taproot signing is now enabled\n"
@@ -15773,21 +15891,21 @@ void MainWindow::onUnlockWallet() {
           walletUnlocked_ = true;
           unlockSecondsRemaining_ = 0;
           unlockCountdownTimer_->stop();
-          btnWalletLock_->setText("Unlocked | Lock");
+          btnWalletLock_->setText(tr("Unlocked | Lock"));
           btnWalletLock_->setStyleSheet(chromeButtonStyle());
-          btnWalletLock_->setToolTip("Wallet is not encrypted. Encrypt wallet for stronger security.");
-          QMessageBox::information(this, "Wallet Unencrypted",
-            "ℹ️ Wallet is not encrypted.\n\n"
+          btnWalletLock_->setToolTip(tr("Wallet is not encrypted. Encrypt wallet for stronger security."));
+          QMessageBox::information(this, tr("Wallet Unencrypted"),
+            tr("ℹ️ Wallet is not encrypted.\n\n"
             "No unlock is required.\n"
-            "Use Encrypt Wallet to protect private keys.");
+            "Use Encrypt Wallet to protect private keys."));
         } else {
-          QMessageBox::critical(this, "Unlock Failed", buildUnlockErrorMessage(message));
+          QMessageBox::critical(this, tr("Unlock Failed"), buildUnlockErrorMessage(message));
 
           // Reset to locked state UI
           walletUnlocked_ = false;
-          btnWalletLock_->setText("Locked | Unlock");
+          btnWalletLock_->setText(tr("Locked | Unlock"));
           btnWalletLock_->setStyleSheet(chromeButtonStyle());
-          btnWalletLock_->setToolTip("Wallet locked. Click to unlock for Taproot signing.");
+          btnWalletLock_->setToolTip(tr("Wallet locked. Click to unlock for Taproot signing."));
         }
 
         updateWalletUIState();
@@ -15816,19 +15934,19 @@ void MainWindow::onLockWallet() {
   walletUnlocked_ = false;
 
   // Update button to show locked state
-  btnWalletLock_->setText("Locked | Unlock");
+  btnWalletLock_->setText(tr("Locked | Unlock"));
   btnWalletLock_->setStyleSheet(chromeButtonStyle());
-  btnWalletLock_->setToolTip("Wallet locked. Click to unlock for Taproot signing.");
+  btnWalletLock_->setToolTip(tr("Wallet locked. Click to unlock for Taproot signing."));
 
   // Update all wallet-dependent UI
   updateWalletUIState();
 
   QTimer::singleShot(0, this, [this]() {
-    QMessageBox::information(this, "Locked",
-      "🔒 Wallet locked successfully!\n\n"
+    QMessageBox::information(this, tr("Locked"),
+      tr("🔒 Wallet locked successfully!\n\n"
       "• Taproot signing is now disabled\n"
       "• Private keys are secured\n"
-      "• Unlock to spend or sign transactions");
+      "• Unlock to spend or sign transactions"));
   });
 }
 
@@ -15873,8 +15991,8 @@ void MainWindow::updateWalletSwitcherState() {
   if (walletSwitchInFlight_) {
     cmbWalletSelector_->setEnabled(false);
     btnLoadWallet_->setEnabled(false);
-    btnLoadWallet_->setText("Switching...");
-    btnLoadWallet_->setToolTip("Switching active wallet...");
+    btnLoadWallet_->setText(tr("Switching..."));
+    btnLoadWallet_->setToolTip(tr("Switching active wallet..."));
     return;
   }
 
@@ -15886,11 +16004,11 @@ void MainWindow::updateWalletSwitcherState() {
   btnLoadWallet_->setEnabled(hasSelection);
 
   if (!hasEntries) {
-    btnLoadWallet_->setText("Open Wallet");
-    btnLoadWallet_->setToolTip("No wallets found");
+    btnLoadWallet_->setText(tr("Open Wallet"));
+    btnLoadWallet_->setToolTip(tr("No wallets found"));
   } else if (!hasSelection) {
-    btnLoadWallet_->setText("Open Wallet");
-    btnLoadWallet_->setToolTip("Select a wallet to load");
+    btnLoadWallet_->setText(tr("Open Wallet"));
+    btnLoadWallet_->setToolTip(tr("Select a wallet to load"));
   } else if (!currentWalletName_.isEmpty() && selectedWallet == currentWalletName_) {
     // Re-opening the active wallet makes the daemon close it and open a new,
     // LOCKED session, discarding the user's unlock (and restarting any v3
@@ -15900,10 +16018,10 @@ void MainWindow::updateWalletSwitcherState() {
       ? QString("Refresh wallet '%1'").arg(selectedWallet)
       : QString("Unlock wallet '%1'").arg(selectedWallet));
   } else if (currentWalletName_.isEmpty()) {
-    btnLoadWallet_->setText("Open Wallet");
+    btnLoadWallet_->setText(tr("Open Wallet"));
     btnLoadWallet_->setToolTip(QString("Open wallet '%1'").arg(selectedWallet));
   } else {
-    btnLoadWallet_->setText("Switch Wallet");
+    btnLoadWallet_->setText(tr("Switch Wallet"));
     btnLoadWallet_->setToolTip(QString("Switch from '%1' to '%2'")
       .arg(currentWalletName_, selectedWallet));
   }
@@ -15994,7 +16112,7 @@ void MainWindow::clearWalletScopedUiState() {
     btnConsolidate_->setVisible(false);
   }
   if (lblBalance_) {
-    lblBalance_->setText("Loading...");
+    lblBalance_->setText(tr("Loading..."));
   }
   cachedTransparentBalance_ = 0.0;
   cachedP2mrBalance_ = 0.0;
@@ -16022,18 +16140,18 @@ void MainWindow::clearWalletScopedUiState() {
     txtSendResult_->clear();
   }
   if (lblTotalWalletBalance_) {
-    lblTotalWalletBalance_->setText("Loading...");
+    lblTotalWalletBalance_->setText(tr("Loading..."));
   }
   updateWalletBalanceDisplay();
   if (lblSendStatus_) {
-    lblSendStatus_->setText("ℹ️ Select or unlock a wallet to send transactions");
+    lblSendStatus_->setText(tr("ℹ️ Select or unlock a wallet to send transactions"));
     lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
   }
   if (tblContracts_) {
     tblContracts_->setRowCount(0);
   }
   if (lblContractsSummary_) {
-    lblContractsSummary_->setText("Loading...");
+    lblContractsSummary_->setText(tr("Loading..."));
   }
   if (hardwareWalletWidget_) {
     hardwareWalletWidget_->clearWalletState();
@@ -16067,14 +16185,14 @@ void MainWindow::onLoadSelectedWallet() {
 
   // Block wallet switch while a send is in-flight (change reservation active)
   if (!activeReservationId_.isEmpty() || sendSubmissionPending_ || (privateCovenantWidget_ && privateCovenantWidget_->submissionPending())) {
-    QMessageBox::warning(this, "Wallet Switch Blocked",
-        "A send is in progress. Wait for it to complete before switching wallets.");
+    QMessageBox::warning(this, tr("Wallet Switch Blocked"),
+        tr("A send is in progress. Wait for it to complete before switching wallets."));
     return;
   }
 
   const QString walletName = cmbWalletSelector_->currentText().trimmed();
   if (walletName.isEmpty()) {
-    QMessageBox::warning(this, "Wallet Selection", "Select a wallet to load first.");
+    QMessageBox::warning(this, tr("Wallet Selection"), tr("Select a wallet to load first."));
     return;
   }
 
@@ -16204,9 +16322,9 @@ void MainWindow::checkRescanStatus() {
         // Wallet unloaded
         walletSwitched = true;
         currentWalletName_.clear();
-        lblWalletName_->setText("Wallet: none");
+        lblWalletName_->setText(tr("Wallet: none"));
         lblWalletName_->setStyleSheet(headerPillStyle());
-        lblWalletName_->setToolTip("No wallet loaded. Create or restore a wallet to get started.");
+        lblWalletName_->setToolTip(tr("No wallet loaded. Create or restore a wallet to get started."));
       }
 
       if (!pendingWalletOpenName_.isEmpty() && walletName == pendingWalletOpenName_) {
@@ -16214,7 +16332,7 @@ void MainWindow::checkRescanStatus() {
         pendingWalletOpenName_.clear();
         confirmedWalletOpenName_.clear();
         confirmedWalletOpenUnlocked_ = false;
-        lblConnectionStatus_->setText("Wallet loaded");
+        lblConnectionStatus_->setText(tr("Wallet loaded"));
         lblConnectionStatus_->setStyleSheet(headerPillStyle());
         lblConnectionStatus_->setToolTip(QString("Active wallet: %1").arg(walletName));
       }
@@ -16231,13 +16349,13 @@ void MainWindow::checkRescanStatus() {
 
         // Sync lock button with daemon-reported state for the newly active wallet.
         if (walletUnlocked_) {
-          btnWalletLock_->setText("Unlocked | Lock");
+          btnWalletLock_->setText(tr("Unlocked | Lock"));
           btnWalletLock_->setStyleSheet(chromeButtonStyle());
-          btnWalletLock_->setToolTip("Wallet unlocked. Click to lock and secure private keys.");
+          btnWalletLock_->setToolTip(tr("Wallet unlocked. Click to lock and secure private keys."));
         } else {
-          btnWalletLock_->setText("Locked | Unlock");
+          btnWalletLock_->setText(tr("Locked | Unlock"));
           btnWalletLock_->setStyleSheet(chromeButtonStyle());
-          btnWalletLock_->setToolTip("Wallet locked. Click to unlock for Taproot signing.");
+          btnWalletLock_->setToolTip(tr("Wallet locked. Click to unlock for Taproot signing."));
         }
 
         // Clear the old scope before binding the newly reported wallet.
@@ -16268,13 +16386,13 @@ void MainWindow::checkRescanStatus() {
         walletUnlocked_ = unlocked;
         btnWalletLock_->setEnabled(true);  // ensure button isn't stuck in disabled "Unlocking..." state
         if (walletUnlocked_) {
-          btnWalletLock_->setText("Unlocked | Lock");
+          btnWalletLock_->setText(tr("Unlocked | Lock"));
           btnWalletLock_->setStyleSheet(chromeButtonStyle());
-          btnWalletLock_->setToolTip("Wallet unlocked. Click to lock and secure private keys.");
+          btnWalletLock_->setToolTip(tr("Wallet unlocked. Click to lock and secure private keys."));
         } else {
-          btnWalletLock_->setText("Locked | Unlock");
+          btnWalletLock_->setText(tr("Locked | Unlock"));
           btnWalletLock_->setStyleSheet(chromeButtonStyle());
-          btnWalletLock_->setToolTip("Wallet locked. Click to unlock for Taproot signing.");
+          btnWalletLock_->setToolTip(tr("Wallet locked. Click to unlock for Taproot signing."));
         }
       }
 
@@ -16285,14 +16403,14 @@ void MainWindow::checkRescanStatus() {
       // Update button state based on rescan
       if (walletRescanning_) {
         btnWalletLock_->setEnabled(false);
-        btnWalletLock_->setToolTip("Wallet lock/unlock disabled during blockchain rescan");
+        btnWalletLock_->setToolTip(tr("Wallet lock/unlock disabled during blockchain rescan"));
       } else if (!wasRescanning || !walletRescanning_) {
         btnWalletLock_->setEnabled(true);
         // Restore appropriate tooltip
         if (walletUnlocked_) {
-          btnWalletLock_->setToolTip("Lock wallet to secure private keys");
+          btnWalletLock_->setToolTip(tr("Lock wallet to secure private keys"));
         } else {
-          btnWalletLock_->setToolTip("Unlock wallet to enable Taproot signing and transactions");
+          btnWalletLock_->setToolTip(tr("Unlock wallet to enable Taproot signing and transactions"));
         }
       }
 
@@ -16337,11 +16455,11 @@ void MainWindow::updateWalletUIState() {
   if (btnRescanWallet_) {
     btnRescanWallet_->setEnabled(hasWallet && !walletRescanning_);
     if (!hasWallet) {
-      btnRescanWallet_->setToolTip("Create or load the default wallet first");
+      btnRescanWallet_->setToolTip(tr("Create or load the default wallet first"));
     } else if (walletRescanning_) {
-      btnRescanWallet_->setToolTip("Rescan already running");
+      btnRescanWallet_->setToolTip(tr("Rescan already running"));
     } else {
-      btnRescanWallet_->setToolTip("Rescan blockchain for wallet funds/history");
+      btnRescanWallet_->setToolTip(tr("Rescan blockchain for wallet funds/history"));
     }
   }
   if (btnConsolidate_) {
@@ -16354,29 +16472,29 @@ void MainWindow::updateWalletUIState() {
     btnSend_->setEnabled(canTransact && !sendSubmissionPending_);
     updateCovenantReview();
     if (!hasWallet) {
-      btnSend_->setToolTip("Create or load a wallet first");
+      btnSend_->setToolTip(tr("Create or load a wallet first"));
     } else if (walletRescanning_) {
-      btnSend_->setToolTip("Wait for blockchain rescan to complete");
+      btnSend_->setToolTip(tr("Wait for blockchain rescan to complete"));
     } else if (!walletUnlocked_) {
-      btnSend_->setToolTip("Unlock wallet to send transactions");
+      btnSend_->setToolTip(tr("Unlock wallet to send transactions"));
     } else if (!walletSendReady_) {
       btnSend_->setToolTip(walletSendUnavailableReason_);
     } else {
-      btnSend_->setToolTip("Send DIN to another address");
+      btnSend_->setToolTip(tr("Send DIN to another address"));
     }
   }
   if (btnHardwareWalletSend_) {
     btnHardwareWalletSend_->setEnabled(canTransact && standardSendMode && !walletTransparentV3SendReady_);
     if (!hasWallet) {
-      btnHardwareWalletSend_->setToolTip("Create or load a wallet first");
+      btnHardwareWalletSend_->setToolTip(tr("Create or load a wallet first"));
     } else if (walletRescanning_) {
-      btnHardwareWalletSend_->setToolTip("Wait for blockchain rescan to complete");
+      btnHardwareWalletSend_->setToolTip(tr("Wait for blockchain rescan to complete"));
     } else if (!walletUnlocked_) {
-      btnHardwareWalletSend_->setToolTip("Unlock wallet to prepare a hardware-wallet send");
+      btnHardwareWalletSend_->setToolTip(tr("Unlock wallet to prepare a hardware-wallet send"));
     } else if (!walletSendReady_) {
       btnHardwareWalletSend_->setToolTip(walletSendUnavailableReason_);
     } else if (!standardSendMode) {
-      btnHardwareWalletSend_->setToolTip("Hardware-wallet signing is currently wired only for public Taproot transfers");
+      btnHardwareWalletSend_->setToolTip(tr("Hardware-wallet signing is currently wired only for public Taproot transfers"));
     } else {
       btnHardwareWalletSend_->setToolTip(hardwareWalletPsbtTooltip());
     }
@@ -16413,26 +16531,26 @@ void MainWindow::updateWalletUIState() {
   if (btnDeriveAddress_) {
     btnDeriveAddress_->setEnabled(canTransact && !walletTransparentV3SendReady_);
     if (!hasWallet) {
-      btnDeriveAddress_->setToolTip("Create or load a wallet first");
+      btnDeriveAddress_->setToolTip(tr("Create or load a wallet first"));
     } else if (!walletUnlocked_) {
-      btnDeriveAddress_->setToolTip("Unlock wallet to generate new addresses");
+      btnDeriveAddress_->setToolTip(tr("Unlock wallet to generate new addresses"));
     } else if (currentReceiveMode() == "p2mr") {
-      btnDeriveAddress_->setToolTip("Generate a new quantum-safe P2MR receiving address (din1r...)");
+      btnDeriveAddress_->setToolTip(tr("Generate a new quantum-safe P2MR receiving address (din1r...)"));
     } else {
-      btnDeriveAddress_->setToolTip("Generate a new Taproot receiving address (din1p...)");
+      btnDeriveAddress_->setToolTip(tr("Generate a new Taproot receiving address (din1p...)"));
     }
   }
   // Update Send status label with helpful hint.
   if (lblSendStatus_) {
     if (!canTransact) {
       if (!hasWallet) {
-        lblSendStatus_->setText("ℹ️ Create or restore a wallet to send transactions");
+        lblSendStatus_->setText(tr("ℹ️ Create or restore a wallet to send transactions"));
         lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
       } else if (walletRescanning_) {
-        lblSendStatus_->setText("🔄 Blockchain rescan in progress... Please wait.");
+        lblSendStatus_->setText(tr("🔄 Blockchain rescan in progress... Please wait."));
         lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
       } else if (!walletUnlocked_) {
-        lblSendStatus_->setText("🔒 Wallet is locked. Unlock to send transactions.");
+        lblSendStatus_->setText(tr("🔒 Wallet is locked. Unlock to send transactions."));
         lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
       } else if (!walletSendReady_) {
         lblSendStatus_->setText(QString("%1 %2.")
@@ -16450,7 +16568,7 @@ void MainWindow::updateWalletUIState() {
           status.startsWith("Wallet balance is viewable.") ||
           status.startsWith("Wallet balance is unavailable.");
       if (isStateHint) {
-        lblSendStatus_->setText("✅ Wallet unlocked. Ready to send transactions.");
+        lblSendStatus_->setText(tr("✅ Wallet unlocked. Ready to send transactions."));
         lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
       }
     }
@@ -16471,16 +16589,16 @@ void MainWindow::updateWalletUIState() {
   if (btnUseWalletAddr_) {
     btnUseWalletAddr_->setEnabled(canUseWalletAddress && !miningWalletAddressPending_);
     if (!hasWallet) {
-      btnUseWalletAddr_->setToolTip("Create or load a wallet first");
+      btnUseWalletAddr_->setToolTip(tr("Create or load a wallet first"));
       btnUseWalletAddr_->setStyleSheet(miningButtonStyle());
     } else if (walletRescanning_) {
-      btnUseWalletAddr_->setToolTip("Wait for blockchain rescan to complete");
+      btnUseWalletAddr_->setToolTip(tr("Wait for blockchain rescan to complete"));
       btnUseWalletAddr_->setStyleSheet(miningButtonStyle());
     } else if (!walletUnlocked_) {
-      btnUseWalletAddr_->setToolTip("Unlock wallet to use your Taproot address");
+      btnUseWalletAddr_->setToolTip(tr("Unlock wallet to use your Taproot address"));
       btnUseWalletAddr_->setStyleSheet(miningButtonStyle());
     } else {
-      btnUseWalletAddr_->setToolTip("Use your wallet's first Taproot receive address");
+      btnUseWalletAddr_->setToolTip(tr("Use your wallet's first Taproot receive address"));
       btnUseWalletAddr_->setStyleSheet(miningButtonStyle()); // Uniform mining control style
     }
   }
@@ -16490,13 +16608,13 @@ void MainWindow::updateWalletUIState() {
 void MainWindow::onEncryptWallet() {
   // Confirm action
   QMessageBox::StandardButton reply = QMessageBox::warning(this, 
-    "Encrypt Wallet",
-    "⚠️  You are about to encrypt your wallet.\n\n"
+    tr("Encrypt Wallet"),
+    tr("⚠️  You are about to encrypt your wallet.\n\n"
     "• You will need a password to unlock and spend coins\n"
     "• Your wallet will be locked after encryption\n"
     "• SAVE YOUR 12-WORD SEED PHRASE - it's the only backup!\n\n"
     "Make sure you have written down your seed phrase.\n\n"
-    "Do you want to continue?",
+    "Do you want to continue?"),
     QMessageBox::Yes | QMessageBox::No,
     QMessageBox::No);
   
@@ -16521,15 +16639,15 @@ void MainWindow::onEncryptWallet() {
     QLineEdit::Password, "", &ok);
   
   if (!ok || password != password2) {
-    QMessageBox::critical(this, "Error", "Passwords do not match!");
+    QMessageBox::critical(this, tr("Error"), tr("Passwords do not match!"));
     return;
   }
   
   // Check password strength
   if (password.length() < 8) {
-    QMessageBox::warning(this, "Weak Password",
-      "Password should be at least 8 characters for security.\n"
-      "Consider using a longer, stronger password.");
+    QMessageBox::warning(this, tr("Weak Password"),
+      tr("Password should be at least 8 characters for security.\n"
+      "Consider using a longer, stronger password."));
   }
   
   // Call encryptwallet RPC
@@ -16551,7 +16669,7 @@ void MainWindow::onEncryptWallet() {
     QObject::disconnect(*encryptErrorConn);
 
     if (result.isObject() && result.toObject().contains("error")) {
-      QMessageBox::critical(this, "Error",
+      QMessageBox::critical(this, tr("Error"),
         "Failed to encrypt wallet:\n" + result.toObject()["error"].toString());
     } else {
       // Hide encrypt button after successful encryption
@@ -16565,16 +16683,16 @@ void MainWindow::onEncryptWallet() {
       walletUnlocked_ = false;
 
       // Update button to show locked state
-      btnWalletLock_->setText("Encrypted | Unlock");
+      btnWalletLock_->setText(tr("Encrypted | Unlock"));
       btnWalletLock_->setStyleSheet(chromeButtonStyle());
-      btnWalletLock_->setToolTip("Wallet encrypted and locked. Click to unlock for Taproot signing.");
+      btnWalletLock_->setToolTip(tr("Wallet encrypted and locked. Click to unlock for Taproot signing."));
 
-      QMessageBox::information(this, "Success",
-        "✅ Wallet encrypted successfully!\n\n"
+      QMessageBox::information(this, tr("Success"),
+        tr("✅ Wallet encrypted successfully!\n\n"
         "• Your wallet is now locked and protected\n"
         "• Taproot signing requires password unlock\n"
         "• You will need your password to spend funds\n\n"
-        "🚨 IMPORTANT: Make sure you have saved your 12-word seed phrase!");
+        "🚨 IMPORTANT: Make sure you have saved your 12-word seed phrase!"));
     }
   });
 
@@ -16588,19 +16706,19 @@ void MainWindow::onEncryptWallet() {
     QObject::disconnect(*encryptResultConn);
     QObject::disconnect(*encryptErrorConn);
 
-    QMessageBox::critical(this, "Error", "Failed to encrypt wallet:\n" + message);
+    QMessageBox::critical(this, tr("Error"), "Failed to encrypt wallet:\n" + message);
   });
 }
 
 void MainWindow::onDeriveNewAddress() {
   if (walletTransparentV3SendReady_) {
-    QMessageBox::information(this, "Address Derivation Unavailable",
-      "This recovered wallet uses its existing addresses until Orchard enrollment is complete.");
+    QMessageBox::information(this, tr("Address Derivation Unavailable"),
+      tr("This recovered wallet uses its existing addresses until Orchard enrollment is complete."));
     return;
   }
   if (!walletUnlocked_) {
-    QMessageBox::warning(this, "Wallet Locked",
-      "Please unlock your wallet first to derive new addresses.");
+    QMessageBox::warning(this, tr("Wallet Locked"),
+      tr("Please unlock your wallet first to derive new addresses."));
     onUnlockWallet();
     return;
   }
@@ -16639,15 +16757,15 @@ void MainWindow::onDeriveNewAddress() {
         } else {
           errorMsg = "❌ Failed to generate address:\n\n" + error;
         }
-        QMessageBox::critical(this, "Address Generation Failed", errorMsg);
+        QMessageBox::critical(this, tr("Address Generation Failed"), errorMsg);
         return;
       }
 
       const QString address = obj.value("address").toString();
       if (address.isEmpty()) {
-        QMessageBox::critical(this, "Address Generation Failed",
-          "❌ Address generation returned an empty address.\n\n"
-          "Please verify wallet state and try again.");
+        QMessageBox::critical(this, tr("Address Generation Failed"),
+          tr("❌ Address generation returned an empty address.\n\n"
+          "Please verify wallet state and try again."));
         return;
       }
 
@@ -16660,13 +16778,13 @@ void MainWindow::onDeriveNewAddress() {
       }
 
       if (p2mrMode) {
-        QMessageBox::information(this, "New Quantum-Safe Address",
+        QMessageBox::information(this, tr("New Quantum-Safe Address"),
           QString("New P2MR (ML-DSA-65) receive address generated:\n\n%1\n\n"
                   "This address is quantum-resistant. Funds sent here are "
                   "protected against future quantum computing threats.")
             .arg(address));
       } else {
-        QMessageBox::information(this, "New Taproot Address",
+        QMessageBox::information(this, tr("New Taproot Address"),
           QString("New transparent Taproot address generated:\n\n%1").arg(address));
       }
     }
@@ -16680,7 +16798,7 @@ void MainWindow::onDeriveNewAddress() {
     }
     QObject::disconnect(*deriveResultConn);
     QObject::disconnect(*deriveErrorConn);
-    QMessageBox::critical(this, "Address Generation Failed",
+    QMessageBox::critical(this, tr("Address Generation Failed"),
       "❌ Failed to generate address:\n\n" + message);
   });
 }
@@ -16698,7 +16816,7 @@ bool MainWindow::collectSendForm(QString& recipient,
 
   if (mode != "shield" && mode != "unshield" && mode != "shield_covenant" &&
       !isSendModeContract(mode) && recipient.isEmpty()) {
-    lblSendStatus_->setText("❌ Error: Recipient address is required");
+    lblSendStatus_->setText(tr("❌ Error: Recipient address is required"));
     lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
     return false;
   }
@@ -16707,12 +16825,12 @@ bool MainWindow::collectSendForm(QString& recipient,
       cmbContractTemplate_->currentData().toString() == "payroll";
   if (batch) { recipient.clear(); amountText.clear(); }
   if (mode == "public_contract" && !batch && recipient.isEmpty()) {
-    lblSendStatus_->setText("A public withdrawal destination is required for this covenant.");
+    lblSendStatus_->setText(tr("A public withdrawal destination is required for this covenant."));
     return false;
   }
   qint64 exactAmount = 0;
   if (!batch && !ShieldedTransferPolicy::parseDinToUna(amountText, &exactAmount)) {
-    lblSendStatus_->setText("❌ Error: Amount must be greater than 0");
+    lblSendStatus_->setText(tr("❌ Error: Amount must be greater than 0"));
     lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
     return false;
   }
@@ -16756,18 +16874,18 @@ bool MainWindow::collectSendForm(QString& recipient,
     }
   } else if (mode == "shield" && !recipient.isEmpty()) {
     if (!isConfidentialDineroAddress(recipient)) {
-      lblSendStatus_->setText("❌ Error: Shield destination must be a shielded dins1 address.\n"
-        "Leave recipient blank to shield to your own private lane.");
+      lblSendStatus_->setText(tr("❌ Error: Shield destination must be a shielded dins1 address.\n"
+        "Leave recipient blank to shield to your own private lane."));
       lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
       return false;
     }
   }
 
   if (requireUnlocked && !walletUnlocked_) {
-    lblSendStatus_->setText("❌ Error: Wallet is locked. Please unlock it first.");
+    lblSendStatus_->setText(tr("❌ Error: Wallet is locked. Please unlock it first."));
     lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
-    QMessageBox::warning(this, "Wallet Locked",
-      "Please unlock your wallet before sending transactions.");
+    QMessageBox::warning(this, tr("Wallet Locked"),
+      tr("Please unlock your wallet before sending transactions."));
     onUnlockWallet();
     return false;
   }
@@ -16803,7 +16921,7 @@ void MainWindow::startHardwareWalletSendFlow(const QString& recipient,
                                              const QString& amountText,
                                              double amount,
                                              double feeRate) {
-  lblSendStatus_->setText("🔄 Creating PSBT for hardware wallet...");
+  lblSendStatus_->setText(tr("🔄 Creating PSBT for hardware wallet..."));
   lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
   txtSendResult_->clear();
 
@@ -16848,7 +16966,7 @@ void MainWindow::startHardwareWalletSendFlow(const QString& recipient,
 
       if (psbt.isEmpty() || !hardwareWalletWidget_ || !mainTabs_) {
         clearPendingHardwareWalletSend();
-        lblSendStatus_->setText("❌ Error: Failed to prepare hardware-wallet signing flow");
+        lblSendStatus_->setText(tr("❌ Error: Failed to prepare hardware-wallet signing flow"));
         lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
         return;
       }
@@ -16869,7 +16987,7 @@ void MainWindow::startHardwareWalletSendFlow(const QString& recipient,
         const QString path = inputObj["path"].toString();
         if (path.startsWith("m/88'") || path.startsWith("88'")) {
           clearPendingHardwareWalletSend();
-          lblSendStatus_->setText("❌ Hardware-wallet PSBT cannot spend P2MR inputs yet.");
+          lblSendStatus_->setText(tr("❌ Hardware-wallet PSBT cannot spend P2MR inputs yet."));
           lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
           if (txtSendResult_) {
             txtSendResult_->setHtml(
@@ -16889,7 +17007,7 @@ void MainWindow::startHardwareWalletSendFlow(const QString& recipient,
       hardwareWalletWidget_->loadPsbtForSigning(psbt, fileStatus);
       mainTabs_->setCurrentWidget(hardwareWalletWidget_);
 
-      lblSendStatus_->setText("✅ Hardware-wallet send prepared. Continue in the Hardware Wallet tab.");
+      lblSendStatus_->setText(tr("✅ Hardware-wallet send prepared. Continue in the Hardware Wallet tab."));
       lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
 
       if (txtSendResult_) {
@@ -16957,7 +17075,7 @@ void MainWindow::handleHardwareWalletBroadcast(const QString& txid, bool linkedS
     txTracker_->trackSend(tracked);
   }
 
-  lblSendStatus_->setText("✅ Hardware-wallet transaction sent successfully!");
+  lblSendStatus_->setText(tr("✅ Hardware-wallet transaction sent successfully!"));
   lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; font-weight: 600; }");
 
   if (txtSendResult_) {
@@ -16984,8 +17102,8 @@ void MainWindow::onSendTransaction() {
     return;
   }
   if (walletTransparentV3SendReady_ && currentSendMode() != "public_transfer") {
-    if (lblSendStatus_) lblSendStatus_->setText(
-        "This recovered wallet can send public transfers only.");
+    if (lblSendStatus_) lblSendStatus_->setText(tr(
+        "This recovered wallet can send public transfers only."));
     return;
   }
   if (sendSubmissionPending_) return;
@@ -16999,7 +17117,7 @@ void MainWindow::onSendTransaction() {
     return;
   }
   if (currentSendMode() != "public_transfer" && currentSendMode() != "public_contract") {
-    lblSendStatus_->setText("Unsupported send mode. Select a public payment or open the Shielded composer.");
+    lblSendStatus_->setText(tr("Unsupported send mode. Select a public payment or open the Shielded composer."));
     return;
   }
   QString recipient;
@@ -17011,14 +17129,14 @@ void MainWindow::onSendTransaction() {
   }
   
   // Show processing status
-  lblSendStatus_->setText("🔄 Processing transaction...");
+  lblSendStatus_->setText(tr("🔄 Processing transaction..."));
   lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
   txtSendResult_->clear();
 
   btnSend_->setEnabled(false);
-  btnSend_->setText("Processing...");
+  btnSend_->setText(tr("Processing..."));
   if (lblSendStatus_) {
-    lblSendStatus_->setText("Sending transaction...");
+    lblSendStatus_->setText(tr("Sending transaction..."));
     lblSendStatus_->setStyleSheet("QLabel { color: #9fb3c8; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
   }
 
@@ -17051,7 +17169,7 @@ void MainWindow::onSendTransaction() {
     if (templateKey == "vault") {
       templateLabel = "Simple Lock";
       if (fundingValueUna <= kContractSpendFeeUna) {
-        lblSendStatus_->setText("\xe2\x9d\x8c Contract amount is too small after the fixed spend fee.");
+        lblSendStatus_->setText(tr("\xe2\x9d\x8c Contract amount is too small after the fixed spend fee."));
         btnSend_->setEnabled(true); updateSendModeUi(); return;
       }
       covenantOutputs.append(QJsonObject{
@@ -17066,7 +17184,7 @@ void MainWindow::onSendTransaction() {
       auto* model = qobject_cast<QStandardItemModel*>(cmbContractTemplate_->model());
       auto* item = model ? model->item(cmbContractTemplate_->currentIndex()) : nullptr;
       if (!item || !item->isEnabled()) {
-        lblSendStatus_->setText("Timelock funding requires an upgraded node with contextual lock enforcement active.");
+        lblSendStatus_->setText(tr("Timelock funding requires an upgraded node with contextual lock enforcement active."));
         btnSend_->setEnabled(true); updateSendModeUi(); return;
       }
       templateLabel = "Timelock";
@@ -17074,12 +17192,12 @@ void MainWindow::onSendTransaction() {
       const QString unit = cmbTimelockUnit_ ? cmbTimelockUnit_->currentData().toString() : "blocks";
       delay = CovenantFormPolicy::delayBlocks(delay, unit, chainTiming_.blockSeconds);
       if (delay <= 0 || delay > 65535) {
-        lblSendStatus_->setText("\xe2\x9d\x8c Relative timelock must be between 1 and 65,535 blocks.");
+        lblSendStatus_->setText(tr("\xe2\x9d\x8c Relative timelock must be between 1 and 65,535 blocks."));
         btnSend_->setEnabled(true); updateSendModeUi(); return;
       }
       covenantSequence = static_cast<quint32>(delay);
       if (fundingValueUna <= kContractSpendFeeUna) {
-        lblSendStatus_->setText("\xe2\x9d\x8c Contract amount is too small after the fixed spend fee.");
+        lblSendStatus_->setText(tr("\xe2\x9d\x8c Contract amount is too small after the fixed spend fee."));
         btnSend_->setEnabled(true); updateSendModeUi(); return;
       }
       covenantOutputs.append(QJsonObject{
@@ -17122,7 +17240,7 @@ void MainWindow::onSendTransaction() {
         "\xE2\x9D\x8C Arbitrary scripts are disabled in the consumer wallet."));
       btnSend_->setEnabled(true); updateSendModeUi(); return;
     } else {
-      lblSendStatus_->setText("\xe2\x9d\x8c Unknown contract template; refusing to create a fallback script.");
+      lblSendStatus_->setText(tr("\xe2\x9d\x8c Unknown contract template; refusing to create a fallback script."));
       btnSend_->setEnabled(true); updateSendModeUi(); return;
     }
 
@@ -17141,7 +17259,7 @@ void MainWindow::onSendTransaction() {
     }
 
     QMessageBox reviewBox(this);
-    reviewBox.setWindowTitle("Review Public Contract");
+    reviewBox.setWindowTitle(tr("Review Public Contract"));
     reviewBox.setIcon(QMessageBox::Information);
     reviewBox.setText(QString("<b>Review Public Contract</b>"));
     reviewBox.setInformativeText(
@@ -17209,8 +17327,8 @@ void MainWindow::onSendTransaction() {
 
 void MainWindow::onCreatePSBT() {
   if (walletTransparentV3SendReady_) {
-    if (lblSendStatus_) lblSendStatus_->setText(
-        "Hardware-wallet sends are unavailable for this recovered wallet.");
+    if (lblSendStatus_) lblSendStatus_->setText(tr(
+        "Hardware-wallet sends are unavailable for this recovered wallet."));
     return;
   }
   if (!walletSendReady_) {
@@ -17218,8 +17336,8 @@ void MainWindow::onCreatePSBT() {
     return;
   }
   if (currentSendMode() != "public_transfer") {
-    QMessageBox::information(this, "Hardware Wallet",
-      "Hardware-wallet signing is currently wired only for public Taproot transfers.");
+    QMessageBox::information(this, tr("Hardware Wallet"),
+      tr("Hardware-wallet signing is currently wired only for public Taproot transfers."));
     return;
   }
   QString recipient;
@@ -17231,9 +17349,9 @@ void MainWindow::onCreatePSBT() {
   }
 
   if (recipient.startsWith("din1r") || recipient.startsWith("tdin1r") || recipient.startsWith("rdin1r")) {
-    QMessageBox::information(this, "Hardware Wallet PSBT",
-      "P2MR is a Dinero quantum-safe address type. Current hardware-wallet PSBT signing is "
-      "Taproot/BIP86 only, so use the normal Send button for P2MR transfers.");
+    QMessageBox::information(this, tr("Hardware Wallet PSBT"),
+      tr("P2MR is a Dinero quantum-safe address type. Current hardware-wallet PSBT signing is "
+      "Taproot/BIP86 only, so use the normal Send button for P2MR transfers."));
     return;
   }
 
@@ -17242,8 +17360,8 @@ void MainWindow::onCreatePSBT() {
 
 void MainWindow::onConsolidateUTXOs() {
   if (walletTransparentV3SendReady_) {
-    if (lblSendStatus_) lblSendStatus_->setText(
-        "Consolidation is unavailable for this recovered wallet.");
+    if (lblSendStatus_) lblSendStatus_->setText(tr(
+        "Consolidation is unavailable for this recovered wallet."));
     return;
   }
   if (!walletSendReady_) {
@@ -17256,9 +17374,9 @@ void MainWindow::onConsolidateUTXOs() {
   // Check wallet unlock state
   if (!walletUnlocked_) {
     QMessageBox::StandardButton reply = QMessageBox::warning(this,
-      "Wallet Locked",
-      "Your wallet must be unlocked to consolidate UTXOs.\n\n"
-      "Would you like to unlock your wallet now?",
+      tr("Wallet Locked"),
+      tr("Your wallet must be unlocked to consolidate UTXOs.\n\n"
+      "Would you like to unlock your wallet now?"),
       QMessageBox::Yes | QMessageBox::No,
       QMessageBox::Yes);
 
@@ -17278,7 +17396,7 @@ void MainWindow::onConsolidateUTXOs() {
   // of coins and the exact fee are shown on the preview/confirm step that
   // follows (the daemon dry-runs first), so we do NOT invent estimates here.
   QMessageBox msgBox(this);
-  msgBox.setWindowTitle("Consolidate UTXOs");
+  msgBox.setWindowTitle(tr("Consolidate UTXOs"));
   msgBox.setIcon(QMessageBox::Question);
   msgBox.setText(QString("<b>Consolidate small coins</b>"));
   msgBox.setInformativeText(
@@ -17306,7 +17424,7 @@ void MainWindow::onConsolidateUTXOs() {
   // Disable button to prevent double-click
   if (btnConsolidate_) {
     btnConsolidate_->setEnabled(false);
-    btnConsolidate_->setText("Consolidating...");
+    btnConsolidate_->setText(tr("Consolidating..."));
   }
   consolidationInFlight_ = true;
 
@@ -17360,7 +17478,7 @@ void MainWindow::onFeePresetChanged(int index) {
   if (confTarget == -1) {
     // Custom fee - show the input field
     edtFee_->setVisible(true);
-    lblEstimatedFee_->setText("Enter custom fee in una/vB");
+    lblEstimatedFee_->setText(tr("Enter custom fee in una/vB"));
   } else {
     // Preset fee - hide input and fetch estimate
     edtFee_->setVisible(false);
@@ -17376,7 +17494,7 @@ void MainWindow::updateFeeEstimate() {
   if (confTarget <= 0) return;  // Don't estimate for custom
 
   // Update label to show we're fetching
-  lblEstimatedFee_->setText("Estimating...");
+  lblEstimatedFee_->setText(tr("Estimating..."));
 
   // Map preset to mode
   QString mode = (confTarget >= 12) ? "ECONOMICAL" : "CONSERVATIVE";
@@ -17409,7 +17527,7 @@ void MainWindow::onDisconnectPeer() {
 
   int row = tblPeers_->currentRow();
   if (row < 0) {
-    QMessageBox::warning(this, "No Peer Selected", "Please select a peer to disconnect.");
+    QMessageBox::warning(this, tr("No Peer Selected"), tr("Please select a peer to disconnect."));
     return;
   }
 
@@ -17418,7 +17536,7 @@ void MainWindow::onDisconnectPeer() {
   if (addr.isEmpty() && peerItem) addr = peerItem->text();
   const QString label = peerItem ? peerItem->text() : addr;
 
-  auto reply = QMessageBox::question(this, "Disconnect Peer",
+  auto reply = QMessageBox::question(this, tr("Disconnect Peer"),
     QString("Disconnect from %1?").arg(label),
     QMessageBox::Yes | QMessageBox::No);
 
@@ -17441,7 +17559,7 @@ void MainWindow::onBanPeer() {
 
   int row = tblPeers_->currentRow();
   if (row < 0) {
-    QMessageBox::warning(this, "No Peer Selected", "Please select a peer to manage.");
+    QMessageBox::warning(this, tr("No Peer Selected"), tr("Please select a peer to manage."));
     return;
   }
 
@@ -17451,7 +17569,7 @@ void MainWindow::onBanPeer() {
   const QString label = peerItem ? peerItem->text() : addr;
   const QString ip = peerHostFromEndpoint(addr);
   if (ip.isEmpty()) {
-    QMessageBox::warning(this, "Peer Address Missing", "The selected peer does not have a usable address.");
+    QMessageBox::warning(this, tr("Peer Address Missing"), tr("The selected peer does not have a usable address."));
     return;
   }
 
@@ -17476,7 +17594,7 @@ void MainWindow::onBanPeer() {
   const bool removing = chosen->data().toString() == QStringLiteral("remove");
 
   if (!removing && isDefaultBootstrapPeerHost(ip)) {
-    auto reply = QMessageBox::question(this, "Block Bootstrap Peer",
+    auto reply = QMessageBox::question(this, tr("Block Bootstrap Peer"),
       QString("%1 is one of Dinero's default bootstrap peers.\n\nBlocking it is allowed, but it can reduce your node's ability to find peers automatically. Continue?")
         .arg(label),
       QMessageBox::Yes | QMessageBox::No);
@@ -17486,7 +17604,7 @@ void MainWindow::onBanPeer() {
   }
 
   if (!removing) {
-    auto reply = QMessageBox::question(this, "Block Peer",
+    auto reply = QMessageBox::question(this, tr("Block Peer"),
       QString("%1\n\n%2 will disconnect this peer and prevent reconnection.")
         .arg(label, chosen->text()),
       QMessageBox::Yes | QMessageBox::No);
@@ -17526,7 +17644,7 @@ void MainWindow::onReconnectAllPeers() {
   }
 
   if (peerAddrs.isEmpty()) {
-    QMessageBox::information(this, "No Peers", "No peers connected to reconnect.");
+    QMessageBox::information(this, tr("No Peers"), tr("No peers connected to reconnect."));
     return;
   }
 
@@ -17558,7 +17676,7 @@ void MainWindow::onCopyNetworkDiagnostics() {
   QApplication::clipboard()->setText(networkDiagnosticsText());
   if (lblPeerSummary_) {
     const QString previous = lblPeerSummary_->text();
-    lblPeerSummary_->setText("Diagnostics copied to clipboard");
+    lblPeerSummary_->setText(tr("Diagnostics copied to clipboard"));
     QTimer::singleShot(1800, this, [this, previous]() {
       if (lblPeerSummary_) {
         lblPeerSummary_->setText(previous);
@@ -17574,9 +17692,9 @@ void MainWindow::onRefreshTemplate() {
 
   QString addr = edtMiningAddress_->text().trimmed();
   if (addr.isEmpty()) {
-    QMessageBox::warning(this, "Mining Address Required",
-      "To request a block template, enter a Taproot mining address first.\n\n"
-      "Tip: Wallet → Receive → New Transparent Address generates a Taproot (din1p/tdin1p/rdin1p) address by default.");
+    QMessageBox::warning(this, tr("Mining Address Required"),
+      tr("To request a block template, enter a Taproot mining address first.\n\n"
+      "Tip: Wallet → Receive → New Transparent Address generates a Taproot (din1p/tdin1p/rdin1p) address by default."));
     return;
   }
 
@@ -17596,7 +17714,7 @@ void MainWindow::onGenerateQR() {
   QString address = edtQRAddress_->text().trimmed();
 
   if (address.isEmpty()) {
-    QMessageBox::warning(this, "Empty Address", "Please enter an address to generate QR code.");
+    QMessageBox::warning(this, tr("Empty Address"), tr("Please enter an address to generate QR code."));
     return;
   }
 
@@ -17604,8 +17722,8 @@ void MainWindow::onGenerateQR() {
   if (!address.startsWith("din1") && !address.startsWith("tdin1") &&
       !address.startsWith("rdin1") && !address.startsWith("dins1") &&
       !address.startsWith("tdins1") && !address.startsWith("rdins1")) {
-    QMessageBox::warning(this, "Invalid Address",
-      "Invalid Dinero address format.\n\nEnter a Dinero transparent or shielded address.");
+    QMessageBox::warning(this, tr("Invalid Address"),
+      tr("Invalid Dinero address format.\n\nEnter a Dinero transparent or shielded address."));
     return;
   }
 
@@ -17613,7 +17731,7 @@ void MainWindow::onGenerateQR() {
   QPixmap qrCode = QPixmap::fromImage(QrUtil::makeQr(address, 300, 4, /*ecLevel=*/3));
 
   if (qrCode.isNull()) {
-    QMessageBox::critical(this, "QR Generation Failed", "Failed to generate QR code.");
+    QMessageBox::critical(this, tr("QR Generation Failed"), tr("Failed to generate QR code."));
     return;
   }
 
@@ -17640,7 +17758,7 @@ void MainWindow::onGenerateQR() {
   lblQRCode_->setPixmap(withText.scaled(lblQRCode_->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
 
   // Show success message
-  QMessageBox::information(this, "QR Code Generated",
+  QMessageBox::information(this, tr("QR Code Generated"),
     QString("QR code generated successfully!\n\nAddress: %1\n\nScan this code with your mobile wallet to receive payments.").arg(address));
 }
 
@@ -17656,7 +17774,7 @@ void MainWindow::onImportAddresses() {
 
   QFile file(filename);
   if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-    QMessageBox::critical(this, "Error", "Failed to open file for reading.");
+    QMessageBox::critical(this, tr("Error"), tr("Failed to open file for reading."));
     return;
   }
 
@@ -17695,13 +17813,13 @@ void MainWindow::onImportAddresses() {
   file.close();
 
   if (validAddresses.isEmpty()) {
-    QMessageBox::warning(this, "No Valid Addresses",
-      "No valid Dinero addresses found in CSV file.\n\nExpected format:\nLabel,Address");
+    QMessageBox::warning(this, tr("No Valid Addresses"),
+      tr("No valid Dinero addresses found in CSV file.\n\nExpected format:\nLabel,Address"));
     return;
   }
 
   // Confirm import
-  auto reply = QMessageBox::question(this, "Confirm Import",
+  auto reply = QMessageBox::question(this, tr("Confirm Import"),
     QString("Found %1 valid addresses.\n\nImport as watch-only addresses?\n\n"
             "Watch-only addresses allow you to monitor balances and transactions "
             "without the ability to spend funds.")
@@ -17738,7 +17856,7 @@ void MainWindow::onImportAddresses() {
   }
 
   // Show completion message
-  QMessageBox::information(this, "Import Complete",
+  QMessageBox::information(this, tr("Import Complete"),
     QString("Imported %1 watch-only addresses.\n\n"
             "Note: Balances will update after blockchain rescan.\n"
             "Use 'rescanblockchain' RPC command if needed.")
@@ -17761,7 +17879,7 @@ void MainWindow::onExportAddresses() {
 
   QFile file(filename);
   if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-    QMessageBox::critical(this, "Error", "Failed to open file for writing.");
+    QMessageBox::critical(this, tr("Error"), tr("Failed to open file for writing."));
     return;
   }
 
@@ -17793,7 +17911,7 @@ void MainWindow::onExportAddresses() {
 
   file.close();
 
-  QMessageBox::information(this, "Export Complete",
+  QMessageBox::information(this, tr("Export Complete"),
     QString("Exported addresses to:\n%1").arg(filename));
 }
 
@@ -17854,9 +17972,9 @@ void MainWindow::onAddressLabelChanged(QTableWidgetItem* item) {
 
       // Update display style
       if (newLabel.isEmpty()) {
-        item->setText("(no label)");
+        item->setText(tr("(no label)"));
         item->setForeground(QBrush(QColor("#868e96")));
-        item->setToolTip("Double-click to add a label");
+        item->setToolTip(tr("Double-click to add a label"));
       } else {
         item->setForeground(QBrush(QColor("#c6ced8")));
         item->setToolTip("");
@@ -17877,7 +17995,7 @@ void MainWindow::onAddressLabelChanged(QTableWidgetItem* item) {
       tblAddresses_->setEditTriggers(QAbstractItemView::NoEditTriggers);
       labelEditInProgress_ = false;
 
-      QMessageBox::warning(this, "Label Error",
+      QMessageBox::warning(this, tr("Label Error"),
         QString("Failed to save label: %1").arg(error));
     }
   );
@@ -17888,7 +18006,7 @@ void MainWindow::onAddressLabelChanged(QTableWidgetItem* item) {
 void MainWindow::onWsConnected() {
   // WebSocket status label removed (WebSockets disabled in production)
   // if (lblWsStatus_) {
-  //   lblWsStatus_->setText("🟢 WebSocket: Connected");
+  //   lblWsStatus_->setText(tr("🟢 WebSocket: Connected"));
   //   lblWsStatus_->setStyleSheet("QLabel { color: #51cf66; font-weight: bold; }");
   // }
 }
@@ -17896,7 +18014,7 @@ void MainWindow::onWsConnected() {
 void MainWindow::onWsDisconnected() {
   // WebSocket status label removed (WebSockets disabled in production)
   // if (lblWsStatus_) {
-  //   lblWsStatus_->setText("🔴 WebSocket: Disconnected");
+  //   lblWsStatus_->setText(tr("🔴 WebSocket: Disconnected"));
   //   lblWsStatus_->setStyleSheet("QLabel { color: #ff6b6b; font-weight: bold; }");
   // }
 }
@@ -18033,7 +18151,7 @@ void MainWindow::updateNodeStatus(const QJsonObject& blockchainInfo, const QJson
   bool synced = (height >= headers - 1);
 
   if (synced) {
-    lblNodeSyncStatus_->setText("✅ Synced");
+    lblNodeSyncStatus_->setText(tr("✅ Synced"));
     lblNodeSyncStatus_->setStyleSheet("QLabel { color: #d6dde6; font-weight: 600; }");
   } else {
     double progress = (height * 100.0) / headers;
@@ -18075,10 +18193,10 @@ void MainWindow::updateNetworkInfo(const QJsonObject& networkInfo) {
   }
   if (lblPeersStatus_) {
     if (!networkActive) {
-      lblPeersStatus_->setText("P2P disabled");
+      lblPeersStatus_->setText(tr("P2P disabled"));
       lblPeersStatus_->setStyleSheet("QLabel { font-size: 11px; color: #a9b2bc; }");
     } else if (connections == 0) {
-      lblPeersStatus_->setText("No peers");
+      lblPeersStatus_->setText(tr("No peers"));
       lblPeersStatus_->setStyleSheet("QLabel { font-size: 11px; color: #a9b2bc; }");
     } else if (inboundObserved) {
       lblPeersStatus_->setText(QString("%1 outbound, %2 inbound").arg(outbound).arg(inbound));
@@ -18208,19 +18326,19 @@ void MainWindow::updateNetworkInfo(const QJsonObject& networkInfo) {
 void MainWindow::updateOverviewContribution() {
   if (lblOverviewReachability_) {
     if (!overviewNetworkActive_) {
-      lblOverviewReachability_->setText("P2P disabled");
+      lblOverviewReachability_->setText(tr("P2P disabled"));
       lblOverviewReachability_->setStyleSheet(
           "QLabel { color: #a9b2bc; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
     } else if (overviewDirectReachable_) {
-      lblOverviewReachability_->setText("Direct inbound");
+      lblOverviewReachability_->setText(tr("Direct inbound"));
       lblOverviewReachability_->setStyleSheet(
           "QLabel { color: #80d39b; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
     } else if (overviewTorActive_) {
-      lblOverviewReachability_->setText("Tor available");
+      lblOverviewReachability_->setText(tr("Tor available"));
       lblOverviewReachability_->setStyleSheet(
           "QLabel { color: #a9c5ff; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
     } else {
-      lblOverviewReachability_->setText("Outbound only");
+      lblOverviewReachability_->setText(tr("Outbound only"));
       lblOverviewReachability_->setStyleSheet(
           "QLabel { color: #d8c08a; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
     }
@@ -18485,7 +18603,7 @@ void MainWindow::onExportMetrics() {
   
   QFile file(fileName);
   if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-    QMessageBox::warning(this, "Export Failed", "Could not open file for writing");
+    QMessageBox::warning(this, tr("Export Failed"), tr("Could not open file for writing"));
     return;
   }
   
@@ -18545,7 +18663,7 @@ void MainWindow::onExportMetrics() {
     txtAlerts_->append(alertMsg);
   }
   
-  QMessageBox::information(this, "Export Successful", 
+  QMessageBox::information(this, tr("Export Successful"),
     QString("Metrics exported to:\n%1").arg(fileName));
 }
 
@@ -18578,7 +18696,7 @@ void MainWindow::onDaemonConnected() {
   setEnabled(true);
 
   // Update status bar
-  lblConnectionStatus_->setText("Connected");
+  lblConnectionStatus_->setText(tr("Connected"));
   lblConnectionStatus_->setStyleSheet(headerPillStyle());
 
   // Always show Stop button when connected
@@ -18588,9 +18706,9 @@ void MainWindow::onDaemonConnected() {
   // CRITICAL FIX: Enable mining buttons when daemon connects
   if (btnStartMining_) {
     btnStartMining_->setEnabled(true);
-    btnStartMining_->setToolTip("Start mining to this address");
+    btnStartMining_->setToolTip(tr("Start mining to this address"));
     if (!isMining_) {
-      btnStartMining_->setText("Start Mining");
+      btnStartMining_->setText(tr("Start Mining"));
       btnStartMining_->setStyleSheet(miningButtonStyle());
     }
   }
@@ -18634,15 +18752,15 @@ void MainWindow::onDaemonDisconnected() {
     changeAddrMgr_->setWalletIdentityKey(QString());
   }
   if (lblWalletName_) {
-    lblWalletName_->setText("Wallet: none");
+    lblWalletName_->setText(tr("Wallet: none"));
     lblWalletName_->setStyleSheet(headerPillStyle());
-    lblWalletName_->setToolTip("No wallet loaded. Create or restore a wallet to get started.");
+    lblWalletName_->setToolTip(tr("No wallet loaded. Create or restore a wallet to get started."));
   }
   clearWalletScopedUiState();
   updateWalletUIState();
 
   // Update status bar
-  lblConnectionStatus_->setText("Disconnected");
+  lblConnectionStatus_->setText(tr("Disconnected"));
   lblConnectionStatus_->setStyleSheet(headerPillStyle());
 
   // Always show Start button when disconnected
@@ -18809,7 +18927,7 @@ void MainWindow::updateConnectionStatus(ConnectionManager::ConnectionState state
 
   switch (state) {
     case ConnectionManager::Disconnected:
-      lblConnectionStatus_->setText("Disconnected");
+      lblConnectionStatus_->setText(tr("Disconnected"));
       lblConnectionStatus_->setStyleSheet(headerPillStyle());
       // Always show Start button when disconnected
       btnStartDaemon_->setVisible(true);
@@ -18819,7 +18937,7 @@ void MainWindow::updateConnectionStatus(ConnectionManager::ConnectionState state
       break;
 
     case ConnectionManager::Connecting:
-      lblConnectionStatus_->setText("Connecting...");
+      lblConnectionStatus_->setText(tr("Connecting..."));
       lblConnectionStatus_->setStyleSheet(headerPillStyle());
       // Show Stop button while connecting (will be connected soon)
       btnStartDaemon_->setVisible(false);
@@ -18831,7 +18949,7 @@ void MainWindow::updateConnectionStatus(ConnectionManager::ConnectionState state
       break;
 
     case ConnectionManager::Connected:
-      lblConnectionStatus_->setText("Connected");
+      lblConnectionStatus_->setText(tr("Connected"));
       lblConnectionStatus_->setStyleSheet(headerPillStyle());
       // Always show Stop button when connected (regardless of who started daemon)
       btnStartDaemon_->setVisible(false);
@@ -18853,7 +18971,7 @@ void MainWindow::updateConnectionStatus(ConnectionManager::ConnectionState state
       break;
 
     case ConnectionManager::Failed:
-      lblConnectionStatus_->setText("Node unavailable — retrying");
+      lblConnectionStatus_->setText(tr("Node unavailable — retrying"));
       lblConnectionStatus_->setStyleSheet(headerPillStyle());
       // Always show Start button on failure
       btnStartDaemon_->setVisible(true);

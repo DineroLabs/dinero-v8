@@ -149,7 +149,7 @@ void VaultPanel::clearWalletScopedFields(const QString& operatorText) {
     if (lbl_account_locked_)    lbl_account_locked_->setText("—");
     if (lbl_account_spendable_) lbl_account_spendable_->setText("—");
     if (lbl_account_loss_)      lbl_account_loss_->setText("—");
-    if (lbl_last_request_id_)   lbl_last_request_id_->setText("Last request: —");
+    if (lbl_last_request_id_)   lbl_last_request_id_->setText(tr("Last request: —"));
     if (lbl_status_value_)      lbl_status_value_->setText("—");
     if (status_request_id_input_) status_request_id_input_->clear();
 }
@@ -161,8 +161,8 @@ void VaultPanel::requestWalletPrimaryBinding() {
     operator_bind_attempted_ = true;
     waiting_for_wallet_primary_ = true;
     if (lbl_operator_address_) {
-        lbl_operator_address_->setText(
-            "<span style='color:#d8a37b;'>rebinding to active wallet…</span>");
+        lbl_operator_address_->setText(tr(
+            "<span style='color:#d8a37b;'>rebinding to active wallet…</span>"));
     }
     callRpc("wallet.getinfo", QJsonObject{});
 }
@@ -211,15 +211,15 @@ void VaultPanel::setupUi() {
     root->setContentsMargins(12, 12, 12, 12);
 
     auto* header = new QHBoxLayout();
-    auto* title = new QLabel("<h2>\xF0\x9F\x8F\xA6 Liquidity Vault</h2>");
-    auto* refresh_btn = new QPushButton("\xF0\x9F\x94\x84 Refresh");
+    auto* title = new QLabel(tr("<h2>\xF0\x9F\x8F\xA6 Liquidity Vault</h2>"));
+    auto* refresh_btn = new QPushButton(tr("\xF0\x9F\x94\x84 Refresh"));
     refresh_btn->setObjectName("vault_refresh_button");
     header->addWidget(title);
     header->addStretch();
     header->addWidget(refresh_btn);
     root->addLayout(header);
 
-    auto* hint = new QLabel(
+    auto* hint = new QLabel(tr(
         "Custodial deposit / withdrawal ledger backed by the daemon's "
         "Track-C vault service. Distinct from on-chain script vaults "
         "(see Contracts tab). When the daemon starts with an active "
@@ -228,49 +228,49 @@ void VaultPanel::setupUi() {
         "credits open at K=10 confirmations, settle at K=20. This is a "
         "separate vault ledger—not your normal wallet balance. Only new "
         "payments received at the Vault Deposit Address after binding are "
-        "credited; existing wallet funds are never imported automatically.");
+        "credited; existing wallet funds are never imported automatically."));
     hint->setWordWrap(true);
     hint->setStyleSheet("color: #9fb3c8; padding: 4px;");
     root->addWidget(hint);
 
     // Service-level metrics.
-    service_group_ = new QGroupBox("Vault Summary");
+    service_group_ = new QGroupBox(tr("Vault Summary"));
     auto* svc_grid = new QGridLayout(service_group_);
-    lbl_runtime_status_ = new QLabel("unknown");
-    lbl_connection_status_ = new QLabel("connecting…");
-    lbl_operator_address_ = new QLabel("\xE2\x80\x93");
+    lbl_runtime_status_ = new QLabel(tr("unknown"));
+    lbl_connection_status_ = new QLabel(tr("connecting…"));
+    lbl_operator_address_ = new QLabel(tr("\xE2\x80\x93"));
     lbl_operator_address_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     lbl_operator_address_->setStyleSheet("QLabel { font-family: monospace; font-size: 11px; }");
-    lbl_total_credits_ = new QLabel("\xE2\x80\x93");
-    lbl_total_loss_ = new QLabel("\xE2\x80\x93");
-    lbl_queue_depth_ = new QLabel("\xE2\x80\x93");
-    lbl_ledger_seq_ = new QLabel("\xE2\x80\x93");
-    lbl_account_count_ = new QLabel("\xE2\x80\x93");
-    svc_grid->addWidget(new QLabel("Runtime:"), 0, 0);
+    lbl_total_credits_ = new QLabel(tr("\xE2\x80\x93"));
+    lbl_total_loss_ = new QLabel(tr("\xE2\x80\x93"));
+    lbl_queue_depth_ = new QLabel(tr("\xE2\x80\x93"));
+    lbl_ledger_seq_ = new QLabel(tr("\xE2\x80\x93"));
+    lbl_account_count_ = new QLabel(tr("\xE2\x80\x93"));
+    svc_grid->addWidget(new QLabel(tr("Runtime:")), 0, 0);
     svc_grid->addWidget(lbl_runtime_status_, 0, 1);
-    svc_grid->addWidget(new QLabel("Connection:"), 0, 2);
+    svc_grid->addWidget(new QLabel(tr("Connection:")), 0, 2);
     svc_grid->addWidget(lbl_connection_status_, 0, 3);
-    svc_grid->addWidget(new QLabel("Withdrawal queue:"), 1, 2);
+    svc_grid->addWidget(new QLabel(tr("Withdrawal queue:")), 1, 2);
     svc_grid->addWidget(lbl_queue_depth_, 1, 3);
-    svc_grid->addWidget(new QLabel("Settling:"), 1, 0);
+    svc_grid->addWidget(new QLabel(tr("Settling:")), 1, 0);
     svc_grid->addWidget(lbl_total_credits_, 1, 1);
-    svc_grid->addWidget(new QLabel("Vault Deposit Address:"), 2, 0);
+    svc_grid->addWidget(new QLabel(tr("Vault Deposit Address:")), 2, 0);
     svc_grid->addWidget(lbl_operator_address_, 2, 1, 1, 3);
     root->addWidget(service_group_);
 
     // Per-account inspector.
-    account_group_ = new QGroupBox("Vault Balance");
+    account_group_ = new QGroupBox(tr("Vault Balance"));
     auto* acc_layout = new QVBoxLayout(account_group_);
     account_id_input_ = new QLineEdit();
     account_id_input_->setText(activeAccountKey());
     account_id_input_->hide();
 
     auto* acc_grid = new QGridLayout();
-    lbl_account_confirmed_ = new QLabel("\xE2\x80\x93");
-    lbl_account_pending_ = new QLabel("\xE2\x80\x93");
-    lbl_account_locked_ = new QLabel("\xE2\x80\x93");
-    lbl_account_spendable_ = new QLabel("\xE2\x80\x93");
-    lbl_account_loss_ = new QLabel("\xE2\x80\x93");
+    lbl_account_confirmed_ = new QLabel(tr("\xE2\x80\x93"));
+    lbl_account_pending_ = new QLabel(tr("\xE2\x80\x93"));
+    lbl_account_locked_ = new QLabel(tr("\xE2\x80\x93"));
+    lbl_account_spendable_ = new QLabel(tr("\xE2\x80\x93"));
+    lbl_account_loss_ = new QLabel(tr("\xE2\x80\x93"));
     for (QLabel* label : {lbl_total_credits_, lbl_total_loss_, lbl_account_confirmed_,
                           lbl_account_pending_, lbl_account_locked_, lbl_account_spendable_,
                           lbl_account_loss_}) {
@@ -293,7 +293,7 @@ void VaultPanel::setupUi() {
     root->addWidget(account_group_);
 
     // Withdrawal form + status check.
-    withdraw_group_ = new QGroupBox("Withdrawal");
+    withdraw_group_ = new QGroupBox(tr("Withdrawal"));
     auto* wd_layout = new QVBoxLayout(withdraw_group_);
     auto* wd_form = new QFormLayout();
     withdraw_account_input_ = new QLineEdit(activeAccountKey());
@@ -305,36 +305,36 @@ void VaultPanel::setupUi() {
         withdraw_amount_input_));
     wd_form->addRow("Amount (DIN):", withdraw_amount_input_);
     withdraw_destination_input_ = new QLineEdit();
-    withdraw_destination_input_->setPlaceholderText(
-        "din1p… Taproot address");
+    withdraw_destination_input_->setPlaceholderText(tr(
+        "din1p… Taproot address"));
     wd_form->addRow("Destination:", withdraw_destination_input_);
     wd_layout->addLayout(wd_form);
 
     auto* wd_action_row = new QHBoxLayout();
-    btn_withdraw_ = new QPushButton("Review Withdrawal");
+    btn_withdraw_ = new QPushButton(tr("Review Withdrawal"));
     btn_withdraw_->setStyleSheet("font-weight: bold; padding: 6px 14px;");
     wd_action_row->addStretch();
     wd_action_row->addWidget(btn_withdraw_);
     wd_layout->addLayout(wd_action_row);
 
-    lbl_last_request_id_ = new QLabel("Last request: \xE2\x80\x93");
+    lbl_last_request_id_ = new QLabel(tr("Last request: \xE2\x80\x93"));
     lbl_last_request_id_->setStyleSheet("color: #9fb3c8;");
     wd_layout->addWidget(lbl_last_request_id_);
 
     auto* status_row = new QHBoxLayout();
-    status_row->addWidget(new QLabel("Status of:"));
+    status_row->addWidget(new QLabel(tr("Status of:")));
     status_request_id_input_ = new QLineEdit();
-    status_request_id_input_->setPlaceholderText("withdrawal_id");
+    status_request_id_input_->setPlaceholderText(tr("withdrawal_id"));
     status_row->addWidget(status_request_id_input_);
-    btn_check_status_ = new QPushButton("Check");
+    btn_check_status_ = new QPushButton(tr("Check"));
     status_row->addWidget(btn_check_status_);
-    lbl_status_value_ = new QLabel("\xE2\x80\x93");
+    lbl_status_value_ = new QLabel(tr("\xE2\x80\x93"));
     lbl_status_value_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     root->addWidget(withdraw_group_);
 
     // Raw operator/ledger diagnostics are intentionally outside the normal
     // consumer flow. They remain available for support and operators.
-    advanced_group_ = new QGroupBox("Advanced / Operator Details");
+    advanced_group_ = new QGroupBox(tr("Advanced / Operator Details"));
     advanced_group_->setCheckable(true);
     advanced_group_->setChecked(false);
     auto* advanced_outer = new QVBoxLayout(advanced_group_);
@@ -344,10 +344,10 @@ void VaultPanel::setupUi() {
     raw_metrics->setText(QStringLiteral("Ledger sequence and daemon-wide account/loss metrics are available in Developer status."));
     raw_metrics->setWordWrap(true);
     log_layout->addWidget(raw_metrics);
-    log_layout->addWidget(new QLabel("Manual withdrawal status lookup:"));
+    log_layout->addWidget(new QLabel(tr("Manual withdrawal status lookup:")));
     log_layout->addLayout(status_row);
     log_layout->addWidget(lbl_status_value_);
-    log_layout->addWidget(new QLabel("Activity:"));
+    log_layout->addWidget(new QLabel(tr("Activity:")));
     event_log_ = new QTextEdit();
     event_log_->setReadOnly(true);
     event_log_->setMaximumHeight(140);
@@ -419,24 +419,24 @@ void VaultPanel::onWithdrawClicked() {
     const QString destination = withdraw_destination_input_->text().trimmed();
     qint64 amount = 0;
     if (!parseDinAmount(withdraw_amount_input_->text(), &amount)) {
-        QMessageBox::warning(this, "Invalid Vault Amount",
-                             "Enter a positive DIN amount with no more than 8 decimal places.");
+        QMessageBox::warning(this, tr("Invalid Vault Amount"),
+                             tr("Enter a positive DIN amount with no more than 8 decimal places."));
         return;
     }
     if (!isTaprootAddress(destination)) {
-        QMessageBox::warning(this, "Invalid Vault Destination",
-                             "Enter a Taproot Dinero address beginning with din1p…");
+        QMessageBox::warning(this, tr("Invalid Vault Destination"),
+                             tr("Enter a Taproot Dinero address beginning with din1p…"));
         return;
     }
     if (account_spendable_una_ <= 0 || amount > account_spendable_una_) {
-        QMessageBox::warning(this, "Insufficient Vault Balance",
+        QMessageBox::warning(this, tr("Insufficient Vault Balance"),
                              QString("This vault can currently withdraw %1. Requested: %2.")
                                  .arg(formatAmountPlain(account_spendable_una_),
                                       formatAmountPlain(amount)));
         return;
     }
     const auto answer = QMessageBox::question(
-        this, "Review Vault Withdrawal",
+        this, tr("Review Vault Withdrawal"),
         QString("Vault account:\n%1\n\nDestination:\n%2\n\nAmount: %3\n\n"
                 "The active wallet must be unlocked. Enqueuing reserves vault funds.")
             .arg(account, destination, formatAmountPlain(amount)),
@@ -470,7 +470,7 @@ void VaultPanel::onRpcResult(const QString& method, const QJsonValue& result) {
             return;
         }
         const QJsonObject obj = result.toObject();
-        lbl_runtime_status_->setText("<span style='color:#7bd88f;'>active</span>");
+        lbl_runtime_status_->setText(tr("<span style='color:#7bd88f;'>active</span>"));
         lbl_total_credits_->setText(formatAmountRich(safeInt(obj.value("total_open_credits_una"))));
         lbl_total_loss_->setText(formatAmountRich(safeInt(obj.value("total_operator_loss_una"))));
         lbl_queue_depth_->setText(QString::number(safeInt(obj.value("withdrawal_queue_depth"))));
@@ -514,8 +514,8 @@ void VaultPanel::onRpcResult(const QString& method, const QJsonValue& result) {
             appendLog("No operator address bound — auto-binding to wallet primary…");
             callRpc("wallet.getinfo", QJsonObject{});
         } else {
-            lbl_operator_address_->setText(
-                "<span style='color:#d8a37b;'>not bound</span>");
+            lbl_operator_address_->setText(tr(
+                "<span style='color:#d8a37b;'>not bound</span>"));
         }
         return;
     }
@@ -641,18 +641,18 @@ void VaultPanel::onRpcError(const QString& method, int code, const QString& mess
     }
     if (isTransientConnectionError(code, message)) {
         transient_connection_error_ = true;
-        lbl_connection_status_->setText(
-            "<span style='color:#d8a37b;'>waiting for daemon…</span>");
+        lbl_connection_status_->setText(tr(
+            "<span style='color:#d8a37b;'>waiting for daemon…</span>"));
         if (method == "vault.metrics") {
-            lbl_runtime_status_->setText("<span style='color:#d8a37b;'>starting…</span>");
+            lbl_runtime_status_->setText(tr("<span style='color:#d8a37b;'>starting…</span>"));
         }
         return;
     }
     if (method == "vault.metrics") {
         // Most common: runtime not initialised. Surface as a calmer
         // status rather than an error log spam every refresh tick.
-        lbl_runtime_status_->setText(
-            "<span style='color:#d8a37b;'>disabled</span> (set vault=1)");
+        lbl_runtime_status_->setText(tr(
+            "<span style='color:#d8a37b;'>disabled</span> (set vault=1)"));
         developer_summary_ = QStringLiteral("Vault raw metrics: unavailable (vault service disabled)");
         Q_EMIT developerSummaryChanged(developer_summary_);
         return;
@@ -726,7 +726,7 @@ bool VaultPanel::isTransientConnectionError(int code, const QString& message) co
 }
 
 void VaultPanel::markVaultConnectionHealthy() {
-    lbl_connection_status_->setText("<span style='color:#7bd88f;'>connected</span>");
+    lbl_connection_status_->setText(tr("<span style='color:#7bd88f;'>connected</span>"));
     if (!transient_connection_error_) return;
     transient_connection_error_ = false;
     // Transient startup failures are transport noise, not vault activity.

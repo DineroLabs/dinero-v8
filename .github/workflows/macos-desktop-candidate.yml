@@ -311,10 +311,10 @@ jobs:
             dinerod dinero-cli dinero-swap-tower dinero-qt dinero-miner dinero-stratum-worker \
             dinero-wallet-cli dinero-gpu-miner dinero-solo-miner-cli dinero-seeder
 
-      - name: Verify daemon output cannot block before the Qt event loop
+      - name: Verify Qt startup and language catalogs
         run: |
-          cmake --build build-desktop --target test_daemon_output
-          ctest --test-dir build-desktop/qt -R '^DaemonOutputBeforeEventLoop$' --output-on-failure
+          cmake --build build-desktop --target test_daemon_output test_i18n
+          ctest --test-dir build-desktop/qt -R '^(DaemonOutputBeforeEventLoop|QtI18nChain|QtSeedPhraseNeverTranslated|QtUniversalTermsUntranslated)$' --output-on-failure
 
       - name: Assert reachability stack
         run: |

@@ -18,11 +18,11 @@ if ($manifestData.network -ne 'mainnet' -or $manifestData.format_version -ne 6 -
 }
 
 function Get-NodeRpc {
-    param([string]$Method, [string[]]$Arguments = @())
+    param([string]$Method, [string[]]$Arguments = @(), [int]$TimeoutSeconds = 8)
     $prior = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        $value = & $cli "-datadir=$DataDir" '-rpcclienttimeout=8' $Method @Arguments 2>$null
+        $value = & $cli "-datadir=$DataDir" "-rpcclienttimeout=$TimeoutSeconds" $Method @Arguments 2>$null
         if ($LASTEXITCODE -ne 0 -or -not $value) { return $null }
         $text = $value -join [Environment]::NewLine
         try { return ($text | ConvertFrom-Json -ErrorAction Stop) }
@@ -30,6 +30,59 @@ function Get-NodeRpc {
     } finally {
         $ErrorActionPreference = $prior
     }
+}
+
+# dinero-cli's HTTP command dispatcher only exposes a small fixed command set;
+# wallet.createhd is a native RPC used by the GUI, so call the installed node
+# directly with the same named arguments. Never print its mnemonic response.
+function New-InstalledWallet {
+    $nodeInfoPath = Join-Path $DataDir 'nodeinfo.json'
+    $cookiePath = Join-Path $DataDir '.cookie'
+    # A daemon can serve RPC before writing nodeinfo.json (and some profiles
+    # never write it). Mirror dinero-cli's local default in that case.
+    $rpcUrl = [uri]'http://127.0.0.1:20998/'
+    if (Test-Path -LiteralPath $nodeInfoPath) {
+        $nodeInfo = Get-Content -Raw -LiteralPath $nodeInfoPath | ConvertFrom-Json
+        if ($nodeInfo.rpc.url) { $rpcUrl = [uri]($nodeInfo.rpc.url) }
+    }
+    if ($rpcUrl.Scheme -ne 'http' -or $rpcUrl.Host -notin @('127.0.0.1', 'localhost', '::1', '[::1]')) {
+        throw 'Installed node advertised a non-local wallet RPC endpoint'
+    }
+    $cookie = (Get-Content -Raw -LiteralPath $cookiePath).Trim()
+    if (-not $cookie) { throw 'Installed node has no RPC cookie' }
+    $auth = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($cookie))
+    $request = @{
+        jsonrpc = '2.0'
+        id = 'windows-fresh-wallet-gate'
+        method = 'wallet.createhd'
+        params = @{ name = 'WindowsFreshInstallGate'; word_count = 12; initial_taproot_addresses = 20 }
+    } | ConvertTo-Json -Depth 4 -Compress
+    try {
+        $response = Invoke-RestMethod -Uri $rpcUrl.AbsoluteUri -Method Post `
+            -Headers @{ Authorization = "Basic $auth" } -ContentType 'application/json' `
+            -Body $request -TimeoutSec 1200
+    } catch {
+        $kind = $_.Exception.GetType().Name
+        $status = if ($_.Exception -is [System.Net.WebException]) {
+            [string]$_.Exception.Status
+        } else { 'unavailable' }
+        throw "Installed wallet RPC transport failed ($kind, status=$status)"
+    }
+    if ($response.error) {
+        # HTTP promotes handler refusals to the top-level JSON-RPC error.
+        # The node carries only the typed creation refusal and retry flag in
+        # error.data; never retry from an English message or a generic -32603.
+        $typed = $response.error.data.wallet_creation
+        if ($typed -and $typed.error_code -in @('snapshot_bootstrap_pending', 'orchard_history_pending') -and
+            $typed.retryable -eq $true) {
+            return [PSCustomObject]@{ error = [string]$response.error.message;
+                error_code = [string]$typed.error_code; retryable = $true }
+        }
+        $message = [string]$response.error.message
+        if ($message.Length -gt 300) { $message = $message.Substring(0, 300) }
+        throw "Installed wallet RPC refusal (rpc_code=$($response.error.code), error_code=$($typed.error_code), message=$message)"
+    }
+    return $response.result
 }
 
 function Get-EmbeddedDaemon {
@@ -121,6 +174,32 @@ try {
     # 25-minute deadline. Budget for cold header indexing, import and catch-up.
     $fresh = Wait-SelectedTip -Qt $qt -MinHeight ([int]$base.height + 288) -ProveImport $true -Minutes 60
     Write-Host "Installed Qt reached H$($fresh.blocks) with $($fresh.peers) peers"
+    # Use the same native RPC and address count as the GUI wizard. Keep the
+    # returned mnemonic in memory; never print it to the release log.
+    $walletStarted = Get-Date
+    $walletDeadline = $walletStarted.AddMinutes(45)
+    $nextWalletReport = $walletStarted
+    do {
+        $create = New-InstalledWallet
+        if (-not $create -or $create.error_code -notin @('snapshot_bootstrap_pending', 'orchard_history_pending') -or
+            $create.retryable -ne $true -or (Get-Date) -ge $walletDeadline) { break }
+        if ((Get-Date) -ge $nextWalletReport) {
+            $elapsed = [int]((Get-Date) - $walletStarted).TotalSeconds
+            $history = (Get-NodeRpc 'getsnapshotbootstrapstatus').orchard_history
+            Write-Host "Installed wallet creation awaits verified history after ${elapsed}s (code=$($create.error_code), ready=$($history.ready), verified=$($history.verified_height), target=$($history.target_height))"
+            $nextWalletReport = (Get-Date).AddMinutes(1)
+        }
+        Start-Sleep -Seconds 15
+    } while ((Get-Date) -lt $walletDeadline)
+    if (-not $create) { throw 'Fresh installed Windows wallet creation returned no result' }
+    if ($create.error -or $create.success -eq $false -or -not $create.mnemonic -or
+        -not $create.first_address -or -not $create.first_p2mr_address -or
+        -not $create.first_orchard_address -or $create.addresses_ready -ne $true) {
+        throw "Fresh installed Windows wallet creation failed (code=$($create.error_code), error=$($create.error), addresses_ready=$($create.addresses_ready))"
+    }
+    Remove-Variable create
+    $walletSeconds = [int]((Get-Date) - $walletStarted).TotalSeconds
+    Write-Host "Fresh installed Windows wallet and all three receive address types were created after ${walletSeconds}s"
     Stop-InstalledQt $qt
     $launch = @{
         FilePath = $qtExe

@@ -5422,6 +5422,7 @@ void P2PManager::begin_shutdown() {
 
 // THREAD-SAFE: Multiple concurrent calls to stop() are safe (idempotent)
 void P2PManager::stop() {
+    std::cout << "[P2P] shutdown phase=relay_quota" << std::endl;
     save_relay_quota(/*force=*/true);  // also when start() never ran
     // Atomically check and transition to shutdown state
     bool expected = true;
@@ -5433,6 +5434,7 @@ void P2PManager::stop() {
     // Signal cancellation before the final save. Disk or resolver latency in
     // persistence must never allow an already-queued outbound dial to start.
     begin_shutdown();
+    std::cout << "[P2P] shutdown phase=peers_save" << std::endl;
 #ifdef DINERO_TEST_BUILD
     if (test_before_final_peers_save_) test_before_final_peers_save_();
 #endif
@@ -5445,6 +5447,7 @@ void P2PManager::stop() {
     if (!peers_file_path_.empty()) {
         save_peers_with_seeds(peers_file_path_);
     }
+    std::cout << "[P2P] shutdown phase=peer_sockets" << std::endl;
 
     // Interrupt all peer sockets BEFORE joining threads.
     // Peer threads block on select(1s) — closing sockets makes select() return
@@ -5463,10 +5466,12 @@ void P2PManager::stop() {
         }
     }
     if (quic_endpoint_) {
+        std::cout << "[P2P] shutdown phase=quic_endpoint" << std::endl;
         quic_endpoint_->Stop();  // outside peers_mutex_ (see lock-order note)
     }
 
     // Wait for management threads to finish
+    std::cout << "[P2P] shutdown phase=management_threads" << std::endl;
     if (listen_thread_ && listen_thread_->joinable()) {
         listen_thread_->join();
     }
@@ -5486,6 +5491,7 @@ void P2PManager::stop() {
     if (punch_thread_ && punch_thread_->joinable()) {
         punch_thread_->join();
     }
+    std::cout << "[P2P] shutdown phase=peer_threads" << std::endl;
 
     // TS1 CRITICAL SECTION: Join all peer threads BEFORE erasing peers
     // =================================================================
@@ -5502,6 +5508,7 @@ void P2PManager::stop() {
             entry.thread->join();
         }
     }
+    std::cout << "[P2P] shutdown phase=peer_cleanup" << std::endl;
 
     // Step 2: Now that all threads are joined, transition peers to JOINED state
     {

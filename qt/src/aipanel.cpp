@@ -162,14 +162,14 @@ void AiPanel::buildConfigScreen()
     layout->setContentsMargins(16, 20, 16, 16);
     layout->setSpacing(10);
 
-    auto* title = new QLabel("DineroAI Setup");
+    auto* title = new QLabel(tr("DineroAI Setup"));
     title->setAlignment(Qt::AlignCenter);
     title->setStyleSheet(
         "QLabel { color: #eef2f6; font-size: 17px; font-weight: 700; "
         "background: transparent; border: none; }");
     layout->addWidget(title);
 
-    auto* sub = new QLabel("Choose your AI provider");
+    auto* sub = new QLabel(tr("Choose your AI provider"));
     sub->setAlignment(Qt::AlignCenter);
     sub->setStyleSheet(
         "QLabel { color: #868e96; font-size: 12px; background: transparent; border: none; }");
@@ -242,10 +242,10 @@ void AiPanel::buildConfigScreen()
     {
         auto* kl = new QVBoxLayout(keyRow_);
         kl->setContentsMargins(0,4,0,0); kl->setSpacing(4);
-        auto* lbl = new QLabel("API Key");
+        auto* lbl = new QLabel(tr("API Key"));
         lbl->setStyleSheet("QLabel { color: #868e96; font-size: 11px; background: transparent; border: none; }");
         apiKeyEdit_ = new QLineEdit;
-        apiKeyEdit_->setPlaceholderText("Paste your API key here…");
+        apiKeyEdit_->setPlaceholderText(tr("Paste your API key here…"));
         apiKeyEdit_->setEchoMode(QLineEdit::Password);
         apiKeyEdit_->setStyleSheet(
             "QLineEdit { background: #1f2328; color: #d7dde5; border: 1px solid #353b44; "
@@ -262,14 +262,14 @@ void AiPanel::buildConfigScreen()
     {
         auto* pl = new QVBoxLayout(pathRow_);
         pl->setContentsMargins(0,4,0,0); pl->setSpacing(4);
-        auto* lbl = new QLabel("Claude CLI path (blank = auto-detect)");
+        auto* lbl = new QLabel(tr("Claude CLI path (blank = auto-detect)"));
         lbl->setStyleSheet("QLabel { color: #868e96; font-size: 11px; background: transparent; border: none; }");
         auto* row2 = new QWidget;
         row2->setStyleSheet("QWidget { background: transparent; border: none; }");
         auto* rl = new QHBoxLayout(row2);
         rl->setContentsMargins(0,0,0,0); rl->setSpacing(6);
         claudePathEdit_ = new QLineEdit;
-        claudePathEdit_->setPlaceholderText("/opt/homebrew/bin/claude");
+        claudePathEdit_->setPlaceholderText(tr("/opt/homebrew/bin/claude"));
         claudePathEdit_->setStyleSheet(
             "QLineEdit { background: #1f2328; color: #d7dde5; border: 1px solid #353b44; "
             "border-radius: 6px; padding: 6px 10px; font-size: 12px; }"
@@ -297,16 +297,16 @@ void AiPanel::buildConfigScreen()
     {
         auto* ol = new QVBoxLayout(ollamaRow_);
         ol->setContentsMargins(0,4,0,0); ol->setSpacing(4);
-        auto* lbl = new QLabel("Server URL  /  Model name");
+        auto* lbl = new QLabel(tr("Server URL  /  Model name"));
         lbl->setStyleSheet("QLabel { color: #868e96; font-size: 11px; background: transparent; border: none; }");
         ollamaUrlEdit_ = new QLineEdit;
-        ollamaUrlEdit_->setPlaceholderText("http://localhost:11434");
+        ollamaUrlEdit_->setPlaceholderText(tr("http://localhost:11434"));
         ollamaUrlEdit_->setStyleSheet(
             "QLineEdit { background: #1f2328; color: #d7dde5; border: 1px solid #353b44; "
             "border-radius: 6px; padding: 6px 10px; font-size: 12px; }"
             "QLineEdit:focus { border-color: #51cf66; }");
         ollamaModelEdit_ = new QLineEdit;
-        ollamaModelEdit_->setPlaceholderText("llama3.2");
+        ollamaModelEdit_->setPlaceholderText(tr("llama3.2"));
         ollamaModelEdit_->setStyleSheet(ollamaUrlEdit_->styleSheet());
         ol->addWidget(lbl);
         ol->addWidget(ollamaUrlEdit_);
@@ -320,17 +320,17 @@ void AiPanel::buildConfigScreen()
     {
         auto* wl = new QVBoxLayout(wdinRow_);
         wl->setContentsMargins(0, 4, 0, 0); wl->setSpacing(4);
-        auto* lbl = new QLabel("Base address (wDIN required)");
+        auto* lbl = new QLabel(tr("Base address (wDIN required)"));
         lbl->setStyleSheet("QLabel { color: #868e96; font-size: 11px; background: transparent; border: none; }");
         baseAddressEdit_ = new QLineEdit;
-        baseAddressEdit_->setPlaceholderText("0x…  (must hold wDIN v2 to unlock)");
+        baseAddressEdit_->setPlaceholderText(tr("0x…  (must hold wDIN v2 to unlock)"));
         baseAddressEdit_->setStyleSheet(
             "QLineEdit { background: #1f2328; color: #d7dde5; border: 1px solid #353b44; "
             "border-radius: 6px; padding: 6px 10px; font-size: 12px; }"
             "QLineEdit:focus { border-color: #51cf66; }");
-        auto* hint = new QLabel(
+        auto* hint = new QLabel(tr(
             "<a href='https://bridge.dinero-coin.com' style='color:#5c7cfa;'>Bridge DIN → wDIN</a>"
-            " · contract: 0x0C979…1119");
+            " · contract: 0x0C979…1119"));
         hint->setOpenExternalLinks(true);
         hint->setStyleSheet("QLabel { color: #5c6370; font-size: 10px; background: transparent; border: none; }");
         wl->addWidget(lbl);
@@ -349,7 +349,7 @@ void AiPanel::buildConfigScreen()
 
     layout->addStretch();
 
-    saveBtn_ = new QPushButton("Save & Start");
+    saveBtn_ = new QPushButton(tr("Save & Start"));
     saveBtn_->setMinimumHeight(38);
     saveBtn_->setStyleSheet(
         "QPushButton { background: #51cf66; color: #181b20; border: none; "
@@ -393,19 +393,19 @@ void AiPanel::onProviderChanged()
     ollamaRow_->setVisible(isOllama || isMlx);
     wdinRow_->setVisible(isCli);  // wDIN gate only applies to Claude CLI
 
-    if      (rbGemini_->isChecked()) configHint_->setText("Get free key at aistudio.google.com");
-    else if (rbGroq_->isChecked())   configHint_->setText("Get free key at console.groq.com");
-    else if (rbClaude_->isChecked()) configHint_->setText("Uses your Anthropic API key");
-    else if (isCli)                  configHint_->setText("Uses claude CLI on this machine");
-    else if (isOllama)               configHint_->setText("Requires Ollama running locally (ollama.ai)");
-    else if (isMlx)                  configHint_->setText("pip install mlx-lm  |  python -m mlx_lm.server --model <model>");
+    if      (rbGemini_->isChecked()) configHint_->setText(tr("Get free key at aistudio.google.com"));
+    else if (rbGroq_->isChecked())   configHint_->setText(tr("Get free key at console.groq.com"));
+    else if (rbClaude_->isChecked()) configHint_->setText(tr("Uses your Anthropic API key"));
+    else if (isCli)                  configHint_->setText(tr("Uses claude CLI on this machine"));
+    else if (isOllama)               configHint_->setText(tr("Requires Ollama running locally (ollama.ai)"));
+    else if (isMlx)                  configHint_->setText(tr("pip install mlx-lm  |  python -m mlx_lm.server --model <model>"));
     else                             configHint_->clear();
 
     // Pre-fill default URL for MLX vs Ollama
     if (isMlx && ollamaUrlEdit_ && ollamaUrlEdit_->text().isEmpty())
-        ollamaUrlEdit_->setText("http://localhost:8080");
+        ollamaUrlEdit_->setText(tr("http://localhost:8080"));
     else if (isOllama && ollamaUrlEdit_ && ollamaUrlEdit_->text().isEmpty())
-        ollamaUrlEdit_->setText("http://localhost:11434");
+        ollamaUrlEdit_->setText(tr("http://localhost:11434"));
 }
 
 void AiPanel::onSaveConfig()
@@ -418,12 +418,12 @@ void AiPanel::onSaveConfig()
         if (addr.isEmpty() || !addr.startsWith("0x") || addr.length() != 42) {
             configHint_->setStyleSheet(
                 "QLabel { color: #ff6b6b; font-size: 11px; background: transparent; border: none; }");
-            configHint_->setText("Enter your Base address (0x…) to verify wDIN balance");
+            configHint_->setText(tr("Enter your Base address (0x…) to verify wDIN balance"));
             return;
         }
         configHint_->setStyleSheet(
             "QLabel { color: #51cf66; font-size: 11px; background: transparent; border: none; }");
-        configHint_->setText("Checking wDIN balance…");
+        configHint_->setText(tr("Checking wDIN balance…"));
         if (saveBtn_) saveBtn_->setEnabled(false);
         checkWdinBalance(addr);
         return;   // onWdinCheckDone() will proceed
@@ -512,8 +512,8 @@ void AiPanel::onWdinCheckDone(quint64 balance)
     if (balance == 0) {
         configHint_->setStyleSheet(
             "QLabel { color: #ff6b6b; font-size: 11px; background: transparent; border: none; }");
-        configHint_->setText(
-            "No wDIN found on this address. Bridge DIN → wDIN at bridge.dinero-coin.com");
+        configHint_->setText(tr(
+            "No wDIN found on this address. Bridge DIN → wDIN at bridge.dinero-coin.com"));
         return;
     }
 
@@ -562,7 +562,7 @@ void AiPanel::buildChatScreen()
     auto* headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(12, 0, 8, 0);
 
-    auto* headerTitle = new QLabel("DineroAI");
+    auto* headerTitle = new QLabel(tr("DineroAI"));
     headerTitle->setStyleSheet(
         "QLabel { color: #eef2f6; font-size: 14px; font-weight: 700; "
         "background: transparent; border: none; }");
@@ -582,7 +582,7 @@ void AiPanel::buildChatScreen()
 
     auto* settingsBtn = new QPushButton("⚙");
     settingsBtn->setFixedSize(26, 26);
-    settingsBtn->setToolTip("AI Settings");
+    settingsBtn->setToolTip(tr("AI Settings"));
     settingsBtn->setStyleSheet(
         "QPushButton { background: transparent; color: #5c6370; border: none; font-size: 14px; }"
         "QPushButton:hover { color: #d6dde6; }");
@@ -591,7 +591,7 @@ void AiPanel::buildChatScreen()
     });
     headerLayout->addWidget(settingsBtn);
 
-    auto* clearBtn = new QPushButton("Clear");
+    auto* clearBtn = new QPushButton(tr("Clear"));
     clearBtn->setFixedSize(44, 26);
     clearBtn->setStyleSheet(
         "QPushButton { background: #2b3037; color: #868e96; border: 1px solid #353b44; "
@@ -703,7 +703,7 @@ void AiPanel::buildChatScreen()
 
     inputField_ = new QLineEdit;
     inputField_->setMinimumHeight(36);
-    inputField_->setPlaceholderText("Ask anything crypto…");
+    inputField_->setPlaceholderText(tr("Ask anything crypto…"));
     inputField_->setStyleSheet(
         "QLineEdit { background: #1f2328; color: #d7dde5; "
         "border: 1px solid #353b44; border-radius: 8px; padding: 0 12px; "
@@ -715,7 +715,7 @@ void AiPanel::buildChatScreen()
     attachButton_ = new QPushButton("📎");
     attachButton_->setFixedSize(36, 36);
     attachButton_->setCursor(Qt::PointingHandCursor);
-    attachButton_->setToolTip("Attach image (vision models)");
+    attachButton_->setToolTip(tr("Attach image (vision models)"));
     attachButton_->setStyleSheet(
         "QPushButton { background: #2b3037; color: #d6dde6; border: 1px solid #353b44; "
         "border-radius: 8px; font-size: 15px; }"
@@ -725,7 +725,7 @@ void AiPanel::buildChatScreen()
     connect(attachButton_, &QPushButton::clicked, this, &AiPanel::onAttachClicked);
     inputLayout->addWidget(attachButton_);
 
-    voiceButton_ = new QPushButton("Mic");
+    voiceButton_ = new QPushButton(tr("Mic"));
     voiceButton_->setFixedSize(42, 36);
     voiceButton_->setCursor(Qt::PointingHandCursor);
     voiceButton_->setStyleSheet(
@@ -735,7 +735,7 @@ void AiPanel::buildChatScreen()
     connect(voiceButton_, &QPushButton::clicked, this, &AiPanel::onVoiceClicked);
     inputLayout->addWidget(voiceButton_);
 
-    sendButton_ = new QPushButton("Send");
+    sendButton_ = new QPushButton(tr("Send"));
     sendButton_->setFixedSize(50, 36);
     sendButton_->setStyleSheet(
         "QPushButton { background: #51cf66; color: #181b20; border: none; "
@@ -748,7 +748,7 @@ void AiPanel::buildChatScreen()
 
     layout->addLayout(inputLayout);
 
-    auto* watermark = new QLabel("DineroAI — your crypto assistant");
+    auto* watermark = new QLabel(tr("DineroAI — your crypto assistant"));
     watermark->setAlignment(Qt::AlignCenter);
     watermark->setStyleSheet(
         "QLabel { color: #484f58; font-size: 9px; background: transparent; "
@@ -924,7 +924,7 @@ void AiPanel::onVoiceClicked()
         return;
     }
     isListening_ = true;
-    voiceButton_->setText("Stop");
+    voiceButton_->setText(tr("Stop"));
     voiceButton_->setStyleSheet(
         "QPushButton { background: #ff6b6b; color: #fff; border: none; "
         "border-radius: 8px; font-size: 11px; }");
@@ -940,7 +940,7 @@ void AiPanel::onVoiceClicked()
 void AiPanel::onVoiceFinished(int, QProcess::ExitStatus)
 {
     isListening_ = false;
-    voiceButton_->setText("Mic");
+    voiceButton_->setText(tr("Mic"));
     voiceButton_->setStyleSheet(
         "QPushButton { background: #2b3037; color: #d6dde6; border: 1px solid #353b44; "
         "border-radius: 8px; font-size: 11px; font-weight: 600; }"

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Qt's v3 preflight is read-only and distinguishes eligible full archives."""
+"""Qt preflights read old snapshot and v3 sources without changing wallet data."""
 
 from contextlib import closing
 import hashlib
+import os
 from pathlib import Path
 import shutil
 import socket
@@ -76,6 +77,54 @@ try:
     wal = index.with_name(index.name + "-wal")
     assert not wal.exists() or wal.stat().st_size == 0, "status preflight wrote a WAL"
     print("PASS eligible v2 status is read-only before any daemon services")
+
+    legacy = root / "legacy"
+    shutil.copytree(datadir / "blockchain", legacy / "blockchain")
+    legacy_index = legacy / "blockchain" / "utxo"
+    legacy_status = [dinerod, "--regtest", f"--datadir={legacy}",
+                     "--legacy-snapshot-status"]
+    rc, output = run(legacy_status)
+    assert rc == 0 and "legacy_snapshot_status=current_or_full" in output, output[-12000:]
+    with closing(sqlite3.connect(legacy_index)) as db:
+        db.execute("INSERT OR REPLACE INTO utxo_metadata(key,value) VALUES (?,?)",
+                   ("assumeutxo_lc_base_height", "52287"))
+        db.commit()
+    old_index = index_files(legacy_index)
+    rc, output = run(legacy_status)
+    assert rc == 0 and "legacy_snapshot_status=legacy_empty" in output, output[-12000:]
+    assert index_files(legacy_index) == old_index, "legacy probe changed the wallet index"
+    (legacy / "wallets").mkdir()
+    (legacy / "wallets" / "wallet_Existing.db").write_bytes(b"wallet material")
+    rc, output = run(legacy_status)
+    assert rc == 0 and "legacy_snapshot_status=legacy_wallets" in output, output[-12000:]
+    (legacy / "wallets" / "wallet_Existing.db").unlink()
+    if os.name != "nt":
+        dangling_wallet = legacy / "wallet.db"
+        dangling_wallet.symlink_to(legacy / "wallet-missing.db")
+        rc, output = run(legacy_status)
+        assert rc == 0 and "legacy_snapshot_status=legacy_wallets" in output, output[-12000:]
+        dangling_wallet.unlink()
+    registry = legacy / "wallet_registry.db"
+    registry_wal = legacy / "wallet_registry.db-wal"
+    registry_wal.write_bytes(b"stranded wallet registry")
+    rc, output = run(legacy_status)
+    assert rc == 0 and "legacy_snapshot_status=legacy_wallets" in output, output[-12000:]
+    registry_wal.unlink()
+    with closing(sqlite3.connect(registry)) as db:
+        db.execute("CREATE TABLE wallets(name TEXT NOT NULL)")
+        db.execute("INSERT INTO wallets(name) VALUES ('Existing')")
+        db.commit()
+    rc, output = run(legacy_status)
+    assert rc == 0 and "legacy_snapshot_status=legacy_wallets" in output, output[-12000:]
+    with closing(sqlite3.connect(registry)) as db:
+        db.execute("DROP TABLE wallets")
+        db.commit()
+    rc, output = run(legacy_status)
+    assert rc != 0 and "Wallet registry cannot be verified" in output, output[-12000:]
+    rc, output = run([dinerod, "--regtest", f"--datadir={legacy}",
+                      "--wallet-index-v3-status"])
+    assert rc != 0 and "refuses imported wallet snapshot state" in output, output[-12000:]
+    print("PASS old lifecycle marker is never offered v3 upgrade; empty and funded data differ")
 
     for restriction in ("sync-profile=ios_utreexo\n", "utreexo-stateless=1\n",
                         "archival=false\n"):
