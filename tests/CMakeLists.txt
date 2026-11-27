@@ -250,6 +250,17 @@ if(NOT WIN32)
     LABELS "integration;e2e-daemon;consensus;mandatory" TIMEOUT 300 RUN_SERIAL TRUE)
 endif()
 
+if(WIN32 AND TARGET dinerod)
+  # Small mainnet fixture for the Windows release lane. The full daemon
+  # lifecycle fixture above is intentionally Unix-only.
+  add_executable(test_legacy_snapshot_fixture
+    tests/daemon/test_legacy_snapshot_fixture.cpp)
+  target_link_libraries(test_legacy_snapshot_fixture PRIVATE
+    dinero_core dinero_chainstate dinero_wallet dinero_consensus dinero_crypto
+    RocksDB::rocksdb)
+  link_zstd_if_needed(test_legacy_snapshot_fixture)
+endif()
+
 add_executable(test_packed_header_alignment
   tests/consensus/test_packed_header_alignment.cpp)
 target_include_directories(test_packed_header_alignment PRIVATE ${CMAKE_SOURCE_DIR}/include)
