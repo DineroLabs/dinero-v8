@@ -32,6 +32,39 @@ function Get-NodeRpc {
     }
 }
 
+# dinero-cli's HTTP command dispatcher only exposes a small fixed command set;
+# wallet.createhd is a native RPC used by the GUI, so call the installed node
+# directly with the same named arguments. Never print its mnemonic response.
+function New-InstalledWallet {
+    $nodeInfoPath = Join-Path $DataDir 'nodeinfo.json'
+    $cookiePath = Join-Path $DataDir '.cookie'
+    $nodeInfo = Get-Content -Raw -LiteralPath $nodeInfoPath | ConvertFrom-Json
+    $rpcUrl = [uri]($nodeInfo.rpc.url)
+    if ($rpcUrl.Scheme -ne 'http' -or $rpcUrl.Host -notin @('127.0.0.1', 'localhost', '::1', '[::1]')) {
+        throw 'Installed node advertised a non-local wallet RPC endpoint'
+    }
+    $cookie = (Get-Content -Raw -LiteralPath $cookiePath).Trim()
+    if (-not $cookie) { throw 'Installed node has no RPC cookie' }
+    $auth = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($cookie))
+    $request = @{
+        jsonrpc = '2.0'
+        id = 'windows-fresh-wallet-gate'
+        method = 'wallet.createhd'
+        params = @{ name = 'WindowsFreshInstallGate'; word_count = 12; initial_taproot_addresses = 20 }
+    } | ConvertTo-Json -Depth 4 -Compress
+    try {
+        $response = Invoke-RestMethod -Uri $rpcUrl.AbsoluteUri -Method Post `
+            -Headers @{ Authorization = "Basic $auth" } -ContentType 'application/json' `
+            -Body $request -TimeoutSec 300
+    } catch {
+        throw "Installed wallet RPC transport failed ($($_.Exception.GetType().Name))"
+    }
+    if ($response.error) {
+        throw "Installed wallet RPC protocol error (code=$($response.error.code))"
+    }
+    return $response.result
+}
+
 function Get-EmbeddedDaemon {
     param([System.Diagnostics.Process]$Qt)
     Get-CimInstance Win32_Process -Filter "ParentProcessId=$($Qt.Id) AND Name='dinerod.exe'" |
@@ -127,7 +160,7 @@ try {
     $walletDeadline = $walletStarted.AddMinutes(20)
     $nextWalletReport = $walletStarted
     do {
-        $create = Get-NodeRpc -Method 'wallet.createhd' -Arguments @('{"name":"WindowsFreshInstallGate","word_count":12,"initial_taproot_addresses":20}') -TimeoutSeconds 300
+        $create = New-InstalledWallet
         if (-not $create -or $create.error_code -notin @('snapshot_bootstrap_pending', 'orchard_history_pending') -or
             $create.retryable -ne $true -or (Get-Date) -ge $walletDeadline) { break }
         if ((Get-Date) -ge $nextWalletReport) {
