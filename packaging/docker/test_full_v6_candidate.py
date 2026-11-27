@@ -159,7 +159,7 @@ class FullV6DockerCandidateTest(unittest.TestCase):
 
     def test_release_revision_and_swap_runtime_are_present(self):
         source = (ROOT / "Dockerfile").read_text()
-        self.assertIn('ARG PRIMARY_SNAPSHOT_RELEASE=v8.2.6', source)
+        self.assertIn('ARG PRIMARY_SNAPSHOT_RELEASE=v8.2.7', source)
         self.assertIn('BASE="${PRIMARY}"', source)
         self.assertIn('libcurl4t64 ca-certificates', source)
         workflow = (ROOT / ".github/workflows/linux-release.yml").read_text()
@@ -225,14 +225,14 @@ class FullV6DockerCandidateTest(unittest.TestCase):
         base = os.environ | {
             'GITHUB_OUTPUT': str(output), 'GITHUB_EVENT_NAME': 'workflow_dispatch',
             'GITHUB_REF_NAME': 'codex/v823-desktop-full-v6-packaging',
-            'INPUT_VERSION': '8.2.6', 'INPUT_CANDIDATE_SOURCE': source_sha,
+            'INPUT_VERSION': '8.2.7', 'INPUT_CANDIDATE_SOURCE': source_sha,
             'INPUT_PUBLISH_LATEST': 'false', 'INPUT_DRY_RUN': 'true',
             'RELEASE_PRERELEASE': 'false', 'RELEASE_DRAFT': 'false',
             'INPUT_SNAPSHOT_PAYLOAD_URL': 'https://example.org/snapshot.dat',
             'INPUT_SNAPSHOT_MANIFEST_URL': 'https://example.org/manifest.json',
             'INPUT_SNAPSHOT_SIGNATURE_URL': 'https://example.org/manifest.sig',
-            'INPUT_BINARY_TARBALL_URL': 'https://example.org/dinero-linux-x86_64-8.2.6.tar.gz',
-            'INPUT_BINARY_SUMS_URL': 'https://example.org/SHA256SUMS-linux-x86_64-8.2.6',
+            'INPUT_BINARY_TARBALL_URL': 'https://example.org/dinero-linux-x86_64-8.2.7.tar.gz',
+            'INPUT_BINARY_SUMS_URL': 'https://example.org/SHA256SUMS-linux-x86_64-8.2.7',
             'INPUT_BINARY_TARBALL_SHA256': 'a' * 64,
             'INPUT_BINARY_SUMS_SHA256': 'b' * 64,
         }
@@ -255,23 +255,23 @@ class FullV6DockerCandidateTest(unittest.TestCase):
         ):
             with self.subTest(changes=changes):
                 self.assertNotEqual(run_case(**changes).returncode, 0)
-        release = run_case(GITHUB_EVENT_NAME='release', GITHUB_REF_NAME='v8.2.6',
+        release = run_case(GITHUB_EVENT_NAME='release', GITHUB_REF_NAME='v8.2.7',
                            INPUT_CANDIDATE_SOURCE='', INPUT_SNAPSHOT_PAYLOAD_URL='',
                            INPUT_SNAPSHOT_MANIFEST_URL='', INPUT_SNAPSHOT_SIGNATURE_URL='',
                            INPUT_BINARY_TARBALL_URL='', INPUT_BINARY_SUMS_URL='',
                            INPUT_BINARY_TARBALL_SHA256='', INPUT_BINARY_SUMS_SHA256='',
                            INPUT_VERSION='', INPUT_DRY_RUN='')
         self.assertEqual(release.returncode, 0, release.stderr)
-        revision = run_case(GITHUB_EVENT_NAME='release', GITHUB_REF_NAME='v8.2.6-r1',
+        revision = run_case(GITHUB_EVENT_NAME='release', GITHUB_REF_NAME='v8.2.7-r1',
                             INPUT_CANDIDATE_SOURCE='', INPUT_SNAPSHOT_PAYLOAD_URL='',
                             INPUT_SNAPSHOT_MANIFEST_URL='', INPUT_SNAPSHOT_SIGNATURE_URL='',
                             INPUT_BINARY_TARBALL_URL='', INPUT_BINARY_SUMS_URL='',
                             INPUT_BINARY_TARBALL_SHA256='', INPUT_BINARY_SUMS_SHA256='',
                             INPUT_VERSION='', INPUT_DRY_RUN='')
         self.assertEqual(revision.returncode, 0, revision.stderr)
-        self.assertIn('version=8.2.6\n', output.read_text())
+        self.assertIn('version=8.2.7\n', output.read_text())
         invalid_revision = run_case(GITHUB_EVENT_NAME='release',
-                                    GITHUB_REF_NAME='v8.2.6-r1-extra',
+                                    GITHUB_REF_NAME='v8.2.7-r1-extra',
                                     INPUT_CANDIDATE_SOURCE='', INPUT_VERSION='',
                                     INPUT_SNAPSHOT_PAYLOAD_URL='', INPUT_SNAPSHOT_MANIFEST_URL='',
                                     INPUT_SNAPSHOT_SIGNATURE_URL='', INPUT_BINARY_TARBALL_URL='',
@@ -292,9 +292,9 @@ class FullV6DockerCandidateTest(unittest.TestCase):
             'INPUT_DRY_RUN': 'false', 'INPUT_PUBLISH_LATEST': 'true',
             'PATH': str(self.root) + os.pathsep + os.environ['PATH'],
         }
-        accepted_latest = run_case(**manual_release, FAKE_LATEST_TAG='v8.2.6-r1')
+        accepted_latest = run_case(**manual_release, FAKE_LATEST_TAG='v8.2.7-r1')
         self.assertEqual(accepted_latest.returncode, 0, accepted_latest.stderr)
-        wrong_latest = run_case(**manual_release, FAKE_LATEST_TAG='v8.2.7')
+        wrong_latest = run_case(**manual_release, FAKE_LATEST_TAG='v8.2.8')
         self.assertNotEqual(wrong_latest.returncode, 0)
 
     def test_fresh_volume_smoke_restarts_same_volume_and_requires_armed_snapshot(self):
