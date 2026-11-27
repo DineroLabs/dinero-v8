@@ -123,7 +123,20 @@ try {
     Write-Host "Installed Qt reached H$($fresh.blocks) with $($fresh.peers) peers"
     # Use the same native RPC and address count as the GUI wizard. Keep the
     # returned mnemonic in memory; never print it to the release log.
-    $create = Get-NodeRpc -Method 'wallet.createhd' -Arguments @('{"name":"WindowsFreshInstallGate","word_count":12,"initial_taproot_addresses":20}') -TimeoutSeconds 300
+    $walletStarted = Get-Date
+    $walletDeadline = $walletStarted.AddMinutes(20)
+    $nextWalletReport = $walletStarted
+    do {
+        $create = Get-NodeRpc -Method 'wallet.createhd' -Arguments @('{"name":"WindowsFreshInstallGate","word_count":12,"initial_taproot_addresses":20}') -TimeoutSeconds 300
+        if (-not $create -or $create.error_code -notin @('snapshot_bootstrap_pending', 'orchard_history_pending') -or
+            $create.retryable -ne $true -or (Get-Date) -ge $walletDeadline) { break }
+        if ((Get-Date) -ge $nextWalletReport) {
+            $elapsed = [int]((Get-Date) - $walletStarted).TotalSeconds
+            Write-Host "Installed wallet creation awaits verified history after ${elapsed}s (code=$($create.error_code))"
+            $nextWalletReport = (Get-Date).AddMinutes(1)
+        }
+        Start-Sleep -Seconds 15
+    } while ((Get-Date) -lt $walletDeadline)
     if (-not $create) { throw 'Fresh installed Windows wallet creation returned no result' }
     if ($create.error -or $create.success -eq $false -or -not $create.mnemonic -or
         -not $create.first_address -or -not $create.first_p2mr_address -or
@@ -131,7 +144,8 @@ try {
         throw "Fresh installed Windows wallet creation failed (code=$($create.error_code), error=$($create.error), addresses_ready=$($create.addresses_ready))"
     }
     Remove-Variable create
-    Write-Host 'Fresh installed Windows wallet and all three receive address types were created'
+    $walletSeconds = [int]((Get-Date) - $walletStarted).TotalSeconds
+    Write-Host "Fresh installed Windows wallet and all three receive address types were created after ${walletSeconds}s"
     Stop-InstalledQt $qt
     $launch = @{
         FilePath = $qtExe
