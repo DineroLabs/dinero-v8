@@ -1034,6 +1034,20 @@ Json::Value HttpRpcServer::process_admitted_rpc_call(const Json::Value& request)
                             }
                             normalized["data"]["orchard"] = detail;
                         }
+                        // A new-wallet refusal is also a normal result of a
+                        // first-run snapshot or Orchard history catch-up.
+                        // Preserve its typed retry decision across the HTTP
+                        // envelope; callers must not infer it from English
+                        // wording or retry an unrelated creation failure.
+                        const bool wallet_creation = admin_check_method == "wallet.createhd" ||
+                            dispatch_method == "wallet.createhd" || method == "createhd";
+                        if (wallet_creation && raw.isString() &&
+                            token(result["error_code"], 64) && result["retryable"].isBool()) {
+                            Json::Value detail(Json::objectValue);
+                            detail["error_code"] = result["error_code"];
+                            detail["retryable"] = result["retryable"];
+                            normalized["data"]["wallet_creation"] = detail;
+                        }
                         response["error"] = normalized;
                     }
                     return response;

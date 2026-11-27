@@ -65,7 +65,18 @@ function New-InstalledWallet {
         throw "Installed wallet RPC transport failed ($($_.Exception.GetType().Name))"
     }
     if ($response.error) {
-        throw "Installed wallet RPC protocol error (code=$($response.error.code))"
+        # HTTP promotes handler refusals to the top-level JSON-RPC error.
+        # The node carries only the typed creation refusal and retry flag in
+        # error.data; never retry from an English message or a generic -32603.
+        $typed = $response.error.data.wallet_creation
+        if ($typed -and $typed.error_code -in @('snapshot_bootstrap_pending', 'orchard_history_pending') -and
+            $typed.retryable -eq $true) {
+            return [PSCustomObject]@{ error = [string]$response.error.message;
+                error_code = [string]$typed.error_code; retryable = $true }
+        }
+        $message = [string]$response.error.message
+        if ($message.Length -gt 300) { $message = $message.Substring(0, 300) }
+        throw "Installed wallet RPC refusal (rpc_code=$($response.error.code), error_code=$($typed.error_code), message=$message)"
     }
     return $response.result
 }
