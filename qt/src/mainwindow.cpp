@@ -5146,9 +5146,13 @@ void MainWindow::setupUI() {
     blocksScoreboard->setFitToWidth(true);
     lblBlocksFound_ = blocksScoreboard;
     lblBlocksFound_->setStyleSheet(miningStatStyle("#bec8d0", true));
-    auto* lblBlocksCaption = new QLabel(tr("Blocks:"));
-    lblBlocksCaption->setStyleSheet(miningStatStyle());
-    row2->addWidget(lblBlocksCaption);
+    lblBlocksCaption_ = new QLabel(currentMiningMode() == QStringLiteral("sv2_pool")
+      ? tr("Block candidates:") : tr("Blocks:"));
+    lblBlocksCaption_->setStyleSheet(miningStatStyle());
+    if (currentMiningMode() == QStringLiteral("sv2_pool")) {
+      lblBlocksCaption_->setToolTip(tr("Local block-target submissions. Pool and node acceptance is not confirmed here."));
+    }
+    row2->addWidget(lblBlocksCaption_);
     row2->addWidget(lblBlocksFound_);
 
     auto* lblHeightCaption = new QLabel(tr("Height:"));
@@ -11802,6 +11806,13 @@ void MainWindow::onMiningModeChanged(int index) {
   const bool poolSv2 = (mode == "sv2_pool");
   const bool anyPool = poolV1 || poolSv2;
 
+  if (lblBlocksCaption_) {
+    lblBlocksCaption_->setText(poolSv2 ? tr("Block candidates:") : tr("Blocks:"));
+    lblBlocksCaption_->setToolTip(poolSv2
+      ? tr("Local block-target submissions. Pool and node acceptance is not confirmed here.")
+      : QString());
+  }
+
   if (lblMinerType_) {
     lblMinerType_->setVisible(!anyPool);
   }
@@ -14349,10 +14360,10 @@ void MainWindow::startSv2Miner() {
           obj.value("error").toString());
       } else if (event == "share_submitted") {
         if (obj.value("meets_block_target").toBool()) {
-          mining_stats_.blocks_found += 1;
-          if (lblBlocksFound_) lblBlocksFound_->setText(QString::number(mining_stats_.blocks_found));
-          appendSv2EventLine(txtMiningOutput_, "block",
-            QString("FOUND hash=%1 nonce=%2")
+          mining_stats_.sv2_candidates_submitted += 1;
+          if (lblBlocksFound_) lblBlocksFound_->setText(QString::number(mining_stats_.sv2_candidates_submitted));
+          appendSv2EventLine(txtMiningOutput_, "candidate",
+            QString("SUBMITTED hash=%1 nonce=%2 (node result unconfirmed)")
               .arg(obj.value("hash").toString())
               .arg(obj.value("nonce").toString()),
             "#f6c85f",
@@ -14504,6 +14515,7 @@ void MainWindow::startSv2Miner() {
   mining_stats_.mining_started = QDateTime::currentMSecsSinceEpoch();
   mining_stats_.current_hashrate = 0.0;
   mining_stats_.sv2_shares_accepted = 0;
+  mining_stats_.sv2_candidates_submitted = 0;
   mining_stats_.sv2_hashrate_updates = 0;
   mining_stats_.sv2_window_bps = -1;
   mining_stats_.sv2_window_shares = 0;
