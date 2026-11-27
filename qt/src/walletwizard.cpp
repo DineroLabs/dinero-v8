@@ -765,7 +765,7 @@ CreateSeedPage::CreateSeedPage(ConnectionManager* connMgr, QWidget* parent)
   warningBanner_->setWordWrap(true);
   warningBanner_->setVisible(false);
   layout->addWidget(warningBanner_);
-  
+
   // Seed display; the person reveals the words when ready.
   lblSeed_ = new QLabel(tr("[Seed phrase will appear here]"));
   lblSeed_->setAlignment(Qt::AlignCenter);
