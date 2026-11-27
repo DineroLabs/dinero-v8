@@ -11812,6 +11812,10 @@ void MainWindow::onMiningModeChanged(int index) {
       ? tr("Local block-target submissions. Pool and node acceptance is not confirmed here.")
       : QString());
   }
+  if (lblBlocksFound_ && !isMining_) {
+    lblBlocksFound_->setText(QString::number(poolSv2
+      ? mining_stats_.sv2_candidates_submitted : mining_stats_.blocks_found));
+  }
 
   if (lblMinerType_) {
     lblMinerType_->setVisible(!anyPool);
