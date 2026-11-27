@@ -1,0 +1,94 @@
+name: Windows installed wallet retest
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: 'Windows release run holding the signed candidate installer'
+        required: true
+        type: string
+      artifact_name:
+        description: 'Failure artifact containing the signed GUI installer'
+        required: true
+        type: string
+      expected_binary_sha:
+        description: 'Exact commit printed by the installed daemon --version'
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  installed-wallet:
+    runs-on: windows-2022
+    timeout-minutes: 130
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install signed candidate and exercise fresh wallet
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          ARTIFACT_NAME: ${{ inputs.artifact_name }}
+          EXPECTED_BINARY_SHA: ${{ inputs.expected_binary_sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:SOURCE_RUN_ID -notmatch '^[0-9]+$' -or
+              $env:ARTIFACT_NAME -notmatch '^windows-candidate-failure-[0-9]+$' -or
+              $env:EXPECTED_BINARY_SHA -notmatch '^[0-9a-f]{40}$') {
+            throw 'Invalid signed candidate artifact identity'
+          }
+          $artifactDir = Join-Path $env:RUNNER_TEMP 'signed-candidate'
+          gh run download $env:SOURCE_RUN_ID --repo DineroLabs/dinero-v8 `
+            --name $env:ARTIFACT_NAME --dir $artifactDir
+          if ($LASTEXITCODE -ne 0) { throw 'Could not download signed candidate artifact' }
+          $installers = @(Get-ChildItem -LiteralPath $artifactDir -Recurse -File `
+            -Filter 'Dinero-*-windows-x86_64-Setup.exe' |
+            Where-Object Name -NotLike 'Dinero-Server-*')
+          if ($installers.Count -ne 1) { throw "Expected one signed GUI installer; found $($installers.Count)" }
+          $installDir = Join-Path $env:ProgramFiles 'Dinero'
+          $install = Start-Process -FilePath $installers[0].FullName -ArgumentList '/S' -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "GUI installer exited $($install.ExitCode)" }
+          $daemonExe = Join-Path $installDir 'dinerod.exe'
+          $qtExe = Join-Path $installDir 'dinero-qt.exe'
+          if (-not (Test-Path -LiteralPath $daemonExe) -or -not (Test-Path -LiteralPath $qtExe)) {
+            throw 'Installed GUI or daemon is missing'
+          }
+          $version = & $daemonExe --version
+          if ($LASTEXITCODE -ne 0 -or
+              ($version -join [Environment]::NewLine) -notmatch [regex]::Escape("commit: $env:EXPECTED_BINARY_SHA")) {
+            throw 'Installed daemon source commit does not match the signed candidate'
+          }
+          $catalog = Get-Content -Raw packaging/snapshot/desktop-inputs-candidate.json | ConvertFrom-Json
+          $manifest = Join-Path $installDir "$($catalog.primary.filename).manifest.json"
+          if (-not (Test-Path -LiteralPath $manifest)) { throw 'Installed full-v6 manifest is missing' }
+          $dataDir = Join-Path $env:RUNNER_TEMP 'dinero-installed-wallet-retest'
+          New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+          $qt = Start-Process -FilePath $qtExe -ArgumentList "-datadir=$dataDir" `
+            -RedirectStandardOutput "$dataDir\qt-stdout.log" `
+            -RedirectStandardError "$dataDir\qt-stderr.log" -PassThru
+          try {
+            .\scripts\ci\check_windows_installed_snapshot.ps1 `
+              -InstallDir $installDir -DataDir $dataDir -Manifest $manifest -InitialQt $qt
+          } finally {
+            $qt.Refresh()
+            if (-not $qt.HasExited) {
+              Get-CimInstance Win32_Process -Filter "ParentProcessId=$($qt.Id) AND Name='dinerod.exe'" |
+                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+              Stop-Process -Id $qt.Id -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+      - name: Preserve installed-wallet diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installed-wallet-retest-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/dinero-installed-wallet-retest/*.log
+            installed-windows-snapshot-result.json
+          if-no-files-found: warn
+          retention-days: 7
