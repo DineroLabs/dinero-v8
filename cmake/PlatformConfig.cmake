@@ -40,7 +40,7 @@ include_directories(${CMAKE_SOURCE_DIR}/vendor/include)
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
 # Vendored JsonCpp must take precedence over Homebrew for header ABI compatibility.
-include_directories(BEFORE SYSTEM ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include)
+include_directories(BEFORE ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include)
 
 # Keep Homebrew out of global discovery; add it per-target where explicitly needed.
 if(APPLE)
