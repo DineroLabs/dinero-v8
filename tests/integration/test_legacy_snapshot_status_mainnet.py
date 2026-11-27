@@ -11,7 +11,8 @@ import tempfile
 
 
 def run(*args):
-    process = subprocess.run(args, capture_output=True, text=True, timeout=60)
+    process = subprocess.run(args, capture_output=True, text=True,
+                             encoding="utf-8", errors="replace", timeout=60)
     output = process.stdout + process.stderr
     return process.returncode, output
 
