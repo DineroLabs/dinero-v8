@@ -158,8 +158,10 @@ private Q_SLOTS:
                     if (wallet) ++walletRequests;
                     const QByteArray body = request.value("method").toString() == "blockchain.getsnapshotbootstrapstatus"
                         ? R"({"result":{"orchard_history":{"activation_height":150000,"verified_height":150042,"target_height":150100,"requested":true,"ready":false}},"error":null})"
-                        : wallet
+                        : wallet && walletRequests < 3
                         ? R"({"result":null,"error":{"code":-32603,"message":"Orchard history is not ready; wallet was not created. Retry after history sync.","data":{"wallet_creation":{"error_code":"orchard_history_pending","retryable":true}}}})"
+                        : wallet
+                        ? R"({"result":{"success":true,"mnemonic":"abandon ability able about above absent absorb abstract absurd abuse access accident","wallet_name":"FreshGateWallet","first_address":"din1pfixture","first_p2mr_address":"din1rfixture","first_orchard_address":"din1sfixture","addresses_ready":true},"error":null})"
                         : R"({"result":142767,"error":null})";
                     socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: "
                                   + QByteArray::number(body.size()) + "\r\n\r\n" + body);
@@ -190,7 +192,30 @@ private Q_SLOTS:
         QTRY_VERIFY_WITH_TIMEOUT(retry->isActive(), 3000);
         QCOMPARE(walletRequests, 1);
         retry->setInterval(200);
-        QTRY_VERIFY_WITH_TIMEOUT(walletRequests >= 2, 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(walletRequests >= 3, 3000);
+        QLabel* seedLabel = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            for (auto* label : page->findChildren<QLabel*>()) {
+                if (label->text() == "[Seed hidden. Click Reveal Seed]") {
+                    seedLabel = label;
+                    return true;
+                }
+            }
+            return false;
+        }()), 3000);
+        QVERIFY(seedLabel);
+        QVERIFY(!retry->isActive());
+        QVERIFY(!seedLabel->text().contains("abandon"));
+        QPushButton* reveal = nullptr;
+        for (auto* button : page->findChildren<QPushButton*>()) {
+            if (button->text().contains("Reveal Seed")) reveal = button;
+        }
+        QVERIFY(reveal);
+        QVERIFY(reveal->isEnabled());
+        reveal->click();
+        QVERIFY(seedLabel->text().contains("abandon"));
+        reveal->click();
+        QCOMPARE(seedLabel->text(), QString("[Seed hidden. Click Reveal Seed]"));
         wizard.reject();
         QVERIFY(!retry->isActive());
         const int atClose = walletRequests;

@@ -5,7 +5,7 @@
  *
  * Architecture:
  * - Uses unified rpc_client library (src/rpc_client.cpp)
- * - Cookie authentication from ~/.dinero/.cookie
+ * - Cookie authentication from the platform's Dinero data directory
  * - Generic RPC method forwarding
  * - Pretty JSON output
  *
@@ -38,11 +38,22 @@ static const uint16_t REGTEST_RPC_PORT = 20996;
 
 // Get default data directory
 std::string get_default_datadir() {
+#ifdef _WIN32
+    // Match dinero-qt's defaultDataDir(): the Windows GUI and its embedded
+    // daemon keep the RPC cookie in %APPDATA%\Dinero, not .dinero beside the
+    // CLI executable. A normal packaged CLI command must reach that daemon.
+    if (const char* appdata = std::getenv("APPDATA"); appdata && *appdata)
+        return std::string(appdata) + "/Dinero";
+    if (const char* profile = std::getenv("USERPROFILE"); profile && *profile)
+        return std::string(profile) + "/Dinero";
+    return "Dinero";
+#else
     const char* home = std::getenv("HOME");
     if (!home) {
         return ".dinero";
     }
     return std::string(home) + "/.dinero";
+#endif
 }
 
 std::string join_path(const std::string& base, const std::string& child) {
@@ -72,9 +83,15 @@ void print_usage() {
     std::cout << dinero::consensus::kGenesisMotto << "\n\n";
     std::cout << "Usage: dinero-cli [options] <method> [params...]\n\n";
     std::cout << "Options:\n";
+#ifdef _WIN32
+    std::cout << "  -datadir=<dir>        Data directory (default: %APPDATA%\\Dinero)\n";
+    std::cout << "  -testnet              Use %APPDATA%\\Dinero\\testnet unless -datadir is set\n";
+    std::cout << "  -regtest              Use %APPDATA%\\Dinero\\regtest and RPC port 20996 unless overridden\n";
+#else
     std::cout << "  -datadir=<dir>        Data directory (default: ~/.dinero)\n";
     std::cout << "  -testnet              Use ~/.dinero/testnet unless -datadir is set\n";
     std::cout << "  -regtest              Use ~/.dinero/regtest and RPC port 20996 unless overridden\n";
+#endif
     std::cout << "  -rpcport=<port>       RPC server port (default: 20998)\n";
     std::cout << "  -rpchost=<host>       RPC server host (default: 127.0.0.1)\n";
     std::cout << "  -rpcclienttimeout=<n> RPC timeout in seconds, 1-7200 (default: 30)\n";

@@ -758,15 +758,15 @@ CreateSeedPage::CreateSeedPage(ConnectionManager* connMgr, QWidget* parent)
   
   // Warning banner
   warningBanner_ = new QLabel(tr(
-    "⚠️ <b>CRITICAL:</b> Anyone with these words can access your funds. "
-    "Write them on paper and store securely. Never take screenshots or save digitally."
+    "<b>Keep your recovery words private.</b> Anyone who knows them can use your funds. "
+    "Write them on paper and keep them safe. Avoid screenshots or digital copies."
   ));
-  warningBanner_->setStyleSheet("QLabel { background: #ff6b6b; color: white; padding: 8px; border-radius: 4px; }");
+  warningBanner_->setStyleSheet("QLabel { background: #f59f00; color: #1b1b1b; padding: 8px; border-radius: 4px; }");
   warningBanner_->setWordWrap(true);
   warningBanner_->setVisible(false);
   layout->addWidget(warningBanner_);
   
-  // Seed display (shown automatically once generated)
+  // Seed display; the person reveals the words when ready.
   lblSeed_ = new QLabel(tr("[Seed phrase will appear here]"));
   lblSeed_->setAlignment(Qt::AlignCenter);
   lblSeed_->setStyleSheet(
@@ -798,7 +798,7 @@ CreateSeedPage::CreateSeedPage(ConnectionManager* connMgr, QWidget* parent)
   btnReveal_->setEnabled(false);
   connect(btnReveal_, &QPushButton::clicked, this, &CreateSeedPage::onRevealClicked);
   layout->addWidget(btnReveal_);
-  btnRetry_ = new QPushButton("Retry wallet creation", this);
+  btnRetry_ = new QPushButton(tr("Retry wallet creation"), this);
   btnRetry_->setVisible(false);
   connect(btnRetry_, &QPushButton::clicked, this, &CreateSeedPage::onManualRetry);
   layout->addWidget(btnRetry_);
@@ -837,7 +837,7 @@ void CreateSeedPage::initializePage() {
             Qt::UniqueConnection);
   const QString walletName = currentWizardWalletName(wizard());
   if (!walletName.isEmpty()) {
-    setSubTitle(QString("Write down these 12 words for wallet '%1'. Keep them safe and NEVER share them.")
+    setSubTitle(tr("Write down these 12 words for wallet '%1'. Keep them safe and NEVER share them.")
                   .arg(walletName));
   }
 
@@ -852,7 +852,6 @@ void CreateSeedPage::initializePage() {
 void CreateSeedPage::cleanupPage() {
   creationRetryTimer_->stop();
   historyProgressTimer_->stop();
-  creationWait_.invalidate();
   QWizardPage::cleanupPage();
 }
 
@@ -879,13 +878,20 @@ void CreateSeedPage::refreshHistoryProgress() {
       if (activation > 0 && target > activation && verified >= activation) {
         const int total = target - activation;
         const int done = std::clamp(verified - activation, 0, total);
-        historyProgress_->setRange(0, total);
-        historyProgress_->setValue(ready ? total : done);
-        historyProgress_->setFormat(QStringLiteral("%p%"));
-        lblHistoryProgress_->setText(ready
-            ? tr("Orchard history verified. Finalizing wallet setup...")
-            : tr("Orchard history: %1 of %2 blocks verified. Wallet setup will continue automatically.")
-                .arg(done).arg(total));
+        if (ready || done < total) {
+          historyProgress_->setRange(0, total);
+          historyProgress_->setValue(done);
+          historyProgress_->setFormat(QStringLiteral("%p%"));
+          lblHistoryProgress_->setText(ready
+              ? tr("Orchard history verified. Finalizing wallet setup...")
+              : tr("Orchard history: %1 of %2 blocks verified. Wallet setup will continue automatically.")
+                  .arg(done).arg(total));
+        } else {
+          // Reaching the target height does not by itself certify the final
+          // catalog or make the wallet safe to create. Do not show 100% ready.
+          historyProgress_->setRange(0, 0);
+          lblHistoryProgress_->setText(tr("Orchard blocks received. Verifying final history state before wallet setup..."));
+        }
       } else {
         historyProgress_->setRange(0, 0);
         lblHistoryProgress_->setText(tr("Connecting to peers and checking Orchard history. Wallet setup will continue automatically."));
@@ -898,7 +904,6 @@ void CreateSeedPage::refreshHistoryProgress() {
 }
 
 void CreateSeedPage::onManualRetry() {
-  creationWait_.start();
   onGenerateSeed();
 }
 
@@ -914,18 +919,16 @@ void CreateSeedPage::showCreationRefusal(const QString& code, bool retryable,
   const auto refusal = code.isEmpty()
       ? WalletCreateRefusal::shownFromTransportError(error, rollbackError)
       : WalletCreateRefusal::shown(code, error, rollbackError);
-  constexpr qint64 kAutoRetryWindowMs = 60LL * 60 * 1000;
+  // A fresh Windows v6 snapshot took over 90 minutes to verify Orchard
+  // history in the field. Keep retrying typed no-wallet refusals for as long
+  // as this page is open; the user must never need to restart creation after
+  // an arbitrary hour while the node is still working.
   const bool keepWaiting = safePending && wizard() && wizard()->isVisible() &&
-      wizard()->currentPage() == this &&
-      creationWait_.isValid() && creationWait_.elapsed() < kAutoRetryWindowMs;
-  const bool expired = safePending && creationWait_.isValid() &&
-      creationWait_.elapsed() >= kAutoRetryWindowMs;
+      wizard()->currentPage() == this;
   lblSeed_->setText(refusal.text + (keepWaiting
-      ? QStringLiteral("\n\nWaiting here and retrying automatically while the node catches up.")
-      : expired
-          ? QStringLiteral("\n\nAutomatic retries paused after one hour. Check sync progress, then press Retry.")
-          : refusal.retry
-              ? QStringLiteral("\n\nPress Retry when the node is ready.")
+      ? QStringLiteral("\n\n") + tr("Waiting here and retrying automatically while the node catches up.")
+      : refusal.retry
+              ? QStringLiteral("\n\n") + tr("Press Retry when the node is ready.")
               : QString()));
   lblSeed_->setStyleSheet(refusal.calm
       ? "QLabel { color: #f59f00; background: #2b2b2b; padding: 20px; }"
@@ -939,7 +942,6 @@ void CreateSeedPage::onGenerateSeed() {
   // 🛡️ Bulletproof wallet creation via ConnectionManager
   if (rpcPending_) return;
   creationRetryTimer_->stop();
-  if (!creationWait_.isValid()) creationWait_.start();
   if (!connMgr_) {
     lblSeed_->setText(tr("❌ Error: Connection manager not available"));
     return;
@@ -966,7 +968,7 @@ void CreateSeedPage::onGenerateSeed() {
   }
 
   // Show generating status
-  lblSeed_->setText(QString("🔄 Preparing wallet '%1' and verifying Orchard history. First setup can take a while...").arg(walletName));
+  lblSeed_->setText(tr("Preparing wallet '%1' and verifying Orchard history. First setup can take a while...").arg(walletName));
   lblSeed_->setStyleSheet(
     "QLabel { "
     "  background: #2b2b2b; "
@@ -1038,7 +1040,6 @@ void CreateSeedPage::onGenerateSeed() {
       if (!mnemonic.trimmed().isEmpty()) {
         creationRetryTimer_->stop();
         historyProgressTimer_->stop();
-        creationWait_.invalidate();
         seedPhrase_ = mnemonic.trimmed();
         seedGenerated_ = true;
         lblSeed_->setProperty("actualSeed", seedPhrase_);
@@ -1072,7 +1073,9 @@ void CreateSeedPage::onGenerateSeed() {
           walletWizard->setProperty("provisionedMode", QStringLiteral("create"));
         }
 
-        // Show seed immediately after generation.
+        // Let the person reveal the words after setup finishes. A remote
+        // support session must not expose them just because the node finished
+        // while the helper was looking at the progress screen.
         lblSeed_->setStyleSheet(
           "QLabel { "
           "  background: #2b2b2b; "
@@ -1084,7 +1087,7 @@ void CreateSeedPage::onGenerateSeed() {
           "  min-height: 200px; "
           "}"
         );
-        setSeedVisible(true);
+        setSeedVisible(false);
       } else {
         qWarning() << "CreateSeedPage: wallet.createhd returned without a mnemonic";
 
@@ -1118,7 +1121,6 @@ void CreateSeedPage::onGenerateSeed() {
             seedPhrase_ = exportedMnemonic;
             creationRetryTimer_->stop();
             historyProgressTimer_->stop();
-            creationWait_.invalidate();
             seedGenerated_ = true;
             seedVisible_ = false;
             warningBanner_->setVisible(true);
@@ -1138,7 +1140,7 @@ void CreateSeedPage::onGenerateSeed() {
               "  min-height: 200px; "
               "}"
             );
-            setSeedVisible(true);
+            setSeedVisible(false);
           },
           [this, alive](QString exportError) {
             if (!alive) return;

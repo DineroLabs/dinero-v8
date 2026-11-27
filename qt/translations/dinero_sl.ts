@@ -392,8 +392,8 @@ Vrnite se in jo skrbno prepišite.</translation>
         </message>
         <message>
             <location filename="../src/walletwizard.cpp" line="716" />
-            <source>⚠️ &lt;b&gt;CRITICAL:&lt;/b&gt; Anyone with these words can access your funds. Write them on paper and store securely. Never take screenshots or save digitally.</source>
-            <translation>⚠️ &lt;b&gt;NUJNO:&lt;/b&gt; Kdor pozna te besede, lahko dostopa do vaših sredstev. Zapišite jih na papir in jih varno shranite. Nikoli jih ne fotografirajte in jih ne shranjujte digitalno.</translation>
+            <source>&lt;b&gt;Keep your recovery words private.&lt;/b&gt; Anyone who knows them can use your funds. Write them on paper and keep them safe. Avoid screenshots or digital copies.</source>
+            <translation>&lt;b&gt;Obnovitvene besede ohranite zase.&lt;/b&gt; Kdor jih pozna, lahko uporablja vaša sredstva. Zapišite jih na papir in jih varno shranite. Ne delajte posnetkov zaslona ali digitalnih kopij.</translation>
         </message>
         <message>
             <location filename="../src/walletwizard.cpp" line="725" />
@@ -494,6 +494,62 @@ Brez te kopije denarnice ne boste mogli obnoviti, če izgubite ali poškodujete 
         <message>
             <source>Still verifying Orchard history. Keep this window open; the wallet creation request is still running.</source>
             <translation>Zgodovina Orchard se še preverja. Pustite to okno odprto; zahteva za ustvarjanje denarnice še poteka.</translation>
+        </message>
+        <message>
+            <source>Checking Orchard history before creating the wallet...</source>
+            <translation>Pred ustvarjanjem denarnice preverjamo zgodovino Orchard ...</translation>
+        </message>
+        <message>
+            <source>Retry wallet creation</source>
+            <translation>Ponovi ustvarjanje denarnice</translation>
+        </message>
+        <message>
+            <source>Write down these 12 words for wallet '%1'. Keep them safe and NEVER share them.</source>
+            <translation>Zapišite si teh 12 besed za denarnico »%1«. Varno jih shranite in jih NIKOLI ne delite z drugimi.</translation>
+        </message>
+        <message>
+            <source>Preparing wallet '%1' and verifying Orchard history. First setup can take a while...</source>
+            <translation>Pripravljamo denarnico »%1« in preverjamo zgodovino Orchard. Prva nastavitev lahko traja nekaj časa ...</translation>
+        </message>
+        <message>
+            <source>Orchard history: %1 of %2 blocks verified. Wallet setup will continue automatically.</source>
+            <translation>Zgodovina Orchard: preverjenih je %1 od %2 blokov. Nastavitev denarnice se bo samodejno nadaljevala.</translation>
+        </message>
+        <message>
+            <source>Orchard history verified. Finalizing wallet setup...</source>
+            <translation>Zgodovina Orchard je preverjena. Zaključujemo nastavitev denarnice ...</translation>
+        </message>
+        <message>
+            <source>Orchard blocks received. Verifying final history state before wallet setup...</source>
+            <translation>Bloki Orchard so prejeti. Pred nastavitvijo denarnice preverjamo končno stanje zgodovine ...</translation>
+        </message>
+        <message>
+            <source>Connecting to peers and checking Orchard history. Wallet setup will continue automatically.</source>
+            <translation>Povezujemo se z omrežjem in preverjamo zgodovino Orchard. Nastavitev denarnice se bo samodejno nadaljevala.</translation>
+        </message>
+        <message>
+            <source>Your node is still loading its starting snapshot. No wallet was created. Retry in a few minutes.</source>
+            <translation>Vozlišče še nalaga začetni posnetek stanja. Denarnica ni bila ustvarjena. Poskusite znova čez nekaj minut.</translation>
+        </message>
+        <message>
+            <source>Orchard history is still downloading and verifying. No wallet was created.</source>
+            <translation>Zgodovina Orchard se še prenaša in preverja. Denarnica ni bila ustvarjena.</translation>
+        </message>
+        <message>
+            <source>Error creating wallet: </source>
+            <translation>Napaka pri ustvarjanju denarnice: </translation>
+        </message>
+        <message>
+            <source>Rollback warning:</source>
+            <translation>Opozorilo pri povrnitvi stanja:</translation>
+        </message>
+        <message>
+            <source>Waiting here and retrying automatically while the node catches up.</source>
+            <translation>Počakajte tukaj. Med posodabljanjem vozlišča bomo samodejno poskušali znova.</translation>
+        </message>
+        <message>
+            <source>Press Retry when the node is ready.</source>
+            <translation>Ko bo vozlišče pripravljeno, pritisnite »Ponovi«.</translation>
         </message>
     </context>
     <context>

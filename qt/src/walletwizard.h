@@ -11,7 +11,6 @@
 #include <QGridLayout>
 #include <QButtonGroup>
 #include <QTimer>
-#include <QElapsedTimer>
 #include <QProgressBar>
 
 class RpcClient;
@@ -83,7 +82,6 @@ private:
   QTimer* rpcTimeout_;
   QTimer* creationRetryTimer_;
   QTimer* historyProgressTimer_;
-  QElapsedTimer creationWait_;
   bool seedGenerated_;
   bool seedVisible_;
   bool rpcPending_;
