@@ -640,6 +640,9 @@ jobs:
             & python @orchardArgs
             if ($LASTEXITCODE -ne 0) { throw 'Installed Orchard capability check failed' }
             if ($case.Gui) {
+              .\scripts\ci\check_windows_legacy_gui_upgrade.ps1 `
+                -InstallDir $case.Dir `
+                -Fixture (Resolve-Path 'build-msvc-native\Release\test_legacy_snapshot_fixture.exe').Path
               # Regression gate for #673: the first tab change used to dereference the
               # mining output widget before construction, shortly after the embedded
               # daemon connected. Keep the installed GUI alive through that path and
@@ -737,6 +740,7 @@ jobs:
           path: |
             ${{ runner.temp }}/dinero-qt-startup-smoke/*.log
             ${{ runner.temp }}/dinero-qt-startup-smoke/window-text.txt
+            ${{ runner.temp }}/dinero-legacy-gui-smoke/*.log
             packaging/windows/dist/Dinero-*-Setup.exe
             packaging/windows/dist/dinero-v*-windows-x86_64-msvc.zip
           if-no-files-found: warn
