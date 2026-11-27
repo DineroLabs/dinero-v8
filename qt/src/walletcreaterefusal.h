@@ -11,6 +11,13 @@ struct Shown {
     bool calm = false;    // nothing broke: amber, not the red error box
 };
 
+// The node guarantees that these two typed refusals create no wallet. A
+// transport failure, an English message, or an unknown code cannot authorize
+// an automatic second creation request.
+inline bool mayAutoRetry(const QString& code, bool retryable) {
+    return retryable && (code == "snapshot_bootstrap_pending" || code == "orchard_history_pending");
+}
+
 // `code` and `error` are the node's error_code and error for wallet.createhd.
 inline Shown shown(const QString& code, const QString& error, const QString& rollbackError) {
     if (code == "snapshot_bootstrap_pending")

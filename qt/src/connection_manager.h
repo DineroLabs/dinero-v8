@@ -62,7 +62,8 @@ public:
               std::function<void(const QString&)> onError = nullptr);
     void callNamed(const QString& method, const QJsonObject& params,
                    std::function<void(const QJsonObject&)> onSuccess = nullptr,
-                   std::function<void(const QString&)> onError = nullptr);
+                   std::function<void(const QString&)> onError = nullptr,
+                   std::function<void(const QString&, const QJsonObject&)> onErrorDetails = nullptr);
 
 Q_SIGNALS:
     // State changes
@@ -91,6 +92,7 @@ private:
         bool namedParams = false;
         std::function<void(const QJsonObject&)> onSuccess;
         std::function<void(const QString&)> onError;
+        std::function<void(const QString&, const QJsonObject&)> onErrorDetails;
         int attempts = 0;
     };
 
