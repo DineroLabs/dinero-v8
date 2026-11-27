@@ -3,11 +3,106 @@
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QFile>
+#include <QJsonDocument>
+#include <memory>
 #include "connection_manager.h"
+#include "walletcreaterefusal.h"
 
 class ConnectionManagerTest : public QObject {
     Q_OBJECT
 private Q_SLOTS:
+    void automaticCreationRetryRequiresTypedNoWalletRefusal() {
+        QVERIFY(WalletCreateRefusal::mayAutoRetry("snapshot_bootstrap_pending", true));
+        QVERIFY(WalletCreateRefusal::mayAutoRetry("orchard_history_pending", true));
+        QVERIFY(!WalletCreateRefusal::mayAutoRetry("orchard_history_pending", false));
+        QVERIFY(!WalletCreateRefusal::mayAutoRetry("native_wallet_unservable", true));
+        QVERIFY(!WalletCreateRefusal::mayAutoRetry("", true));
+    }
+
+    void walletCreationGetsTypedRefusalButTransportFailureDoesNot() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        QFile cookie(directory.filePath(".cookie"));
+        QVERIFY(cookie.open(QIODevice::WriteOnly));
+        cookie.write("test:owned-fixture");
+        cookie.close();
+
+        QTcpServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost));
+        int walletRequests = 0;
+        QObject::connect(&server, &QTcpServer::newConnection, &server, [&]() {
+            while (auto* socket = server.nextPendingConnection()) {
+                auto pending = std::make_shared<QByteArray>();
+                QObject::connect(socket, &QTcpSocket::readyRead, socket, [&, socket, pending]() {
+                    pending->append(socket->readAll());
+                    const int split = pending->indexOf("\r\n\r\n");
+                    if (split < 0) return;
+                    int length = 0;
+                    for (const auto& line : pending->left(split).split('\n')) {
+                        if (line.trimmed().toLower().startsWith("content-length:"))
+                            length = line.mid(line.indexOf(':') + 1).trimmed().toInt();
+                    }
+                    if (pending->size() < split + 4 + length) return;
+                    const auto request = QJsonDocument::fromJson(pending->mid(split + 4, length)).object();
+                    const bool wallet = request.value("method").toString() == "wallet.createhd";
+                    if (wallet) ++walletRequests;
+                    const QByteArray body = wallet
+                        ? walletRequests == 1
+                            ? R"({"result":null,"error":{"code":-32603,"message":"Orchard history is not ready; wallet was not created. Retry after history sync.","data":{"wallet_creation":{"error_code":"orchard_history_pending","retryable":true}}}})"
+                            : QByteArray("not JSON")
+                        : R"({"result":142767,"error":null})";
+                    socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: "
+                                  + QByteArray::number(body.size()) + "\r\n\r\n" + body);
+                    socket->disconnectFromHost();
+                });
+                QObject::connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+            }
+        });
+        ConnectionManager manager;
+        manager.setCookiePath(cookie.fileName());
+        manager.setDaemonUrl(QString("http://127.0.0.1:%1").arg(server.serverPort()));
+        manager.setHealthCheckInterval(30000);
+        manager.connectToDaemon();
+        QTRY_COMPARE_WITH_TIMEOUT(manager.state(), ConnectionManager::Connected, 3000);
+
+        QString refusal;
+        QJsonObject data;
+        manager.callNamed("wallet.createhd", {{"name", "Fresh"}}, nullptr, nullptr,
+            [&](const QString& error, const QJsonObject& details) {
+                refusal = error;
+                data = details;
+            });
+        QTRY_VERIFY_WITH_TIMEOUT(!refusal.isEmpty(), 3000);
+        QCOMPARE(walletRequests, 1);
+        const auto typed = data.value("wallet_creation").toObject();
+        QCOMPARE(typed.value("error_code").toString(), QString("orchard_history_pending"));
+        QCOMPARE(typed.value("retryable").toBool(), true);
+
+        refusal.clear();
+        data = {};
+        manager.callNamed("wallet.createhd", {{"name", "Fresh"}}, nullptr, nullptr,
+            [&](const QString& error, const QJsonObject& details) {
+                refusal = error;
+                data = details;
+            });
+        QTRY_COMPARE_WITH_TIMEOUT(refusal, QString("Malformed RPC response"), 3000);
+        QVERIFY(data.isEmpty());
+        QCOMPARE(walletRequests, 2);
+
+        QVERIFY(cookie.remove());
+        refusal.clear();
+        data = {};
+        manager.callNamed("wallet.createhd", {{"name", "Fresh"}}, nullptr, nullptr,
+            [&](const QString& error, const QJsonObject& details) {
+                refusal = error;
+                data = details;
+            });
+        QCOMPARE(refusal, QString("Cookie authentication failed"));
+        QVERIFY(data.isEmpty());
+        QCOMPARE(walletRequests, 2);
+        manager.disconnectFromDaemon();
+    }
+
     void lateDaemonRecoversAfterFastRetriesExpire() {
         QTemporaryDir directory;
         QVERIFY(directory.isValid());

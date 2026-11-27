@@ -170,13 +170,15 @@ void ConnectionManager::call(const QString& method, const QJsonObject& params,
 
 void ConnectionManager::callNamed(const QString& method, const QJsonObject& params,
                                   std::function<void(const QJsonObject&)> onSuccess,
-                                  std::function<void(const QString&)> onError)
+                                  std::function<void(const QString&)> onError,
+                                  std::function<void(const QString&, const QJsonObject&)> onErrorDetails)
 {
     RpcCall call;
     call.method = method;
     call.params = params;
     call.onSuccess = onSuccess;
     call.onError = onError;
+    call.onErrorDetails = onErrorDetails;
     call.attempts = 0;
     call.namedParams = true;
     
@@ -378,6 +380,9 @@ void ConnectionManager::executeRpcCall(const RpcCall& call) {
         if (call.onError) {
             call.onError("Cookie authentication failed");
         }
+        if (call.onErrorDetails) {
+            call.onErrorDetails("Cookie authentication failed", {});
+        }
         Q_EMIT rpcError(call.method, "Cookie authentication failed");
         return;
     }
@@ -429,9 +434,13 @@ void ConnectionManager::executeRpcCall(const RpcCall& call) {
                 QJsonObject obj = doc.object();
                 
                 if (obj.contains("error") && !obj["error"].isNull()) {
-                    QString error = obj["error"].toObject()["message"].toString();
+                    const QJsonObject rpcErrorObject = obj["error"].toObject();
+                    QString error = rpcErrorObject.value("message").toString("Malformed RPC error");
                     if (call.onError) {
                         call.onError(error);
+                    }
+                    if (call.onErrorDetails) {
+                        call.onErrorDetails(error, rpcErrorObject.value("data").toObject());
                     }
                     Q_EMIT rpcError(call.method, error);
                 } else if (obj.contains("result")) {
@@ -440,12 +449,25 @@ void ConnectionManager::executeRpcCall(const RpcCall& call) {
                         call.onSuccess(result);
                     }
                     Q_EMIT rpcSuccess(call.method, result);
+                } else {
+                    const QString error = "RPC response missing result or error";
+                    if (call.onError) call.onError(error);
+                    if (call.onErrorDetails) call.onErrorDetails(error, {});
+                    Q_EMIT rpcError(call.method, error);
                 }
+            } else {
+                const QString error = "Malformed RPC response";
+                if (call.onError) call.onError(error);
+                if (call.onErrorDetails) call.onErrorDetails(error, {});
+                Q_EMIT rpcError(call.method, error);
             }
         } else {
             QString error = replyPtr->errorString();
             if (call.onError) {
                 call.onError(error);
+            }
+            if (call.onErrorDetails) {
+                call.onErrorDetails(error, {});
             }
             Q_EMIT rpcError(call.method, error);
         }

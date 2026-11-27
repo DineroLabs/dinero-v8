@@ -723,6 +723,7 @@ CreateSeedPage::CreateSeedPage(ConnectionManager* connMgr, QWidget* parent)
     : QWizardPage(parent)
     , connMgr_(connMgr)
     , rpcTimeout_(new QTimer(this))
+    , creationRetryTimer_(new QTimer(this))
     , seedGenerated_(false)
     , seedVisible_(false)
     , rpcPending_(false) {
@@ -731,6 +732,19 @@ CreateSeedPage::CreateSeedPage(ConnectionManager* connMgr, QWidget* parent)
   // cancel the in-flight creation request or encourage a duplicate request.
   rpcTimeout_->setSingleShot(true);
   rpcTimeout_->setInterval(30000);
+  connect(rpcTimeout_, &QTimer::timeout, this, [this]() {
+    if (!rpcPending_) return;
+    lblSeed_->setText(tr("Still verifying Orchard history. Keep this window open; the wallet creation request is still running."));
+    lblSeed_->setStyleSheet("QLabel { color: #f59f00; background: #2b2b2b; padding: 20px; }");
+  });
+  creationRetryTimer_->setSingleShot(true);
+  creationRetryTimer_->setObjectName("walletCreationPendingRetry");
+  creationRetryTimer_->setInterval(15000);
+  connect(creationRetryTimer_, &QTimer::timeout, this, [this]() {
+    if (wizard() && wizard()->isVisible() && wizard()->currentPage() == this &&
+        !seedGenerated_ && !rpcPending_)
+      onGenerateSeed();
+  });
   setTitle(tr("Your Seed Phrase"));
   setSubTitle(tr("Write down these 12 words in order. Keep them safe and NEVER share them."));
   
@@ -770,7 +784,7 @@ CreateSeedPage::CreateSeedPage(ConnectionManager* connMgr, QWidget* parent)
   layout->addWidget(btnReveal_);
   btnRetry_ = new QPushButton("Retry wallet creation", this);
   btnRetry_->setVisible(false);
-  connect(btnRetry_, &QPushButton::clicked, this, &CreateSeedPage::onGenerateSeed);
+  connect(btnRetry_, &QPushButton::clicked, this, &CreateSeedPage::onManualRetry);
   layout->addWidget(btnRetry_);
   
   // Compatibility info
@@ -801,6 +815,9 @@ CreateSeedPage::CreateSeedPage(ConnectionManager* connMgr, QWidget* parent)
 }
 
 void CreateSeedPage::initializePage() {
+  if (wizard())
+    connect(wizard(), &QDialog::finished, creationRetryTimer_, &QTimer::stop,
+            Qt::UniqueConnection);
   const QString walletName = currentWizardWalletName(wizard());
   if (!walletName.isEmpty()) {
     setSubTitle(QString("Write down these 12 words for wallet '%1'. Keep them safe and NEVER share them.")
@@ -813,9 +830,52 @@ void CreateSeedPage::initializePage() {
   }
 }
 
+void CreateSeedPage::cleanupPage() {
+  creationRetryTimer_->stop();
+  creationWait_.invalidate();
+  QWizardPage::cleanupPage();
+}
+
+void CreateSeedPage::onManualRetry() {
+  creationWait_.start();
+  onGenerateSeed();
+}
+
+void CreateSeedPage::showCreationRefusal(const QString& code, bool retryable,
+                                         const QString& error, bool confirmedNoWallet) {
+  // Only the two typed node refusals certify that no wallet was created. Keep
+  // the previous wallet unloaded while retrying; canceling the wizard restores
+  // it through the existing rollback path.
+  const bool safePending = confirmedNoWallet && WalletCreateRefusal::mayAutoRetry(code, retryable);
+  if (wizard()) wizard()->setProperty("walletRollbackCandidateName", QString());
+  QString rollbackError;
+  if (!safePending) rollbackProvisionedWallet(wizard(), &rollbackError);
+  const auto refusal = code.isEmpty()
+      ? WalletCreateRefusal::shownFromTransportError(error, rollbackError)
+      : WalletCreateRefusal::shown(code, error, rollbackError);
+  const bool keepWaiting = safePending && wizard() && wizard()->isVisible() &&
+      wizard()->currentPage() == this &&
+      creationWait_.isValid() && creationWait_.elapsed() < 20 * 60 * 1000;
+  const bool expired = safePending && creationWait_.isValid() &&
+      creationWait_.elapsed() >= 20 * 60 * 1000;
+  lblSeed_->setText(refusal.text + (keepWaiting
+      ? QStringLiteral("\n\nWaiting here and retrying automatically while the node catches up.")
+      : expired
+          ? QStringLiteral("\n\nAutomatic retries paused after 20 minutes. Check sync progress, then press Retry.")
+          : QString()));
+  lblSeed_->setStyleSheet(refusal.calm
+      ? "QLabel { color: #f59f00; background: #2b2b2b; padding: 20px; }"
+      : "QLabel { color: #ff6b6b; background: #ffe3e3; padding: 20px; }");
+  btnReveal_->setEnabled(false);
+  btnRetry_->setVisible(refusal.retry && !keepWaiting);
+  if (keepWaiting) creationRetryTimer_->start();
+}
+
 void CreateSeedPage::onGenerateSeed() {
   // 🛡️ Bulletproof wallet creation via ConnectionManager
   if (rpcPending_) return;
+  creationRetryTimer_->stop();
+  if (!creationWait_.isValid()) creationWait_.start();
   if (!connMgr_) {
     lblSeed_->setText(tr("❌ Error: Connection manager not available"));
     return;
@@ -865,17 +925,14 @@ void CreateSeedPage::onGenerateSeed() {
 
   // This timer only changes the status text; the RPC remains in flight.
   rpcTimeout_->start();
-  connect(rpcTimeout_, &QTimer::timeout, this, [this]() {
-    if (!rpcPending_) return;
-    lblSeed_->setText(tr("Still verifying Orchard history. Keep this window open; the wallet creation request is still running."));
-    lblSeed_->setStyleSheet("QLabel { color: #f59f00; background: #2b2b2b; padding: 20px; }");
-  }, Qt::SingleShotConnection);
 
   // Call via ConnectionManager (automatically queued if daemon not ready)
   rpcPending_ = true;
+  const QPointer<CreateSeedPage> alive(this);
   connMgr_->callNamed("wallet.createhd", params,
     // Success callback
-    [this, walletName](QJsonObject result) {
+    [this, alive, walletName](QJsonObject result) {
+      if (!alive) return;
       // Stop timeout timer
       rpcTimeout_->stop();
       rpcPending_ = false;
@@ -892,22 +949,10 @@ void CreateSeedPage::onGenerateSeed() {
         const QString errorText = !payloadError.isEmpty()
           ? payloadError
           : QStringLiteral("Wallet creation failed.");
-        // The node answered with an error, so it created nothing: never delete a
-        // wallet of this name (it may be the user's existing wallet). Rollback
-        // still reopens the previously loaded wallet.
-        if (wizard() && !keepRollbackCandidateAfterRpc(/*daemonResponded=*/true, /*success=*/false))
-          wizard()->setProperty("walletRollbackCandidateName", QString());
-        QString rollbackError;
-        rollbackProvisionedWallet(wizard(), &rollbackError);
-        const auto refusal = WalletCreateRefusal::shown(payload.value("error_code").toString(), errorText, rollbackError);
-        lblSeed_->setText(refusal.text);
-        lblSeed_->setStyleSheet(refusal.calm
-            ? "QLabel { color: #f59f00; background: #2b2b2b; padding: 20px; }"
-            : "QLabel { color: #ff6b6b; background: #ffe3e3; padding: 20px; }");
-        btnReveal_->setEnabled(false);
-        btnRetry_->setVisible(refusal.retry);
-        qWarning() << "CreateSeedPage: wallet.createhd returned application error:"
-                   << QJsonDocument(payload).toJson(QJsonDocument::Compact);
+        showCreationRefusal(payload.value("error_code").toString(),
+                            payload.value("retryable").toBool(false), errorText, true);
+        qWarning() << "CreateSeedPage: wallet.createhd returned application error code:"
+                   << payload.value("error_code").toString();
         return;
       }
 
@@ -922,6 +967,8 @@ void CreateSeedPage::onGenerateSeed() {
       }
 
       if (!mnemonic.trimmed().isEmpty()) {
+        creationRetryTimer_->stop();
+        creationWait_.invalidate();
         seedPhrase_ = mnemonic.trimmed();
         seedGenerated_ = true;
         lblSeed_->setProperty("actualSeed", seedPhrase_);
@@ -965,13 +1012,13 @@ void CreateSeedPage::onGenerateSeed() {
         );
         setSeedVisible(true);
       } else {
-        qWarning() << "CreateSeedPage: wallet.createhd returned without mnemonic:"
-                   << QJsonDocument(payload).toJson(QJsonDocument::Compact);
+        qWarning() << "CreateSeedPage: wallet.createhd returned without a mnemonic";
 
         // Fallback: export mnemonic from the just-created active wallet if runtime
         // state has it but createhd omitted the field.
         connMgr_->callNamed("wallet.exportseed", QJsonObject(),
-          [this](QJsonObject exportResult) {
+          [this, alive](QJsonObject exportResult) {
+            if (!alive) return;
             QJsonObject exportPayload = exportResult;
             if (exportPayload.contains("result") && exportPayload.value("result").isObject()) {
               exportPayload = exportPayload.value("result").toObject();
@@ -995,6 +1042,8 @@ void CreateSeedPage::onGenerateSeed() {
             }
 
             seedPhrase_ = exportedMnemonic;
+            creationRetryTimer_->stop();
+            creationWait_.invalidate();
             seedGenerated_ = true;
             seedVisible_ = false;
             lblSeed_->setProperty("actualSeed", seedPhrase_);
@@ -1012,7 +1061,8 @@ void CreateSeedPage::onGenerateSeed() {
             );
             setSeedVisible(true);
           },
-          [this](QString exportError) {
+          [this, alive](QString exportError) {
+            if (!alive) return;
             QString rollbackError;
             rollbackProvisionedWallet(wizard(), &rollbackError);
             lblSeed_->setText("❌ Error: Wallet was created, but no seed phrase was returned.\n\n"
@@ -1027,25 +1077,20 @@ void CreateSeedPage::onGenerateSeed() {
       }
     },
     // Error callback
-    [this](QString error) {
+    nullptr,
+    [this, alive](QString error, const QJsonObject& data) {
+      if (!alive) return;
       // Stop timeout timer
       rpcTimeout_->stop();
       rpcPending_ = false;
 
-      // The HTTP RPC envelope promotes handler errors to this callback. A
-      // transport error can also leave creation's outcome unknown. Neither
-      // proves that this wizard owns a wallet with the requested name.
-      if (wizard())
-        wizard()->setProperty("walletRollbackCandidateName", QString());
-      QString rollbackError;
-      rollbackProvisionedWallet(wizard(), &rollbackError);
-      const auto refusal = WalletCreateRefusal::shownFromTransportError(error, rollbackError);
-      lblSeed_->setText(refusal.text);
-      lblSeed_->setStyleSheet(refusal.calm
-          ? "QLabel { color: #f59f00; background: #2b2b2b; padding: 20px; }"
-          : "QLabel { color: #ff6b6b; background: #ffe3e3; padding: 20px; }");
-      btnReveal_->setEnabled(false);
-      btnRetry_->setVisible(refusal.retry);
+      // HTTP promotes handler refusals to an error envelope. Retry only the
+      // explicit typed refusal from that envelope; a lost response could mean
+      // the first request created a wallet and must remain a manual decision.
+      const QJsonObject typed = data.value("wallet_creation").toObject();
+      const QString code = typed.value("error_code").toString();
+      showCreationRefusal(code, typed.value("retryable").toBool(false),
+                          error, !typed.isEmpty());
       qWarning() << "CreateSeedPage: Failed to generate seed:" << error;
     }
   );
@@ -1928,6 +1973,12 @@ void WalletWizard::onFinished(int result) {
     return;
   }
 
+  // Closing during an unanswered create request cannot prove whether the node
+  // created a wallet. Never delete a wallet merely because its requested name
+  // was recorded as a rollback candidate before that RPC returned.
+  if (auto* createPage = qobject_cast<CreateSeedPage*>(page(Page_CreateSeed));
+      createPage && createPage->createRequestInFlight())
+    setProperty("walletRollbackCandidateName", QString());
   QString rollbackError;
   if (!rollbackProvisionedWallet(this, &rollbackError) && !rollbackError.isEmpty()) {
     QMessageBox::warning(
