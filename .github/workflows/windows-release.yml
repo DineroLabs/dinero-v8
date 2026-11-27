@@ -741,6 +741,7 @@ jobs:
             ${{ runner.temp }}/dinero-qt-startup-smoke/*.log
             ${{ runner.temp }}/dinero-qt-startup-smoke/window-text.txt
             ${{ runner.temp }}/dinero-legacy-gui-smoke/*.log
+            ${{ runner.temp }}/dinero-legacy-gui-smoke/Roaming/Dinero-current-*/embedded-daemon.log
             packaging/windows/dist/Dinero-*-Setup.exe
             packaging/windows/dist/dinero-v*-windows-x86_64-msvc.zip
           if-no-files-found: warn

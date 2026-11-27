@@ -70,6 +70,8 @@ try {
 
     $newDir = $null
     $child = $null
+    $reportedDir = $null
+    $rpcFailure = $null
     $deadline = (Get-Date).AddSeconds(120)
     do {
         $qt.Refresh()
@@ -79,11 +81,32 @@ try {
         if ($newDirs.Count -eq 1) { $newDir = $newDirs[0].FullName }
         $child = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($qt.Id) AND Name='dinerod.exe'" |
             Select-Object -First 1
-        if ($newDir -and $child -and $child.CommandLine -match [regex]::Escape($newDir)) { break }
+        # Qt may use forward slashes in its Windows command line. Ask the
+        # authenticated daemon which data folder it actually opened.
+        if ($newDir -and $child) {
+            $cookiePath = Join-Path $newDir '.cookie'
+            if (Test-Path -LiteralPath $cookiePath) {
+                try {
+                    $cookie = (Get-Content -Raw -LiteralPath $cookiePath).Trim()
+                    $auth = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($cookie))
+                    $reply = Invoke-RestMethod -Uri 'http://127.0.0.1:20998/' -Method Post `
+                        -Headers @{ Authorization = "Basic $auth" } -ContentType 'application/json' `
+                        -Body '{"jsonrpc":"2.0","id":"legacy-gui-gate","method":"rpc.getcontext","params":{}}' `
+                        -TimeoutSec 5
+                    if (-not $reply.error -and $reply.result.datadir) {
+                        $reportedDir = [System.IO.Path]::GetFullPath([string]$reply.result.datadir)
+                        if ($reportedDir -ieq [System.IO.Path]::GetFullPath($newDir)) { break }
+                    }
+                } catch {
+                    $rpcFailure = $_.Exception.GetType().Name
+                }
+            }
+        }
         Start-Sleep -Seconds 1
     } while ((Get-Date) -lt $deadline)
-    if (-not $newDir -or -not $child -or $child.CommandLine -notmatch [regex]::Escape($newDir)) {
-        throw "Installed Qt did not start its daemon in the separate folder (new=$newDir, child=$($child.ProcessId))"
+    $expectedDir = if ($newDir) { [System.IO.Path]::GetFullPath($newDir) } else { $null }
+    if (-not $expectedDir -or -not $child -or $reportedDir -ine $expectedDir) {
+        throw "Installed Qt did not use the separate folder (new=$newDir, rpc=$reportedDir, child=$($child.ProcessId), command=$($child.CommandLine), rpc_failure=$rpcFailure)"
     }
     if ((Get-FileHash -LiteralPath $oldIndex -Algorithm SHA256).Hash -ne $before) {
         throw 'Old snapshot index changed during GUI recovery'
