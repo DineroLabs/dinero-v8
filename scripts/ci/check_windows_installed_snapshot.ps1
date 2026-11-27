@@ -38,8 +38,13 @@ function Get-NodeRpc {
 function New-InstalledWallet {
     $nodeInfoPath = Join-Path $DataDir 'nodeinfo.json'
     $cookiePath = Join-Path $DataDir '.cookie'
-    $nodeInfo = Get-Content -Raw -LiteralPath $nodeInfoPath | ConvertFrom-Json
-    $rpcUrl = [uri]($nodeInfo.rpc.url)
+    # A daemon can serve RPC before writing nodeinfo.json (and some profiles
+    # never write it). Mirror dinero-cli's local default in that case.
+    $rpcUrl = [uri]'http://127.0.0.1:20998/'
+    if (Test-Path -LiteralPath $nodeInfoPath) {
+        $nodeInfo = Get-Content -Raw -LiteralPath $nodeInfoPath | ConvertFrom-Json
+        if ($nodeInfo.rpc.url) { $rpcUrl = [uri]($nodeInfo.rpc.url) }
+    }
     if ($rpcUrl.Scheme -ne 'http' -or $rpcUrl.Host -notin @('127.0.0.1', 'localhost', '::1', '[::1]')) {
         throw 'Installed node advertised a non-local wallet RPC endpoint'
     }
