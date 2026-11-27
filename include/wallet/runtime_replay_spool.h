@@ -145,8 +145,8 @@ public:
         std::lock_guard guard(mutex_);
         Check((frozen_||!sqlite3_get_autocommit(db_.get()))&&space<255&&!after.empty()&&
               after[0]==space&&after.size()<=MaximumKeyBytes);
-        Query stmt(db_.get(),next_statement_,
-            "SELECT k,v,tag FROM records WHERE k>?1 AND k<?2 ORDER BY k LIMIT 256",false,statements_prepared_);
+        Query stmt(db_.get(),batch_statement_,
+            "SELECT k,v,tag FROM records WHERE k>?1 AND k<?2 ORDER BY k LIMIT 256",cache_statements_,statements_prepared_);
         stmt.Blob(1,after);const Bytes upper{uint8_t(space+1)};stmt.Blob(2,upper);
         std::vector<std::pair<Bytes,Bytes>> rows;rows.reserve(256);size_t bytes=0;
         for(;;) {
@@ -261,7 +261,7 @@ private:
         struct Finalize {void operator()(sqlite3_stmt* s)const noexcept{if(s)sqlite3_finalize(s);}};
         std::unique_ptr<sqlite3_stmt,Finalize> stmt_;
     };
-    // Optional fixed three-statement cache. Every lease resets bindings/rows
+    // Optional fixed statement cache. Every lease resets bindings/rows
     // while the spool mutex is still held; no cursor or borrowed blob escapes.
     class Query {
     public:
@@ -275,7 +275,7 @@ private:
     private:
         std::unique_ptr<Statement> owned_;Statement* statement_=nullptr;
     };
-    mutable std::unique_ptr<Statement> insert_statement_,read_statement_,next_statement_;
+    mutable std::unique_ptr<Statement> insert_statement_,read_statement_,next_statement_,batch_statement_;
     mutable uint64_t statements_prepared_=0;
     void Exec(const char* sql){Check(sqlite3_exec(db_.get(),sql,nullptr,nullptr,nullptr)==SQLITE_OK);}
 };
