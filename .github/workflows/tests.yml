@@ -141,9 +141,10 @@ jobs:
                        'ActualBindingRefusalRetainsMachineCodeWithoutWalletAccess',
                        'MalformedDetailsNeverInventProofProgress',
                        'FeeBelowMinimumCarriesRequiredFeeAndSize',
+                       'WalletCreationRefusalKeepsOnlyTypedRetryState',
                        'ExistingStructuredErrorsAndNullSuccessRemainCompatible']:
               assert log.count('[       OK ] RpcOrchardErrorEnvelope.' + case + ' (') == 1, case
-          assert '[  PASSED  ] 5 tests.' in log
+          assert '[  PASSED  ] 6 tests.' in log
           PYCODE
 
       - name: Verify default-backend replay and origin refusal
