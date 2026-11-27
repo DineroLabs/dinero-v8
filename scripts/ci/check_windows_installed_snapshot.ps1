@@ -18,11 +18,11 @@ if ($manifestData.network -ne 'mainnet' -or $manifestData.format_version -ne 6 -
 }
 
 function Get-NodeRpc {
-    param([string]$Method, [string[]]$Arguments = @())
+    param([string]$Method, [string[]]$Arguments = @(), [int]$TimeoutSeconds = 8)
     $prior = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        $value = & $cli "-datadir=$DataDir" '-rpcclienttimeout=8' $Method @Arguments 2>$null
+        $value = & $cli "-datadir=$DataDir" "-rpcclienttimeout=$TimeoutSeconds" $Method @Arguments 2>$null
         if ($LASTEXITCODE -ne 0 -or -not $value) { return $null }
         $text = $value -join [Environment]::NewLine
         try { return ($text | ConvertFrom-Json -ErrorAction Stop) }
@@ -121,6 +121,17 @@ try {
     # 25-minute deadline. Budget for cold header indexing, import and catch-up.
     $fresh = Wait-SelectedTip -Qt $qt -MinHeight ([int]$base.height + 288) -ProveImport $true -Minutes 60
     Write-Host "Installed Qt reached H$($fresh.blocks) with $($fresh.peers) peers"
+    # Use the same native RPC and address count as the GUI wizard. Keep the
+    # returned mnemonic in memory; never print it to the release log.
+    $create = Get-NodeRpc -Method 'wallet.createhd' -Arguments @('{"name":"WindowsFreshInstallGate","word_count":12,"initial_taproot_addresses":20}') -TimeoutSeconds 300
+    if (-not $create) { throw 'Fresh installed Windows wallet creation returned no result' }
+    if ($create.error -or $create.success -eq $false -or -not $create.mnemonic -or
+        -not $create.first_address -or -not $create.first_p2mr_address -or
+        -not $create.first_orchard_address -or $create.addresses_ready -ne $true) {
+        throw "Fresh installed Windows wallet creation failed (code=$($create.error_code), error=$($create.error), addresses_ready=$($create.addresses_ready))"
+    }
+    Remove-Variable create
+    Write-Host 'Fresh installed Windows wallet and all three receive address types were created'
     Stop-InstalledQt $qt
     $launch = @{
         FilePath = $qtExe

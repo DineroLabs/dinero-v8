@@ -2936,16 +2936,22 @@ void P2PService::Stop() {
         if (onion_runtime_) onion_runtime_->Shutdown();
         if (embedded_tor_) embedded_tor_->Stop();
 
+        logger_interface_->info("[P2PService] Stopping port mapping...");
         StopPortMapping();
+        logger_interface_->info("[P2PService] Port mapping stopped");
 
         // NAT traversal Phase C1: tear down the STUN client (closes the
         // ephemeral UDP socket + joins the reader thread). Idempotent. The
         // endpoint outlives it, so unhook its STUN handler first.
         if (auto* ep = p2p_mgr_->quic_endpoint()) ep->SetStunHandler(nullptr);
+        logger_interface_->info("[P2PService] Stopping STUN client...");
         stun_client_.reset();
+        logger_interface_->info("[P2PService] STUN client stopped");
 
         // Stop P2P manager (disconnects all peers, stops threads)
+        logger_interface_->info("[P2PService] Stopping P2P manager...");
         p2p_mgr_->stop();
+        logger_interface_->info("[P2PService] P2P manager stopped");
 
         logger_interface_->info("[P2PService] P2P networking stopped cleanly");
 
