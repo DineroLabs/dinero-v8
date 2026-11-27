@@ -853,15 +853,16 @@ void CreateSeedPage::showCreationRefusal(const QString& code, bool retryable,
   const auto refusal = code.isEmpty()
       ? WalletCreateRefusal::shownFromTransportError(error, rollbackError)
       : WalletCreateRefusal::shown(code, error, rollbackError);
+  constexpr qint64 kAutoRetryWindowMs = 60LL * 60 * 1000;
   const bool keepWaiting = safePending && wizard() && wizard()->isVisible() &&
       wizard()->currentPage() == this &&
-      creationWait_.isValid() && creationWait_.elapsed() < 20 * 60 * 1000;
+      creationWait_.isValid() && creationWait_.elapsed() < kAutoRetryWindowMs;
   const bool expired = safePending && creationWait_.isValid() &&
-      creationWait_.elapsed() >= 20 * 60 * 1000;
+      creationWait_.elapsed() >= kAutoRetryWindowMs;
   lblSeed_->setText(refusal.text + (keepWaiting
       ? QStringLiteral("\n\nWaiting here and retrying automatically while the node catches up.")
       : expired
-          ? QStringLiteral("\n\nAutomatic retries paused after 20 minutes. Check sync progress, then press Retry.")
+          ? QStringLiteral("\n\nAutomatic retries paused after one hour. Check sync progress, then press Retry.")
           : QString()));
   lblSeed_->setStyleSheet(refusal.calm
       ? "QLabel { color: #f59f00; background: #2b2b2b; padding: 20px; }"
@@ -897,7 +898,7 @@ void CreateSeedPage::onGenerateSeed() {
   }
 
   // Show generating status
-  lblSeed_->setText(QString("🔄 Preparing wallet '%1' and verifying Orchard history. This can take a few minutes...").arg(walletName));
+  lblSeed_->setText(QString("🔄 Preparing wallet '%1' and verifying Orchard history. First setup can take a while...").arg(walletName));
   lblSeed_->setStyleSheet(
     "QLabel { "
     "  background: #2b2b2b; "
