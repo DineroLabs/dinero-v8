@@ -2201,6 +2201,7 @@ static din::Json rpc_context_getsnapshotbootstrapstatus(const ExecutionContext& 
             if (const auto history = peers->PhoneHistoryDownload()) {
                 const auto progress = history->Observe();
                 auto& orchard = result["orchard_history"];
+                orchard["activation_height"] = dinero::Params().orchard_activation_height;
                 orchard["source_target_available"] = chainstate->PhoneHistoryTarget(false).has_value();
                 orchard["requested"] = progress.requested;
                 orchard["ready"] = progress.ready;

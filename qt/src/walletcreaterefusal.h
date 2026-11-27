@@ -23,7 +23,7 @@ inline Shown shown(const QString& code, const QString& error, const QString& rol
     if (code == "snapshot_bootstrap_pending")
         return {"Your node is still loading its starting snapshot. No wallet was created. Retry in a few minutes.", true, true};
     if (code == "orchard_history_pending")
-        return {"Orchard history is still downloading and verifying. No wallet was created. Retry after sync progresses.", true, true};
+        return {"Orchard history is still downloading and verifying. No wallet was created.", true, true};
     // This node can never credit a new wallet. The node's own sentence says
     // why and where to create it instead; waiting does not help, so no Retry.
     if (code == "native_wallet_unservable" && !error.trimmed().isEmpty()) return {error, false, true};

@@ -3,7 +3,7 @@
 ## Desktop wallet
 
 - When setup recognizes data from an older snapshot, it offers a separate folder for a new wallet. The original folder keeps its wallets and keys. If you already received DIN, keep your original wallet and use the recovery guidance. Starting a separate wallet does not restore older balances.
-- New-wallet setup waits and retries when the node confirms that it still needs to verify history and has not created a wallet. You can close the wizard while it waits.
+- New-wallet setup shows Orchard history verification progress and waits and retries when the node confirms that it has not created a wallet yet. You can close the wizard while it waits.
 - Choose your language in Settings or in the older-snapshot setup dialog. The list includes Slovenian. Recovery words and protocol identifiers retain their original form.
 - The Orchard page shows the minimum fee when a payment’s proposed fee is too low to sign and submit. You can cancel an unsigned queued payment. Switching wallets clears the previous wallet’s Orchard amount.
 - Pool mining displays submitted block candidates separately from blocks the pool confirms.

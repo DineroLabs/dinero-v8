@@ -12,6 +12,7 @@
 #include <QButtonGroup>
 #include <QTimer>
 #include <QElapsedTimer>
+#include <QProgressBar>
 
 class RpcClient;
 class ConnectionManager;
@@ -63,6 +64,7 @@ private Q_SLOTS:
   void onGenerateSeed();
   void onManualRetry();
   void onRevealClicked();
+  void refreshHistoryProgress();
   
 private:
   QString formatSeedPhrase(const QString& seed) const;
@@ -71,16 +73,21 @@ private:
                            const QString& error, bool confirmedNoWallet);
   ConnectionManager* connMgr_;
   QString seedPhrase_;
+  QLabel* warningBanner_;
   QLabel* lblSeed_;
+  QLabel* lblHistoryProgress_;
+  QProgressBar* historyProgress_;
   QPushButton* btnReveal_;
   QPushButton* btnRetry_;
   QCheckBox* chkCopied_;
   QTimer* rpcTimeout_;
   QTimer* creationRetryTimer_;
+  QTimer* historyProgressTimer_;
   QElapsedTimer creationWait_;
   bool seedGenerated_;
   bool seedVisible_;
   bool rpcPending_;
+  bool historyRequestPending_;
 };
 
 // ============================================================================

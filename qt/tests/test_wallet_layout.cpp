@@ -156,7 +156,9 @@ private Q_SLOTS:
                     const auto request = QJsonDocument::fromJson(bytes->mid(split + 4, length)).object();
                     const bool wallet = request.value("method").toString() == "wallet.createhd";
                     if (wallet) ++walletRequests;
-                    const QByteArray body = wallet
+                    const QByteArray body = request.value("method").toString() == "blockchain.getsnapshotbootstrapstatus"
+                        ? R"({"result":{"orchard_history":{"activation_height":150000,"verified_height":150042,"target_height":150100,"requested":true,"ready":false}},"error":null})"
+                        : wallet
                         ? R"({"result":null,"error":{"code":-32603,"message":"Orchard history is not ready; wallet was not created. Retry after history sync.","data":{"wallet_creation":{"error_code":"orchard_history_pending","retryable":true}}}})"
                         : R"({"result":142767,"error":null})";
                     socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: "
@@ -180,6 +182,11 @@ private Q_SLOTS:
         QVERIFY(page);
         auto* retry = page->findChild<QTimer*>("walletCreationPendingRetry");
         QVERIFY(retry);
+        auto* progress = page->findChild<QProgressBar*>("orchardHistoryProgress");
+        QVERIFY(progress);
+        QTRY_VERIFY_WITH_TIMEOUT(progress->isVisible(), 3000);
+        QTRY_COMPARE_WITH_TIMEOUT(progress->maximum(), 100, 3000);
+        QCOMPARE(progress->value(), 42);
         QTRY_VERIFY_WITH_TIMEOUT(retry->isActive(), 3000);
         QCOMPARE(walletRequests, 1);
         retry->setInterval(200);

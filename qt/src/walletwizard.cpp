@@ -20,6 +20,7 @@
 #include <QTimer>
 #include <QPointer>
 #include <QEventLoop>
+#include <algorithm>
 #include <memory>
 
 namespace {
@@ -724,9 +725,11 @@ CreateSeedPage::CreateSeedPage(ConnectionManager* connMgr, QWidget* parent)
     , connMgr_(connMgr)
     , rpcTimeout_(new QTimer(this))
     , creationRetryTimer_(new QTimer(this))
+    , historyProgressTimer_(new QTimer(this))
     , seedGenerated_(false)
     , seedVisible_(false)
-    , rpcPending_(false) {
+    , rpcPending_(false)
+    , historyRequestPending_(false) {
 
   // A verified Orchard replay can outlast this status timer. It must never
   // cancel the in-flight creation request or encourage a duplicate request.
@@ -745,19 +748,23 @@ CreateSeedPage::CreateSeedPage(ConnectionManager* connMgr, QWidget* parent)
         !seedGenerated_ && !rpcPending_)
       onGenerateSeed();
   });
+  historyProgressTimer_->setInterval(5000);
+  connect(historyProgressTimer_, &QTimer::timeout,
+          this, &CreateSeedPage::refreshHistoryProgress);
   setTitle(tr("Your Seed Phrase"));
   setSubTitle(tr("Write down these 12 words in order. Keep them safe and NEVER share them."));
   
   auto* layout = new QVBoxLayout;
   
   // Warning banner
-  auto* warning = new QLabel(tr(
+  warningBanner_ = new QLabel(tr(
     "⚠️ <b>CRITICAL:</b> Anyone with these words can access your funds. "
     "Write them on paper and store securely. Never take screenshots or save digitally."
   ));
-  warning->setStyleSheet("QLabel { background: #ff6b6b; color: white; padding: 8px; border-radius: 4px; }");
-  warning->setWordWrap(true);
-  layout->addWidget(warning);
+  warningBanner_->setStyleSheet("QLabel { background: #ff6b6b; color: white; padding: 8px; border-radius: 4px; }");
+  warningBanner_->setWordWrap(true);
+  warningBanner_->setVisible(false);
+  layout->addWidget(warningBanner_);
   
   // Seed display (shown automatically once generated)
   lblSeed_ = new QLabel(tr("[Seed phrase will appear here]"));
@@ -775,6 +782,15 @@ CreateSeedPage::CreateSeedPage(ConnectionManager* connMgr, QWidget* parent)
   );
   lblSeed_->setWordWrap(true);
   layout->addWidget(lblSeed_);
+  lblHistoryProgress_ = new QLabel(tr("Checking Orchard history before creating the wallet..."), this);
+  lblHistoryProgress_->setWordWrap(true);
+  lblHistoryProgress_->setVisible(false);
+  layout->addWidget(lblHistoryProgress_);
+  historyProgress_ = new QProgressBar(this);
+  historyProgress_->setObjectName(QStringLiteral("orchardHistoryProgress"));
+  historyProgress_->setRange(0, 0);
+  historyProgress_->setVisible(false);
+  layout->addWidget(historyProgress_);
   
   // Simple reveal/hide toggle (no press-and-hold)
   btnReveal_ = new QPushButton(tr("👁️ Reveal Seed"));
@@ -806,6 +822,7 @@ CreateSeedPage::CreateSeedPage(ConnectionManager* connMgr, QWidget* parent)
   // Confirmation checkbox
   chkCopied_ = new QCheckBox(tr("✅ I have written down my seed phrase on paper"));
   chkCopied_->setStyleSheet("QCheckBox { font-weight: bold; }");
+  chkCopied_->setEnabled(false);
   layout->addWidget(chkCopied_);
   
   registerField("seedConfirmed", chkCopied_);
@@ -826,14 +843,58 @@ void CreateSeedPage::initializePage() {
 
   // Generate seed on first display
   if (!seedGenerated_) {
+    historyProgressTimer_->start();
+    refreshHistoryProgress();
     onGenerateSeed();
   }
 }
 
 void CreateSeedPage::cleanupPage() {
   creationRetryTimer_->stop();
+  historyProgressTimer_->stop();
   creationWait_.invalidate();
   QWizardPage::cleanupPage();
+}
+
+void CreateSeedPage::refreshHistoryProgress() {
+  if (!connMgr_ || historyRequestPending_ || seedGenerated_ || !wizard() ||
+      wizard()->currentPage() != this) return;
+  historyRequestPending_ = true;
+  const QPointer<CreateSeedPage> alive(this);
+  connMgr_->callNamed("blockchain.getsnapshotbootstrapstatus", QJsonObject(),
+    [this, alive](const QJsonObject& response) {
+      if (!alive) return;
+      historyRequestPending_ = false;
+      if (seedGenerated_ || !wizard() || wizard()->currentPage() != this) return;
+      const QJsonObject payload = response.value("result").isObject()
+          ? response.value("result").toObject() : response;
+      const QJsonObject history = payload.value("orchard_history").toObject();
+      if (history.isEmpty()) return;
+      lblHistoryProgress_->setVisible(true);
+      historyProgress_->setVisible(true);
+      const int activation = history.value("activation_height").toInt();
+      const int target = history.value("target_height").toInt();
+      const int verified = history.value("verified_height").toInt();
+      const bool ready = history.value("ready").toBool();
+      if (activation > 0 && target > activation && verified >= activation) {
+        const int total = target - activation;
+        const int done = std::clamp(verified - activation, 0, total);
+        historyProgress_->setRange(0, total);
+        historyProgress_->setValue(ready ? total : done);
+        historyProgress_->setFormat(QStringLiteral("%p%"));
+        lblHistoryProgress_->setText(ready
+            ? tr("Orchard history verified. Finalizing wallet setup...")
+            : tr("Orchard history: %1 of %2 blocks verified. Wallet setup will continue automatically.")
+                .arg(done).arg(total));
+      } else {
+        historyProgress_->setRange(0, 0);
+        lblHistoryProgress_->setText(tr("Connecting to peers and checking Orchard history. Wallet setup will continue automatically."));
+      }
+      historyProgress_->setToolTip(history.value("error").toString());
+    },
+    [this, alive](const QString&) {
+      if (alive) historyRequestPending_ = false;
+    });
 }
 
 void CreateSeedPage::onManualRetry() {
@@ -863,7 +924,9 @@ void CreateSeedPage::showCreationRefusal(const QString& code, bool retryable,
       ? QStringLiteral("\n\nWaiting here and retrying automatically while the node catches up.")
       : expired
           ? QStringLiteral("\n\nAutomatic retries paused after one hour. Check sync progress, then press Retry.")
-          : QString()));
+          : refusal.retry
+              ? QStringLiteral("\n\nPress Retry when the node is ready.")
+              : QString()));
   lblSeed_->setStyleSheet(refusal.calm
       ? "QLabel { color: #f59f00; background: #2b2b2b; padding: 20px; }"
       : "QLabel { color: #ff6b6b; background: #ffe3e3; padding: 20px; }");
@@ -885,6 +948,11 @@ void CreateSeedPage::onGenerateSeed() {
   seedPhrase_.clear();
   seedGenerated_ = false;
   seedVisible_ = false;
+  warningBanner_->setVisible(false);
+  chkCopied_->setChecked(false);
+  chkCopied_->setEnabled(false);
+  lblHistoryProgress_->setVisible(true);
+  historyProgress_->setVisible(true);
   lblSeed_->setProperty("actualSeed", QString());
   btnReveal_->setEnabled(false);
   btnReveal_->setText(tr("👁️ Reveal Seed"));
@@ -969,11 +1037,16 @@ void CreateSeedPage::onGenerateSeed() {
 
       if (!mnemonic.trimmed().isEmpty()) {
         creationRetryTimer_->stop();
+        historyProgressTimer_->stop();
         creationWait_.invalidate();
         seedPhrase_ = mnemonic.trimmed();
         seedGenerated_ = true;
         lblSeed_->setProperty("actualSeed", seedPhrase_);
         btnReveal_->setEnabled(true);
+        warningBanner_->setVisible(true);
+        lblHistoryProgress_->setVisible(false);
+        historyProgress_->setVisible(false);
+        chkCopied_->setEnabled(true);
 
         qDebug() << "CreateSeedPage: Seed generated successfully";
         qDebug() << "CreateSeedPage: Mnemonic word count:" << seedPhrase_.split(" ").count();
@@ -1044,9 +1117,14 @@ void CreateSeedPage::onGenerateSeed() {
 
             seedPhrase_ = exportedMnemonic;
             creationRetryTimer_->stop();
+            historyProgressTimer_->stop();
             creationWait_.invalidate();
             seedGenerated_ = true;
             seedVisible_ = false;
+            warningBanner_->setVisible(true);
+            lblHistoryProgress_->setVisible(false);
+            historyProgress_->setVisible(false);
+            chkCopied_->setEnabled(true);
             lblSeed_->setProperty("actualSeed", seedPhrase_);
             btnReveal_->setEnabled(true);
             lblSeed_->setStyleSheet(
