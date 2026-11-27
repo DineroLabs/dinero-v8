@@ -8622,6 +8622,7 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
                      <<" (bodies "<<target.activation<<" to "<<base->first<<")"<<std::endl;
             const auto prefix_started=std::chrono::steady_clock::now();
             auto replay=RuntimeAccountReplay::BuildWithActivationPrefix(std::move(material),[&](uint32_t height){
+                RuntimeReplayCancellationScope::ThrowIfCancelled();
                 auto body=std::make_shared<const OrchardBlockCandidate>(OrchardBlockCandidate::DecodeExact(history->Body(height)));
                 const auto now=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
                 auto checked=verifier->Append(*body,uint64_t(now));
