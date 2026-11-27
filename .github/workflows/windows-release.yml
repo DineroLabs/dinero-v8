@@ -414,13 +414,16 @@ jobs:
             throw 'dinero-qt.exe does not import the CUDA driver and NVRTC runtime'
           }
 
-      - name: Verify Qt, header ancestor, and Orchard cache safety
+      - name: Verify Qt wallet, legacy snapshot, header ancestor, and Orchard cache safety
         shell: powershell
         run: |
-          cmake --build build-msvc-native --config Release --parallel 2 --target test_daemon_output test_i18n test_wallet_backup_lock test_header_skip_pointers test_assumeutxo_replay
+          cmake --build build-msvc-native --config Release --parallel 2 --target test_daemon_output test_i18n test_wallet_layout test_wallet_backup_lock test_header_skip_pointers test_legacy_snapshot_fixture test_assumeutxo_replay
           if ($LASTEXITCODE -ne 0) { throw 'Qt, header, or Orchard cache test build failed' }
-          ctest --test-dir build-msvc-native\qt -C Release -R '^(DaemonOutputBeforeEventLoop|QtI18nChain|QtSeedPhraseNeverTranslated|QtUniversalTermsUntranslated|WalletBackupLock)$' --output-on-failure
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          ctest --test-dir build-msvc-native\qt -C Release -R '^(DaemonOutputBeforeEventLoop|QtI18nChain|QtSeedPhraseNeverTranslated|QtUniversalTermsUntranslated|WalletLayout|WalletBackupLock)$' --output-on-failure --no-tests=error
           if ($LASTEXITCODE -ne 0) { throw 'Qt safety test failed' }
+          python -B tests/integration/test_legacy_snapshot_status_mainnet.py build-msvc-native/Release/dinerod.exe build-msvc-native/Release/test_legacy_snapshot_fixture.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Windows legacy snapshot wallet preflight failed' }
           ctest --test-dir build-msvc-native -C Release -R '^HeaderSkipPointers$' --output-on-failure
           if ($LASTEXITCODE -ne 0) { throw 'header ancestor parity test failed' }
           $cacheTests = @(Get-ChildItem -Path 'build-msvc-native' -Filter 'test_assumeutxo_replay.exe' -Recurse -File)
@@ -637,6 +640,9 @@ jobs:
             & python @orchardArgs
             if ($LASTEXITCODE -ne 0) { throw 'Installed Orchard capability check failed' }
             if ($case.Gui) {
+              .\scripts\ci\check_windows_legacy_gui_upgrade.ps1 `
+                -InstallDir $case.Dir `
+                -Fixture (Resolve-Path 'build-msvc-native\Release\test_legacy_snapshot_fixture.exe').Path
               # Regression gate for #673: the first tab change used to dereference the
               # mining output widget before construction, shortly after the embedded
               # daemon connected. Keep the installed GUI alive through that path and
@@ -734,6 +740,8 @@ jobs:
           path: |
             ${{ runner.temp }}/dinero-qt-startup-smoke/*.log
             ${{ runner.temp }}/dinero-qt-startup-smoke/window-text.txt
+            ${{ runner.temp }}/dinero-legacy-gui-smoke/*.log
+            ${{ runner.temp }}/dinero-legacy-gui-smoke/Roaming/Dinero-current-*/embedded-daemon.log
             packaging/windows/dist/Dinero-*-Setup.exe
             packaging/windows/dist/dinero-v*-windows-x86_64-msvc.zip
           if-no-files-found: warn

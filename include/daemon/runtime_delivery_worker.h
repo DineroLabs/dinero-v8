@@ -2,6 +2,7 @@
 #include "daemon/runtime_outbox_cursor.h"
 #include "wallet/runtime_recovery_limits.h"
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -89,6 +90,8 @@ public:
     void RequestReplay() noexcept;
     [[nodiscard]] Report Snapshot() const;
 private:
+    enum class Stage { Idle, WalletPreflight, WalletMixed, WalletOrchard,
+        WalletRecovery, RetiredNotes, Vault, Reorg };
     friend struct RuntimeDeliveryWorkerCreationTestAccess;
     void Run() noexcept;
     bool Stopping() const;
@@ -115,6 +118,7 @@ private:
         Report report;
     };
     const std::shared_ptr<WakeState> state_=std::make_shared<WakeState>();
+    mutable std::atomic<Stage> stage_{Stage::Idle};
     std::thread thread_;
 };
 } // namespace dinero
