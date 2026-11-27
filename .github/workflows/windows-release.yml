@@ -417,7 +417,9 @@ jobs:
       - name: Verify Qt wallet, legacy snapshot, header ancestor, and Orchard cache safety
         shell: powershell
         run: |
-          cmake --build build-msvc-native --config Release --parallel 2 --target test_daemon_output test_i18n test_wallet_layout test_wallet_backup_lock test_header_skip_pointers test_legacy_snapshot_fixture test_assumeutxo_replay
+          python -B tests/integration/test_cli_windows_gui_cookie.py build-msvc-native/Release/dinero-cli.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Windows CLI default GUI-cookie integration failed' }
+          cmake --build build-msvc-native --config Release --parallel 2 --target test_daemon_output test_i18n test_wallet_layout test_wallet_backup_lock test_header_skip_pointers test_legacy_snapshot_fixture test_assumeutxo_replay test_runtime_replay_spool
           if ($LASTEXITCODE -ne 0) { throw 'Qt, header, or Orchard cache test build failed' }
           $env:QT_QPA_PLATFORM = 'offscreen'
           ctest --test-dir build-msvc-native\qt -C Release -R '^(DaemonOutputBeforeEventLoop|QtI18nChain|QtSeedPhraseNeverTranslated|QtUniversalTermsUntranslated|WalletLayout|WalletBackupLock)$' --output-on-failure --no-tests=error
@@ -433,8 +435,8 @@ jobs:
               $cases -notmatch 'WindowsRetainsExactPublicBytesAndRefusesReplacement') {
             throw 'Windows Orchard cache test case is absent'
           }
-          ctest --test-dir build-msvc-native -C Release -R '^OrchardHistoryCache$' --output-on-failure
-          if ($LASTEXITCODE -ne 0) { throw 'Windows Orchard cache test failed' }
+          ctest --test-dir build-msvc-native -C Release -R '^(OrchardHistoryCache|RuntimeReplaySpool)$' --output-on-failure --no-tests=error
+          if ($LASTEXITCODE -ne 0) { throw 'Windows Orchard history or spool test failed' }
 
       - name: Build Windows server release and installer
         shell: powershell
