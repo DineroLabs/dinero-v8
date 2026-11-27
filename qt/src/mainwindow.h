@@ -670,6 +670,7 @@ private:
     // SV2-specific: session-cumulative accepted share count (pool's
     // per-submit accepted_count field is only 1 per ack).
     qint64 sv2_shares_accepted = 0;
+    qint64 sv2_candidates_submitted = 0;
     qint64 sv2_hashrate_updates = 0;
     qint64 sv2_window_bps = -1;
     qint64 sv2_window_shares = 0;
@@ -678,6 +679,7 @@ private:
   
   // Mining statistics UI
   QLabel* lblBlocksFound_ = nullptr;
+  QLabel* lblBlocksCaption_ = nullptr;
   QLabel* lblMiningUptimeCaption_ = nullptr;
   QLabel* lblMiningUptime_ = nullptr;
   QLabel* lblCurrentHash_ = nullptr;
