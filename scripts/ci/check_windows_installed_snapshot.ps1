@@ -60,9 +60,13 @@ function New-InstalledWallet {
     try {
         $response = Invoke-RestMethod -Uri $rpcUrl.AbsoluteUri -Method Post `
             -Headers @{ Authorization = "Basic $auth" } -ContentType 'application/json' `
-            -Body $request -TimeoutSec 300
+            -Body $request -TimeoutSec 1200
     } catch {
-        throw "Installed wallet RPC transport failed ($($_.Exception.GetType().Name))"
+        $kind = $_.Exception.GetType().Name
+        $status = if ($_.Exception -is [System.Net.WebException]) {
+            [string]$_.Exception.Status
+        } else { 'unavailable' }
+        throw "Installed wallet RPC transport failed ($kind, status=$status)"
     }
     if ($response.error) {
         # HTTP promotes handler refusals to the top-level JSON-RPC error.
@@ -173,7 +177,7 @@ try {
     # Use the same native RPC and address count as the GUI wizard. Keep the
     # returned mnemonic in memory; never print it to the release log.
     $walletStarted = Get-Date
-    $walletDeadline = $walletStarted.AddMinutes(20)
+    $walletDeadline = $walletStarted.AddMinutes(45)
     $nextWalletReport = $walletStarted
     do {
         $create = New-InstalledWallet
@@ -181,7 +185,8 @@ try {
             $create.retryable -ne $true -or (Get-Date) -ge $walletDeadline) { break }
         if ((Get-Date) -ge $nextWalletReport) {
             $elapsed = [int]((Get-Date) - $walletStarted).TotalSeconds
-            Write-Host "Installed wallet creation awaits verified history after ${elapsed}s (code=$($create.error_code))"
+            $history = (Get-NodeRpc 'getsnapshotbootstrapstatus').orchard_history
+            Write-Host "Installed wallet creation awaits verified history after ${elapsed}s (code=$($create.error_code), ready=$($history.ready), verified=$($history.verified_height), target=$($history.target_height))"
             $nextWalletReport = (Get-Date).AddMinutes(1)
         }
         Start-Sleep -Seconds 15
