@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check the Windows release daemon against an isolated old mainnet index."""
 
+from contextlib import closing
 import hashlib
 from pathlib import Path
 import sqlite3
@@ -32,9 +33,10 @@ with tempfile.TemporaryDirectory(prefix="dinero-mainnet-legacy-status-") as temp
     assert hashlib.sha256(index.read_bytes()).hexdigest() == before
 
     for old_height in (99677, 148375):
-        with sqlite3.connect(index) as database:
+        with closing(sqlite3.connect(index)) as database:
             database.execute("INSERT OR REPLACE INTO utxo_metadata(key,value) VALUES (?,?)",
                              ("assumeutxo_lc_base_height", str(old_height)))
+            database.commit()
         before = hashlib.sha256(index.read_bytes()).hexdigest()
         code, output = status(original)
         assert code == 0 and "legacy_snapshot_status=legacy_empty" in output, (old_height, output)
