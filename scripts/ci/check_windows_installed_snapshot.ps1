@@ -55,7 +55,8 @@ function New-InstalledWallet {
         jsonrpc = '2.0'
         id = 'windows-fresh-wallet-gate'
         method = 'wallet.createhd'
-        params = @{ name = 'WindowsFreshInstallGate'; word_count = 12; initial_taproot_addresses = 20 }
+        params = @{ name = 'WindowsFreshInstallGate'; word_count = 12; initial_taproot_addresses = 20;
+            allow_deferred_orchard = $true }
     } | ConvertTo-Json -Depth 4 -Compress
     try {
         $response = Invoke-RestMethod -Uri $rpcUrl.AbsoluteUri -Method Post `
@@ -192,14 +193,24 @@ try {
         Start-Sleep -Seconds 15
     } while ((Get-Date) -lt $walletDeadline)
     if (-not $create) { throw 'Fresh installed Windows wallet creation returned no result' }
+    $complete = $create.first_orchard_address -and $create.addresses_ready -eq $true
+    $deferred = $create.orchard_deferred -eq $true -and -not $create.first_orchard_address -and
+        $create.addresses_ready -ne $true
     if ($create.error -or $create.success -eq $false -or -not $create.mnemonic -or
         -not $create.first_address -or -not $create.first_p2mr_address -or
-        -not $create.first_orchard_address -or $create.addresses_ready -ne $true) {
-        throw "Fresh installed Windows wallet creation failed (code=$($create.error_code), error=$($create.error), addresses_ready=$($create.addresses_ready))"
+        -not ($complete -or $deferred)) {
+        throw "Fresh installed Windows wallet creation failed (code=$($create.error_code), error=$($create.error), orchard_deferred=$($create.orchard_deferred), addresses_ready=$($create.addresses_ready))"
     }
     Remove-Variable create
     $walletSeconds = [int]((Get-Date) - $walletStarted).TotalSeconds
-    Write-Host "Fresh installed Windows wallet and all three receive address types were created after ${walletSeconds}s"
+    if ($walletSeconds -gt 180) {
+        throw "Fresh installed Windows wallet took ${walletSeconds}s after tip; first-run target is 180s"
+    }
+    if ($deferred) {
+        Write-Host "Fresh installed Windows wallet with Taproot/P2MR receivers and explicit Orchard pending state was created after ${walletSeconds}s"
+    } else {
+        Write-Host "Fresh installed Windows wallet and all three receive address types were created after ${walletSeconds}s"
+    }
     Stop-InstalledQt $qt
     $launch = @{
         FilePath = $qtExe
