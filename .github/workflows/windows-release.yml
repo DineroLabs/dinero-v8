@@ -676,6 +676,17 @@ jobs:
                 $catalog = Get-Content -Raw packaging/snapshot/desktop-inputs-candidate.json | ConvertFrom-Json
                 $manifest = Join-Path $case.Dir "$($catalog.primary.filename).manifest.json"
                 .\scripts\ci\check_windows_installed_snapshot.ps1 -InstallDir $case.Dir -DataDir $dataDir -Manifest $manifest -InitialQt $qt
+                # Diagnostic-only tooling for #990. Keep the packaged product
+                # pinned to candidate_source; export phase timings, not wallet
+                # secrets or the raw daemon log.
+                $timingLog = Join-Path $dataDir 'orchard-windows-timing.log'
+                $daemonLog = Join-Path $dataDir 'embedded-daemon.log'
+                if (Test-Path -LiteralPath $daemonLog) {
+                  Get-Content -LiteralPath $daemonLog |
+                    Where-Object { $_ -match '\[OrchardHistory\].*(wallet replay: (building|verified prefix|built)|wallet replay adopted|wallet replay waits:)' } |
+                    Set-Content -LiteralPath $timingLog
+                  Get-Content -LiteralPath $timingLog -ErrorAction SilentlyContinue | Select-Object -Last 100
+                }
               } catch {
                 Write-Host "Installer smoke failed: $($_.Exception.Message)"
                 $qt.Refresh()
@@ -800,6 +811,7 @@ jobs:
             installed-windows-snapshot-result.json
             shipped-wallet-*.log
             shipped-wallet-result.json
+            ${{ runner.temp }}/dinero-qt-startup-smoke/orchard-windows-timing.log
           if-no-files-found: warn
 
       - name: Checksum final Windows matrix
