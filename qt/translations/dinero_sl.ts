@@ -336,6 +336,10 @@
             <source>Private (Orchard) Address:</source>
             <translation>Zasebni naslov (Orchard):</translation>
         </message>
+        <message>
+            <source>Wallet created and unlocked. Taproot and P2MR receiving are ready. Orchard is still preparing; after history verification, open Shielded → Orchard → Set up Orchard account.</source>
+            <translation>Denarnica je ustvarjena in odklenjena. Naslova Taproot in P2MR sta pripravljena za prejemanje. Orchard se še pripravlja; ko bo zgodovina preverjena, odprite Shielded → Orchard → Set up Orchard account.</translation>
+        </message>
     </context>
     <context>
         <name>ConfirmSeedPage</name>
@@ -508,8 +512,8 @@ Brez te kopije denarnice ne boste mogli obnoviti, če izgubite ali poškodujete 
             <translation>Zapišite si teh 12 besed za denarnico »%1«. Varno jih shranite in jih NIKOLI ne delite z drugimi.</translation>
         </message>
         <message>
-            <source>Preparing wallet '%1' and verifying Orchard history. First setup can take a while...</source>
-            <translation>Pripravljamo denarnico »%1« in preverjamo zgodovino Orchard. Prva nastavitev lahko traja nekaj časa ...</translation>
+            <source>Preparing wallet '%1'. Orchard history may continue loading after your wallet is ready...</source>
+            <translation>Pripravljamo denarnico »%1«. Zgodovina Orchard se lahko nalaga še po tem, ko bo denarnica pripravljena ...</translation>
         </message>
         <message>
             <source>Orchard history: %1 of %2 blocks verified. Wallet setup will continue automatically.</source>

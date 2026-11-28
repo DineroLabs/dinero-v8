@@ -140,6 +140,7 @@ private Q_SLOTS:
         QTcpServer server;
         QVERIFY(server.listen(QHostAddress::LocalHost));
         int walletRequests = 0;
+        bool deferredOptIn = true;
         connect(&server, &QTcpServer::newConnection, &server, [&]() {
             while (auto* socket = server.nextPendingConnection()) {
                 auto bytes = std::make_shared<QByteArray>();
@@ -155,13 +156,17 @@ private Q_SLOTS:
                     if (bytes->size() < split + 4 + length) return;
                     const auto request = QJsonDocument::fromJson(bytes->mid(split + 4, length)).object();
                     const bool wallet = request.value("method").toString() == "wallet.createhd";
-                    if (wallet) ++walletRequests;
+                    if (wallet) {
+                        ++walletRequests;
+                        deferredOptIn = deferredOptIn && request.value("params").toObject()
+                            .value("allow_deferred_orchard").toBool(false);
+                    }
                     const QByteArray body = request.value("method").toString() == "blockchain.getsnapshotbootstrapstatus"
                         ? R"({"result":{"orchard_history":{"activation_height":150000,"verified_height":150042,"target_height":150100,"requested":true,"ready":false}},"error":null})"
                         : wallet && walletRequests < 3
                         ? R"({"result":null,"error":{"code":-32603,"message":"Orchard history is not ready; wallet was not created. Retry after history sync.","data":{"wallet_creation":{"error_code":"orchard_history_pending","retryable":true}}}})"
                         : wallet
-                        ? R"({"result":{"success":true,"mnemonic":"abandon ability able about above absent absorb abstract absurd abuse access accident","wallet_name":"FreshGateWallet","first_address":"din1pfixture","first_p2mr_address":"din1rfixture","first_orchard_address":"din1sfixture","addresses_ready":true},"error":null})"
+                        ? R"({"result":{"success":true,"mnemonic":"abandon ability able about above absent absorb abstract absurd abuse access accident","wallet_name":"FreshGateWallet","first_address":"din1pfixture","first_p2mr_address":"din1rfixture","orchard_deferred":true,"addresses_ready":false},"error":null})"
                         : R"({"result":142767,"error":null})";
                     socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: "
                                   + QByteArray::number(body.size()) + "\r\n\r\n" + body);
@@ -193,6 +198,9 @@ private Q_SLOTS:
         QCOMPARE(walletRequests, 1);
         retry->setInterval(200);
         QTRY_VERIFY_WITH_TIMEOUT(walletRequests >= 3, 3000);
+        QVERIFY(deferredOptIn);
+        QTRY_VERIFY_WITH_TIMEOUT(page->property("orchardDeferred").toBool(), 3000);
+        QCOMPARE(page->property("firstOrchardAddress").toString(), QString());
         QLabel* seedLabel = nullptr;
         QTRY_VERIFY_WITH_TIMEOUT(([&] {
             for (auto* label : page->findChildren<QLabel*>()) {

@@ -968,7 +968,7 @@ void CreateSeedPage::onGenerateSeed() {
   }
 
   // Show generating status
-  lblSeed_->setText(tr("Preparing wallet '%1' and verifying Orchard history. First setup can take a while...").arg(walletName));
+  lblSeed_->setText(tr("Preparing wallet '%1'. Orchard history may continue loading after your wallet is ready...").arg(walletName));
   lblSeed_->setStyleSheet(
     "QLabel { "
     "  background: #2b2b2b; "
@@ -985,6 +985,10 @@ void CreateSeedPage::onGenerateSeed() {
   QJsonObject params;
   params["name"] = walletName;
   params["word_count"] = 12;
+  // A newly generated wallet on a full-v6 snapshot can receive public coins
+  // while Orchard history is authenticated. The node returns a typed
+  // orchard_deferred state and no Orchard address until it is safe to issue.
+  params["allow_deferred_orchard"] = true;
   // Give a new desktop wallet twenty distinct ready-to-use Taproot receivers.
   // PQ keeps one issued receiver; its watch-only reserve is not shown as issued.
   params["initial_taproot_addresses"] = 20;
@@ -1063,6 +1067,7 @@ void CreateSeedPage::onGenerateSeed() {
         setProperty("firstP2mrAddress", payload.value("first_p2mr_address").toString());
         setProperty("firstOrchardAddress", payload.value("first_orchard_address").toString());
         setProperty("addressesReady", payload.value("addresses_ready").toBool(false));
+        setProperty("orchardDeferred", payload.value("orchard_deferred").toBool(false));
         if (payload.contains("wallet_name")) {
           setProperty("walletName", payload["wallet_name"].toString());
         } else {
@@ -1894,6 +1899,8 @@ void CompletionPage::initializePage() {
     ? QStringLiteral("active wallet")
     : walletName;
   const bool creationAddressesReady = isRestore || createPage->property("addressesReady").toBool();
+  const bool orchardDeferred = !isRestore && createPage->property("orchardDeferred").toBool();
+  const bool p2mrReady = !createPage->property("firstP2mrAddress").toString().isEmpty();
   lblStatus_->setText(QString("✅ Wallet '%1' %2. Encrypting...")
                         .arg(walletDisplayName, walletAction));
 
@@ -1923,7 +1930,7 @@ void CompletionPage::initializePage() {
   auto errorConn = std::make_shared<QMetaObject::Connection>();
 
   *resultConn = connect(rpc_, &RpcClient::rpcResult, this,
-    [this, password, walletAction, creationAddressesReady, normalizeUnlockError, resultConn, errorConn](const QString& method, const QJsonValue& result) {
+    [this, password, walletAction, creationAddressesReady, orchardDeferred, p2mrReady, normalizeUnlockError, resultConn, errorConn](const QString& method, const QJsonValue& result) {
       if (method == "wallet.encrypt") {
         if (!result.isObject()) {
           QObject::disconnect(*resultConn);
@@ -1957,7 +1964,9 @@ void CompletionPage::initializePage() {
           return;
         }
 
-        if (!creationAddressesReady) {
+        if (orchardDeferred && p2mrReady) {
+          lblStatus_->setText(tr("Wallet created and unlocked. Taproot and P2MR receiving are ready. Orchard is still preparing; after history verification, open Shielded → Orchard → Set up Orchard account."));
+        } else if (!creationAddressesReady) {
           lblStatus_->setText(QString("⚠️ Wallet %1 and unlocked, but a receive address is still missing. Check Wallet for Taproot and P2MR, then open Shielded → Orchard → Set up Orchard account after history verification finishes.").arg(walletAction));
         } else {
           lblStatus_->setText(QString("✅ Wallet %1, encrypted, and unlocked.").arg(walletAction));

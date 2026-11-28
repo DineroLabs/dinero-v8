@@ -8022,12 +8022,13 @@ din::Json rpc_context_wallet_generateqrcode(const ExecutionContext& ctx, const d
     return result;
 }
 
-// A new wallet receives on all three address kinds from the start (#939):
-// Taproot index 0 (derived by RpcCreateHDWallet), P2MR index 0 and Orchard
-// account 0. Both run while the fresh wallet is still unenrolled and
-// unlocked, the only state in which a v3 node lets it issue addresses. A
-// failure here never undoes creation; it is reported for the client.
-static void AddCreationReceiveAddresses(const ExecutionContext& ctx, din::Json& result) {
+// Taproot index 0 is derived by RpcCreateHDWallet. This adds P2MR index 0 and,
+// when history is ready, Orchard account 0. A snapshot-backed first run may
+// explicitly defer Orchard, with no private receiver issued until authenticated
+// history is available. Address failures never undo wallet creation; callers
+// must check the returned per-receiver state.
+static void AddCreationReceiveAddresses(const ExecutionContext& ctx, din::Json& result,
+                                        bool defer_orchard) {
     try {
         if (auto* p2mr = g_rpcRegistry.lookup("wallet.getnewp2mraddress")) {
             din::Json p2mr_params;
@@ -8048,18 +8049,26 @@ static void AddCreationReceiveAddresses(const ExecutionContext& ctx, din::Json& 
         result["p2mr_error"] = e.what();
     }
 #if DINERO_WALLET_RAW_ORCHARD
-    try {
-        din::Json orchard_params;
-        orchard_params["account"] = 0;
-        const auto orchard = rpc_context_wallet_orchard_createaccount(ctx, orchard_params);
-        if (orchard.isMember("address") && orchard["address"].isString())
-            result["first_orchard_address"] = orchard["address"];
-        else
-            result["orchard_error"] = orchard.isMember("error") ? orchard["error"] : din::Json("unavailable");
-    } catch (const std::exception& e) {
-        result["orchard_error"] = e.what();
+    if (defer_orchard) {
+        // The newly generated wallet has no Orchard account or disclosed
+        // Orchard receiver. Its authenticated history can finish in the
+        // background while Taproot/P2MR are already usable.
+        result["orchard_deferred"] = true;
+    } else {
+        try {
+            din::Json orchard_params;
+            orchard_params["account"] = 0;
+            const auto orchard = rpc_context_wallet_orchard_createaccount(ctx, orchard_params);
+            if (orchard.isMember("address") && orchard["address"].isString())
+                result["first_orchard_address"] = orchard["address"];
+            else
+                result["orchard_error"] = orchard.isMember("error") ? orchard["error"] : din::Json("unavailable");
+        } catch (const std::exception& e) {
+            result["orchard_error"] = e.what();
+        }
     }
 #else
+    (void)defer_orchard;
     result["orchard_error"] = "Orchard wallet backend unavailable";
 #endif
     // Bitcoin, from the same recovery words (the built-in Bitcoin wallet's
@@ -8078,6 +8087,17 @@ static void AddCreationReceiveAddresses(const ExecutionContext& ctx, din::Json& 
 
 din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
+
+    // Opt-in for the desktop first-run wizard. Older callers keep the
+    // all-receivers-ready contract. A deferred Orchard receiver is never
+    // advertised as an address and must be set up after history is ready.
+    if (params.isObject() && params.isMember("allow_deferred_orchard") &&
+        !params["allow_deferred_orchard"].isBool()) {
+        result["error"] = "allow_deferred_orchard must be a boolean";
+        return result;
+    }
+    const bool allow_deferred_orchard = params.isObject() &&
+        params.get("allow_deferred_orchard", false).asBool();
 
     if (!ctx.daemon || !ctx.daemon->wallet) {
         result["error"] = "Wallet service not available";
@@ -8114,29 +8134,39 @@ din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Js
         }
     }
 #if DINERO_WALLET_RAW_ORCHARD
-    // Creating a post-activation wallet promises a usable Orchard receiver.
-    // A late snapshot can expose the selected tip before its independently
-    // verified Orchard history is available. Refuse before creating any wallet
-    // instead of returning a partial wallet with a silently missing address.
+    bool defer_orchard = false;
+    // The default post-activation contract promises an Orchard receiver and
+    // refuses before wallet creation until its history is authenticated.
+    // The explicit desktop fast path returns a typed, visible deferred state
+    // with no Orchard receiver; it never advertises a partial receiver.
     if (birth_height >= dinero::Params().orchard_activation_height) {
         const auto source = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
-        // The read refuses when a block is delivered while it runs, which
-        // during a first run's catch-up is nearly every time. It is asked
-        // again for a few seconds before the user is told to come back
-        // (runtime_replay_retry.h): the same read, the same checks.
-        const auto replay = source ? dinero::ReadRuntimeReplayWithRetry(
-                [&] { return source->getRuntimeAccountReplay(); },
-                [&] { return source->PhoneReplayCaptureCounts().first > 0; }) :
-            dinero::StatusOr<std::shared_ptr<const dinero::RuntimeAccountReplay>>(dinero::Status::Invalid);
-        if (!replay.ok()) {
-            result["error"] = "Orchard history is not ready; wallet was not created. Retry after history sync.";
-            result["error_code"] = "orchard_history_pending";
-            result["retryable"] = replay.status()==dinero::Status::NotFound ||
-                replay.status()==dinero::Status::Invalid;
-            result["source_status"] = dinero::StatusToString(replay.status());
-            return result;
+        // Only a new, sealed-birth wallet on an authenticated full-v6
+        // snapshot may take the opt-in fast path. No Orchard key/account or
+        // address is issued before the full history source becomes usable.
+        defer_orchard = allow_deferred_orchard && source &&
+            source->IsAssumeUTXOActive() && source->HasOrchardSnapshotHistorySource();
+        if (!defer_orchard) {
+            // The read refuses when a block is delivered while it runs, which
+            // during a first run's catch-up is nearly every time. It is asked
+            // again for a few seconds before the user is told to come back.
+            const auto replay = source ? dinero::ReadRuntimeReplayWithRetry(
+                    [&] { return source->getRuntimeAccountReplay(); },
+                    [&] { return source->PhoneReplayCaptureCounts().first > 0; }) :
+                dinero::StatusOr<std::shared_ptr<const dinero::RuntimeAccountReplay>>(dinero::Status::Invalid);
+            if (!replay.ok()) {
+                result["error"] = "Orchard history is not ready; wallet was not created. Retry after history sync.";
+                result["error_code"] = "orchard_history_pending";
+                result["retryable"] = replay.status()==dinero::Status::NotFound ||
+                    replay.status()==dinero::Status::Invalid;
+                result["source_status"] = dinero::StatusToString(replay.status());
+                return result;
+            }
         }
     }
+#else
+    (void)allow_deferred_orchard;
+    const bool defer_orchard = false;
 #endif
     // The history read above takes from a moment to a minute or more (its
     // first build, then the bounded retry), and blocks keep arriving: the
@@ -8174,7 +8204,7 @@ din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Js
             try {
                 if (password.empty()) throw std::runtime_error("Creation password unavailable");
                 wallet_service->get().unlockWallet(password, 0);
-                AddCreationReceiveAddresses(ctx, result);
+                AddCreationReceiveAddresses(ctx, result, defer_orchard);
                 wallet_service->get().lockWallet();
             } catch (const std::exception& e) {
                 if (!wallet_service->get().isWalletLocked()) {
@@ -8184,7 +8214,7 @@ din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Js
                 if (!result.isMember("first_orchard_address")) result["orchard_error"] = e.what();
             }
         } else {
-            AddCreationReceiveAddresses(ctx, result);
+            AddCreationReceiveAddresses(ctx, result, defer_orchard);
         }
         result["addresses_ready"] = result.isMember("first_address") &&
             result.isMember("first_p2mr_address") && result.isMember("first_orchard_address");
