@@ -85,11 +85,11 @@ namespace {
 constexpr int kDineroMainnetP2PPort = 20999;
 
 QString p2pPortMapAllowedKey() {
-    return QStringLiteral("network/p2p_portmap_auto_allowed_v1");
+    return QStringLiteral("network/p2p_portmap_user_enabled_v2");
 }
 
 bool p2pPortMappingAllowed() {
-    return QSettings().value(p2pPortMapAllowedKey(), true).toBool();
+    return QSettings().value(p2pPortMapAllowedKey(), false).toBool();
 }
 
 QString bundledTorPath() {
