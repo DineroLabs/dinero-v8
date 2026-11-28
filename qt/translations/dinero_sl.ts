@@ -337,8 +337,8 @@
             <translation>Zasebni naslov (Orchard):</translation>
         </message>
         <message>
-            <source>Wallet created and unlocked. Taproot and P2MR receiving are ready. Orchard is still preparing; after history verification, open Shielded → Orchard → Set up Orchard account.</source>
-            <translation>Denarnica je ustvarjena in odklenjena. Naslova Taproot in P2MR sta pripravljena za prejemanje. Orchard se še pripravlja; ko bo zgodovina preverjena, odprite Shielded → Orchard → Set up Orchard account.</translation>
+            <source>Wallet created and unlocked. Taproot and P2MR receiving are ready. For private receiving, open Shielded → Orchard → Set up Orchard account when that button becomes available.</source>
+            <translation>Denarnica je ustvarjena in odklenjena. Naslova Taproot in P2MR sta pripravljena za prejemanje. Za zasebno prejemanje odprite Shielded → Orchard → Set up Orchard account, ko bo ta gumb na voljo.</translation>
         </message>
     </context>
     <context>

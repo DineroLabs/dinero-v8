@@ -1965,7 +1965,7 @@ void CompletionPage::initializePage() {
         }
 
         if (orchardDeferred && p2mrReady) {
-          lblStatus_->setText(tr("Wallet created and unlocked. Taproot and P2MR receiving are ready. Orchard is still preparing; after history verification, open Shielded → Orchard → Set up Orchard account."));
+          lblStatus_->setText(tr("Wallet created and unlocked. Taproot and P2MR receiving are ready. For private receiving, open Shielded → Orchard → Set up Orchard account when that button becomes available."));
         } else if (!creationAddressesReady) {
           lblStatus_->setText(QString("⚠️ Wallet %1 and unlocked, but a receive address is still missing. Check Wallet for Taproot and P2MR, then open Shielded → Orchard → Set up Orchard account after history verification finishes.").arg(walletAction));
         } else {
