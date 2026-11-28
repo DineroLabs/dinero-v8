@@ -86,6 +86,43 @@ function New-InstalledWallet {
     return $response.result
 }
 
+# Use only the installed daemon's loopback RPC and cookie. The wallet binding
+# and Orchard address stay in memory; the release log records only readiness.
+function Invoke-InstalledWalletRpc {
+    param([string]$Method, [hashtable]$Params, [int]$TimeoutSeconds = 1200)
+    $nodeInfoPath = Join-Path $DataDir 'nodeinfo.json'
+    $cookiePath = Join-Path $DataDir '.cookie'
+    $rpcUrl = [uri]'http://127.0.0.1:20998/'
+    if (Test-Path -LiteralPath $nodeInfoPath) {
+        $nodeInfo = Get-Content -Raw -LiteralPath $nodeInfoPath | ConvertFrom-Json
+        if ($nodeInfo.rpc.url) { $rpcUrl = [uri]($nodeInfo.rpc.url) }
+    }
+    if ($rpcUrl.Scheme -ne 'http' -or $rpcUrl.Host -notin @('127.0.0.1', 'localhost', '::1', '[::1]')) {
+        throw 'Installed node advertised a non-local wallet RPC endpoint'
+    }
+    $cookie = (Get-Content -Raw -LiteralPath $cookiePath).Trim()
+    if (-not $cookie) { throw 'Installed node has no RPC cookie' }
+    $auth = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($cookie))
+    $request = @{
+        jsonrpc = '2.0'; id = 'windows-wallet-post-history-gate';
+        method = $Method; params = $Params
+    } | ConvertTo-Json -Depth 5 -Compress
+    try {
+        $response = Invoke-RestMethod -Uri $rpcUrl.AbsoluteUri -Method Post `
+            -Headers @{ Authorization = "Basic $auth" } -ContentType 'application/json' `
+            -Body $request -TimeoutSec $TimeoutSeconds
+    } catch {
+        throw "Installed $Method RPC transport failed ($($_.Exception.GetType().Name))"
+    }
+    if ($response.error) {
+        throw "Installed $Method RPC refused (code=$($response.error.code), reason=$($response.error.data.error_code))"
+    }
+    if ($response.result.error) {
+        throw "Installed $Method refused (reason=$($response.result.error_code))"
+    }
+    return $response.result
+}
+
 function Get-EmbeddedDaemon {
     param([System.Diagnostics.Process]$Qt)
     Get-CimInstance Win32_Process -Filter "ParentProcessId=$($Qt.Id) AND Name='dinerod.exe'" |
@@ -196,6 +233,7 @@ try {
     $complete = $create.first_orchard_address -and $create.addresses_ready -eq $true
     $deferred = $create.orchard_deferred -eq $true -and -not $create.first_orchard_address -and
         $create.addresses_ready -ne $true
+    $orchardAfterHistory = [bool]$complete
     if ($create.error -or $create.success -eq $false -or -not $create.mnemonic -or
         -not $create.first_address -or -not $create.first_p2mr_address -or
         -not ($complete -or $deferred)) {
@@ -222,9 +260,46 @@ try {
     $qt = Start-Process @launch
     $restart = Wait-SelectedTip -Qt $qt -MinHeight $fresh.blocks -ProveImport $false -Minutes 20
     Write-Host "Restarted Qt selected H$($restart.blocks) with $($restart.peers) peers"
+    $wallet = Invoke-InstalledWalletRpc -Method 'wallet.getinfo' -Params @{} -TimeoutSeconds 120
+    if ($wallet.wallet_name -ne 'WindowsFreshInstallGate' -or -not $wallet.has_active_wallet -or $wallet.locked) {
+        throw 'Created wallet did not reopen unlocked after installed Qt restart'
+    }
+    Write-Host 'Created Windows wallet persisted through Qt restart'
+    if ($deferred) {
+        $historyDeadline = (Get-Date).AddMinutes(60)
+        $nextHistoryReport = Get-Date
+        do {
+            $history = (Get-NodeRpc 'getsnapshotbootstrapstatus').orchard_history
+            if ($history.ready -eq $true -and [int]$history.target_height -gt 0 -and
+                [int]$history.verified_height -ge [int]$history.target_height) { break }
+            if ((Get-Date) -ge $nextHistoryReport) {
+                Write-Host "Installed Orchard history after restart (ready=$($history.ready), verified=$($history.verified_height), target=$($history.target_height))"
+                $nextHistoryReport = (Get-Date).AddMinutes(1)
+            }
+            Start-Sleep -Seconds 15
+        } while ((Get-Date) -lt $historyDeadline)
+        if ($history.ready -ne $true -or [int]$history.target_height -le 0 -or
+            [int]$history.verified_height -lt [int]$history.target_height) {
+            throw 'Installed Orchard history did not become fully verified after wallet restart'
+        }
+        $binding = Invoke-InstalledWalletRpc -Method 'wallet.orchard.getwalletbinding' `
+            -Params @{ wallet_name = 'WindowsFreshInstallGate' } -TimeoutSeconds 120
+        if ($binding.wallet_name -ne 'WindowsFreshInstallGate' -or
+            $binding.wallet_binding -notmatch '^[0-9a-f]{64}$') {
+            throw 'Created wallet has no valid Orchard binding after history verification'
+        }
+        $orchard = Invoke-InstalledWalletRpc -Method 'wallet.orchard.createaccount' `
+            -Params @{ account = 0; wallet_binding = $binding.wallet_binding } -TimeoutSeconds 1200
+        if ($orchard.account -ne 0 -or -not $orchard.address) {
+            throw 'Deferred Orchard account 0 did not issue a receive address'
+        }
+        $orchardAfterHistory = $true
+        Write-Host 'Deferred Orchard account 0 issued a receive address after verified history'
+    }
     Stop-InstalledQt $qt
     [ordered]@{ primary = $base.height; base_hash = $base.block_hash;
-        fresh = $fresh; cold_restart = $restart } |
+        fresh = $fresh; cold_restart = $restart; wallet_seconds = $walletSeconds;
+        orchard_deferred = [bool]$deferred; orchard_account_after_history = $orchardAfterHistory } |
         ConvertTo-Json -Depth 4 | Tee-Object -FilePath 'installed-windows-snapshot-result.json'
 } finally {
     if ($qt -and -not $qt.HasExited) {
