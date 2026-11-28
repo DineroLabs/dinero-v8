@@ -658,12 +658,8 @@ QString localStratumEndpoint() {
 }
 
 constexpr int kDineroMainnetP2PPort = 20999;
-QString p2pAccessPromptAcceptedKey() {
-  return QStringLiteral("network/p2p_access_prompt_accepted_v1");
-}
-
 QString p2pPortMapAllowedKey() {
-  return QStringLiteral("network/p2p_portmap_auto_allowed_v1");
+  return QStringLiteral("network/p2p_portmap_user_enabled_v2");
 }
 
 // ─────── SV2 pool miner (dinero-sv2-miner) ───────
@@ -2566,13 +2562,13 @@ void MainWindow::setupUI() {
     "QMenuBar::item:selected { background: #2d323b; color: #eef2f6; } "
     "QMenuBar::item:pressed { background: #353b45; }"
   );
-  // rc8+: Network menu with a checkable router-port-mapping toggle.
-  // Writes the same QSettings key the daemon launcher reads. Takes
-  // effect on the next daemon restart (File → Quit, then reopen).
+  // Router access is an explicit choice. Outbound syncing works without it;
+  // router discovery can block shutdown on networks with unresponsive IGDs.
+  // The setting takes effect on the next daemon restart.
   auto *networkMenu = menuBar->addMenu(tr("&Network"));
   auto *portmapAction = networkMenu->addAction(tr("Enable router port mapping (UPnP/NAT-PMP)"));
   portmapAction->setCheckable(true);
-  portmapAction->setChecked(QSettings().value(p2pPortMapAllowedKey(), true).toBool());
+  portmapAction->setChecked(QSettings().value(p2pPortMapAllowedKey(), false).toBool());
   connect(portmapAction, &QAction::toggled, this, [this](bool enabled) {
     QSettings().setValue(p2pPortMapAllowedKey(), enabled);
     QMessageBox::information(this, tr("Router port mapping"),
@@ -15245,38 +15241,8 @@ void MainWindow::maybeAutoStartDaemon() {
   }
 }
 
-bool MainWindow::maybeShowP2PNetworkNotice() {
-  QSettings settings;
-  if (settings.contains(p2pPortMapAllowedKey())) {
-    return settings.value(p2pPortMapAllowedKey(), true).toBool();
-  }
-
-  // rc8+: default-ON. The portmap subsystem runs on a worker thread with
-  // a bounded discovery deadline (default 45s), so a hostile router can
-  // no longer freeze startup. We still show a one-time non-blocking
-  // notice and offer a Disable button for users who don't want it.
-  settings.setValue(p2pAccessPromptAcceptedKey(), true);
-  settings.setValue(p2pPortMapAllowedKey(), true);
-
-  QMessageBox box(this);
-  box.setIcon(QMessageBox::Information);
-  box.setWindowTitle(tr("Dinero P2P Networking"));
-  box.setText(QStringLiteral("Dinero is enabling automatic router port mapping."));
-  box.setInformativeText(
-      QStringLiteral("Dinero will ask your home router (UPnP / NAT-PMP) to open TCP %1 so "
-                     "other Dinero nodes can connect inbound. Outbound sync works either way.\n\n"
-                     "You can toggle this later via the Network menu.")
-          .arg(kDineroMainnetP2PPort));
-  box.setStandardButtons(QMessageBox::Ok);
-  QPushButton* disableButton = box.addButton(QStringLiteral("Disable"), QMessageBox::RejectRole);
-  box.setDefaultButton(QMessageBox::Ok);
-  box.exec();
-
-  if (box.clickedButton() == disableButton) {
-    settings.setValue(p2pPortMapAllowedKey(), false);
-    return false;
-  }
-  return true;
+bool MainWindow::isP2PPortMappingEnabled() {
+  return QSettings().value(p2pPortMapAllowedKey(), false).toBool();
 }
 
 // Defined in main.cpp: sweep any orphaned dinerod/dinero-seeder squatting the
@@ -15414,7 +15380,7 @@ bool MainWindow::startDaemonWithOptions(bool showFeedback, bool openLogWindow) {
     }
   }
 
-  const bool allowPortMapping = maybeShowP2PNetworkNotice();
+  const bool allowPortMapping = isP2PPortMappingEnabled();
 
   if (!daemonProcess_) {
     daemonProcess_ = new QProcess(this);

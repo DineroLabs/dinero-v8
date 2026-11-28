@@ -187,7 +187,7 @@ private Q_SLOTS:
 private:
   void setupUI();
   bool startDaemonWithOptions(bool showFeedback, bool openLogWindow);
-  bool maybeShowP2PNetworkNotice();
+  bool isP2PPortMappingEnabled();
   void updateStatus(const QJsonObject& info);
   void updateEconomics(const QJsonObject& economics);
   void refreshTimingText();
