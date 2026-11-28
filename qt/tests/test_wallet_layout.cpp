@@ -2,6 +2,7 @@
 #include <QGroupBox>
 #include <QTableWidget>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QComboBox>
 #include <QJsonObject>
 #include <QLabel>
@@ -20,10 +21,13 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QWheelEvent>
+#include <QFile>
 #include <algorithm>
+#include <memory>
 #include "mainwindow.h"
 #include "connection_manager.h"
 #include "rpcclient.h"
+#include "walletwizard.h"
 #if defined(DIN_ENABLE_ORCHARD_UI) && DIN_ENABLE_ORCHARD_UI
 #include "orchardwidget.h"
 #include "walletcatchup.h"
@@ -119,6 +123,113 @@ private Q_SLOTS:
         QVERIFY(broke.text.contains("disk full") && broke.text.contains("could not reopen"));
         // A refusal code with no sentence must not leave an empty box.
         QVERIFY(!WalletCreateRefusal::shown("native_wallet_unservable", " ", QString()).text.trimmed().isEmpty());
+        const auto transport = WalletCreateRefusal::shownFromTransportError(
+            "This node cannot show money in a new wallet: its data was started from an older snapshot. "
+            "No wallet was created.", QString());
+        QCOMPARE(transport.text, why);
+        QVERIFY(transport.calm && !transport.retry);
+        QVERIFY(!transport.text.contains("ensure daemon is running", Qt::CaseInsensitive));
+    }
+    void wizardRetriesOnlyWhilePendingAndOpen() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        QFile cookie(directory.filePath(".cookie"));
+        QVERIFY(cookie.open(QIODevice::WriteOnly));
+        cookie.write("test:owned-fixture");
+        cookie.close();
+        QTcpServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost));
+        int walletRequests = 0;
+        bool deferredOptIn = true;
+        connect(&server, &QTcpServer::newConnection, &server, [&]() {
+            while (auto* socket = server.nextPendingConnection()) {
+                auto bytes = std::make_shared<QByteArray>();
+                connect(socket, &QTcpSocket::readyRead, socket, [&, socket, bytes]() {
+                    bytes->append(socket->readAll());
+                    const int split = bytes->indexOf("\r\n\r\n");
+                    if (split < 0) return;
+                    int length = 0;
+                    for (const auto& line : bytes->left(split).split('\n')) {
+                        if (line.trimmed().toLower().startsWith("content-length:"))
+                            length = line.mid(line.indexOf(':') + 1).trimmed().toInt();
+                    }
+                    if (bytes->size() < split + 4 + length) return;
+                    const auto request = QJsonDocument::fromJson(bytes->mid(split + 4, length)).object();
+                    const bool wallet = request.value("method").toString() == "wallet.createhd";
+                    if (wallet) {
+                        ++walletRequests;
+                        deferredOptIn = deferredOptIn && request.value("params").toObject()
+                            .value("allow_deferred_orchard").toBool(false);
+                    }
+                    const QByteArray body = request.value("method").toString() == "blockchain.getsnapshotbootstrapstatus"
+                        ? R"({"result":{"orchard_history":{"activation_height":150000,"verified_height":150042,"target_height":150100,"requested":true,"ready":false}},"error":null})"
+                        : wallet && walletRequests < 3
+                        ? R"({"result":null,"error":{"code":-32603,"message":"Orchard history is not ready; wallet was not created. Retry after history sync.","data":{"wallet_creation":{"error_code":"orchard_history_pending","retryable":true}}}})"
+                        : wallet
+                        ? R"({"result":{"success":true,"mnemonic":"abandon ability able about above absent absorb abstract absurd abuse access accident","wallet_name":"FreshGateWallet","first_address":"din1pfixture","first_p2mr_address":"din1rfixture","orchard_deferred":true,"addresses_ready":false},"error":null})"
+                        : R"({"result":142767,"error":null})";
+                    socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: "
+                                  + QByteArray::number(body.size()) + "\r\n\r\n" + body);
+                    socket->disconnectFromHost();
+                });
+                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+            }
+        });
+        ConnectionManager manager;
+        manager.setCookiePath(cookie.fileName());
+        manager.setDaemonUrl(QString("http://127.0.0.1:%1").arg(server.serverPort()));
+        manager.setHealthCheckInterval(30000);
+        manager.connectToDaemon();
+        QTRY_COMPARE_WITH_TIMEOUT(manager.state(), ConnectionManager::Connected, 3000);
+        WalletWizard wizard(&manager, nullptr);
+        wizard.setStartId(WalletWizard::Page_CreateSeed);
+        wizard.setField("walletName", "FreshGateWallet");
+        wizard.show();
+        auto* page = qobject_cast<CreateSeedPage*>(wizard.page(WalletWizard::Page_CreateSeed));
+        QVERIFY(page);
+        auto* retry = page->findChild<QTimer*>("walletCreationPendingRetry");
+        QVERIFY(retry);
+        auto* progress = page->findChild<QProgressBar*>("orchardHistoryProgress");
+        QVERIFY(progress);
+        QTRY_VERIFY_WITH_TIMEOUT(progress->isVisible(), 3000);
+        QTRY_COMPARE_WITH_TIMEOUT(progress->maximum(), 100, 3000);
+        QCOMPARE(progress->value(), 42);
+        QTRY_VERIFY_WITH_TIMEOUT(retry->isActive(), 3000);
+        QCOMPARE(walletRequests, 1);
+        retry->setInterval(200);
+        QTRY_VERIFY_WITH_TIMEOUT(walletRequests >= 3, 3000);
+        QVERIFY(deferredOptIn);
+        QTRY_VERIFY_WITH_TIMEOUT(page->property("orchardDeferred").toBool(), 3000);
+        QCOMPARE(page->property("firstOrchardAddress").toString(), QString());
+        QLabel* seedLabel = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            for (auto* label : page->findChildren<QLabel*>()) {
+                if (label->text() == "[Seed hidden. Click Reveal Seed]") {
+                    seedLabel = label;
+                    return true;
+                }
+            }
+            return false;
+        }()), 3000);
+        QVERIFY(seedLabel);
+        QVERIFY(!retry->isActive());
+        QVERIFY(!seedLabel->text().contains("abandon"));
+        QPushButton* reveal = nullptr;
+        for (auto* button : page->findChildren<QPushButton*>()) {
+            if (button->text().contains("Reveal Seed")) reveal = button;
+        }
+        QVERIFY(reveal);
+        QVERIFY(reveal->isEnabled());
+        reveal->click();
+        QVERIFY(seedLabel->text().contains("abandon"));
+        reveal->click();
+        QCOMPARE(seedLabel->text(), QString("[Seed hidden. Click Reveal Seed]"));
+        wizard.reject();
+        QVERIFY(!retry->isActive());
+        const int atClose = walletRequests;
+        QTest::qWait(300);
+        QCOMPARE(walletRequests, atClose);
+        manager.disconnectFromDaemon();
     }
     void initTestCase() {
         QVERIFY(dir_.isValid());

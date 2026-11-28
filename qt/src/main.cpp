@@ -21,11 +21,17 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QCheckBox>
+#include <QIcon>
+#include <QMenu>
+#include <QTranslator>
 #include <QProgressDialog>
 #include <QEventLoop>
 #include <QTimer>
 #include <QMutex>
 #include <QPointer>
+#include <QDateTime>
+#include <QJsonDocument>
+#include <QJsonObject>
 #ifndef Q_OS_WIN
 #include <signal.h>
 #include <sys/types.h>
@@ -57,6 +63,8 @@
 #include "build_identity.h"
 #include "debugconsole.h"
 #include "portcheck.h"
+#include "apprestart.h"
+#include "i18n.h"
 
 #include "swaplaunchpolicy.h"
 #include "minercontroller.h"
@@ -77,11 +85,11 @@ namespace {
 constexpr int kDineroMainnetP2PPort = 20999;
 
 QString p2pPortMapAllowedKey() {
-    return QStringLiteral("network/p2p_portmap_auto_allowed_v1");
+    return QStringLiteral("network/p2p_portmap_user_enabled_v2");
 }
 
 bool p2pPortMappingAllowed() {
-    return QSettings().value(p2pPortMapAllowedKey(), true).toBool();
+    return QSettings().value(p2pPortMapAllowedKey(), false).toBool();
 }
 
 QString bundledTorPath() {
@@ -121,7 +129,8 @@ QStringList currentBootstrapAddnodes() {
 // All remain armed on every start. The daemon treats them as inert on an
 // ordinary synced datadir, but an interrupted first sync needs the exact old
 // artifact even after the app bundle has been upgraded.
-constexpr char kBundledSnapshotPrimary[] = "dinero-assumeutxo-167856-v6-full.dat";
+constexpr char kBundledSnapshotPrimary[] = "dinero-assumeutxo-169068-v6-full.dat";
+constexpr char kBundledSnapshotPreviousRelease[] = "dinero-assumeutxo-167856-v6-full.dat";
 constexpr char kBundledSnapshotImmediatePrevious[] = "dinero-assumeutxo-163965-v6-full.dat";
 constexpr char kBundledSnapshotPreviousPrimary[] = "dinero-assumeutxo-155650-v6-full.dat";
 constexpr char kBundledSnapshotPriorFullV6[] = "dinero-assumeutxo-153578-v6-full.dat";
@@ -156,6 +165,7 @@ void appendAssumeUtxoSnapshotArgs(QStringList& args, const QString& datadir) {
 
     const auto selected = dinero::qt::SelectBundledSnapshots({
         findBundledSnapshot(kBundledSnapshotPrimary).toStdString(),
+        findBundledSnapshot(kBundledSnapshotPreviousRelease).toStdString(),
         findBundledSnapshot(kBundledSnapshotImmediatePrevious).toStdString(),
         findBundledSnapshot(kBundledSnapshotPreviousPrimary).toStdString(),
         findBundledSnapshot(kBundledSnapshotPriorFullV6).toStdString(),
@@ -1220,6 +1230,259 @@ static WalletIndexMaintenanceResult runWalletIndexMaintenance(
   return result;
 }
 
+// An old pre-Orchard snapshot cannot serve a newly created wallet. Offer a
+// separate datadir with the current bundled snapshot before launching the
+// daemon. The original directory is never renamed or deleted. A user with
+// existing wallet material must explicitly acknowledge that the new profile
+// does not transfer those wallets or their coins.
+static std::optional<QString> selectLegacySnapshotDataDir(const QString& original) {
+  constexpr auto kActiveDirKey = "data/active_dir_after_legacy_snapshot_v1";
+  constexpr auto kUseOldDirKey = "data/use_preserved_legacy_dir_v1";
+  QSettings settings;
+  QString languageCode = dinero::qt::i18n::CurrentLanguageCode();
+  QTranslator catalog;
+  auto loadCatalog = [&]() {
+    if (languageCode == dinero::qt::i18n::SourceLanguageCode()) return;
+    catalog.load(dinero::qt::i18n::CatalogResourcePath(languageCode));
+  };
+  loadCatalog();
+  auto wording = [&languageCode, &catalog](const char* english, const char* slovenian) {
+    if (languageCode == QStringLiteral("sl")) return QString::fromUtf8(slovenian);
+    if (languageCode != dinero::qt::i18n::SourceLanguageCode()) {
+      const QString translated = catalog.translate("LegacySnapshotDialog", english);
+      if (!translated.isEmpty()) return translated;
+    }
+    return QString::fromUtf8(english);
+  };
+  const QString selected = settings.value(QString::fromLatin1(kActiveDirKey)).toString();
+  if (!selected.isEmpty()) {
+    if (settings.value(QString::fromLatin1(kUseOldDirKey), false).toBool()) {
+      if (!QFileInfo(original).isDir()) {
+        QMessageBox::critical(nullptr, wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog", "Preserved Dinero data is missing"),
+            "Ohranjeni podatki Dinera manjkajo"),
+            wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog", "The preserved Dinero data folder is missing:\n%1\n\n"
+                    "Dinero will not silently switch to a different wallet."),
+                    "Mapa z ohranjenimi podatki Dinera manjka:\n%1\n\n"
+                    "Dinero ne bo samodejno preklopil na drugo denarnico.").arg(original));
+        return std::nullopt;
+      }
+      return original;
+    }
+    if (!QFileInfo(selected).isDir()) {
+      QMessageBox::critical(nullptr, wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog", "Dinero wallet data is missing"),
+          "Podatki denarnice Dinero manjkajo"),
+          wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog", "The selected Dinero data folder is missing:\n%1\n\n"
+                  "Restore that folder before opening the wallet. "
+                  "Dinero will not silently switch to a different wallet."),
+                  "Izbrana mapa s podatki Dinera manjka:\n%1\n\n"
+                  "Pred odpiranjem denarnice obnovite to mapo. "
+                  "Dinero ne bo samodejno preklopil na drugo denarnico.").arg(selected));
+      return std::nullopt;
+    }
+    return selected;
+  }
+  if (isDaemonRunning(300)) return original;
+  const QString daemonPath = defaultDaemonPath();
+  if (!QFileInfo(daemonPath).isExecutable()) return original;
+  const auto help = runWalletIndexMaintenance(daemonPath, {QStringLiteral("--help")}, 10000);
+  if (!help.completed || help.exitCode != 0 ||
+      !help.output.contains(QStringLiteral("--legacy-snapshot-status")))
+    return original;
+  const auto status = runWalletIndexMaintenance(daemonPath,
+      {QStringLiteral("--legacy-snapshot-status"), QStringLiteral("--datadir"), original}, 60000);
+  if (!status.completed || status.exitCode != 0) return original;
+  bool empty = false;
+  bool hasWallets = false;
+  for (const auto& line : status.output.split('\n')) {
+    empty |= line.trimmed() == QStringLiteral("legacy_snapshot_status=legacy_empty");
+    hasWallets |= line.trimmed() == QStringLiteral("legacy_snapshot_status=legacy_wallets");
+  }
+  if (!empty && !hasWallets) return original;
+
+  QMessageBox choice;
+  choice.setIcon(hasWallets ? QMessageBox::Warning : QMessageBox::Information);
+  auto* start = choice.addButton(QString(), QMessageBox::AcceptRole);
+  auto* later = choice.addButton(QString(), QMessageBox::RejectRole);
+  auto* switchLanguage = choice.addButton(QString(), QMessageBox::ActionRole);
+  QPushButton* helpButton = nullptr;
+  QCheckBox* acknowledge = nullptr;
+  if (hasWallets) {
+    helpButton = choice.addButton(QString(), QMessageBox::HelpRole);
+    acknowledge = new QCheckBox(&choice);
+    choice.setCheckBox(acknowledge);
+    start->setEnabled(false);
+    QObject::connect(acknowledge, &QCheckBox::toggled, start, &QPushButton::setEnabled);
+  }
+  auto updateWording = [&]() {
+    choice.setWindowTitle(wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog", "Update Dinero wallet data"), "Posodobitev podatkov denarnice Dinero"));
+    choice.setText(wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog",
+        "This computer has older Dinero data. A new wallet here might miss coins."),
+        "V računalniku so starejši podatki Dinera. Nova denarnica tukaj morda ne bi prikazala kovancev."));
+    if (hasWallets) {
+      choice.setInformativeText(wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog",
+          "Dinero found existing wallet files. A separate new wallet can use current "
+          "blockchain data, but it will NOT show or transfer coins from those existing wallets. "
+          "Keep their recovery words and the old data folder.\n\n"
+          "Old data folder:\n%1"),
+          "Dinero je našel datoteke obstoječih denarnic. Ločena nova denarnica lahko uporablja "
+          "novejše podatke verige blokov, vendar NE bo prikazala ali prenesla kovancev iz obstoječih "
+          "denarnic. Ohranite njihove obnovitvene besede in staro podatkovno mapo.\n\n"
+          "Stara podatkovna mapa:\n%1")
+          .arg(QDir::toNativeSeparators(original)));
+    } else {
+      choice.setInformativeText(wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog",
+          "Dinero found no wallet files or recovery keys in this data folder. "
+          "It can start a new, separate data folder using current blockchain data. "
+          "The old folder stays untouched at:\n%1\n\n"
+          "The new node will need time to verify wallet history before you can create a wallet."),
+          "Dinero v tej podatkovni mapi ni našel datotek denarnice ali obnovitvenih ključev. "
+          "Ustvari lahko novo, ločeno podatkovno mapo z novejšimi podatki verige blokov. "
+          "Stara mapa ostane nedotaknjena:\n%1\n\n"
+          "Novo vozlišče mora pred ustvarjanjem denarnice preveriti zgodovino denarnic. To lahko traja nekaj časa.")
+          .arg(QDir::toNativeSeparators(original)));
+    }
+    start->setText(hasWallets
+        ? wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog", "Start a separate new wallet"), "Začni z ločeno novo denarnico")
+        : wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog", "Start with current data"), "Začni z novejšimi podatki"));
+    later->setText(wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog", "Keep old data for now"), "Za zdaj obdrži stare podatke"));
+    QString nativeLanguage = QStringLiteral("English");
+    for (const auto& language : dinero::qt::i18n::AvailableLanguages()) {
+      if (language.code == languageCode) { nativeLanguage = language.nativeName; break; }
+    }
+    switchLanguage->setText(wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog", "Language"), "Jezik") + QStringLiteral(": ") + nativeLanguage);
+    if (helpButton) helpButton->setText(wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog", "Recover existing wallets"), "Obnovi obstoječe denarnice"));
+    if (acknowledge) acknowledge->setText(wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog",
+        "I understand this does not move my existing wallets or coins"),
+        "Razumem, da to ne prenese mojih obstoječih denarnic ali kovancev"));
+  };
+  updateWording();
+  choice.setDefaultButton(later);
+  choice.setEscapeButton(later);
+  while (true) {
+    choice.exec();
+    if (choice.clickedButton() != switchLanguage) break;
+    QMenu menu;
+    for (const auto& language : dinero::qt::i18n::AvailableLanguages()) {
+      QAction* action = menu.addAction(QIcon(language.flagIconPath), language.nativeName);
+      action->setData(language.code);
+      action->setCheckable(true);
+      action->setChecked(language.code == languageCode);
+    }
+    QAction* selectedLanguage = menu.exec(switchLanguage->mapToGlobal(
+        QPoint(0, switchLanguage->height())));
+    if (!selectedLanguage) { updateWording(); continue; }
+    languageCode = selectedLanguage->data().toString();
+    loadCatalog();
+    settings.setValue(dinero::qt::i18n::LanguageSettingsKey(), languageCode);
+    settings.sync();
+    updateWording();
+  }
+  if (helpButton && choice.clickedButton() == helpButton) {
+    QMessageBox::information(nullptr, wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog", "Recover an existing wallet"), "Obnova obstoječe denarnice"),
+        wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog", "Your wallet files are still in:\n%1\n\n"
+                "Do not delete this folder. A wallet with coins from before the current "
+                "snapshot needs its full history checked before its balance can be trusted. "
+                "Keep your recovery words and ask Dinero support to help recover the existing wallet. "
+                "You can reopen the app later to create a separate new wallet."),
+                "Datoteke vaše denarnice so še vedno v mapi:\n%1\n\n"
+                "Te mape ne izbrišite. Preden lahko zaupate stanju denarnice s kovanci iz časa "
+                "pred novejšim snapshotom, je treba preveriti njeno celotno zgodovino. "
+                "Ohranite obnovitvene besede in se za pomoč pri obnovi obrnite na podporo Dinero. "
+                "Aplikacijo lahko pozneje znova odprete in ustvarite ločeno novo denarnico.")
+            .arg(QDir::toNativeSeparators(original)));
+    return std::nullopt;
+  }
+  if (choice.clickedButton() != start) return original;
+
+  // Avoid adopting a daemon that started on the old datadir while the user
+  // read the dialog. No running process may be silently switched to a new
+  // wallet source.
+  if (isDaemonRunning(300)) {
+    QMessageBox::warning(nullptr, wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog", "Dinero is already running"), "Dinero že deluje"),
+        wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog", "A Dinero node started while this window was open. "
+                "Close it and reopen the wallet to start with current data."),
+                "Medtem ko je bilo to okno odprto, se je zagnalo vozlišče Dinero. "
+                "Zaprite ga in znova odprite denarnico za uporabo novejših podatkov."));
+    return std::nullopt;
+  }
+  const QDir parent = QFileInfo(original).dir();
+  const QString stem = QStringLiteral("Dinero-current-%1")
+      .arg(QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMdd-HHmmss")));
+  QString replacement;
+  for (int attempt = 0; attempt < 100; ++attempt) {
+    const QString name = attempt == 0 ? stem : stem + QStringLiteral("-%1").arg(attempt);
+    const QString candidate = parent.filePath(name);
+    const QFileInfo info(candidate);
+    if (!info.exists() && !info.isSymbolicLink()) { replacement = candidate; break; }
+  }
+  if (replacement.isEmpty() || !QDir().mkpath(replacement)) {
+    QMessageBox::critical(nullptr, wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog", "Could not create Dinero data"), "Podatkov Dinera ni bilo mogoče ustvariti"),
+        wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog", "Dinero could not create a separate data folder. The old data is untouched."),
+                "Dinero ni mogel ustvariti ločene podatkovne mape. Stari podatki so nedotaknjeni."));
+    return std::nullopt;
+  }
+  settings.setValue(QString::fromLatin1(kActiveDirKey), replacement);
+  settings.setValue(QString::fromLatin1(kUseOldDirKey), false);
+  settings.sync();
+  if (settings.status() != QSettings::NoError) {
+    QMessageBox::critical(nullptr, wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog", "Could not save Dinero data location"),
+        "Lokacije podatkov Dinera ni bilo mogoče shraniti"),
+        wording(QT_TRANSLATE_NOOP("LegacySnapshotDialog", "Dinero could not save the new data folder location. The old data is untouched."),
+                "Dinero ni mogel shraniti lokacije nove podatkovne mape. Stari podatki so nedotaknjeni."));
+    return std::nullopt;
+  }
+  return replacement;
+}
+
+// The normal launcher can adopt an already responsive daemon. After a user
+// switches wallet data folders, prove that such a daemon serves the selected
+// folder before attaching the GUI to it. A stale cookie or an older daemon
+// that cannot answer this identity request is an uncertainty, not a match.
+static bool runningDaemonMatchesDataDir(const QString& datadir) {
+  QFile cookie(QDir(datadir).filePath(QStringLiteral(".cookie")));
+  if (!cookie.open(QIODevice::ReadOnly)) return false;
+  const QByteArray secret = cookie.readAll().trimmed();
+  if (secret.isEmpty() || secret.size() > 512 ||
+      secret.contains('\r') || secret.contains('\n')) return false;
+  QTcpSocket socket;
+  socket.connectToHost(QStringLiteral("127.0.0.1"), 20998);
+  if (!socket.waitForConnected(3000)) return false;
+  const QByteArray body =
+      "{\"jsonrpc\":\"1.0\",\"id\":\"qt-data-folder\",\"method\":\"rpc.getcontext\",\"params\":[]}";
+  const QByteArray request = "POST / HTTP/1.1\r\n"
+      "Host: 127.0.0.1:20998\r\n"
+      "Authorization: Basic " + secret.toBase64() + "\r\n"
+      "Content-Type: application/json\r\n"
+      "Content-Length: " + QByteArray::number(body.size()) + "\r\n"
+      "Connection: close\r\n\r\n" + body;
+  socket.write(request);
+  if (!socket.waitForBytesWritten(3000)) return false;
+  QByteArray response;
+  QElapsedTimer timer;
+  timer.start();
+  while (timer.elapsed() < 10000 && response.size() < 131072) {
+    if (socket.waitForReadyRead(1000)) response += socket.readAll();
+    const auto headerEnd = response.indexOf("\r\n\r\n");
+    if (headerEnd < 0) continue;
+    const QByteArray header = response.left(headerEnd);
+    if (!header.startsWith("HTTP/1.1 200 ") && !header.startsWith("HTTP/1.0 200 "))
+      return false;
+    const auto reply = QJsonDocument::fromJson(response.mid(headerEnd + 4));
+    if (!reply.isObject()) continue;
+    const QString served = reply.object().value(QStringLiteral("result"))
+                               .toObject().value(QStringLiteral("datadir")).toString();
+    const QString expectedPath = QFileInfo(datadir).canonicalFilePath();
+    const QString servedPath = QFileInfo(served).canonicalFilePath();
+    if (expectedPath.isEmpty() || servedPath.isEmpty()) return false;
+#ifdef Q_OS_WIN
+    return expectedPath.compare(servedPath, Qt::CaseInsensitive) == 0;
+#else
+    return expectedPath == servedPath;
+#endif
+  }
+  return false;
+}
+
 static std::optional<dinero::qt::WalletIndexStartupMode>
 offerFullArchiveWalletIndexUpgrade(const QString& datadir) {
   using dinero::qt::WalletIndexStartupMode;
@@ -1334,12 +1597,34 @@ int main(int argc, char** argv) {
 
   // Allow override via command-line argument
   QStringList args = app.arguments();
+  bool explicitDataDir = false;
   for (int i = 1; i < args.size(); ++i) {
     if (args[i].startsWith("-datadir=")) {
       datadir = args[i].mid(9); // Extract value after "-datadir="
+      explicitDataDir = true;
       break;
     }
   }
+  if (!explicitDataDir) {
+    // This lock lives beside the default datadir, so switching to a clean
+    // sibling cannot open a gap between two desktop instances.
+    static std::unique_ptr<QLockFile> defaultDataDirLock;
+    defaultDataDirLock = std::make_unique<QLockFile>(
+        QFileInfo(datadir).dir().filePath(QStringLiteral(".dinero-qt-default.lock")));
+    defaultDataDirLock->setStaleLockTime(0);
+    if (!defaultDataDirLock->tryLock(0)) {
+      QMessageBox::information(nullptr, QStringLiteral("Dinero is already running"),
+          QStringLiteral("Another Dinero wallet is already open for this account."));
+      return 0;
+    }
+    const auto selected = selectLegacySnapshotDataDir(datadir);
+    if (!selected) return 1;
+    datadir = *selected;
+  }
+  // The legacy-data dialog can change the language before the wallet opens.
+  // Install its final choice now, before constructing the main UI. Locale,
+  // amount formatting, and recovery words remain unchanged.
+  dinero::qt::i18n::InstallTranslator(app);
 
   // Single-instance guard. dinero-qt embeds and manages a dinerod bound to
   // fixed ports (RPC 20998 / P2P 20999) against this datadir. A second GUI
@@ -1355,7 +1640,18 @@ int main(int argc, char** argv) {
   static QLockFile* singleInstanceLock =
       new QLockFile(QDir(datadir).filePath(QStringLiteral(".dinero-qt.lock")));
   singleInstanceLock->setStaleLockTime(0);
-  if (!singleInstanceLock->tryLock(0)) {
+  bool acquiredSingleInstanceLock = singleInstanceLock->tryLock(0);
+  if (!acquiredSingleInstanceLock &&
+      dinero::qt::apprestart::StartedAwaitingRestart(args)) {
+    QElapsedTimer restartLockWait;
+    restartLockWait.start();
+    while (!acquiredSingleInstanceLock &&
+           restartLockWait.elapsed() < dinero::qt::apprestart::LockWaitMilliseconds()) {
+      QThread::msleep(200);
+      acquiredSingleInstanceLock = singleInstanceLock->tryLock(0);
+    }
+  }
+  if (!acquiredSingleInstanceLock) {
     qWarning() << "Another dinero-qt instance already holds the lock for"
                << datadir << "- refusing to start a second instance";
     QMessageBox box;
@@ -1379,6 +1675,17 @@ int main(int argc, char** argv) {
   // Fail loud if a non-daemon process is squatting the RPC port (#295).
   if (!confirmRpcPortSquatter()) {
     return 0;
+  }
+  // A healthy daemon on another wallet folder must never be silently
+  // adopted after the legacy-snapshot profile switch.
+  if (!QSettings().value("data/active_dir_after_legacy_snapshot_v1").toString().isEmpty() &&
+      isDaemonRunning(300) && isDaemonHealthy(3000) &&
+      !runningDaemonMatchesDataDir(datadir)) {
+    QMessageBox::warning(nullptr, QStringLiteral("Another Dinero node is running"),
+        QStringLiteral("A Dinero node is already using the wallet connection, but its data folder "
+                       "could not be verified as the selected wallet. Close that node, then reopen Dinero. "
+                       "No wallet data was changed."));
+    return 1;
   }
 
   // An already verified v3 source needs a snapshot-free daemon launch. An
@@ -1580,6 +1887,15 @@ int main(int argc, char** argv) {
   if (daemonProcess) {
     gracefulShutdownDaemon(daemonProcess, datadir);
     delete daemonProcess;
+  }
+
+  if (dinero::qt::apprestart::RestartRequested()) {
+    const QString program = QCoreApplication::applicationFilePath();
+    const QStringList relaunchArgs =
+        dinero::qt::apprestart::RelaunchArguments(args);
+    if (!QProcess::startDetached(program, relaunchArgs)) {
+      qWarning() << "restart: relaunch failed; start Dinero manually";
+    }
   }
 
   return ret;

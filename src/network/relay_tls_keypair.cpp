@@ -22,12 +22,14 @@ namespace {
 struct EvpPkeyDeleter { void operator()(EVP_PKEY* p) const { if (p) EVP_PKEY_free(p); } };
 struct EvpCtxDeleter  { void operator()(EVP_PKEY_CTX* p) const { if (p) EVP_PKEY_CTX_free(p); } };
 struct X509Deleter    { void operator()(X509* p) const { if (p) X509_free(p); } };
+struct X509NameDeleter { void operator()(X509_NAME* p) const { if (p) X509_NAME_free(p); } };
 struct BioDeleter     { void operator()(BIO* p) const { if (p) BIO_free(p); } };
 struct BnDeleter      { void operator()(BIGNUM* p) const { if (p) BN_free(p); } };
 
 using EvpPkeyPtr = std::unique_ptr<EVP_PKEY, EvpPkeyDeleter>;
 using EvpCtxPtr  = std::unique_ptr<EVP_PKEY_CTX, EvpCtxDeleter>;
 using X509Ptr    = std::unique_ptr<X509, X509Deleter>;
+using X509NamePtr = std::unique_ptr<X509_NAME, X509NameDeleter>;
 using BioPtr     = std::unique_ptr<BIO, BioDeleter>;
 using BnPtr      = std::unique_ptr<BIGNUM, BnDeleter>;
 
@@ -114,12 +116,18 @@ bool GenerateRelayTlsKeypair(std::string* cert_pem,
         return SetErr(err, "X509_set_pubkey failed");
     }
 
-    X509_NAME* name = X509_get_subject_name(x509.get());
+    // Build a mutable name separately. Newer OpenSSL versions return a const
+    // view from X509_get_subject_name(), and mutating that view is unnecessary.
+    X509NamePtr name(X509_NAME_new());
+    if (!name) return SetErr(err, "X509_NAME_new failed");
     const auto* cn = reinterpret_cast<const unsigned char*>("localhost");
-    if (X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, cn, -1, -1, 0) != 1) {
+    if (X509_NAME_add_entry_by_txt(name.get(), "CN", MBSTRING_ASC, cn, -1, -1, 0) != 1) {
         return SetErr(err, "X509_NAME_add_entry_by_txt failed");
     }
-    if (X509_set_issuer_name(x509.get(), name) != 1) {
+    if (X509_set_subject_name(x509.get(), name.get()) != 1) {
+        return SetErr(err, "X509_set_subject_name failed");
+    }
+    if (X509_set_issuer_name(x509.get(), name.get()) != 1) {
         return SetErr(err, "X509_set_issuer_name failed");
     }
 

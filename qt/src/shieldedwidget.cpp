@@ -78,7 +78,7 @@ void ShieldedWidget::setupUI() {
     root->setSpacing(10);
 
     // ── Status banner ──
-    statusBanner_ = new QLabel("Checking shielded pool status…");
+    statusBanner_ = new QLabel(tr("Checking shielded pool status…"));
     statusBanner_->setObjectName("shieldedStatusBanner");
     statusBanner_->setStyleSheet(
         "QLabel { padding: 8px 12px; border-radius: 6px; background: #2f343c; "
@@ -88,34 +88,34 @@ void ShieldedWidget::setupUI() {
     // ── Balance + Receive (side-by-side) ──
     auto* topRow = new QHBoxLayout;
 
-    auto* balanceBox = new QGroupBox("Shielded Balance");
+    auto* balanceBox = new QGroupBox(tr("Shielded Balance"));
     {
         auto* g = new QGridLayout(balanceBox);
-        g->addWidget(new QLabel("Balance:"),     0, 0);
+        g->addWidget(new QLabel(tr("Balance:")),     0, 0);
         balanceDinLabel_ = new QLabel("—");
         balanceDinLabel_->setObjectName("shieldedBalanceDin");
         balanceDinLabel_->setStyleSheet("font-size: 18px; font-weight: 700;");
         g->addWidget(balanceDinLabel_, 0, 1);
-        g->addWidget(new QLabel("Balance (una):"), 1, 0);
+        g->addWidget(new QLabel(tr("Balance (una):")), 1, 0);
         balanceUnaLabel_ = new QLabel("—");
         g->addWidget(balanceUnaLabel_, 1, 1);
-        g->addWidget(new QLabel("Confirmed notes:"), 2, 0);
+        g->addWidget(new QLabel(tr("Confirmed notes:")), 2, 0);
         noteCountLabel_ = new QLabel("—");
         g->addWidget(noteCountLabel_, 2, 1);
-        g->addWidget(new QLabel("Pending notes:"), 3, 0);
+        g->addWidget(new QLabel(tr("Pending notes:")), 3, 0);
         pendingNoteCountLabel_ = new QLabel("—");
         g->addWidget(pendingNoteCountLabel_, 3, 1);
-        g->addWidget(new QLabel("Tree size:"),   4, 0);
+        g->addWidget(new QLabel(tr("Tree size:")),   4, 0);
         treeSizeLabel_ = new QLabel("—");
         g->addWidget(treeSizeLabel_, 4, 1);
 
-        auto* refreshBtn = new QPushButton("Refresh");
+        auto* refreshBtn = new QPushButton(tr("Refresh"));
         connect(refreshBtn, &QPushButton::clicked, this, &ShieldedWidget::refresh);
         g->addWidget(refreshBtn, 5, 0, 1, 2);
     }
     topRow->addWidget(balanceBox, /*stretch=*/1);
 
-    auto* receiveBox = new QGroupBox("Receive Address");
+    auto* receiveBox = new QGroupBox(tr("Receive Address"));
     {
         auto* v = new QVBoxLayout(receiveBox);
         addressLabel_ = new QLabel("—");
@@ -128,17 +128,17 @@ void ShieldedWidget::setupUI() {
         v->addWidget(addressLabel_);
 
         auto* btnRow = new QHBoxLayout;
-        copyAddressBtn_ = new QPushButton("Copy");
+        copyAddressBtn_ = new QPushButton(tr("Copy"));
         connect(copyAddressBtn_, &QPushButton::clicked, this, &ShieldedWidget::onCopyAddressClicked);
         btnRow->addWidget(copyAddressBtn_);
-        newAddressBtn_ = new QPushButton("New (j+1)");
+        newAddressBtn_ = new QPushButton(tr("New (j+1)"));
         connect(newAddressBtn_, &QPushButton::clicked, this, &ShieldedWidget::onNewAddressClicked);
         btnRow->addWidget(newAddressBtn_);
         btnRow->addStretch();
         v->addLayout(btnRow);
 
         // Address book — recall any j we've issued in this session.
-        v->addWidget(new QLabel("Issued addresses:"));
+        v->addWidget(new QLabel(tr("Issued addresses:")));
         addressBookCombo_ = new QComboBox;
         addressBookCombo_->setMinimumContentsLength(40);
         connect(addressBookCombo_,
@@ -160,19 +160,19 @@ void ShieldedWidget::setupUI() {
     fundMovingLayout->setSpacing(10);
 
     // ── Shield ──
-    auto* shieldBox = new QGroupBox("Shield (transparent → shielded)");
+    auto* shieldBox = new QGroupBox(tr("Shield (transparent → shielded)"));
     {
         auto* h = new QHBoxLayout(shieldBox);
-        h->addWidget(new QLabel("Amount (DIN):"));
+        h->addWidget(new QLabel(tr("Amount (DIN):")));
         shieldAmountEdit_ = new QLineEdit;
         shieldAmountEdit_->setPlaceholderText("1.0");
         h->addWidget(shieldAmountEdit_);
-        h->addWidget(new QLabel("Fee (una):"));
+        h->addWidget(new QLabel(tr("Fee (una):")));
         shieldFeeEdit_ = new QLineEdit;
-        shieldFeeEdit_->setPlaceholderText("Auto-sized");
+        shieldFeeEdit_->setPlaceholderText(tr("Auto-sized"));
         shieldFeeEdit_->setMaximumWidth(120);
         h->addWidget(shieldFeeEdit_);
-        shieldBtn_ = new QPushButton("Shield");
+        shieldBtn_ = new QPushButton(tr("Shield"));
         shieldBtn_->setObjectName("shieldButton");
         connect(shieldBtn_, &QPushButton::clicked, this, &ShieldedWidget::onShieldClicked);
         h->addWidget(shieldBtn_);
@@ -186,42 +186,42 @@ void ShieldedWidget::setupUI() {
     // ── Transfer (any-recipient) ──
     // Title/placeholder are made network-aware in applyActiveHrp() once the
     // receive address loads; the generic title here is the pre-load fallback.
-    transferBox_ = new QGroupBox("Send shielded");
+    transferBox_ = new QGroupBox(tr("Send shielded"));
     QGroupBox* transferBox = transferBox_;
     {
         auto* g = new QGridLayout(transferBox);
-        g->addWidget(new QLabel("Recipient:"), 0, 0);
+        g->addWidget(new QLabel(tr("Recipient:")), 0, 0);
         transferAddressEdit_ = new QLineEdit;
-        transferAddressEdit_->setPlaceholderText("shielded address");
+        transferAddressEdit_->setPlaceholderText(tr("shielded address"));
         g->addWidget(transferAddressEdit_, 0, 1, 1, 4);
 
-        g->addWidget(new QLabel("Amount (DIN):"), 1, 0);
+        g->addWidget(new QLabel(tr("Amount (DIN):")), 1, 0);
         transferAmountDinEdit_ = new QLineEdit;
         transferAmountDinEdit_->setPlaceholderText("0.7");
         connect(transferAmountDinEdit_, &QLineEdit::textEdited,
                 this, &ShieldedWidget::onAmountDinChanged);
         g->addWidget(transferAmountDinEdit_, 1, 1);
 
-        g->addWidget(new QLabel("Amount (una):"), 1, 2);
+        g->addWidget(new QLabel(tr("Amount (una):")), 1, 2);
         transferAmountUnaEdit_ = new QLineEdit;
         transferAmountUnaEdit_->setPlaceholderText("70000000");
         connect(transferAmountUnaEdit_, &QLineEdit::textEdited,
                 this, &ShieldedWidget::onAmountUnaChanged);
         g->addWidget(transferAmountUnaEdit_, 1, 3);
 
-        g->addWidget(new QLabel("Fee (una):"), 2, 0);
+        g->addWidget(new QLabel(tr("Fee (una):")), 2, 0);
         transferFeeEdit_ = new QLineEdit;
-        transferFeeEdit_->setPlaceholderText("Auto-sized");
+        transferFeeEdit_->setPlaceholderText(tr("Auto-sized"));
         transferFeeEdit_->setMaximumWidth(120);
         g->addWidget(transferFeeEdit_, 2, 1);
 
-        g->addWidget(new QLabel("Memo (≤512B):"), 2, 2);
+        g->addWidget(new QLabel(tr("Memo (≤512B):")), 2, 2);
         transferMemoEdit_ = new QLineEdit;
-        transferMemoEdit_->setPlaceholderText("optional UTF-8 memo");
+        transferMemoEdit_->setPlaceholderText(tr("optional UTF-8 memo"));
         transferMemoEdit_->setMaxLength(512);
         g->addWidget(transferMemoEdit_, 2, 3);
 
-        transferBtn_ = new QPushButton("Send");
+        transferBtn_ = new QPushButton(tr("Send"));
         transferBtn_->setObjectName("shieldedTransferButton");
         connect(transferBtn_, &QPushButton::clicked, this, &ShieldedWidget::onTransferClicked);
         g->addWidget(transferBtn_, 2, 4);
@@ -235,23 +235,23 @@ void ShieldedWidget::setupUI() {
     fundMovingLayout->addWidget(transferBox);
 
     // ── Unshield ──
-    auto* unshieldBox = new QGroupBox("Unshield note (shielded → transparent)");
+    auto* unshieldBox = new QGroupBox(tr("Unshield note (shielded → transparent)"));
     {
         auto* v = new QVBoxLayout(unshieldBox);
         auto* h = new QHBoxLayout;
-        h->addWidget(new QLabel("Minimum note (DIN):"));
+        h->addWidget(new QLabel(tr("Minimum note (DIN):")));
         unshieldAmountEdit_ = new QLineEdit;
         unshieldAmountEdit_->setPlaceholderText("0.5");
-        unshieldAmountEdit_->setToolTip(
+        unshieldAmountEdit_->setToolTip(tr(
             "The daemon selects the smallest confirmed shielded note at least this large. "
-            "The full selected note minus fee is sent to a fresh wallet Taproot address.");
+            "The full selected note minus fee is sent to a fresh wallet Taproot address."));
         h->addWidget(unshieldAmountEdit_);
-        h->addWidget(new QLabel("Fee (una):"));
+        h->addWidget(new QLabel(tr("Fee (una):")));
         unshieldFeeEdit_ = new QLineEdit;
-        unshieldFeeEdit_->setPlaceholderText("Auto-sized");
+        unshieldFeeEdit_->setPlaceholderText(tr("Auto-sized"));
         unshieldFeeEdit_->setMaximumWidth(120);
         h->addWidget(unshieldFeeEdit_);
-        unshieldBtn_ = new QPushButton("Unshield");
+        unshieldBtn_ = new QPushButton(tr("Unshield"));
         unshieldBtn_->setObjectName("unshieldButton");
         connect(unshieldBtn_, &QPushButton::clicked, this, &ShieldedWidget::onUnshieldClicked);
         h->addWidget(unshieldBtn_);
@@ -260,7 +260,7 @@ void ShieldedWidget::setupUI() {
         unshieldResultLabel_->setStyleSheet("color: #888;");
         h->addWidget(unshieldResultLabel_, /*stretch=*/2);
         v->addLayout(h);
-        unshieldAddressLabel_ = new QLabel("To: fresh wallet Taproot address generated by daemon at submit time");
+        unshieldAddressLabel_ = new QLabel(tr("To: fresh wallet Taproot address generated by daemon at submit time"));
         unshieldAddressLabel_->setStyleSheet("color: #8f98a3;");
         unshieldAddressLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
         unshieldAddressLabel_->setWordWrap(true);
@@ -270,7 +270,7 @@ void ShieldedWidget::setupUI() {
     root->addWidget(fundMovingSurface_);
 
     // ── Notes table ──
-    auto* notesBox = new QGroupBox("Shielded Notes");
+    auto* notesBox = new QGroupBox(tr("Shielded Notes"));
     {
         auto* v = new QVBoxLayout(notesBox);
         notesTable_ = new QTableWidget(0, 4);
@@ -292,7 +292,7 @@ void ShieldedWidget::setupUI() {
     root->addWidget(notesBox);
 
     // ── Activity log ──
-    auto* logBox = new QGroupBox("Activity");
+    auto* logBox = new QGroupBox(tr("Activity"));
     {
         auto* v = new QVBoxLayout(logBox);
         activityLog_ = new QTextEdit;
@@ -339,12 +339,12 @@ void ShieldedWidget::updateFundMovingUi() {
         return;
     }
     if (shieldedActive_ && walletUnlocked_) {
-        statusBanner_->setText("✅ Private payments enabled by the daemon");
+        statusBanner_->setText(tr("✅ Private payments enabled by the daemon"));
         statusBanner_->setStyleSheet(
             "QLabel { padding: 8px 12px; border-radius: 6px; background: #2d4a32; "
             "color: #b8e0bf; font-weight: 600; }");
     } else if (shieldedActive_) {
-        statusBanner_->setText("🔒 Wallet is locked — unlock wallet to continue with private payments.");
+        statusBanner_->setText(tr("🔒 Wallet is locked — unlock wallet to continue with private payments."));
         statusBanner_->setStyleSheet(
             "QLabel { padding: 8px 12px; border-radius: 6px; background: #4a402d; "
             "color: #e0d2b8; font-weight: 600; }");
@@ -420,7 +420,7 @@ void ShieldedWidget::setWalletScope(const QString& walletName) {
     if (transferBtn_) transferBtn_->setEnabled(shieldedActive_);
     if (unshieldResultLabel_) unshieldResultLabel_->clear();
     if (unshieldAddressLabel_) {
-        unshieldAddressLabel_->setText("To: fresh wallet Taproot address generated by daemon at submit time");
+        unshieldAddressLabel_->setText(tr("To: fresh wallet Taproot address generated by daemon at submit time"));
     }
 
     loadAddressBook();
@@ -638,30 +638,30 @@ void ShieldedWidget::onShieldClicked() {
     // trigger to this slot.
     if (!shieldedActive_) return;
     if (!walletUnlocked_) {
-        shieldResultLabel_->setText("Wallet is locked — unlock wallet to continue.");
+        shieldResultLabel_->setText(tr("Wallet is locked — unlock wallet to continue."));
         return;
     }
     if (shieldJournalStage_ == "submitting") {
         clearOperationJournal("shield");
         shieldSubmitting_ = false;
-        shieldBtn_->setText("Shield");
-        shieldResultLabel_->setText(
-            "Previous uncertain attempt cleared — review before submitting again.");
+        shieldBtn_->setText(tr("Shield"));
+        shieldResultLabel_->setText(tr(
+            "Previous uncertain attempt cleared — review before submitting again."));
         updateFundMovingUi();
         return;
     }
     if (shieldJournalStage_ == "accepted") {
         clearOperationJournal("shield");
         shieldAmountEdit_->clear();
-        shieldResultLabel_->setText("ready for a new shield operation");
-        shieldBtn_->setText("Shield");
+        shieldResultLabel_->setText(tr("ready for a new shield operation"));
+        shieldBtn_->setText(tr("Shield"));
         return;
     }
     if (!rpc_ || !shieldedActive_ ||
         !ShieldedTransferPolicy::maySubmit(shieldJournalStage_, shieldSubmitting_)) return;
     qint64 amountUna = 0;
     if (!ShieldedTransferPolicy::parseDinToUna(shieldAmountEdit_->text(), &amountUna)) {
-        shieldResultLabel_->setText("invalid amount");
+        shieldResultLabel_->setText(tr("invalid amount"));
         return;
     }
     qint64 fee = 0;
@@ -669,13 +669,13 @@ void ShieldedWidget::onShieldClicked() {
     if (!shieldFeeEdit_->text().trimmed().isEmpty()) {
         fee = shieldFeeEdit_->text().toLongLong(&ok);
         if (!ok || fee <= 0) {
-            shieldResultLabel_->setText("invalid fee");
+            shieldResultLabel_->setText(tr("invalid fee"));
             return;
         }
     }
     const QString feeReview = fee > 0 ? QString::number(fee) + " una" : "Auto-sized by local prover";
     const auto answer = QMessageBox::question(
-        this, "Review Shield Operation",
+        this, tr("Review Shield Operation"),
         QString("Move transparent funds into this wallet's shielded pool.\n\n"
                 "Amount: %1\nNetwork fee: %2\n\n"
                 "Proving and submission are one operation and cannot be undone.")
@@ -684,14 +684,14 @@ void ShieldedWidget::onShieldClicked() {
     if (answer != QMessageBox::Yes) return;
     if (!saveOperationJournal("shield", "authorized", amountUna, fee) ||
         !saveOperationJournal("shield", "submitting", amountUna, fee)) {
-        shieldResultLabel_->setText("could not persist authorization; nothing submitted");
+        shieldResultLabel_->setText(tr("could not persist authorization; nothing submitted"));
         return;
     }
     setShieldSubmitting(true);
     QJsonObject params{{"amount_una", amountUna}};
     if (fee > 0) params.insert("fee_una", fee);
     rpc_->callNamed("wallet.shield", params);
-    shieldResultLabel_->setText("proving and submitting…");
+    shieldResultLabel_->setText(tr("proving and submitting…"));
 }
 
 void ShieldedWidget::onTransferClicked() {
@@ -700,15 +700,15 @@ void ShieldedWidget::onTransferClicked() {
     // trigger to this slot.
     if (!shieldedActive_) return;
     if (!walletUnlocked_) {
-        transferResultLabel_->setText("Wallet is locked — unlock wallet to continue.");
+        transferResultLabel_->setText(tr("Wallet is locked — unlock wallet to continue."));
         return;
     }
     if (transferJournalStage_ == "submitting") {
         clearTransferJournal();
         transferSubmitting_ = false;
-        transferBtn_->setText("Send");
-        transferResultLabel_->setText(
-            "Previous uncertain attempt cleared — review before submitting again.");
+        transferBtn_->setText(tr("Send"));
+        transferResultLabel_->setText(tr(
+            "Previous uncertain attempt cleared — review before submitting again."));
         updateFundMovingUi();
         return;
     }
@@ -718,40 +718,40 @@ void ShieldedWidget::onTransferClicked() {
         transferAmountUnaEdit_->clear();
         transferAmountDinEdit_->clear();
         transferMemoEdit_->clear();
-        transferResultLabel_->setText("ready for a new private payment");
-        transferBtn_->setText("Send");
+        transferResultLabel_->setText(tr("ready for a new private payment"));
+        transferBtn_->setText(tr("Send"));
         return;
     }
     if (!rpc_ || !shieldedActive_ ||
         !ShieldedTransferPolicy::maySubmit(transferJournalStage_, transferSubmitting_)) return;
     const QString addr = transferAddressEdit_->text().trimmed();
     if (addr.isEmpty()) {
-        transferResultLabel_->setText("enter recipient address");
+        transferResultLabel_->setText(tr("enter recipient address"));
         return;
     }
     const QString expectedHrp = hrpFromAddress(currentAddress_);
     if (expectedHrp == "unknown" || hrpFromAddress(addr) != expectedHrp) {
-        transferResultLabel_->setText("recipient is not a valid address for the active network");
+        transferResultLabel_->setText(tr("recipient is not a valid address for the active network"));
         return;
     }
     bool ok = false;
     qint64 amountUna = transferAmountUnaEdit_->text().toLongLong(&ok);
     if (!ok || amountUna <= 0) {
-        transferResultLabel_->setText("invalid amount_una");
+        transferResultLabel_->setText(tr("invalid amount_una"));
         return;
     }
     qint64 fee = 0;
     if (!transferFeeEdit_->text().trimmed().isEmpty()) {
         fee = transferFeeEdit_->text().toLongLong(&ok);
         if (!ok || fee <= 0) {
-            transferResultLabel_->setText("invalid fee");
+            transferResultLabel_->setText(tr("invalid fee"));
             return;
         }
     }
     const QString memo = transferMemoEdit_->text();
     const QString feeReview = fee > 0 ? QString::number(fee) + " una" : "Auto-sized by local prover";
     const auto answer = QMessageBox::question(
-        this, "Review Private Payment",
+        this, tr("Review Private Payment"),
         QString("Recipient:\n%1\n\nAmount: %2\nNetwork fee: %3\n\n"
                 "The wallet may select multiple shielded notes. Proving and submission "
                 "are one operation and cannot be undone.")
@@ -759,11 +759,11 @@ void ShieldedWidget::onTransferClicked() {
         QMessageBox::Cancel | QMessageBox::Yes, QMessageBox::Cancel);
     if (answer != QMessageBox::Yes) return;
     if (!saveTransferJournal("authorized", addr, amountUna, memo)) {
-        transferResultLabel_->setText("could not persist authorization; nothing submitted");
+        transferResultLabel_->setText(tr("could not persist authorization; nothing submitted"));
         return;
     }
     if (!saveTransferJournal("submitting", addr, amountUna, memo)) {
-        transferResultLabel_->setText("could not persist submission state; nothing submitted");
+        transferResultLabel_->setText(tr("could not persist submission state; nothing submitted"));
         return;
     }
     QJsonObject p{
@@ -774,7 +774,7 @@ void ShieldedWidget::onTransferClicked() {
     if (!memo.isEmpty()) p.insert("memo", memo);
     setTransferSubmitting(true);
     rpc_->callNamed("wallet.transfer", p);
-    transferResultLabel_->setText("proving and submitting…");
+    transferResultLabel_->setText(tr("proving and submitting…"));
 }
 
 void ShieldedWidget::onUnshieldClicked() {
@@ -783,30 +783,30 @@ void ShieldedWidget::onUnshieldClicked() {
     // trigger to this slot.
     if (!shieldedActive_) return;
     if (!walletUnlocked_) {
-        unshieldResultLabel_->setText("Wallet is locked — unlock wallet to continue.");
+        unshieldResultLabel_->setText(tr("Wallet is locked — unlock wallet to continue."));
         return;
     }
     if (unshieldJournalStage_ == "submitting") {
         clearOperationJournal("unshield");
         unshieldSubmitting_ = false;
-        unshieldBtn_->setText("Unshield");
-        unshieldResultLabel_->setText(
-            "Previous uncertain attempt cleared — review before submitting again.");
+        unshieldBtn_->setText(tr("Unshield"));
+        unshieldResultLabel_->setText(tr(
+            "Previous uncertain attempt cleared — review before submitting again."));
         updateFundMovingUi();
         return;
     }
     if (unshieldJournalStage_ == "accepted") {
         clearOperationJournal("unshield");
         unshieldAmountEdit_->clear();
-        unshieldResultLabel_->setText("ready for a new unshield operation");
-        unshieldBtn_->setText("Unshield");
+        unshieldResultLabel_->setText(tr("ready for a new unshield operation"));
+        unshieldBtn_->setText(tr("Unshield"));
         return;
     }
     if (!rpc_ || !shieldedActive_ ||
         !ShieldedTransferPolicy::maySubmit(unshieldJournalStage_, unshieldSubmitting_)) return;
     qint64 amountUna = 0;
     if (!ShieldedTransferPolicy::parseDinToUna(unshieldAmountEdit_->text(), &amountUna)) {
-        unshieldResultLabel_->setText("invalid amount");
+        unshieldResultLabel_->setText(tr("invalid amount"));
         return;
     }
     qint64 fee = 0;
@@ -814,13 +814,13 @@ void ShieldedWidget::onUnshieldClicked() {
     if (!unshieldFeeEdit_->text().trimmed().isEmpty()) {
         fee = unshieldFeeEdit_->text().toLongLong(&ok);
         if (!ok || fee <= 0) {
-            unshieldResultLabel_->setText("invalid fee");
+            unshieldResultLabel_->setText(tr("invalid fee"));
             return;
         }
     }
     const QString feeReview = fee > 0 ? QString::number(fee) + " una" : "Auto-sized by local prover";
     const auto answer = QMessageBox::question(
-        this, "Review Unshield Operation",
+        this, tr("Review Unshield Operation"),
         QString("Minimum note requested: %1\nNetwork fee: %2\n\n"
                 "The daemon spends the smallest confirmed note at least this large. "
                 "The entire selected note, minus the fee, returns to a new Taproot "
@@ -830,14 +830,14 @@ void ShieldedWidget::onUnshieldClicked() {
     if (answer != QMessageBox::Yes) return;
     if (!saveOperationJournal("unshield", "authorized", amountUna, fee) ||
         !saveOperationJournal("unshield", "submitting", amountUna, fee)) {
-        unshieldResultLabel_->setText("could not persist authorization; nothing submitted");
+        unshieldResultLabel_->setText(tr("could not persist authorization; nothing submitted"));
         return;
     }
     setUnshieldSubmitting(true);
     QJsonObject params{{"amount_una", amountUna}};
     if (fee > 0) params.insert("fee_una", fee);
     rpc_->callNamed("wallet.unshield", params);
-    unshieldResultLabel_->setText("proving and submitting…");
+    unshieldResultLabel_->setText(tr("proving and submitting…"));
 }
 
 void ShieldedWidget::updateBalanceLabels(const QJsonValue& result) {
@@ -1003,7 +1003,7 @@ void ShieldedWidget::onRpcResult(const QString& method, const QJsonValue& result
             saveOperationJournal("shield", "accepted",
                                  s.value(base + "/amountUna").toLongLong(),
                                  s.value(base + "/feeUna").toLongLong(), txid);
-            shieldBtn_->setText("New Shield Operation");
+            shieldBtn_->setText(tr("New Shield Operation"));
             shieldResultLabel_->setText("ok — txid " + txid.left(16) + "…");
             appendLog(activityLog_, "[shield] " + txid);
             refresh();
@@ -1055,7 +1055,7 @@ void ShieldedWidget::onRpcResult(const QString& method, const QJsonValue& result
             saveOperationJournal("unshield", "accepted",
                                  s.value(base + "/amountUna").toLongLong(),
                                  s.value(base + "/feeUna").toLongLong(), txid);
-            unshieldBtn_->setText("New Unshield Operation");
+            unshieldBtn_->setText(tr("New Unshield Operation"));
             const QString recipient = obj.value("recipient_address").toString();
             const qint64 recipientUna = obj.value("recipient_una").toVariant().toLongLong();
             const QString amountText = MoneyDinFromUna(recipientUna);
@@ -1118,18 +1118,18 @@ void ShieldedWidget::onRpcError(const QString& method, int code, const QString& 
         // the transaction before the response was lost. Keep `submitting`
         // durable and refuse an automatic or click-driven retry.
         setTransferSubmitting(true);
-        transferResultLabel_->setText(
-            "outcome uncertain — refresh notes and transaction history before retrying");
+        transferResultLabel_->setText(tr(
+            "outcome uncertain — refresh notes and transaction history before retrying"));
     }
     if (method == "wallet.shield") {
         setShieldSubmitting(true);
-        shieldResultLabel_->setText(
-            "outcome uncertain — inspect transaction history before starting another shield");
+        shieldResultLabel_->setText(tr(
+            "outcome uncertain — inspect transaction history before starting another shield"));
     }
     if (method == "wallet.unshield") {
         setUnshieldSubmitting(true);
-        unshieldResultLabel_->setText(
-            "outcome uncertain — inspect notes and transaction history before retrying");
+        unshieldResultLabel_->setText(tr(
+            "outcome uncertain — inspect notes and transaction history before retrying"));
     }
 }
 
@@ -1144,7 +1144,7 @@ void ShieldedWidget::rejectFundMovingRequestForLockedWallet(const QString& metho
                             s.value(base + "/amountUna").toLongLong(),
                             s.value(base + "/memo").toString(), {},
                             s.value(base + "/feeUna").toLongLong());
-        transferBtn_->setText("Review and Retry");
+        transferBtn_->setText(tr("Review and Retry"));
         transferResultLabel_->setText(guidance);
     } else {
         const QString operation = method == "wallet.shield" ? "shield" : "unshield";
@@ -1156,7 +1156,7 @@ void ShieldedWidget::rejectFundMovingRequestForLockedWallet(const QString& metho
                              s.value(base + "/feeUna").toLongLong());
         QPushButton* button = operation == "shield" ? shieldBtn_ : unshieldBtn_;
         QLabel* result = operation == "shield" ? shieldResultLabel_ : unshieldResultLabel_;
-        button->setText("Review and Retry");
+        button->setText(tr("Review and Retry"));
         result->setText(guidance);
     }
 
@@ -1168,7 +1168,7 @@ void ShieldedWidget::setTransferSubmitting(bool submitting) {
     transferSubmitting_ = submitting;
     if (transferBtn_) {
         transferBtn_->setEnabled(shieldedActive_ && walletUnlocked_ && !submitting);
-        if (submitting) transferBtn_->setText("Proving and submitting…");
+        if (submitting) transferBtn_->setText(tr("Proving and submitting…"));
     }
 }
 
@@ -1187,8 +1187,8 @@ bool ShieldedWidget::saveTransferJournal(const QString& stage, const QString& ad
     s.sync();
     transferJournalStage_ = stage;
     if (transferBtn_) {
-        if (stage == "rejected") transferBtn_->setText("Review and Retry");
-        else if (stage == "accepted") transferBtn_->setText("New Private Payment");
+        if (stage == "rejected") transferBtn_->setText(tr("Review and Retry"));
+        else if (stage == "accepted") transferBtn_->setText(tr("New Private Payment"));
     }
     return s.status() == QSettings::NoError && s.value(base + "/stage").toString() == stage;
 }
@@ -1210,15 +1210,15 @@ void ShieldedWidget::loadTransferJournal() {
     transferMemoEdit_->setText(s.value(base + "/memo").toString());
     if (transferJournalStage_ == "submitting") {
         transferSubmitting_ = false;
-        transferBtn_->setText("Review Outcome");
-        transferResultLabel_->setText(
+        transferBtn_->setText(tr("Review Outcome"));
+        transferResultLabel_->setText(tr(
             "Previous outcome is uncertain — inspect notes and transaction history, then click "
-            "Review Outcome to clear this warning. Nothing will be sent by that click.");
+            "Review Outcome to clear this warning. Nothing will be sent by that click."));
     } else if (transferJournalStage_ == "rejected") {
-        transferBtn_->setText("Review and Retry");
-        transferResultLabel_->setText("previous private payment was rejected; review before explicit retry");
+        transferBtn_->setText(tr("Review and Retry"));
+        transferResultLabel_->setText(tr("previous private payment was rejected; review before explicit retry"));
     } else if (transferJournalStage_ == "accepted") {
-        transferBtn_->setText("New Private Payment");
+        transferBtn_->setText(tr("New Private Payment"));
         transferResultLabel_->setText("accepted — txid " + s.value(base + "/txid").toString());
     }
 }
@@ -1227,14 +1227,14 @@ void ShieldedWidget::setShieldSubmitting(bool submitting) {
     shieldSubmitting_ = submitting;
     if (!shieldBtn_) return;
     shieldBtn_->setEnabled(shieldedActive_ && walletUnlocked_ && !submitting);
-    if (submitting) shieldBtn_->setText("Proving and submitting…");
+    if (submitting) shieldBtn_->setText(tr("Proving and submitting…"));
 }
 
 void ShieldedWidget::setUnshieldSubmitting(bool submitting) {
     unshieldSubmitting_ = submitting;
     if (!unshieldBtn_) return;
     unshieldBtn_->setEnabled(shieldedActive_ && walletUnlocked_ && !submitting);
-    if (submitting) unshieldBtn_->setText("Proving and submitting…");
+    if (submitting) unshieldBtn_->setText(tr("Proving and submitting…"));
 }
 
 bool ShieldedWidget::saveOperationJournal(const QString& operation,
@@ -1280,13 +1280,13 @@ void ShieldedWidget::loadOperationJournals() {
         const qint64 feeUna = s.value(base + "feeUna").toLongLong();
         if (feeEdit) feeEdit->setText(feeUna > 0 ? QString::number(feeUna) : QString());
         if (stage == "submitting") {
-            if (button) button->setText("Review Outcome");
-            if (resultLabel) resultLabel->setText(
+            if (button) button->setText(tr("Review Outcome"));
+            if (resultLabel) resultLabel->setText(tr(
                 "Previous outcome is uncertain — inspect notes and transaction history, then click "
-                "Review Outcome to clear this warning. Nothing will be sent by that click.");
+                "Review Outcome to clear this warning. Nothing will be sent by that click."));
         } else if (stage == "rejected") {
-            if (button) button->setText("Review and Retry");
-            if (resultLabel) resultLabel->setText("previous operation was rejected; review before retrying");
+            if (button) button->setText(tr("Review and Retry"));
+            if (resultLabel) resultLabel->setText(tr("previous operation was rejected; review before retrying"));
         } else if (stage == "accepted") {
             if (button) button->setText(operation == "shield"
                                            ? "New Shield Operation"

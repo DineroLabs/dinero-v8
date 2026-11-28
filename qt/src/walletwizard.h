@@ -11,6 +11,7 @@
 #include <QGridLayout>
 #include <QButtonGroup>
 #include <QTimer>
+#include <QProgressBar>
 
 class RpcClient;
 class ConnectionManager;
@@ -46,10 +47,12 @@ class CreateSeedPage : public QWizardPage {
 public:
   explicit CreateSeedPage(ConnectionManager* connMgr, QWidget* parent = nullptr);
   void initializePage() override;
+  void cleanupPage() override;
   bool validatePage() override;
   int nextId() const override;
   
   QString getSeedPhrase() const { return seedPhrase_; }
+  bool createRequestInFlight() const { return rpcPending_; }
   // The user has just proved they hold the words (ConfirmSeedPage): the node
   // records it, and the Wallet page's "recovery words are not confirmed"
   // reminder does not appear for this wallet. If the request is lost, the
@@ -58,21 +61,31 @@ public:
   
 private Q_SLOTS:
   void onGenerateSeed();
+  void onManualRetry();
   void onRevealClicked();
+  void refreshHistoryProgress();
   
 private:
   QString formatSeedPhrase(const QString& seed) const;
   void setSeedVisible(bool visible);
+  void showCreationRefusal(const QString& code, bool retryable,
+                           const QString& error, bool confirmedNoWallet);
   ConnectionManager* connMgr_;
   QString seedPhrase_;
+  QLabel* warningBanner_;
   QLabel* lblSeed_;
+  QLabel* lblHistoryProgress_;
+  QProgressBar* historyProgress_;
   QPushButton* btnReveal_;
   QPushButton* btnRetry_;
   QCheckBox* chkCopied_;
   QTimer* rpcTimeout_;
+  QTimer* creationRetryTimer_;
+  QTimer* historyProgressTimer_;
   bool seedGenerated_;
   bool seedVisible_;
   bool rpcPending_;
+  bool historyRequestPending_;
 };
 
 // ============================================================================

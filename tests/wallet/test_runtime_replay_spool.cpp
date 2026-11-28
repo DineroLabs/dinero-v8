@@ -143,6 +143,9 @@ TEST(RuntimeReplaySpool,BoundedScanPagesKeepExactCoverageAndReturnNoInterruptedP
         }
     }
     EXPECT_EQ(count,600u);EXPECT_EQ(pages,3u);
+    const auto prepared=spool.StatementsPrepared();
+    EXPECT_EQ(spool.NextBatch('m',Bytes{'m'}).size(),256u);
+    EXPECT_EQ(spool.StatementsPrepared(),prepared);
     sqlite3_trace_v2(db,SQLITE_TRACE_ROW,[](unsigned kind,void* context,void*,void*) {
         if(kind==SQLITE_TRACE_ROW)sqlite3_interrupt(static_cast<sqlite3*>(context));return 0;
     },db);

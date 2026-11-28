@@ -8620,10 +8620,20 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             if(!verifier)return refuse("the history verifier could not be prepared","checkpoint "+std::to_string(target.height));
             std::cerr<<"[OrchardHistory] "<<stamp()<<" wallet replay: building from the verified checkpoint "<<target.height
                      <<" (bodies "<<target.activation<<" to "<<base->first<<")"<<std::endl;
+            const auto prefix_started=std::chrono::steady_clock::now();
             auto replay=RuntimeAccountReplay::BuildWithActivationPrefix(std::move(material),[&](uint32_t height){
+                RuntimeReplayCancellationScope::ThrowIfCancelled();
                 auto body=std::make_shared<const OrchardBlockCandidate>(OrchardBlockCandidate::DecodeExact(history->Body(height)));
                 const auto now=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
                 auto checked=verifier->Append(*body,uint64_t(now));
+                const auto verified=height-target.activation+1;
+                if(verified==1 || verified%2048==0 || height==base->first){
+                    const auto elapsed=std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::steady_clock::now()-prefix_started).count();
+                    std::cerr<<"[OrchardHistory] "<<stamp()<<" wallet replay: verified prefix "<<verified
+                             <<"/"<<(base->first-target.activation+1)<<" through "<<height
+                             <<" in "<<elapsed<<" s"<<std::endl;
+                }
                 return RuntimeAccountReplay::VerifiedPrefixStep{std::move(body),std::move(checked)};
             });
             // Retained even when this attempt loses the race to a new block:

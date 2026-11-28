@@ -9,7 +9,7 @@ file(READ "${SOURCE_FILE}" source)
 file(READ "${HEADER_FILE}" header)
 
 foreach(required
-    "auto* blocksCard = new QGroupBox(\"Latest Blocks\")"
+    "auto* blocksCard = new QGroupBox(tr(\"Latest Blocks\"))"
     "overviewBlocksLayout_->addWidget(tblRecentBlocks_)"
     "connect(btnOpenExplorer, &QPushButton::clicked, this, &MainWindow::showExplorerWindow)"
     "explorerWindow_ = makeScrollableTab(explorer)"

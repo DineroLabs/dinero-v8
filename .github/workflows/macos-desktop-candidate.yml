@@ -34,7 +34,7 @@ concurrency:
   group: macos-desktop-candidate-${{ inputs.candidate_source || github.ref }}
   cancel-in-progress: false
 env:
-  SV2_REF: 0a3127d511989f99e753ce7bcfe618067183b3c8
+  SV2_REF: 4f3d0c64b903c521c1fedbd4b7f22ab9394f677f
 jobs:
   contract:
     runs-on: ubuntu-24.04
@@ -132,7 +132,7 @@ jobs:
             echo 'variant=${{ matrix.variant }}'
             echo 'qt_version=${{ matrix.qt }}'
             echo 'deployment_target=13.0'
-            echo 'snapshot_inputs=signed H167856 full-v6 primary from pinned HTTPS inputs; H163965/H155650/H153578/H153051/H148375/H99677/H65300 recovery bases'
+            echo 'snapshot_inputs=signed H169068 full-v6 primary from pinned HTTPS inputs; H167856/H163965/H155650/H153578/H153051/H148375/H99677/H65300 recovery bases'
             echo "source_commit=$SOURCE_HEAD"
             echo "tooling_commit=$TOOLING_HEAD"
             echo "sv2_commit=$SV2_HEAD"
@@ -229,6 +229,11 @@ jobs:
             --manifest-url "$SNAPSHOT_MANIFEST_URL" \
             --destination release-inputs
           PATH="$OPENSSL_BIN:$PATH" python3 packaging/snapshot/fetch_desktop_primary.py \
+            --fallback-height 167856 \
+            --payload-url 'https://github.com/DineroLabs/dinero-v8/releases/download/v8.2.6/dinero-assumeutxo-167856-v6-full.dat' \
+            --manifest-url 'https://github.com/DineroLabs/dinero-v8/releases/download/v8.2.6/dinero-assumeutxo-167856-v6-full.dat.publisher.manifest.json' \
+            --destination release-inputs
+          PATH="$OPENSSL_BIN:$PATH" python3 packaging/snapshot/fetch_desktop_primary.py \
             --fallback-height 163965 \
             --payload-url 'https://github.com/DineroLabs/dinero-v8/releases/download/v8.2.5/dinero-assumeutxo-163965-v6-full.dat' \
             --manifest-url 'https://github.com/DineroLabs/dinero-v8/releases/download/v8.2.5/dinero-assumeutxo-163965-v6-full.dat.publisher.manifest.json' \
@@ -263,8 +268,8 @@ jobs:
             --pattern utxo-snapshot-65300.dat.manifest.json \
             --dir release-inputs
           {
-            echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-167856-v6-full.dat"
-            echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-167856-v6-full.dat.manifest.json"
+            echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-169068-v6-full.dat"
+            echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-169068-v6-full.dat.manifest.json"
             echo "DINERO_SNAPSHOT_RECENT_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-153051-v6-full.dat"
             echo "DINERO_SNAPSHOT_RECENT_FALLBACK_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-153051-v6-full.dat.manifest.json"
             echo "DINERO_SNAPSHOT_FALLBACK_DAT=$PWD/release-inputs/dinero-assumeutxo-148375-v5.dat"
@@ -311,10 +316,10 @@ jobs:
             dinerod dinero-cli dinero-swap-tower dinero-qt dinero-miner dinero-stratum-worker \
             dinero-wallet-cli dinero-gpu-miner dinero-solo-miner-cli dinero-seeder
 
-      - name: Verify daemon output cannot block before the Qt event loop
+      - name: Verify Qt startup and language catalogs
         run: |
-          cmake --build build-desktop --target test_daemon_output
-          ctest --test-dir build-desktop/qt -R '^DaemonOutputBeforeEventLoop$' --output-on-failure
+          cmake --build build-desktop --target test_daemon_output test_i18n
+          ctest --test-dir build-desktop/qt -R '^(DaemonOutputBeforeEventLoop|QtI18nChain|QtSeedPhraseNeverTranslated|QtUniversalTermsUntranslated)$' --output-on-failure
 
       - name: Assert reachability stack
         run: |

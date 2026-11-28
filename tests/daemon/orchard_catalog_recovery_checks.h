@@ -1,6 +1,7 @@
 #pragma once
 #include "wallet/runtime_wallet_recovery.h"
 #include "daemon/services/chainstate_recovery_source.h"
+#include "daemon/runtime_replay_cancellation.h"
 #include <tuple>
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
 namespace dinero {
@@ -54,6 +55,28 @@ TEST(OrchardCatalogRecovery, GeneratedEmptyReplaysWithoutSchemaOrAccountCreation
     EXPECT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(),Recovery::Deferred);EXPECT_EQ(f.Progress(),progress);EXPECT_EQ(f.Snapshot(),before);
     f.Sql("DROP TABLE orchard_wallet_retained");EXPECT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(),Recovery::AppliedPrefix);
     f.EnrollAccount();before=f.Snapshot();EXPECT_EQ(f.wallet->RecoverActiveWalletFromCanonicalSource(),Recovery::Deferred);EXPECT_EQ(f.Snapshot(),before);EXPECT_EQ(f.Progress(),progress);EXPECT_EQ(f.Catalog(),catalog);
+}
+TEST(OrchardCatalogRecovery, WorkerStopLeavesCommittedPrefixForRetry){
+    OrchardCatalogRecoveryFixture f;
+    ASSERT_EQ(f.Recover().applied.cursor.sequence,1u);
+    f.Adopt();f.MineEmpty();f.MineEmpty();
+    const auto view=f.f.service->getRuntimeAccountReplay();ASSERT_TRUE(view.ok());
+    unsigned checks=0;
+    {
+        auto use=WalletService::AcquireWalletUse(f.wallet);
+        auto index=ChainstateService::AcquireWalletIndexUse(f.f.service);
+        const auto source=[&](RuntimeOutboxCursor cursor,size_t count){
+            const auto page=f.f.service->getRuntimeDeliveryPage(cursor,count);
+            OrchardAdmissionFixture::Require(page.ok());return **page;
+        };
+        const RuntimeReplayCancellationScope cancel([&]{return ++checks>=2;});
+        EXPECT_THROW(RuntimeCatalogRecoveryTestAccess::Resume(
+            **view,source,use->Wallet(),index->Index(),f.Session()),RuntimeReplayCancelled);
+    }
+    EXPECT_EQ(checks,2u);
+    EXPECT_EQ(std::get<0>(f.Progress()).sequence,2u);
+    EXPECT_EQ(std::get<5>(f.Progress()).sequence,2u);
+    EXPECT_EQ(f.Recover().applied.cursor.sequence,3u);
 }
 TEST(OrchardCatalogRecovery, NonconsecutiveCatalogOwnersRecoverShieldUndoAndReopen){
     OrchardCatalogRecoveryFixture f;ASSERT_FALSE(f.Call(3).isMember("error"));ASSERT_FALSE(f.Call(17).isMember("error"));const auto catalog=f.Catalog();f.Adopt();

@@ -134,7 +134,7 @@ void OrchardWidget::setupUi() {
     auto* accountGrid = new QGridLayout(account);
     accountSelector_=new QComboBox(account);
     accountSelector_->setObjectName("orchardAccountSelector");
-    accountSelector_->setToolTip("Choose an existing account reported by this wallet. Account numbers need not be consecutive.");
+    accountSelector_->setToolTip(tr("Choose an existing account reported by this wallet. Account numbers need not be consecutive."));
     accountStatus_ = Plain("Accounts unknown", account);
     accountStatus_->setObjectName("orchardAccountStatus");
     createAccount_ = ChromeButton("Set up Orchard account",
@@ -150,7 +150,7 @@ void OrchardWidget::setupUi() {
     auto* balanceLayout = new QVBoxLayout(balanceCard);
     balance_ = Plain(kUnknown, balanceCard);
     balance_->setObjectName("orchardBalance");
-    balance_->setToolTip("Shown as Unknown until the node can report it; never assumed to be zero");
+    balance_->setToolTip(tr("Shown as Unknown until the node can report it; never assumed to be zero"));
     balanceLayout->addWidget(balance_);
     auto* row1 = new QHBoxLayout;
     ShareRow(row1, account, balanceCard);
@@ -168,21 +168,21 @@ void OrchardWidget::setupUi() {
     mode_->addItem("Shield: public DIN into Orchard", "shield");
     mode_->addItem("Send privately to an Orchard address", "send");
     mode_->addItem("Unshield: Orchard to a public address", "unshield");
-    mode_->setToolTip("What this payment does");
+    mode_->setToolTip(tr("What this payment does"));
     recipient_ = new QLineEdit(pay);
     recipient_->setObjectName("orchardRecipient");
-    recipient_->setToolTip("Who receives it");
+    recipient_->setToolTip(tr("Who receives it"));
     amount_ = new QLineEdit(pay);
     amount_->setObjectName("orchardAmount");
     amount_->setPlaceholderText("e.g. 1.5");
-    amount_->setToolTip("Amount in DIN (up to 8 decimals)");
+    amount_->setToolTip(tr("Amount in DIN (up to 8 decimals)"));
     fee_ = new QLineEdit("0.0001", pay);
     fee_->setObjectName("orchardFee");
-    fee_->setToolTip("Network fee in DIN");
+    fee_->setToolTip(tr("Network fee in DIN"));
     memo_ = new QLineEdit(pay);
     memo_->setObjectName("orchardMemo");
-    memo_->setPlaceholderText("Optional private note to the recipient");
-    memo_->setToolTip("Only the recipient can read it (up to 512 bytes)");
+    memo_->setPlaceholderText(tr("Optional private note to the recipient"));
+    memo_->setToolTip(tr("Only the recipient can read it (up to 512 bytes)"));
     g->addWidget(Plain("Payment:", pay), 0, 0);
     g->addWidget(mode_, 0, 1);
     g->addWidget(Plain("To:", pay), 1, 0);
@@ -226,7 +226,7 @@ void OrchardWidget::setupUi() {
     receiveAddress_ = new QLineEdit(receive);
     receiveAddress_->setObjectName("orchardReceiveAddress");
     receiveAddress_->setReadOnly(true);
-    receiveAddress_->setToolTip("Share this address to be paid privately");
+    receiveAddress_->setToolTip(tr("Share this address to be paid privately"));
     receiveAddress_->setVisible(false);
     copyAddress_ = ChromeButton("Copy", "Copy the address to the clipboard", "orchardCopyAddress", receive);
     copyAddress_->setVisible(false);
@@ -268,7 +268,7 @@ void OrchardWidget::setupUi() {
     resume_=new QPushButton("Resume selected",ops);
     resume_->setObjectName("orchardResume");
     resume_->setStyleSheet(chromeButtonStyle());
-    resume_->setToolTip("Complete this node's saved request using its original recipients and fee. This may submit the payment.");
+    resume_->setToolTip(tr("Complete this node's saved request using its original recipients and fee. This may submit the payment."));
     ol->addWidget(resume_);
     connect(resume_,&QPushButton::clicked,this,&OrchardWidget::onResumeSelected);
     cancel_=new QPushButton("Cancel selected request",ops);
@@ -368,10 +368,10 @@ void OrchardWidget::onConnectionContextChanged() {
     wallet_=selectedWallet;payment_=std::move(previousPayment);unlocked_=false;
     showPayment();retry_->setVisible(false);
     if(payment_) {
-        paymentState_->setText("Connection changed — check the original node");
-        paymentDetail_->setText("An earlier request may still complete on the previous node.");
+        paymentState_->setText(tr("Connection changed — check the original node"));
+        paymentDetail_->setText(tr("An earlier request may still complete on the previous node."));
     }
-    accountStatus_->setText("Connection changed — reopen the wallet");
+    accountStatus_->setText(tr("Connection changed — reopen the wallet"));
     updateForm();
     showStatus("RPC connection changed. Reopen the wallet and check earlier payments before paying again.",true);
 }
@@ -476,7 +476,7 @@ void OrchardWidget::requestHistory(quint64 offset,quint64 revision) {
     if(offset && !revision)return;
     historyRequestedOffset_=offset;historyRequestedRevision_=revision;historyInFlight_=true;
     // Correlation exists only in the local transport tag, never a payment ID on the wire.
-    historyRequestTag_=OC::NewRequestId();historyStatus_->setText("Loading receipt history…");
+    historyRequestTag_=OC::NewRequestId();historyStatus_->setText(tr("Loading receipt history…"));
     history_->setVisible(false);historyPrevious_->setEnabled(false);historyNext_->setEnabled(false);historyRefresh_->setEnabled(false);
     send("history",OC::kListReceived,OC::ReceivedParams(account_,offset,revision));
 }
@@ -568,7 +568,7 @@ void OrchardWidget::onResumeSelected() {
     const auto* selected=selectedResumableOperation();if(!selected)return;
     const auto reviewed=*selected;const auto generation=generation_;const auto binding=walletBinding_;
     const auto revision=operationsSnapshot_->accountRevision;
-    QMessageBox box(this);box.setWindowTitle("Resume saved payment");box.setIcon(QMessageBox::Question);
+    QMessageBox box(this);box.setWindowTitle(tr("Resume saved payment"));box.setIcon(QMessageBox::Question);
     box.setText("Resume request "+reviewed.operationId+"?");
     box.setInformativeText("The node will use this request's original stored recipients and fee. This may submit the payment. No new payment will be created.");
     auto* go=box.addButton("Resume saved payment",QMessageBox::AcceptRole);box.addButton(QMessageBox::Cancel);box.setDefaultButton(QMessageBox::Cancel);box.exec();
@@ -658,7 +658,7 @@ void OrchardWidget::onReview() {
     else r.payments = {to};
 
     QMessageBox box(this);
-    box.setWindowTitle("Review payment");
+    box.setWindowTitle(tr("Review payment"));
     box.setIcon(QMessageBox::Information);
     box.setText("<b>" + QString(mode == "shield" ? "Shield %1 DIN" : mode == "send" ? "Send %1 DIN privately"
                                                                                     : "Unshield %1 DIN")
@@ -789,7 +789,7 @@ void OrchardWidget::onRetry() {
 
 void OrchardWidget::showPayment() {
     if (!payment_) {
-        paymentState_->setText("No payment in progress");
+        paymentState_->setText(tr("No payment in progress"));
         paymentState_->setStyleSheet(PayCollectPolicy::pillStyle(Tone::Neutral));
         paymentDetail_->clear();
         retry_->setVisible(false);
@@ -952,7 +952,7 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
         }
         if(selected<0 && accountSelected_) {
             ++generation_;accountSelected_=false;clearAccountView();activationInFlight_=false;
-            accountStatus_->setText("Selected account is missing — reopen the wallet");
+            accountStatus_->setText(tr("Selected account is missing — reopen the wallet"));
             showStatus("The selected account is no longer reported. Earlier payments may still complete; check them before paying again.",true);
         } else if(selected>=0 && receiveAddress_->text().isEmpty() &&
                   OF::LooksLikeOrchardAddress(catalog->accounts[selected].firstReceiveAddress,chain_)) {
@@ -963,7 +963,7 @@ void OrchardWidget::handle(const QString& shortName, const QJsonValue& result) {
             receiveAddress_->setVisible(true);copyAddress_->setVisible(true);
         } else if(!accountSelected_ && !catalog->accounts.isEmpty() && canChooseAccount()) {
             accountSelector_->setCurrentIndex(0); // The first real catalog entry, never a guessed account zero.
-        } else if(catalog->accounts.isEmpty())accountStatus_->setText("No accounts in the authenticated catalog");
+        } else if(catalog->accounts.isEmpty())accountStatus_->setText(tr("No accounts in the authenticated catalog"));
         updateForm();return;
     }
     if (shortName=="activation") {
@@ -1118,7 +1118,7 @@ const OC::Operation* OrchardWidget::selectedOperation() const {
 void OrchardWidget::showOperationDetail() {
     const auto* op=selectedOperation();
     if(!op) {
-        operationDetail_->setText("Select an operation above to see its details.");
+        operationDetail_->setText(tr("Select an operation above to see its details."));
         operationDetail_->setMinimumHeight(0);
         return;
     }

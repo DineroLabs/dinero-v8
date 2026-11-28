@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 # repository name (DineroLabs/dinero). The daemon,
 # CLI, Qt GUI, and solo miner all derive their version from this
 # declaration; in-tree subprojects consume DINERO_MONOREPO_VERSION below.
-project(dinero VERSION 8.2.6 LANGUAGES C CXX)
+project(dinero VERSION 8.2.7 LANGUAGES C CXX)
 # In-tree subprojects consume this value instead of each independently deciding
 # the version of binaries shipped in the same release bundle. Standalone builds
 # retain a local fallback in their own CMakeLists.txt.

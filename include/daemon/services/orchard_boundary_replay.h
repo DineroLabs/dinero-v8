@@ -66,13 +66,18 @@ private:
             [&](const uint256& a)->StatusOr<bool>{if(events_)return ActiveContains(2,a);const auto prefix=Key(2,a);const auto row=spool_.Next(2,prefix);
                 return row&&row->first.size()==37&&std::equal(prefix.begin(),prefix.end(),row->first.begin());},
             [&](const uint256& n)->StatusOr<bool>{return events_?ActiveContains(1,n):spool_.Get(Key(1,n)).has_value();}};
-        const auto before=Commitments();
+        // History mode is append-only. Its previous block's fully checked
+        // commitment sets are exactly this block's "before" sets. Reuse them
+        // instead of walking the growing disk spool twice per block. Event
+        // mode can rewind and follows its existing full-read path.
+        const auto before=!events_&&history_sets_?*history_sets_:Commitments();
         if(events_&&state_)Require(LoadCheckpoint(header_.GetHash()).after_sets==before);
         const auto state=PrepareOrchardStateTransition(*context,state_,coins.Authorizations(),lookups);
         Require(state.Next().pool_balance<=orchard::kMaxMoneyUna-retirement_.retired_value);
         const auto stump=DeriveOrchardCompactBlockStump(block,coins,header_,UtreexoStump::deserialize(catalog_.stump));
         std::unique_ptr<const ValidatedOrchardBlock> verified;
         storage::catalog::State next;
+        std::optional<storage::OrchardCommitmentSets> next_history_sets;
         const auto old_checkpoint=events_?checkpoints_.Get(CheckpointKey(expected)):std::nullopt;
         const uint64_t checkpoint_id=old_checkpoint?DecodeCheckpoint(*old_checkpoint).id:next_checkpoint_;
         if(events_)Require(checkpoint_id&&checkpoint_id<UINT64_MAX);
@@ -88,6 +93,7 @@ private:
             if(events_)RecordOccurrence(2,state.Next().anchor,checkpoint_id,height,expected);
             else {auto anchor=Key(2,state.Next().anchor);for(unsigned i=4;i;--i)anchor.push_back(uint8_t(height>>(8*(i-1))));spool_.Insert(anchor,{});}
             const auto sets=events_?Commitments(expected,height):Commitments();
+            if(!events_)next_history_sets=sets;
             Require(sets.nullifier_count==state.Next().tree_size&&sets.anchor_references==uint64_t(height)+1-context->activation_height);
             const auto root=ComputeOrchardSelectedStateRoot(
                 {context->domain,context->activation_height,height,context->parent_hash},retirement_,state.Next(),sets,
@@ -114,6 +120,7 @@ private:
             if(old_checkpoint)Require(*old_checkpoint==encoded);
             else {checkpoints_.Set(CheckpointKey(expected),encoded);++next_checkpoint_;}
         }
+        if(!events_)history_sets_=std::move(next_history_sets);
         state_=state.Next();catalog_=std::move(next);header_=block.Header();height_=height;poisoned_=false;return verified;
     }
 public:
@@ -160,7 +167,7 @@ private:
         std::shared_ptr<const consensus::HeaderChainSelector> headers,uint32_t height,uint256 hash,bool events=false)
         :baseline_(std::move(proof)),headers_(std::move(headers)),target_height_(height),target_hash_(hash),
          profile_(consensus::ValidatedOrchardBlock::CaptureProfile()),
-         spool_(baseline_->disk_nodes?baseline_->disk_nodes->WorkDirectory():std::filesystem::path{}),checkpoints_(spool_),events_(events),height_(baseline_->parent_catalog.height),
+         spool_(baseline_->disk_nodes?baseline_->disk_nodes->WorkDirectory():std::filesystem::path{},true),checkpoints_(spool_),events_(events),height_(baseline_->parent_catalog.height),
          retirement_(baseline_->retirement.record),catalog_(baseline_->parent_catalog){
         Require(headers_&&target_height_>=(events_?baseline_->parent_catalog.height:baseline_->state.height)&&height_+1==baseline_->state.height&&TargetSelected());
         const auto parent=headers_->GetHeaderValue(catalog_.block);Require(parent&&parent->height==height_);header_=parent->header;
@@ -263,5 +270,8 @@ private:
     wallet::detail::RuntimeReplayIndex checkpoints_;const bool events_;uint64_t next_checkpoint_=1;
     uint32_t height_;storage::LegacyRetirementRecord retirement_;storage::catalog::State catalog_;
     BlockHeader header_;std::optional<storage::OrchardStoredState> state_;bool poisoned_=false,finished_=false;
+    // Only the already-validated digest/count tuple is retained. The spool
+    // remains the source for the next post-append full commitment scan.
+    std::optional<storage::OrchardCommitmentSets> history_sets_;
 };
 } // namespace dinero

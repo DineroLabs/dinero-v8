@@ -21,7 +21,7 @@ cmake_minimum_required(VERSION 3.21)
 # In a monorepo release the root owns the shared version. Keep a standalone
 # fallback for legacy direct builds of qt/.
 if(NOT DEFINED DINERO_MONOREPO_VERSION)
-  set(DINERO_MONOREPO_VERSION 8.2.6)
+  set(DINERO_MONOREPO_VERSION 8.2.7)
 endif()
 project(dinero-qt VERSION ${DINERO_MONOREPO_VERSION} LANGUAGES CXX)
 
@@ -482,6 +482,7 @@ endif()
 # Find Qt6 (required)
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
 message(STATUS "Found Qt6: ${Qt6_VERSION}")
+find_package(Qt6 REQUIRED COMPONENTS LinguistTools)
 
 if(BUILD_TESTING)
   find_package(Qt6 REQUIRED COMPONENTS Test)
@@ -560,6 +561,11 @@ endif()
 
 set(GUI_SOURCES
   src/walleticons.qrc
+  src/languageflags.qrc
+  src/i18n.cpp
+  src/i18n.h
+  src/apprestart.cpp
+  src/apprestart.h
   src/chaintiming.cpp
   src/upgradepolicy.cpp
   src/miningrewards.cpp
@@ -765,6 +771,33 @@ elseif(WIN32)
   add_executable(dinero-qt WIN32 ${GUI_SOURCES} "${_dinero_qt_rc}")
 else()
   add_executable(dinero-qt ${GUI_SOURCES})
+endif()
+
+# Build and embed each available catalog. English is the source language, so
+# untranslated strings fall back to their English tr() text.
+file(GLOB DINERO_QT_TS_FILES "${CMAKE_CURRENT_SOURCE_DIR}/translations/dinero_*.ts")
+if(TARGET Qt6::lrelease AND DINERO_QT_TS_FILES)
+  set(DINERO_QT_QM_FILES "")
+  foreach(_ts_file ${DINERO_QT_TS_FILES})
+    get_filename_component(_ts_name "${_ts_file}" NAME_WE)
+    set(_qm_file "${CMAKE_CURRENT_BINARY_DIR}/i18n/${_ts_name}.qm")
+    add_custom_command(
+      OUTPUT "${_qm_file}"
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/i18n"
+      COMMAND Qt6::lrelease "${_ts_file}" -qm "${_qm_file}"
+      DEPENDS "${_ts_file}"
+      COMMENT "lrelease ${_ts_name}.qm"
+      VERBATIM)
+    list(APPEND DINERO_QT_QM_FILES "${_qm_file}")
+  endforeach()
+  add_custom_target(dinero_qt_translations DEPENDS ${DINERO_QT_QM_FILES})
+  add_dependencies(dinero-qt dinero_qt_translations)
+  qt_add_resources(dinero-qt "dinero_i18n"
+    PREFIX "/i18n"
+    BASE "${CMAKE_CURRENT_BINARY_DIR}/i18n"
+    FILES ${DINERO_QT_QM_FILES})
+else()
+  message(STATUS "dinero-qt translations: none embedded (English-only build)")
 endif()
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1447,6 +1480,30 @@ else()
 endif()
 
 if(BUILD_TESTING)
+  if(TARGET Qt6::lrelease AND DINERO_QT_QM_FILES)
+    add_executable(test_i18n tests/test_i18n.cpp src/i18n.cpp src/apprestart.cpp
+                   src/languageflags.qrc)
+    target_link_libraries(test_i18n PRIVATE Qt6::Core)
+    add_dependencies(test_i18n dinero_qt_translations)
+    qt_add_resources(test_i18n "dinero_i18n_test"
+      PREFIX "/i18n"
+      BASE "${CMAKE_CURRENT_BINARY_DIR}/i18n"
+      FILES ${DINERO_QT_QM_FILES})
+    add_test(NAME QtI18nChain
+             COMMAND test_i18n "${CMAKE_CURRENT_BINARY_DIR}/i18n/dinero_de.qm"
+                               "${CMAKE_CURRENT_BINARY_DIR}/i18n/dinero_sl.qm")
+  endif()
+
+  add_test(NAME QtSeedPhraseNeverTranslated
+           COMMAND ${CMAKE_COMMAND}
+                   -DQT_SRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}/src
+                   -DWALLET_SRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../src/wallet
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_seed_phrase_never_translated.cmake)
+  add_test(NAME QtUniversalTermsUntranslated
+           COMMAND ${CMAKE_COMMAND}
+                   -DTRANSLATIONS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/translations
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_universal_terms_untranslated.cmake)
+
   # Exercise the real window/composer ownership, with an isolated RPC endpoint.
   get_target_property(_wallet_test_sources dinero-qt SOURCES)
   list(FILTER _wallet_test_sources EXCLUDE REGEX "(^|/)main\\.cpp$")

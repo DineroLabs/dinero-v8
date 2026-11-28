@@ -55,7 +55,14 @@ void RuntimeDeliveryWorker::Stop() {
     std::lock_guard lifecycle(lifecycle_);
     SignalStop();
     // No consumer mutex or selected/wallet owner is held while joining.
-    if (thread_.joinable()) thread_.join();
+    if (thread_.joinable()) {
+        static constexpr const char* stages[] = {"idle", "wallet_preflight", "wallet_mixed",
+            "wallet_orchard", "wallet_recovery", "retired_notes", "vault", "reorg"};
+        std::cerr << "[RuntimeDeliveryWorker] joining at stage "
+                  << stages[static_cast<size_t>(stage_.load())] << '\n';
+        thread_.join();
+        std::cerr << "[RuntimeDeliveryWorker] joined" << std::endl;
+    }
     std::lock_guard lock(state_->mutex);state_->report.running=false;
 }
 void RuntimeDeliveryWorker::RequestReplay() noexcept { CaptureWakeHandle().RequestReplay(); }
@@ -162,6 +169,7 @@ void RuntimeDeliveryWorker::RecoverWallet(Report& report,
         // Full-archive v3 owns metadata only. Its transparent recovery must
         // bypass imported snapshot and Orchard-account recovery entirely.
         if(!full_archive_v3) {
+            stage_.store(Stage::WalletMixed);
             const auto mixed=source_->resumeRuntimeImportedMixedRecovery(use->Wallet(),index->Index(),session,
                 limits_.legacy_material_limit_bytes);
             if(!mixed.ok()){refuse_resource_limit(mixed.status());return;}
@@ -169,6 +177,7 @@ void RuntimeDeliveryWorker::RecoverWallet(Report& report,
                 report.wallet_head=(*mixed)->observed_head;return;}
             // Explicit source-composition routing, NEVER a catch/fallback
             // after a mixed recovery failure. Imported failure stays deferred.
+            stage_.store(Stage::WalletOrchard);
             const auto orchard=source_->resumeRuntimeImportedOrchardRecovery(use->Wallet(),index->Index(),session);
             if(!orchard.ok()){refuse_resource_limit(orchard.status());return;}
             if(*orchard){
@@ -177,6 +186,7 @@ void RuntimeDeliveryWorker::RecoverWallet(Report& report,
         }
 #endif
         bool advanced_partial=false;
+        stage_.store(Stage::WalletRecovery);
         const auto recovered=full_archive_v3 ?
             source_->resumeRuntimeWalletRecoveryV3IfNeeded(use->Wallet(),index->Index(),session,
                 limits_.legacy_material_limit_bytes,1,&advanced_partial) :
@@ -259,17 +269,22 @@ void RuntimeDeliveryWorker::Run() noexcept {
             }
             if (restart) {
                 pass=Report{};
+                stage_.store(Stage::WalletPreflight);
                 RecoverWallet(pass,resource_blocked_session,recovery_attempts);
                 if (Stopping()) break;
+                stage_.store(Stage::RetiredNotes);
                 try { RestoreRetiredLegacyPendingNotes(); }
                 catch (...) { /* Keep the durable note state for the next retry. */ }
+                stage_.store(Stage::Vault);
                 ObserveVault(pass,vault_observation);
             }
+            stage_.store(Stage::Reorg);
             try {continue_pass=ReconcileSlice(pass);}
             catch (...) {pass.source_deferred=true;pass.reorg_eof=false;continue_pass=false;}
             if (slices!=std::numeric_limits<uint64_t>::max())++slices;
             pass.slices=slices;pass.running=true;
             {std::lock_guard lock(state_->mutex);state_->report=pass;}
+            stage_.store(Stage::Idle);
         }
     } catch (...) {
         std::lock_guard lock(state_->mutex);state_->report.source_deferred=true;state_->report.reorg_eof=false;

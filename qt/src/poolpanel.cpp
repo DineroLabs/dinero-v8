@@ -135,22 +135,22 @@ void PoolPanel::setupUi() {
 
     // 👥 rather than a pickaxe: the Mining tab owns that, and this panel
     // is about a group of miners sharing a block, not about hashing.
-    auto* title = new QLabel("<h2>\xF0\x9F\x91\xA5 Pool</h2>");
+    auto* title = new QLabel(tr("<h2>\xF0\x9F\x91\xA5 Pool</h2>"));
     root->addWidget(title);
 
     // ---- Why host one -----------------------------------------------
     // This section is for the majority of users, who do not run a pool
     // and have no idea it is an option.
-    why_group_ = new QGroupBox("Hosting a pool");
+    why_group_ = new QGroupBox(tr("Hosting a pool"));
     auto* why_layout = new QVBoxLayout(why_group_);
-    auto* invitation = new QLabel(
+    auto* invitation = new QLabel(tr(
         "<span style='font-size:18px; font-weight:700;'>Bring the cockpit online.</span> "
-        "Run your own pool, connect miners, and earn a transparent operator fee.");
+        "Run your own pool, connect miners, and earn a transparent operator fee."));
     invitation->setWordWrap(true);
     invitation->setTextFormat(Qt::RichText);
     invitation->setStyleSheet("color: #d7e3ef;");
     why_layout->addWidget(invitation);
-    auto* why = new QLabel(
+    auto* why = new QLabel(tr(
         "<p style='margin-top:0;'>A Dinero pool pays every contributing miner "
         "<b>directly in the block's coinbase</b>, split by share weight, the moment a "
         "block is found.</p>"
@@ -168,7 +168,7 @@ void PoolPanel::setupUi() {
         "from your node and submits found blocks through it. That is the point \xE2\x80\x94 every "
         "pool operator is a node operator.</p>"
         "<p style='color:#9fb3c8;'>Setup is one command on a Linux server. See "
-        "<code>docs/RUN-A-POOL.md</code> in the dinero-sv2 repository.</p>");
+        "<code>docs/RUN-A-POOL.md</code> in the dinero-sv2 repository.</p>"));
     why->setWordWrap(true);
     why->setTextFormat(Qt::RichText);
     why_layout->addWidget(why);
@@ -176,12 +176,12 @@ void PoolPanel::setupUi() {
     root->addWidget(why_group_);
 
     // ---- Connect to your pool ---------------------------------------
-    auto* conn_group = new QGroupBox("Your pool");
+    auto* conn_group = new QGroupBox(tr("Your pool"));
     auto* conn_layout = new QVBoxLayout(conn_group);
-    conn_hint_ = new QLabel(
+    conn_hint_ = new QLabel(tr(
         "Point this at your pool's read-only status endpoint. It is loopback-only on the "
         "pool host by design, so from another machine open an SSH tunnel first:"
-        "<br/><code>ssh -N -L 4445:127.0.0.1:4445 you@your.host</code>");
+        "<br/><code>ssh -N -L 4445:127.0.0.1:4445 you@your.host</code>"));
     conn_hint_->setWordWrap(true);
     conn_hint_->setTextFormat(Qt::RichText);
     conn_hint_->setStyleSheet("color: #9fb3c8;");
@@ -197,22 +197,22 @@ void PoolPanel::setupUi() {
     auto* profileRow = new QHBoxLayout();
     pool_profile_combo_ = new QComboBox();
     pool_profile_combo_->setObjectName("poolProfile");
-    pool_profile_combo_->setToolTip("Pools you have connected to before");
+    pool_profile_combo_->setToolTip(tr("Pools you have connected to before"));
     profileRow->addWidget(pool_profile_combo_, 1);
-    btn_forget_pool_ = new QPushButton("Forget");
+    btn_forget_pool_ = new QPushButton(tr("Forget"));
     btn_forget_pool_->setObjectName("poolForget");
-    btn_forget_pool_->setToolTip("Remove this saved pool and its remembered token");
+    btn_forget_pool_->setToolTip(tr("Remove this saved pool and its remembered token"));
     profileRow->addWidget(btn_forget_pool_, 0);
     form->addRow("Pool:", profileRow);
 
     pool_name_input_ = new QLineEdit();
     pool_name_input_->setObjectName("poolName");
-    pool_name_input_->setPlaceholderText("a name for this pool, e.g. SJ");
+    pool_name_input_->setPlaceholderText(tr("a name for this pool, e.g. SJ"));
     form->addRow("Name:", pool_name_input_);
 
     ops_url_input_ = new QLineEdit("http://127.0.0.1:4445");
     ops_url_input_->setObjectName("poolEndpoint");
-    ops_url_input_->setPlaceholderText("http://127.0.0.1:4445");
+    ops_url_input_->setPlaceholderText(tr("http://127.0.0.1:4445"));
     ops_url_input_->setMinimumWidth(320);
     form->addRow("Status endpoint:", ops_url_input_);
 
@@ -220,10 +220,10 @@ void PoolPanel::setupUi() {
     ops_token_input_ = new QLineEdit();
     ops_token_input_->setObjectName("poolToken");
     ops_token_input_->setEchoMode(QLineEdit::Password);
-    ops_token_input_->setPlaceholderText("contents of /etc/dinero-sv2/ops-token");
+    ops_token_input_->setPlaceholderText(tr("contents of /etc/dinero-sv2/ops-token"));
     ops_token_input_->setMinimumWidth(320);
     tokenRow->addWidget(ops_token_input_, 1);
-    btn_fetch_status_ = new QPushButton("Connect");
+    btn_fetch_status_ = new QPushButton(tr("Connect"));
     btn_fetch_status_->setObjectName("poolConnect");
     btn_fetch_status_->setStyleSheet("font-weight: bold; padding: 6px 14px;");
     tokenRow->addWidget(btn_fetch_status_, 0);
@@ -232,23 +232,23 @@ void PoolPanel::setupUi() {
     remember_token_check_ = new QCheckBox();
     remember_token_check_->setObjectName("poolRemember");
     if (token_store_->available()) {
-        remember_token_check_->setText("Remember the token on this Mac (stored in the Keychain)");
-        remember_token_check_->setToolTip("The token goes to your login Keychain, never to the app's settings. "
-                                          "The pool then reconnects by itself when the wallet starts.");
+        remember_token_check_->setText(tr("Remember the token on this Mac (stored in the Keychain)"));
+        remember_token_check_->setToolTip(tr("The token goes to your login Keychain, never to the app's settings. "
+                                          "The pool then reconnects by itself when the wallet starts."));
     } else {
-        remember_token_check_->setText("Remember the token (not available on this platform yet)");
+        remember_token_check_->setText(tr("Remember the token (not available on this platform yet)"));
         remember_token_check_->setEnabled(false);
     }
     form->addRow(QString(), remember_token_check_);
     conn_layout->addLayout(form);
 
-    lbl_status_message_ = new QLabel("\xE2\x80\x93");
+    lbl_status_message_ = new QLabel(tr("\xE2\x80\x93"));
     lbl_status_message_->setObjectName("poolStatusMessage");
     lbl_status_message_->setTextFormat(Qt::RichText);
     lbl_status_message_->setWordWrap(true);
     lbl_status_message_->setStyleSheet("color: #9fb3c8;");
     conn_layout->addWidget(lbl_status_message_);
-    btn_about_ = new QPushButton("About trustless pooled mining");
+    btn_about_ = new QPushButton(tr("About trustless pooled mining"));
     btn_about_->setFlat(true);
     btn_about_->setVisible(false);
     conn_layout->addWidget(btn_about_, 0, Qt::AlignLeft);
@@ -256,7 +256,7 @@ void PoolPanel::setupUi() {
     root->addWidget(conn_group);
 
     // ---- Live status -------------------------------------------------
-    status_group_ = new QGroupBox("Live status");
+    status_group_ = new QGroupBox(tr("Live status"));
     auto* grid = new QGridLayout(status_group_);
     // Bare QLabels inherit a filled background from the page style, which
     // makes captions read as disabled text inputs.
@@ -276,25 +276,25 @@ void PoolPanel::setupUi() {
     grid->setColumnStretch(1, 1);
     grid->setColumnStretch(2, 0);
     grid->setColumnStretch(3, 1);
-    lbl_health_ = new QLabel("OFFLINE");
+    lbl_health_ = new QLabel(tr("OFFLINE"));
     lbl_health_->setStyleSheet("font-size:18px; font-weight:700; color:#ff6b6b;");
-    lbl_health_detail_ = new QLabel("Not connected");
+    lbl_health_detail_ = new QLabel(tr("Not connected"));
     grid->addWidget(lbl_health_, 0, 0);
     grid->addWidget(lbl_health_detail_, 0, 1, 1, 3);
 
-    lbl_connected_miners_ = new QLabel("\xE2\x80\x93");
-    lbl_fee_ = new QLabel("\xE2\x80\x93");
-    lbl_window_ = new QLabel("\xE2\x80\x93");
+    lbl_connected_miners_ = new QLabel(tr("\xE2\x80\x93"));
+    lbl_fee_ = new QLabel(tr("\xE2\x80\x93"));
+    lbl_window_ = new QLabel(tr("\xE2\x80\x93"));
     lbl_window_->setObjectName("poolWindow");
-    lbl_producer_ = new QLabel("\xE2\x80\x93");
-    lbl_shares_ = new QLabel("\xE2\x80\x93");
+    lbl_producer_ = new QLabel(tr("\xE2\x80\x93"));
+    lbl_shares_ = new QLabel(tr("\xE2\x80\x93"));
     lbl_shares_->setObjectName("poolShares");
-    lbl_blocks_ = new QLabel("\xE2\x80\x93");
-    lbl_daemon_ = new QLabel("Unavailable");
-    lbl_stratum_ = new QLabel("Unavailable");
-    grid->addWidget(new QLabel("Connected sessions:"), 1, 0);
+    lbl_blocks_ = new QLabel(tr("\xE2\x80\x93"));
+    lbl_daemon_ = new QLabel(tr("Unavailable"));
+    lbl_stratum_ = new QLabel(tr("Unavailable"));
+    grid->addWidget(new QLabel(tr("Connected sessions:")), 1, 0);
     grid->addWidget(lbl_connected_miners_, 1, 1);
-    grid->addWidget(new QLabel("Operator fee:"), 1, 2);
+    grid->addWidget(new QLabel(tr("Operator fee:")), 1, 2);
     grid->addWidget(lbl_fee_, 1, 3);
     // "This run" and the PPLNS window do not survive a restart equally,
     // and after one they disagree — which reads as a bug unless the panel
@@ -308,15 +308,15 @@ void PoolPanel::setupUi() {
     const QString window_tip = QStringLiteral(
         "Shares still inside the payout window, and the time they span.\n"
         "Journaled to disk, so it survives a pool restart — unlike the counters beside it.");
-    auto* window_caption = new QLabel("PPLNS window:");
+    auto* window_caption = new QLabel(tr("PPLNS window:"));
     window_caption->setToolTip(window_tip);
     lbl_window_->setToolTip(window_tip);
     grid->addWidget(window_caption, 2, 0);
     grid->addWidget(lbl_window_, 2, 1);
-    grid->addWidget(new QLabel("Template producer:"), 2, 2);
+    grid->addWidget(new QLabel(tr("Template producer:")), 2, 2);
     grid->addWidget(lbl_producer_, 2, 3);
-    auto* shares_caption = new QLabel("Shares (since pool restart):");
-    auto* blocks_caption = new QLabel("Blocks found (since pool restart):");
+    auto* shares_caption = new QLabel(tr("Shares (since pool restart):"));
+    auto* blocks_caption = new QLabel(tr("Blocks found (since pool restart):"));
     for (QLabel* l : {shares_caption, blocks_caption, lbl_shares_, lbl_blocks_}) {
         l->setToolTip(counters_tip);
     }
@@ -324,26 +324,26 @@ void PoolPanel::setupUi() {
     grid->addWidget(lbl_shares_, 3, 1);
     grid->addWidget(blocks_caption, 3, 2);
     grid->addWidget(lbl_blocks_, 3, 3);
-    grid->addWidget(new QLabel("Daemon:"), 4, 0);
+    grid->addWidget(new QLabel(tr("Daemon:")), 4, 0);
     grid->addWidget(lbl_daemon_, 4, 1);
-    grid->addWidget(new QLabel("Stratum:"), 4, 2);
+    grid->addWidget(new QLabel(tr("Stratum:")), 4, 2);
     grid->addWidget(lbl_stratum_, 4, 3);
 
     // The address the pool is ACTUALLY paying, straight from /status. An
     // operator should never have to trust the unit file to know this.
-    lbl_payout_current_ = new QLabel("\xE2\x80\x93");
+    lbl_payout_current_ = new QLabel(tr("\xE2\x80\x93"));
     lbl_payout_current_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     lbl_payout_current_->setStyleSheet("font-family: monospace;");
-    grid->addWidget(new QLabel("Fee paid to:"), 5, 0);
+    grid->addWidget(new QLabel(tr("Fee paid to:")), 5, 0);
     grid->addWidget(lbl_payout_current_, 5, 1, 1, 3);
 
     auto* change_row = new QHBoxLayout();
     payout_input_ = new QLineEdit();
-    payout_input_->setPlaceholderText("din1p\xE2\x80\xA6 new fee address");
+    payout_input_->setPlaceholderText(tr("din1p\xE2\x80\xA6 new fee address"));
     change_row->addWidget(payout_input_, 1);
-    btn_change_payout_ = new QPushButton("Change");
+    btn_change_payout_ = new QPushButton(tr("Change"));
     change_row->addWidget(btn_change_payout_, 0);
-    grid->addWidget(new QLabel("Change to:"), 6, 0);
+    grid->addWidget(new QLabel(tr("Change to:")), 6, 0);
     grid->addLayout(change_row, 6, 1, 1, 3);
 
     lbl_payout_message_ = new QLabel();
@@ -360,10 +360,10 @@ void PoolPanel::setupUi() {
     fee_percent_input_->setSingleStep(0.25);
     fee_percent_input_->setSuffix("%");
     fee_row->addWidget(fee_percent_input_);
-    btn_change_fee_ = new QPushButton("Change fee");
+    btn_change_fee_ = new QPushButton(tr("Change fee"));
     fee_row->addWidget(btn_change_fee_);
     fee_row->addStretch();
-    grid->addWidget(new QLabel("Set operator fee:"), 8, 0);
+    grid->addWidget(new QLabel(tr("Set operator fee:")), 8, 0);
     grid->addLayout(fee_row, 8, 1, 1, 3);
     lbl_fee_message_ = new QLabel();
     lbl_fee_message_->setTextFormat(Qt::RichText);
@@ -371,18 +371,18 @@ void PoolPanel::setupUi() {
     lbl_fee_message_->setVisible(false);
     grid->addWidget(lbl_fee_message_, 9, 0, 1, 4);
 
-    lbl_last_share_ = new QLabel("Unavailable");
-    lbl_last_block_ = new QLabel("Unavailable");
-    lbl_rejections_ = new QLabel("None reported");
+    lbl_last_share_ = new QLabel(tr("Unavailable"));
+    lbl_last_block_ = new QLabel(tr("Unavailable"));
+    lbl_rejections_ = new QLabel(tr("None reported"));
     lbl_rejections_->setWordWrap(true);
-    grid->addWidget(new QLabel("Last accepted share:"), 10, 0);
+    grid->addWidget(new QLabel(tr("Last accepted share:")), 10, 0);
     grid->addWidget(lbl_last_share_, 10, 1);
-    grid->addWidget(new QLabel("Last block result:"), 10, 2);
+    grid->addWidget(new QLabel(tr("Last block result:")), 10, 2);
     grid->addWidget(lbl_last_block_, 10, 3);
-    grid->addWidget(new QLabel("Rejection reasons:"), 11, 0);
+    grid->addWidget(new QLabel(tr("Rejection reasons:")), 11, 0);
     grid->addWidget(lbl_rejections_, 11, 1, 1, 3);
 
-    auto* history = new QGroupBox("Share activity history (stored locally)");
+    auto* history = new QGroupBox(tr("Share activity history (stored locally)"));
     auto* history_grid = new QGridLayout(history);
     lbl_history_5m_ = new QLabel("—");
     lbl_history_1h_ = new QLabel("—");
@@ -390,9 +390,9 @@ void PoolPanel::setupUi() {
     lbl_history_5m_->setObjectName("poolHistory5m");
     lbl_history_1h_->setObjectName("poolHistory1h");
     lbl_history_24h_->setObjectName("poolHistory24h");
-    history_grid->addWidget(new QLabel("5 min"), 0, 0); history_grid->addWidget(lbl_history_5m_, 0, 1);
-    history_grid->addWidget(new QLabel("1 hour"), 1, 0); history_grid->addWidget(lbl_history_1h_, 1, 1);
-    history_grid->addWidget(new QLabel("24 hours"), 2, 0); history_grid->addWidget(lbl_history_24h_, 2, 1);
+    history_grid->addWidget(new QLabel(tr("5 min")), 0, 0); history_grid->addWidget(lbl_history_5m_, 0, 1);
+    history_grid->addWidget(new QLabel(tr("1 hour")), 1, 0); history_grid->addWidget(lbl_history_1h_, 1, 1);
+    history_grid->addWidget(new QLabel(tr("24 hours")), 2, 0); history_grid->addWidget(lbl_history_24h_, 2, 1);
     grid->addWidget(history, 12, 0, 1, 4);
 
     // Two share columns, because they are two different numbers and the
@@ -417,7 +417,7 @@ void PoolPanel::setupUi() {
     miners_table_->setColumnWidth(3, 150);
     miners_table_->verticalHeader()->setDefaultSectionSize(24);
     miners_table_->setMaximumHeight(24 * 5 + 28);
-    auto* contributors = new QGroupBox("PPLNS contributors (not connected sessions)");
+    auto* contributors = new QGroupBox(tr("PPLNS contributors (not connected sessions)"));
     auto* contributors_layout = new QVBoxLayout(contributors);
     contributors_layout->addWidget(miners_table_);
     grid->addWidget(contributors, 13, 0, 1, 4);
@@ -428,39 +428,39 @@ void PoolPanel::setupUi() {
     root->addWidget(status_group_);
 
     // ---- Earnings, from the chain ------------------------------------
-    auto* earn_group = new QGroupBox("Fee earnings (verified on-chain)");
+    auto* earn_group = new QGroupBox(tr("Fee earnings (verified on-chain)"));
     auto* earn_layout = new QVBoxLayout(earn_group);
-    auto* earn_hint = new QLabel(
+    auto* earn_hint = new QLabel(tr(
         "Read from your node, not from the pool \xE2\x80\x94 so it is still right when the pool is "
         "down, and it cannot be overstated by a pool reporting on itself."
         "<br/><b>Lifetime</b> is available when the node confirms complete history on one chain. "
         "Otherwise receipts are marked observed, or the check asks you to retry. "
-        "<b>Unspent</b> is what is still sitting there, so it falls when you move funds out.");
+        "<b>Unspent</b> is what is still sitting there, so it falls when you move funds out."));
     earn_hint->setWordWrap(true);
     earn_hint->setTextFormat(Qt::RichText);
     earn_hint->setStyleSheet("color: #9fb3c8;");
     earn_layout->addWidget(earn_hint);
 
     auto* earn_row = new QHBoxLayout();
-    earn_row->addWidget(new QLabel("Fee address:"));
+    earn_row->addWidget(new QLabel(tr("Fee address:")));
     fee_address_input_ = new QLineEdit();
     fee_address_input_->setObjectName("poolFeeAddress");
-    fee_address_input_->setPlaceholderText("the din1p... you passed as --payout-address");
+    fee_address_input_->setPlaceholderText(tr("the din1p... you passed as --payout-address"));
     earn_row->addWidget(fee_address_input_);
-    btn_check_earnings_ = new QPushButton("Check");
+    btn_check_earnings_ = new QPushButton(tr("Check"));
     earn_row->addWidget(btn_check_earnings_);
     earn_layout->addLayout(earn_row);
 
     // Lifetime leads: it is the number that answers "what has this pool
     // earned me". Unspent sits under it as the balance it actually is.
-    lbl_lifetime_ = new QLabel("\xE2\x80\x93");
+    lbl_lifetime_ = new QLabel(tr("\xE2\x80\x93"));
     lbl_lifetime_->setObjectName("poolLifetime");
     lbl_lifetime_->setTextFormat(Qt::RichText);
     lbl_lifetime_->setWordWrap(true);
     lbl_lifetime_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     earn_layout->addWidget(lbl_lifetime_);
 
-    lbl_earnings_ = new QLabel("\xE2\x80\x93");
+    lbl_earnings_ = new QLabel(tr("\xE2\x80\x93"));
     lbl_earnings_->setObjectName("poolUnspent");
     lbl_earnings_->setTextFormat(Qt::RichText);
     lbl_earnings_->setWordWrap(true);
@@ -517,10 +517,10 @@ void PoolPanel::setOperatorAuthenticated(bool authenticated) {
         return;
     }
 
-    conn_hint_->setText(
+    conn_hint_->setText(tr(
         "Point this at your pool's read-only status endpoint. It is loopback-only on the "
         "pool host by design, so from another machine open an SSH tunnel first:"
-        "<br/><code>ssh -N -L 4445:127.0.0.1:4445 you@your.host</code>");
+        "<br/><code>ssh -N -L 4445:127.0.0.1:4445 you@your.host</code>"));
     conn_hint_->setStyleSheet("color: #9fb3c8;");
 }
 
@@ -533,9 +533,9 @@ bool PoolPanel::validateOpsUrl(const QUrl& url, QLabel* error_target) const {
     if (!url.isValid() || host.isEmpty() || !url.userInfo().isEmpty() ||
         (scheme != QStringLiteral("https") &&
          !(scheme == QStringLiteral("http") && loopback))) {
-        error_target->setText(
+        error_target->setText(tr(
             "<span style='color:#ff6b6b;'>Use HTTPS, or plain HTTP only through a "
-            "loopback/SSH-tunnel endpoint such as 127.0.0.1.</span>");
+            "loopback/SSH-tunnel endpoint such as 127.0.0.1.</span>"));
         return false;
     }
     return true;
@@ -699,7 +699,7 @@ void PoolPanel::onChangePayoutClicked() {
     // Money-routing change: confirm explicitly, and name both addresses, so a
     // mis-paste is visible before it is sent rather than after.
     const auto choice = QMessageBox::question(
-        this, "Change fee address",
+        this, tr("Change fee address"),
         QString("Pay your operator fee to a different address?\n\n"
                 "From:  %1\nTo:      %2\n\n"
                 "Takes effect on the pool's next block template. Your miners' "
@@ -743,17 +743,17 @@ void PoolPanel::onChangeFeeClicked() {
     if (fee_in_flight_) return;
     const qint64 requested = qRound64(fee_percent_input_->value() * 100.0);
     if (live_fee_bps_ < 0) {
-        lbl_fee_message_->setText("<span style='color:#f0b429;'>Connect to the pool before changing its fee.</span>");
+        lbl_fee_message_->setText(tr("<span style='color:#f0b429;'>Connect to the pool before changing its fee.</span>"));
         lbl_fee_message_->setVisible(true);
         return;
     }
     if (requested == live_fee_bps_) {
-        lbl_fee_message_->setText("That is already the live operator fee.");
+        lbl_fee_message_->setText(tr("That is already the live operator fee."));
         lbl_fee_message_->setVisible(true);
         return;
     }
     const auto choice = QMessageBox::question(
-        this, "Change operator fee",
+        this, tr("Change operator fee"),
         QString("Change the fee applied to future shared-reward templates?\n\nFrom:  %1%\nTo:      %2%\n\nMiner payouts adjust on the next template. Already-issued templates are unchanged.")
             .arg(live_fee_bps_ / 100.0, 0, 'f', 2)
             .arg(requested / 100.0, 0, 'f', 2),
@@ -768,7 +768,7 @@ void PoolPanel::onChangeFeeClicked() {
         return;
     }
     if (!persistFeeJournal(QStringLiteral("submitting"), live_fee_bps_, requested)) {
-        lbl_fee_message_->setText("<span style='color:#ff6b6b;'>Not sent: the local fee-policy journal could not be saved.</span>");
+        lbl_fee_message_->setText(tr("<span style='color:#ff6b6b;'>Not sent: the local fee-policy journal could not be saved.</span>"));
         lbl_fee_message_->setVisible(true);
         return;
     }
@@ -782,7 +782,7 @@ void PoolPanel::onChangeFeeClicked() {
     body["fee_bps"] = requested;
     fee_in_flight_ = true;
     btn_change_fee_->setEnabled(false);
-    lbl_fee_message_->setText("Review accepted locally; asking the pool to apply the fee policy…");
+    lbl_fee_message_->setText(tr("Review accepted locally; asking the pool to apply the fee policy…"));
     lbl_fee_message_->setVisible(true);
     net_->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
 }
@@ -792,10 +792,10 @@ void PoolPanel::handleFeeReply(QNetworkReply* reply, int http) {
     const QJsonObject object = doc.isObject() ? doc.object() : QJsonObject{};
     if (http == 403) {
         persistFeeJournal(QStringLiteral("rejected"), fee_journal_from_, fee_journal_to_);
-        lbl_fee_message_->setText("<span style='color:#f0b429;'>Runtime fee changes are disabled on this pool. Re-run its installer with <code>--allow-fee-change</code>.</span>");
+        lbl_fee_message_->setText(tr("<span style='color:#f0b429;'>Runtime fee changes are disabled on this pool. Re-run its installer with <code>--allow-fee-change</code>.</span>"));
     } else if (http == 401) {
         persistFeeJournal(QStringLiteral("rejected"), fee_journal_from_, fee_journal_to_);
-        lbl_fee_message_->setText("<span style='color:#ff6b6b;'>Rejected: wrong ops token.</span>");
+        lbl_fee_message_->setText(tr("<span style='color:#ff6b6b;'>Rejected: wrong ops token.</span>"));
     } else if (http != 200) {
         persistFeeJournal(QStringLiteral("rejected"), fee_journal_from_, fee_journal_to_);
         lbl_fee_message_->setText(QString("<span style='color:#ff6b6b;'>Fee not changed: %1</span>")
@@ -804,12 +804,12 @@ void PoolPanel::handleFeeReply(QNetworkReply* reply, int http) {
         const auto applied = strictInt(object.value("fee_bps"));
         if (!applied || *applied != fee_journal_to_) {
             persistFeeJournal(QStringLiteral("conflict"), fee_journal_from_, fee_journal_to_);
-            lbl_fee_message_->setText("<span style='color:#ff6b6b;'>Safety conflict: the pool did not confirm the exact fee you reviewed. Further changes are locked pending inspection.</span>");
+            lbl_fee_message_->setText(tr("<span style='color:#ff6b6b;'>Safety conflict: the pool did not confirm the exact fee you reviewed. Further changes are locked pending inspection.</span>"));
             btn_change_fee_->setEnabled(false);
         } else {
             live_fee_bps_ = *applied;
             persistFeeJournal(QStringLiteral("applied"), fee_journal_from_, *applied);
-            lbl_fee_message_->setText("<span style='color:#8fbf7f;'>Operator fee changed for the next template and persisted across restart.</span>");
+            lbl_fee_message_->setText(tr("<span style='color:#8fbf7f;'>Operator fee changed for the next template and persisted across restart.</span>"));
         }
     }
     lbl_fee_message_->setVisible(true);
@@ -890,7 +890,7 @@ void PoolPanel::onOpsReplyFinished(QNetworkReply* reply) {
         btn_change_fee_->setEnabled(true);
         if (reply->error() != QNetworkReply::NoError && http == 0) {
             persistFeeJournal(QStringLiteral("uncertain"), fee_journal_from_, fee_journal_to_);
-            lbl_fee_message_->setText("<span style='color:#f0b429;'>Fee-change outcome uncertain. Reconnecting to reconcile the live policy.</span>");
+            lbl_fee_message_->setText(tr("<span style='color:#f0b429;'>Fee-change outcome uncertain. Reconnecting to reconcile the live policy.</span>"));
             lbl_fee_message_->setVisible(true);
             btn_change_fee_->setEnabled(false);
             refresh();
@@ -1326,7 +1326,7 @@ void PoolPanel::restoreFeeJournal() {
     if (btn_change_fee_) btn_change_fee_->setEnabled(true);
     if (fee_journal_stage_ == QStringLiteral("submitting") || fee_journal_stage_ == QStringLiteral("uncertain")) {
         fee_journal_stage_ = QStringLiteral("uncertain");
-        lbl_fee_message_->setText("<span style='color:#f0b429;'>A previous fee change has an uncertain outcome. Connect to reconcile it.</span>");
+        lbl_fee_message_->setText(tr("<span style='color:#f0b429;'>A previous fee change has an uncertain outcome. Connect to reconcile it.</span>"));
         lbl_fee_message_->setVisible(true);
         btn_change_fee_->setEnabled(false);
     }
@@ -1336,15 +1336,15 @@ void PoolPanel::reconcileFeeJournal(qint64 observed) {
     if (fee_journal_stage_ != QStringLiteral("submitting") && fee_journal_stage_ != QStringLiteral("uncertain")) return;
     if (observed == fee_journal_to_) {
         persistFeeJournal(QStringLiteral("applied"), fee_journal_from_, fee_journal_to_);
-        lbl_fee_message_->setText("<span style='color:#51cf66;'>Reconciled: the requested operator fee is live.</span>");
+        lbl_fee_message_->setText(tr("<span style='color:#51cf66;'>Reconciled: the requested operator fee is live.</span>"));
         btn_change_fee_->setEnabled(true);
     } else if (observed == fee_journal_from_) {
         persistFeeJournal(QStringLiteral("not-applied"), fee_journal_from_, fee_journal_to_);
-        lbl_fee_message_->setText("<span style='color:#f0b429;'>Reconciled: the previous operator fee remains live.</span>");
+        lbl_fee_message_->setText(tr("<span style='color:#f0b429;'>Reconciled: the previous operator fee remains live.</span>"));
         btn_change_fee_->setEnabled(true);
     } else {
         persistFeeJournal(QStringLiteral("conflict"), fee_journal_from_, fee_journal_to_);
-        lbl_fee_message_->setText("<span style='color:#ff6b6b;'>Fee-policy reconciliation conflict. Inspect the pool before changing it again.</span>");
+        lbl_fee_message_->setText(tr("<span style='color:#ff6b6b;'>Fee-policy reconciliation conflict. Inspect the pool before changing it again.</span>"));
         btn_change_fee_->setEnabled(false);
     }
     lbl_fee_message_->setVisible(true);
@@ -1356,7 +1356,7 @@ void PoolPanel::onCheckEarningsClicked() {
     }
     const QString addr = fee_address_input_->text().trimmed();
     if (addr.isEmpty()) {
-        lbl_earnings_->setText("<span style='color:#f0b429;'>Enter your fee address.</span>");
+        lbl_earnings_->setText(tr("<span style='color:#f0b429;'>Enter your fee address.</span>"));
         return;
     }
     if (!rpc_->isConnected()) {
@@ -1374,8 +1374,8 @@ void PoolPanel::onCheckEarningsClicked() {
     earnings_address_ = addr;
     lifetime_acc_ = poolearnings::Received{};
     lifetime_pages_ = 0;
-    lbl_lifetime_->setText("reading the chain\xE2\x80\xA6 (this walks the block history and can take a few seconds)");
-    lbl_earnings_->setText("checking the chain\xE2\x80\xA6");
+    lbl_lifetime_->setText(tr("reading the chain\xE2\x80\xA6 (this walks the block history and can take a few seconds)"));
+    lbl_earnings_->setText(tr("checking the chain\xE2\x80\xA6"));
     earnings_in_flight_ = true;
     lifetime_in_flight_ = true;
     btn_check_earnings_->setEnabled(false);
@@ -1412,7 +1412,7 @@ void PoolPanel::finishEarningsRequest() {
 void PoolPanel::applyLifetime(const QJsonValue& result) {
     if (!result.isObject()) {
         lifetime_in_flight_ = false;
-        lbl_lifetime_->setText("<span style='color:#ff6b6b;'>Unexpected history reply from the node.</span>");
+        lbl_lifetime_->setText(tr("<span style='color:#ff6b6b;'>Unexpected history reply from the node.</span>"));
         return;
     }
     const QJsonObject page = result.toObject();
@@ -1486,11 +1486,11 @@ void PoolPanel::onRpcResult(const QString& method, const QJsonValue& result) {
     earnings_in_flight_ = false;
     finishEarningsRequest();
     if (!poolearnings::isForAddress(result.toObject(), earnings_address_)) {
-        lbl_earnings_->setText("<span style='color:#ff6b6b;'>The node returned a balance for another address.</span>");
+        lbl_earnings_->setText(tr("<span style='color:#ff6b6b;'>The node returned a balance for another address.</span>"));
         return;
     }
     if (!result.isObject()) {
-        lbl_earnings_->setText("<span style='color:#ff6b6b;'>Unexpected reply from the node.</span>");
+        lbl_earnings_->setText(tr("<span style='color:#ff6b6b;'>Unexpected reply from the node.</span>"));
         return;
     }
     const QJsonObject obj = result.toObject();
@@ -1502,7 +1502,7 @@ void PoolPanel::onRpcResult(const QString& method, const QJsonValue& result) {
         }
     }
     if (!balance) {
-        lbl_earnings_->setText("<span style='color:#ff6b6b;'>The node did not return a valid confirmed unspent balance.</span>");
+        lbl_earnings_->setText(tr("<span style='color:#ff6b6b;'>The node did not return a valid confirmed unspent balance.</span>"));
         return;
     }
     lbl_earnings_->setText(

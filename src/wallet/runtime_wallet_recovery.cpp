@@ -1,4 +1,5 @@
 #include "wallet/runtime_wallet_recovery.h"
+#include "daemon/runtime_replay_cancellation.h"
 #include "wallet/runtime_recovery_source.h"
 #include "wallet/runtime_index_delivery.h"
 #include "wallet/runtime_origin_projection.h"
@@ -97,10 +98,12 @@ RuntimeTransparentRecoveryResult RuntimeWalletRecovery::Resume(
         CheckPosition(*progress,source(progress->cursor,1));
     }
     while (std::min(indexed.cursor.sequence,ordinary.cursor.sequence)<target.sequence) {
+        RuntimeReplayCancellationScope::ThrowIfCancelled();
         const auto after=indexed.cursor.sequence<=ordinary.cursor.sequence?indexed.cursor:ordinary.cursor;
         const auto page=source(after,static_cast<size_t>(std::min<uint64_t>(128,target.sequence-after.sequence)));
         Require(!page.events.empty(),"Wallet recovery source ended before captured head");
         for (const auto& event : page.events) {
+            RuntimeReplayCancellationScope::ThrowIfCancelled();
             Require(event.cursor.sequence<=target.sequence,"Wallet recovery page exceeds captured head");
             const auto lease=wallet.AcquireDatabaseLease();
             const auto current=ReadStores(wallet,index,session);
@@ -202,6 +205,7 @@ RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumeAccounts(
         sequence=std::min(sequence,cursor.sequence);
     }
     for(++sequence;sequence<=target.sequence;++sequence) {
+        RuntimeReplayCancellationScope::ThrowIfCancelled();
         const auto event_handle=view.Event(sequence);const auto& event=*event_handle;
         const auto lease=wallet.AcquireDatabaseLease();
         Require(unchanged(current,read()),"Wallet recovery stores changed during source read");
@@ -295,6 +299,7 @@ RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumePreparedCatalog
         sequence=std::min(sequence,position.sequence);
     }
     for(++sequence;sequence<=target.sequence;++sequence){
+        RuntimeReplayCancellationScope::ThrowIfCancelled();
         const auto event=view.Event(sequence);auto prepared=prepare(Action::Apply,sequence);
         Require(equal(current,prepared.first),"Wallet recovery catalog changed during source read");
         const auto lease=wallet.AcquireDatabaseLease();recheck(current,*prepared.second);
@@ -418,6 +423,7 @@ std::optional<RuntimeOrchardCatalogRecoveryResult> RuntimeWalletRecovery::Resume
     }
     size_t advanced=0;
     while(sequence<target.sequence && advanced<max_events){
+        RuntimeReplayCancellationScope::ThrowIfCancelled();
         ++sequence;const auto event=view.Event(sequence);auto prepared=prepare(Action::Apply,sequence);
         Require(equal(current,prepared.first),"Orchard recovery catalog changed during preparation");
         bind([&](const auto& fence){
